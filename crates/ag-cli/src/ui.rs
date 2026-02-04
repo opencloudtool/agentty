@@ -99,7 +99,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 f.render_stateful_widget(t, main_area, table_state);
             }
 
-            let help_message = Paragraph::new("q: quit | a: add | j/k: nav")
+            let help_message = Paragraph::new("q: quit | a: add | o: open | j/k: nav")
                 .style(Style::default().fg(Color::Gray));
             f.render_widget(help_message, footer_area);
         }

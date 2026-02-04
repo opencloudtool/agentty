@@ -1,4 +1,5 @@
 use std::io;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use ag_cli::app::App;
@@ -46,6 +47,19 @@ fn main() -> io::Result<()> {
                         }
                         KeyCode::Char('k') | KeyCode::Up => {
                             app.previous();
+                        }
+                        KeyCode::Char('o') => {
+                            if let Some(agent) = app.selected_agent() {
+                                let folder = agent.folder.clone();
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                let shell =
+                                    std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+                                let _ = Command::new(&shell).current_dir(&folder).status();
+                                enable_raw_mode()?;
+                                execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                                terminal.clear()?;
+                            }
                         }
                         _ => {}
                     },

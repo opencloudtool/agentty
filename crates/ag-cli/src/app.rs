@@ -123,6 +123,10 @@ impl App {
         }
     }
 
+    pub fn selected_agent(&self) -> Option<&Agent> {
+        self.table_state.selected().and_then(|i| self.agents.get(i))
+    }
+
     pub fn toggle_all(&mut self) {
         for agent in &mut self.agents {
             agent.status.toggle();
