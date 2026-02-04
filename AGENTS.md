@@ -9,8 +9,8 @@ TUI tool to manage agents.
 - `ag-cli`: A binary crate providing the CLI interface using Ratatui.
 
 ## Rust Project Style Guide
-- Dependency versions and project information (version, authors) are managed in the root `Cargo.toml`.
-- All workspace crates must use `workspace = true` for shared package metadata and dependencies.
+- **Dependency Management:** ALL dependencies (including `dev-dependencies` and `build-dependencies`) must be defined in the root `Cargo.toml` under `[workspace.dependencies]`.
+- All workspace crates must use `workspace = true` for shared package metadata and dependencies. Never define a version number inside a crate's `Cargo.toml`.
 - Use `ratatui` for terminal UI development.
 
 ## Quality Gates
