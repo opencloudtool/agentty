@@ -86,8 +86,9 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     rows,
                     [
                         Constraint::Length(15),
-                        Constraint::Min(30),
-                        Constraint::Length(3),
+                        Constraint::Min(0),
+                        Constraint::Max(6),
+                        Constraint::Length(1),
                     ],
                 )
                 .header(header)
