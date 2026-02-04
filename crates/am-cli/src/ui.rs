@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
 
 use crate::model::{Agent, AppMode};
 
@@ -86,8 +86,9 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
         AppMode::Prompt { input } => {
             let vertical_chunks = Layout::default()
                 .constraints([
-                    Constraint::Percentage(30),
-                    Constraint::Length(3),
+                    Constraint::Percentage(20),
+                    Constraint::Min(3),
+                    Constraint::Length(1),
                     Constraint::Min(0),
                 ])
                 .split(area);
@@ -102,6 +103,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 .split(vertical_chunks[1]);
 
             let input_area = horizontal_chunks[1];
+            let inner_width = input_area.width.saturating_sub(2);
 
             let prompt_line = Line::from(vec![
                 Span::styled(
@@ -112,15 +114,17 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 ),
                 Span::raw(input),
             ]);
-            let input_widget = Paragraph::new(prompt_line).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
-                    .title(Span::styled(
-                        " New Agent Prompt ",
-                        Style::default().fg(Color::Cyan),
-                    )),
-            );
+            let input_widget = Paragraph::new(prompt_line)
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Cyan))
+                        .title(Span::styled(
+                            " New Agent Prompt ",
+                            Style::default().fg(Color::Cyan),
+                        )),
+                );
             f.render_widget(input_widget, input_area);
 
             let help_message = Paragraph::new("Enter: confirm | Esc: cancel")
@@ -128,12 +132,16 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 .alignment(ratatui::layout::Alignment::Center);
             f.render_widget(help_message, vertical_chunks[2]);
 
-            // Set cursor position
-            let cursor_x = input_area
-                .x
-                .saturating_add(u16::try_from(input.len()).unwrap_or(u16::MAX))
-                .saturating_add(4);
-            f.set_cursor_position((cursor_x, input_area.y + 1));
+            // Set cursor position with wrapping support
+            let total_chars = u16::try_from(input.len().saturating_add(3)).unwrap_or(u16::MAX);
+            if let Some(cursor_y) = total_chars.checked_div(inner_width) {
+                let cursor_x = total_chars % inner_width;
+
+                f.set_cursor_position((
+                    input_area.x.saturating_add(1).saturating_add(cursor_x),
+                    input_area.y.saturating_add(1).saturating_add(cursor_y),
+                ));
+            }
         }
     }
 }
