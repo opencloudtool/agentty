@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use ratatui::style::Color;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -15,6 +17,7 @@ pub struct Agent {
     pub name: String,
     pub prompt: String,
     pub status: Status,
+    pub folder: PathBuf,
 }
 
 impl Status {

@@ -1,3 +1,8 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use ratatui::widgets::TableState;
 
 use crate::model::{Agent, AppMode, Status};
@@ -61,10 +66,27 @@ impl App {
 
     pub fn add_agent(&mut self, prompt: String) {
         let name = format!("Agent {}", self.agents.len() + 1);
+
+        let mut hasher = DefaultHasher::new();
+        name.hash(&mut hasher);
+        prompt.hash(&mut hasher);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        nanos.hash(&mut hasher);
+        let hash = format!("{:016x}", hasher.finish());
+        let short_hash = &hash[..8];
+
+        let folder = PathBuf::from(format!("/var/tmp/.agentty/{short_hash}"));
+        let _ = std::fs::create_dir_all(&folder);
+        let _ = std::fs::write(folder.join("prompt.txt"), &prompt);
+
         self.agents.push(Agent {
             name,
             prompt,
             status: Status::InProgress,
+            folder,
         });
         if self.table_state.selected().is_none() {
             self.table_state.select(Some(0));

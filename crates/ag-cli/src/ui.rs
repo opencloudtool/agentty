@@ -63,7 +63,9 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             } else {
                 let selected_style = Style::default().bg(Color::DarkGray);
                 let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
-                let header_cells = ["Agent Name", "Status"].iter().map(|h| Cell::from(*h));
+                let header_cells = ["Agent Name", "Folder", "Status"]
+                    .iter()
+                    .map(|h| Cell::from(*h));
                 let header = Row::new(header_cells)
                     .style(normal_style)
                     .height(1)
@@ -71,16 +73,27 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 let rows = agents.iter().map(|agent| {
                     let cells = vec![
                         Cell::from(agent.name.as_str()),
+                        Cell::from(Span::styled(
+                            agent.folder.display().to_string(),
+                            Style::default().fg(Color::Cyan),
+                        )),
                         Cell::from(agent.status.icon())
                             .style(Style::default().fg(agent.status.color())),
                     ];
                     Row::new(cells).height(1)
                 });
-                let t = Table::new(rows, [Constraint::Min(20), Constraint::Length(3)])
-                    .header(header)
-                    .block(Block::default().borders(Borders::ALL).title("Agents"))
-                    .row_highlight_style(selected_style)
-                    .highlight_symbol(">> ");
+                let t = Table::new(
+                    rows,
+                    [
+                        Constraint::Length(15),
+                        Constraint::Min(30),
+                        Constraint::Length(3),
+                    ],
+                )
+                .header(header)
+                .block(Block::default().borders(Borders::ALL).title("Agents"))
+                .row_highlight_style(selected_style)
+                .highlight_symbol(">> ");
 
                 f.render_stateful_widget(t, main_area, table_state);
             }
