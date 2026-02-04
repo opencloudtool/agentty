@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
@@ -126,13 +125,19 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             ..
         } => {
             if let Some(agent) = agents.get(*agent_index) {
+                let bottom_height = if let AppMode::Reply { input, .. } = mode {
+                    calculate_input_height(area.width.saturating_sub(2), input)
+                } else {
+                    1
+                };
+
                 let chunks = Layout::default()
-                    .constraints([Constraint::Min(0), Constraint::Length(1)])
+                    .constraints([Constraint::Min(0), Constraint::Length(bottom_height)])
                     .margin(1)
                     .split(area);
 
                 let output_area = chunks[0];
-                let footer_area = chunks[1];
+                let bottom_area = chunks[1];
 
                 let status = agent.status();
                 let status_label = match status {
@@ -189,99 +194,80 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
 
                 f.render_widget(paragraph, output_area);
 
-                let help_message = Paragraph::new("q: back | r: reply | j/k: scroll")
-                    .style(Style::default().fg(Color::Gray));
-                f.render_widget(help_message, footer_area);
-            }
-            // If in Reply mode, render the input box over the view
-            if let AppMode::Reply { input, .. } = mode {
-                render_input_box(f, " Reply ", input, area);
+                if let AppMode::Reply { input, .. } = mode {
+                    render_chat_input(f, " Reply ", input, bottom_area);
+                } else {
+                    let help_message = Paragraph::new("q: back | r: reply | j/k: scroll")
+                        .style(Style::default().fg(Color::Gray));
+                    f.render_widget(help_message, bottom_area);
+                }
             }
         }
         AppMode::Prompt { input } => {
-            render_input_box(f, " New Agent Prompt ", input, area);
+            let input_height = calculate_input_height(area.width.saturating_sub(2), input);
+            let chunks = Layout::default()
+                .constraints([Constraint::Min(0), Constraint::Length(input_height)])
+                .margin(1)
+                .split(area);
+
+            // Top area (chunks[0]) remains empty for "New Chat" feel
+            render_chat_input(f, " New Chat ", input, chunks[1]);
         }
     }
 }
 
-fn render_input_box(f: &mut Frame, title: &str, input: &str, area: ratatui::layout::Rect) {
-    // First, determine horizontal layout to get available width
-    let horizontal_chunks = centered_horizontal_layout(area);
-    let input_width = horizontal_chunks[1].width;
-    let inner_width = input_width.saturating_sub(2);
-
-    // Manual wrapping logic to match Gemini/Claude CLI behavior
+fn compute_input_layout(input: &str, width: u16) -> (Vec<Line<'static>>, u16, u16) {
+    let inner_width = width.saturating_sub(2) as usize;
     let prefix = " › ";
-    let prefix_len = u16::try_from(prefix.chars().count()).unwrap_or(0);
+    let prefix_span = Span::styled(
+        prefix,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    let prefix_width = prefix_span.width();
 
     let mut display_lines = Vec::new();
-    let mut cursor_x = 0;
-    let mut cursor_y = 0;
+    let mut current_line_spans = vec![prefix_span];
+    let mut current_width = prefix_width;
 
-    if inner_width > prefix_len {
-        let first_line_max_input = (inner_width - prefix_len) as usize;
-        let input_chars: Vec<char> = input.chars().collect();
+    let mut cursor_x: usize = current_width;
+    let mut cursor_y: usize = 0;
 
-        // First line contains prefix + part of input
-        let first_line_part: String = input_chars.iter().take(first_line_max_input).collect();
-        let first_line_part_len = u16::try_from(first_line_part.chars().count()).unwrap_or(0);
+    for c in input.chars() {
+        let char_str = c.to_string();
+        let char_span = Span::raw(char_str);
+        let char_width = char_span.width();
 
-        display_lines.push(Line::from(vec![
-            Span::styled(
-                prefix,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(first_line_part),
-        ]));
-
-        match input_chars.len().cmp(&first_line_max_input) {
-            Ordering::Less => {
-                cursor_x = prefix_len + u16::try_from(input_chars.len()).unwrap_or(0);
-                cursor_y = 0;
-            }
-            Ordering::Equal => {
-                cursor_x = prefix_len + first_line_part_len;
-                cursor_y = 0;
-                if cursor_x >= inner_width {
-                    cursor_x = 0;
-                    cursor_y = 1;
-                }
-            }
-            Ordering::Greater => {
-                let remaining_input = &input_chars[first_line_max_input..];
-                for (i, chunk) in remaining_input.chunks(inner_width as usize).enumerate() {
-                    display_lines.push(Line::from(chunk.iter().collect::<String>()));
-                    if chunk.len() < inner_width as usize {
-                        cursor_x = u16::try_from(chunk.len()).unwrap_or(0);
-                        cursor_y = u16::try_from(i + 1).unwrap_or(0);
-                    } else if chunk.len() == inner_width as usize {
-                        cursor_x = 0;
-                        cursor_y = u16::try_from(i + 2).unwrap_or(0);
-                    }
-                }
-            }
+        if current_width + char_width > inner_width {
+            display_lines.push(Line::from(std::mem::take(&mut current_line_spans)));
+            current_width = 0;
+            cursor_y += 1;
         }
-    } else {
-        display_lines.push(Line::from(prefix));
-        display_lines.push(Line::from(input));
-        cursor_y = 1;
-        cursor_x = u16::try_from(input.chars().count()).unwrap_or(0);
+
+        current_line_spans.push(char_span);
+        current_width += char_width;
+        cursor_x = current_width;
     }
 
-    let box_height = (cursor_y + 1).saturating_add(2);
+    if current_width >= inner_width {
+        cursor_x = 0;
+        cursor_y += 1;
+    }
 
-    let vertical_chunks = Layout::default()
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(box_height),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(area);
+    if !current_line_spans.is_empty() {
+        display_lines.push(Line::from(current_line_spans));
+    }
 
-    let input_area = centered_horizontal_layout(vertical_chunks[1])[1];
+    (
+        display_lines,
+        u16::try_from(cursor_x).unwrap_or(u16::MAX),
+        u16::try_from(cursor_y).unwrap_or(u16::MAX),
+    )
+}
+
+fn render_chat_input(f: &mut Frame, title: &str, input: &str, area: ratatui::layout::Rect) {
+    let (display_lines, cursor_x, cursor_y) = compute_input_layout(input, area.width);
 
     let input_widget = Paragraph::new(display_lines).block(
         Block::default()
@@ -289,18 +275,13 @@ fn render_input_box(f: &mut Frame, title: &str, input: &str, area: ratatui::layo
             .border_style(Style::default().fg(Color::Cyan))
             .title(Span::styled(title, Style::default().fg(Color::Cyan))),
     );
-    f.render_widget(Clear, input_area);
-    f.render_widget(input_widget, input_area);
-
-    let help_message = Paragraph::new("Enter: confirm | Esc: cancel")
-        .style(Style::default().fg(Color::Gray))
-        .alignment(ratatui::layout::Alignment::Center);
-    f.render_widget(help_message, vertical_chunks[2]);
+    f.render_widget(Clear, area);
+    f.render_widget(input_widget, area);
 
     // Set cursor position
     f.set_cursor_position((
-        input_area.x.saturating_add(1).saturating_add(cursor_x),
-        input_area.y.saturating_add(1).saturating_add(cursor_y),
+        area.x.saturating_add(1).saturating_add(cursor_x),
+        area.y.saturating_add(1).saturating_add(cursor_y),
     ));
 }
 
@@ -348,4 +329,134 @@ fn wrap_lines(text: &str, width: usize) -> Vec<Line<'_>> {
         }
     }
     wrapped
+}
+
+fn calculate_input_height(width: u16, input: &str) -> u16 {
+    let (_, _, cursor_y) = compute_input_layout(input, width);
+    cursor_y + 3
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrap_lines_basic() {
+        // Arrange
+        let text = "hello world";
+        let width = 20;
+
+        // Act
+        let wrapped = wrap_lines(text, width);
+
+        // Assert
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped[0].to_string(), "hello world");
+    }
+
+    #[test]
+    fn test_wrap_lines_wrapping() {
+        // Arrange
+        let text = "hello world";
+        let width = 5;
+
+        // Act
+        let wrapped = wrap_lines(text, width);
+
+        // Assert
+        assert_eq!(wrapped.len(), 2);
+        assert_eq!(wrapped[0].to_string(), "hello");
+        assert_eq!(wrapped[1].to_string(), "world");
+    }
+
+    #[test]
+    fn test_compute_input_layout_empty() {
+        // Arrange
+        let input = "";
+        let width = 20;
+
+        // Act
+        let (lines, cursor_x, cursor_y) = compute_input_layout(input, width);
+
+        // Assert
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].width(), 3); // " › "
+        assert_eq!(cursor_x, 3);
+        assert_eq!(cursor_y, 0);
+    }
+
+    #[test]
+    fn test_compute_input_layout_single_line() {
+        // Arrange
+        let input = "test";
+        let width = 20;
+
+        // Act
+        let (lines, cursor_x, cursor_y) = compute_input_layout(input, width);
+
+        // Assert
+        assert_eq!(lines.len(), 1);
+        assert_eq!(cursor_x, 7); // 3 (prefix) + 4 (text)
+        assert_eq!(cursor_y, 0);
+    }
+
+    #[test]
+    fn test_compute_input_layout_exact_fit() {
+        // Arrange
+        let input = "1234567";
+        let width = 12; // Inner width 10, Prefix 3, Available 7
+
+        // Act
+        let (lines, cursor_x, cursor_y) = compute_input_layout(input, width);
+
+        // Assert
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].width(), 10);
+        assert_eq!(cursor_x, 0);
+        assert_eq!(cursor_y, 1);
+    }
+
+    #[test]
+    fn test_compute_input_layout_wrap() {
+        // Arrange
+        let input = "12345678";
+        let width = 12;
+
+        // Act
+        let (lines, cursor_x, cursor_y) = compute_input_layout(input, width);
+
+        // Assert
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].width(), 10);
+        assert_eq!(lines[1].width(), 1);
+        assert_eq!(lines[1].to_string(), "8");
+        assert_eq!(cursor_x, 1);
+        assert_eq!(cursor_y, 1);
+    }
+
+    #[test]
+    fn test_compute_input_layout_multiline_exact_fit() {
+        // Arrange
+        let input = "1234567".to_owned() + "1234567890";
+        let width = 12;
+
+        // Act
+        let (lines, cursor_x, cursor_y) = compute_input_layout(&input, width);
+
+        // Assert
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].width(), 10);
+        assert_eq!(lines[1].width(), 10);
+        assert_eq!(cursor_x, 0);
+        assert_eq!(cursor_y, 2);
+    }
+
+    #[test]
+    fn test_calculate_input_height() {
+        // Arrange & Act & Assert
+        assert_eq!(calculate_input_height(20, ""), 3);
+        assert_eq!(calculate_input_height(12, "1234567"), 4);
+        assert_eq!(calculate_input_height(12, "12345678"), 4);
+        assert_eq!(calculate_input_height(12, "12345671234567890"), 5);
+    }
 }
