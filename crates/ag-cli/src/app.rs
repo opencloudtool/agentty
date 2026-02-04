@@ -1,7 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,11 +53,13 @@ impl App {
                     return None;
                 }
                 let prompt = std::fs::read_to_string(folder.join("prompt.txt")).ok()?;
+                let output_text =
+                    std::fs::read_to_string(folder.join("output.txt")).unwrap_or_default();
                 Some(Agent {
                     name: folder.file_name()?.to_string_lossy().into_owned(),
                     prompt,
                     folder,
-                    output: Arc::new(Mutex::new(String::new())),
+                    output: Arc::new(Mutex::new(output_text)),
                     running: Arc::new(AtomicBool::new(false)),
                 })
             })
@@ -116,6 +118,9 @@ impl App {
         let _ = std::fs::create_dir_all(&folder);
         let _ = std::fs::write(folder.join("prompt.txt"), &prompt);
 
+        let initial_output = format!(" › {prompt}\n\n");
+        let _ = std::fs::write(folder.join("output.txt"), &initial_output);
+
         // Create isolated gemini settings
         let gemini_dir = folder.join(".gemini");
         let _ = std::fs::create_dir_all(&gemini_dir);
@@ -127,7 +132,7 @@ impl App {
 }"#;
         let _ = std::fs::write(gemini_dir.join("settings.json"), settings);
 
-        let output = Arc::new(Mutex::new(String::new()));
+        let output = Arc::new(Mutex::new(initial_output));
         let running = Arc::new(AtomicBool::new(true));
 
         // Spawn background process
@@ -136,6 +141,11 @@ impl App {
         let prompt_clone = prompt.clone();
         let folder_clone = folder.clone();
         std::thread::spawn(move || {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(folder_clone.join("output.txt"))
+                .ok();
+
             let child = Command::new("gemini")
                 .arg("--prompt")
                 .arg(prompt_clone)
@@ -151,6 +161,9 @@ impl App {
                     if let Some(stdout) = child.stdout.take() {
                         let reader = BufReader::new(stdout);
                         for line in reader.lines().map_while(Result::ok) {
+                            if let Some(ref mut f) = file {
+                                let _ = writeln!(f, "{line}");
+                            }
                             if let Ok(mut buf) = output_clone.lock() {
                                 buf.push_str(&line);
                                 buf.push('\n');
