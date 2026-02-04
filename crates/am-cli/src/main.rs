@@ -53,7 +53,8 @@ fn main() -> io::Result<()> {
                         KeyCode::Enter => {
                             if !input.is_empty() {
                                 app.agents.push(Agent {
-                                    name: input.clone(),
+                                    name: format!("Agent {}", app.agents.len() + 1),
+                                    prompt: input.clone(),
                                     status: Status::InProgress,
                                 });
                             }

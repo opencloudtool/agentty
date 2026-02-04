@@ -41,7 +41,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             f.render_stateful_widget(t, rects[0], table_state);
 
             let help_message = ratatui::widgets::Paragraph::new(
-                "Press 'a' to add agent, 'j'/'k' to navigate, 'q' to quit",
+                "Press 'a' to create agent with prompt, 'j'/'k' to navigate, 'q' to quit",
             )
             .style(Style::default().fg(Color::Gray));
             f.render_widget(help_message, rects[1]);
@@ -56,16 +56,14 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 .margin(2)
                 .split(area);
 
-            let input_widget = ratatui::widgets::Paragraph::new(input.as_str()).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("New Agent Name"),
-            );
+            let input_widget = ratatui::widgets::Paragraph::new(input.as_str())
+                .block(Block::default().borders(Borders::ALL).title("Prompt"));
             f.render_widget(input_widget, rects[0]);
 
-            let help_message =
-                ratatui::widgets::Paragraph::new("Press 'Enter' to confirm, 'Esc' to cancel")
-                    .style(Style::default().fg(Color::Gray));
+            let help_message = ratatui::widgets::Paragraph::new(
+                "Enter the initial prompt for the agent. Press 'Enter' to confirm, 'Esc' to cancel",
+            )
+            .style(Style::default().fg(Color::Gray));
             f.render_widget(help_message, rects[2]);
         }
     }

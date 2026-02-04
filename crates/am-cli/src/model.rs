@@ -13,6 +13,7 @@ pub enum AppMode {
 
 pub struct Agent {
     pub name: String,
+    pub prompt: String,
     pub status: Status,
 }
 

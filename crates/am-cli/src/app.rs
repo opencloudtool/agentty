@@ -22,14 +22,17 @@ impl App {
             agents: vec![
                 Agent {
                     name: "Search Agent".to_string(),
+                    prompt: String::new(),
                     status: Status::InProgress,
                 },
                 Agent {
                     name: "Writing Agent".to_string(),
+                    prompt: String::new(),
                     status: Status::Done,
                 },
                 Agent {
                     name: "Research Agent".to_string(),
+                    prompt: String::new(),
                     status: Status::InProgress,
                 },
             ],
