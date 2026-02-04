@@ -12,8 +12,8 @@ use ratatui::{
     Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Row, Table},
+    style::{Color, Style},
+    widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -73,6 +73,9 @@ fn main() -> io::Result<()> {
         },
     ];
 
+    let mut table_state = TableState::default();
+    table_state.select(Some(0));
+
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(100);
 
@@ -83,7 +86,7 @@ fn main() -> io::Result<()> {
                 .margin(2)
                 .split(f.area());
 
-            let selected_style = Style::default().add_modifier(Modifier::REVERSED);
+            let selected_style = Style::default().bg(Color::DarkGray);
             let normal_style = Style::default().bg(Color::Blue);
             let header_cells = ["Agent Name", "Status"]
                 .iter()
@@ -109,10 +112,11 @@ fn main() -> io::Result<()> {
             .row_highlight_style(selected_style)
             .highlight_symbol(">> ");
 
-            f.render_widget(t, rects[0]);
+            f.render_stateful_widget(t, rects[0], &mut table_state);
 
-            let help_message = ratatui::widgets::Paragraph::new("Press 'q' to quit")
-                .style(Style::default().fg(Color::Gray));
+            let help_message =
+                ratatui::widgets::Paragraph::new("Press 'j'/'k' to navigate, 'q' to quit")
+                    .style(Style::default().fg(Color::Gray));
             f.render_widget(help_message, rects[1]);
         })?;
 
@@ -122,8 +126,35 @@ fn main() -> io::Result<()> {
 
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                if let KeyCode::Char('q') = key.code {
-                    break;
+                match key.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        let i = match table_state.selected() {
+                            Some(i) => {
+                                if i >= agents.len() - 1 {
+                                    0
+                                } else {
+                                    i + 1
+                                }
+                            }
+                            None => 0,
+                        };
+                        table_state.select(Some(i));
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        let i = match table_state.selected() {
+                            Some(i) => {
+                                if i == 0 {
+                                    agents.len() - 1
+                                } else {
+                                    i - 1
+                                }
+                            }
+                            None => 0,
+                        };
+                        table_state.select(Some(i));
+                    }
+                    _ => {}
                 }
             }
         }
