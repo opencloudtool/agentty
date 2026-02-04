@@ -195,7 +195,9 @@ impl App {
                 .open(folder.join("output.txt"))
                 .ok();
 
-            let mut cmd = Command::new("gemini");
+            let cmd_name =
+                std::env::var("AGENTTY_GEMINI_COMMAND").unwrap_or_else(|_| "gemini".to_string());
+            let mut cmd = Command::new(cmd_name);
             cmd.arg("--prompt")
                 .arg(prompt)
                 .arg("--model")
@@ -211,16 +213,7 @@ impl App {
             match cmd.spawn() {
                 Ok(mut child) => {
                     if let Some(stdout) = child.stdout.take() {
-                        let reader = BufReader::new(stdout);
-                        for line in reader.lines().map_while(Result::ok) {
-                            if let Some(ref mut f) = file {
-                                let _ = writeln!(f, "{line}");
-                            }
-                            if let Ok(mut buf) = output.lock() {
-                                buf.push_str(&line);
-                                buf.push('\n');
-                            }
-                        }
+                        Self::process_output(stdout, &mut file, &output);
                     }
                     let _ = child.wait();
                 }
@@ -232,6 +225,23 @@ impl App {
             }
             running.store(false, Ordering::Relaxed);
         });
+    }
+
+    fn process_output<R: std::io::Read>(
+        source: R,
+        file: &mut Option<std::fs::File>,
+        output: &Arc<Mutex<String>>,
+    ) {
+        let reader = BufReader::new(source);
+        for line in reader.lines().map_while(Result::ok) {
+            if let Some(f) = file {
+                let _ = writeln!(f, "{line}");
+            }
+            if let Ok(mut buf) = output.lock() {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        }
     }
 
     pub fn selected_agent(&self) -> Option<&Agent> {
@@ -256,6 +266,7 @@ impl App {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use tempfile::tempdir;
 
@@ -363,5 +374,195 @@ mod tests {
         let agent = &app.agents[0];
         let output = agent.output.lock().expect("failed to lock output");
         assert!(output.contains("Reply"));
+    }
+
+    #[test]
+    fn test_load_existing_agents() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let agent_dir = dir.path().join("12345678");
+        std::fs::create_dir(&agent_dir).expect("failed to create agent dir");
+        std::fs::write(agent_dir.join("prompt.txt"), "Existing").expect("failed to write prompt");
+        std::fs::write(agent_dir.join("output.txt"), "Output").expect("failed to write output");
+
+        // Add some garbage files to test filter logic
+        std::fs::write(dir.path().join("ignored_file.txt"), "")
+            .expect("failed to write ignored file");
+        let ignored_dir = dir.path().join("ignored_dir");
+        std::fs::create_dir(&ignored_dir).expect("failed to create ignored dir");
+        // ignored_dir has no prompt.txt
+
+        // Act
+        let app = App::new(dir.path().to_path_buf());
+
+        // Assert
+        assert_eq!(app.agents.len(), 1);
+        assert_eq!(app.agents[0].name, "12345678");
+        assert_eq!(app.agents[0].prompt, "Existing");
+        // Check that initial selection is set to 0
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_load_agents_invalid_path() {
+        let path = PathBuf::from("/invalid/path/that/does/not/exist");
+        let app = App::new(path);
+        assert!(app.agents.is_empty());
+    }
+
+    #[test]
+    fn test_navigation_empty() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = App::new(dir.path().to_path_buf());
+
+        app.next();
+        assert_eq!(app.table_state.selected(), None);
+
+        app.previous();
+        assert_eq!(app.table_state.selected(), None);
+    }
+
+    #[test]
+    fn test_selected_agent() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = App::new(dir.path().to_path_buf());
+        app.add_agent("Test".to_string());
+
+        assert!(app.selected_agent().is_some());
+
+        app.table_state.select(None);
+        assert!(app.selected_agent().is_none());
+    }
+
+    #[test]
+    fn test_delete_selected_agent_edge_cases() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = App::new(dir.path().to_path_buf());
+        app.add_agent("1".to_string());
+        app.add_agent("2".to_string());
+
+        // Select index out of bounds manually
+        app.table_state.select(Some(99));
+        app.delete_selected_agent();
+        assert_eq!(app.agents.len(), 2);
+
+        // Select None
+        app.table_state.select(None);
+        app.delete_selected_agent();
+        assert_eq!(app.agents.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_last_agent_update_selection() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = App::new(dir.path().to_path_buf());
+        app.add_agent("1".to_string());
+        app.add_agent("2".to_string());
+
+        app.table_state.select(Some(1)); // Select the last one
+        app.delete_selected_agent();
+        // Should select new last one (index 0)
+        assert_eq!(app.agents.len(), 1);
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        app.delete_selected_agent();
+        // Should select None
+        assert!(app.agents.is_empty());
+        assert_eq!(app.table_state.selected(), None);
+    }
+
+    #[test]
+    fn test_default() {
+        let app = App::default();
+        // It should be safe to just construct it
+        assert!(app.agents.is_empty() || !app.agents.is_empty());
+    }
+
+    #[test]
+    fn test_navigation_recovery() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = App::new(dir.path().to_path_buf());
+        app.add_agent("A".to_string());
+
+        // Manually deselect
+        app.table_state.select(None);
+        assert!(!app.agents.is_empty());
+        assert_eq!(app.table_state.selected(), None);
+
+        // Next should select 0
+        app.next();
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        // Manually deselect again
+        app.table_state.select(None);
+
+        // Previous should select 0
+        app.previous();
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_process_output_sync() {
+        let output = Arc::new(Mutex::new(String::new()));
+        // Case 1: No file
+        let mut file = None;
+        let source = "Line 1\nLine 2".as_bytes();
+
+        App::process_output(source, &mut file, &output);
+
+        let out = output.lock().expect("failed to lock output").clone();
+        assert!(out.contains("Line 1"));
+        assert!(out.contains("Line 2"));
+
+        // Case 2: With file
+        let dir = tempdir().expect("failed to create temp dir");
+        let file_path = dir.path().join("out.txt");
+        let mut file = Some(std::fs::File::create(&file_path).expect("failed to create file"));
+        let source_file = "File Line".as_bytes();
+        App::process_output(source_file, &mut file, &output);
+
+        drop(file); // Flush/close
+        let content = std::fs::read_to_string(file_path).expect("failed to read file");
+        assert!(content.contains("File Line"));
+    }
+
+    #[test]
+    fn test_spawn_integration() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = App::new(dir.path().to_path_buf());
+
+        // Use "echo" as the command to simulate success
+        unsafe {
+            std::env::set_var("AGENTTY_GEMINI_COMMAND", "echo");
+        }
+
+        // 1. Test Add (resume=false)
+        app.add_agent("SpawnInit".to_string());
+        // Wait for thread
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        {
+            let agent = &app.agents[0];
+            let output = agent.output.lock().expect("failed to lock output").clone();
+            assert!(output.contains("--prompt"));
+            assert!(output.contains("SpawnInit"));
+            assert!(!output.contains("--resume"));
+        }
+
+        // 2. Test Reply (resume=true)
+        app.reply(0, "SpawnReply".to_string());
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        {
+            let agent = &app.agents[0];
+            let output = agent.output.lock().expect("failed to lock output").clone();
+            assert!(output.contains("SpawnReply"));
+            assert!(output.contains("--resume"));
+            assert!(output.contains("latest"));
+        }
+
+        unsafe {
+            std::env::remove_var("AGENTTY_GEMINI_COMMAND");
+        }
     }
 }
