@@ -19,7 +19,7 @@ To ensure code quality, run the following commands:
 - **Format:** `cargo fmt --all -- --check`
 
 ## Git Conventions
-- Before committing, review the recent commit history (e.g., `git log -n 5`) to ensure consistency with the established tone, phrasing, and level of detail.
+- Before committing, review the recent commit history using an optimized command (e.g., `git log -n 5 --format="---%n%B"`) to ensure consistency with the established tone, phrasing, and level of detail while being token-efficient.
 - Follow the "commit title and description" style:
   - The first line should be a concise summary (the "title").
   - Use a blank line between the title and the body.
