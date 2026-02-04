@@ -14,10 +14,10 @@ TUI tool to manage agents.
 - Use `ratatui` for terminal UI development.
 
 ## Quality Gates
-To ensure code quality, run the following commands:
+To ensure code quality, run the following commands with autofix enabled:
 - **Test:** `cargo test`
-- **Lint:** `cargo clippy -- -D warnings`
-- **Format:** `cargo fmt --all -- --check`
+- **Lint:** `cargo clippy --fix --allow-dirty -- -D warnings`
+- **Format:** `cargo fmt --all`
 
 ## Git Conventions
 - Before committing, review the recent commit history using an optimized command (e.g., `git log -n 5 --format="---%n%B"`) to ensure consistency with the established tone, phrasing, and level of detail while being token-efficient.
@@ -29,6 +29,6 @@ To ensure code quality, run the following commands:
 - Do not add `Co-Authored-By` trailers or any AI attribution to commit messages.
 
 ## Agent Instructions
-- Always update `AGENTS.md` files (root and sub-crates) whenever new architectural insights, project facts, or significant conventions are established or discovered during conversations. Both `CLAUDE.md` and `GEMINI.md` are symlinks to `AGENTS.md`, so a single update keeps all AI assistants in sync.
+- **MANDATORY:** After every user instruction that establishes a preference, convention, or workflow change (e.g., "run checks with autofix", "use X instead of Y", "always do Z"), immediately update the relevant `AGENTS.md` file so the instruction persists across sessions. If unsure whether something qualifies, update anyway — over-documenting is better than losing context. Both `CLAUDE.md` and `GEMINI.md` are symlinks to `AGENTS.md`, so a single update keeps all AI assistants in sync.
 - When creating a new `AGENTS.md` file in any directory, always create corresponding symlinks: `ln -s AGENTS.md CLAUDE.md && ln -s AGENTS.md GEMINI.md` in the same directory.
 - Keep the root `README.md` up to date whenever new information is relevant to end users (e.g., new crates, features, usage instructions, or prerequisites).
