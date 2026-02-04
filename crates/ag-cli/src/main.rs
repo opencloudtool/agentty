@@ -55,6 +55,9 @@ fn main() -> io::Result<()> {
                                 }
                             }
                         }
+                        KeyCode::Char('d') => {
+                            app.delete_selected_agent();
+                        }
                         KeyCode::Char('o') => {
                             if let Some(agent) = app.selected_agent() {
                                 let folder = agent.folder.clone();

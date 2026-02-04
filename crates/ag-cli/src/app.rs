@@ -169,4 +169,20 @@ impl App {
     pub fn selected_agent(&self) -> Option<&Agent> {
         self.table_state.selected().and_then(|i| self.agents.get(i))
     }
+
+    pub fn delete_selected_agent(&mut self) {
+        let Some(i) = self.table_state.selected() else {
+            return;
+        };
+        if i >= self.agents.len() {
+            return;
+        }
+        let agent = self.agents.remove(i);
+        let _ = std::fs::remove_dir_all(&agent.folder);
+        if self.agents.is_empty() {
+            self.table_state.select(None);
+        } else if i >= self.agents.len() {
+            self.table_state.select(Some(self.agents.len() - 1));
+        }
+    }
 }

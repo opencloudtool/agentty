@@ -100,7 +100,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             }
 
             let help_message =
-                Paragraph::new("q: quit | a: add | o: open | Enter: view | j/k: nav")
+                Paragraph::new("q: quit | a: add | d: delete | o: open | Enter: view | j/k: nav")
                     .style(Style::default().fg(Color::Gray));
             f.render_widget(help_message, footer_area);
         }
