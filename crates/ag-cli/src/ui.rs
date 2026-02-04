@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
@@ -7,6 +8,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
 use crate::model::{Agent, AppMode, Status};
+
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn centered_horizontal_layout(area: ratatui::layout::Rect) -> std::rc::Rc<[ratatui::layout::Rect]> {
     Layout::default()
@@ -145,7 +148,20 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     .unwrap_or_default();
 
                 let inner_width = output_area.width.saturating_sub(2) as usize;
-                let lines = wrap_lines(&output_text, inner_width);
+                let mut lines = wrap_lines(&output_text, inner_width);
+
+                if status == Status::InProgress {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
+                    let frame_idx = (now / 100) as usize % SPINNER_FRAMES.len();
+                    let spinner = SPINNER_FRAMES[frame_idx];
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("{spinner} Thinking..."),
+                        Style::default().fg(Color::Yellow),
+                    )]));
+                }
 
                 // Auto-scroll logic or manual override
                 let final_scroll = if let Some(offset) = scroll_offset {
