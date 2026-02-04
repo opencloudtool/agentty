@@ -16,7 +16,7 @@ Project to manage agents.
 To ensure code quality, run the following commands:
 - **Test:** `cargo test`
 - **Lint:** `cargo clippy -- -D warnings`
-- **Format:** `cargo fmt --all -- --check`
+- **Format:** `cargo +nightly fmt --all -- --check`
 
 ## Git Conventions
 - Before committing, review the recent commit history using an optimized command (e.g., `git log -n 5 --format="---%n%B"`) to ensure consistency with the established tone, phrasing, and level of detail while being token-efficient.
