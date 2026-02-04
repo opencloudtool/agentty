@@ -84,52 +84,65 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             f.render_widget(help_message, footer_area);
         }
         AppMode::Prompt { input } => {
-            // First, calculate the expected height based on wrapping
-            let horizontal_constraints = [
-                Constraint::Min(2),
-                Constraint::Percentage(80),
-                Constraint::Min(2),
-            ];
-            let temp_horizontal = Layout::default()
+            // Define horizontal layout first to get inner width
+            let horizontal_chunks = Layout::default()
                 .direction(ratatui::layout::Direction::Horizontal)
-                .constraints(horizontal_constraints)
+                .constraints([
+                    Constraint::Min(2),
+                    Constraint::Percentage(80),
+                    Constraint::Min(2),
+                ])
                 .split(area);
-            let input_width = temp_horizontal[1].width;
+
+            let input_width = horizontal_chunks[1].width;
             let inner_width = input_width.saturating_sub(2);
 
-            let total_chars = u16::try_from(input.len().saturating_add(3)).unwrap_or(u16::MAX);
+            // Calculate exact wrapping
+            let prefix = " › ";
+            let prefix_len = u16::try_from(prefix.len()).unwrap_or(3);
+            let total_chars = u16::try_from(input.len())
+                .unwrap_or(u16::MAX)
+                .saturating_add(prefix_len);
+
+            // num_lines is the number of lines required.
+            // We account for the cursor at the end by using total_chars + 1 for height
+            // calculation.
             let num_lines = if inner_width > 0 {
-                total_chars.div_ceil(inner_width)
+                (total_chars + 1).div_ceil(inner_width)
             } else {
                 1
             };
+
             let box_height = num_lines.saturating_add(2); // +2 for borders
 
             let vertical_chunks = Layout::default()
                 .constraints([
-                    Constraint::Percentage(20),
+                    Constraint::Min(0),
                     Constraint::Length(box_height),
                     Constraint::Length(1),
                     Constraint::Min(0),
                 ])
                 .split(area);
 
-            let horizontal_chunks = Layout::default()
+            let input_area = Layout::default()
                 .direction(ratatui::layout::Direction::Horizontal)
-                .constraints(horizontal_constraints)
-                .split(vertical_chunks[1]);
-
-            let input_area = horizontal_chunks[1];
+                .constraints([
+                    Constraint::Min(2),
+                    Constraint::Percentage(80),
+                    Constraint::Min(2),
+                ])
+                .split(vertical_chunks[1])[1];
 
             let prompt_line = Line::from(vec![
                 Span::styled(
-                    " › ",
+                    prefix,
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(input),
             ]);
+
             let input_widget = Paragraph::new(prompt_line)
                 .wrap(Wrap { trim: false })
                 .block(
@@ -148,7 +161,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 .alignment(ratatui::layout::Alignment::Center);
             f.render_widget(help_message, vertical_chunks[2]);
 
-            // Set cursor position with wrapping support
+            // Set cursor position
             if let Some(cursor_y) = total_chars.checked_div(inner_width) {
                 let cursor_x = total_chars % inner_width;
 
