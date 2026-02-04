@@ -1,6 +1,6 @@
 use ratatui::widgets::TableState;
 
-use crate::model::{Agent, AppMode, Status};
+use crate::model::{Agent, AppMode};
 
 pub struct App {
     pub agents: Vec<Agent>,
@@ -17,31 +17,18 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let mut table_state = TableState::default();
-        table_state.select(Some(0));
+        table_state.select(None);
         Self {
-            agents: vec![
-                Agent {
-                    name: "Search Agent".to_string(),
-                    prompt: String::new(),
-                    status: Status::InProgress,
-                },
-                Agent {
-                    name: "Writing Agent".to_string(),
-                    prompt: String::new(),
-                    status: Status::Done,
-                },
-                Agent {
-                    name: "Research Agent".to_string(),
-                    prompt: String::new(),
-                    status: Status::InProgress,
-                },
-            ],
+            agents: Vec::new(),
             table_state,
             mode: AppMode::List,
         }
     }
 
     pub fn next(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
         let i = match self.table_state.selected() {
             Some(i) => {
                 if i >= self.agents.len() - 1 {
@@ -56,6 +43,9 @@ impl App {
     }
 
     pub fn previous(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
         let i = match self.table_state.selected() {
             Some(i) => {
                 if i == 0 {

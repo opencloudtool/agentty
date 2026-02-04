@@ -57,6 +57,9 @@ fn main() -> io::Result<()> {
                                     prompt: input.clone(),
                                     status: Status::InProgress,
                                 });
+                                if app.table_state.selected().is_none() {
+                                    app.table_state.select(Some(0));
+                                }
                             }
                             app.mode = AppMode::List;
                         }
