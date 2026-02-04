@@ -84,10 +84,31 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             f.render_widget(help_message, footer_area);
         }
         AppMode::Prompt { input } => {
+            // First, calculate the expected height based on wrapping
+            let horizontal_constraints = [
+                Constraint::Min(2),
+                Constraint::Percentage(80),
+                Constraint::Min(2),
+            ];
+            let temp_horizontal = Layout::default()
+                .direction(ratatui::layout::Direction::Horizontal)
+                .constraints(horizontal_constraints)
+                .split(area);
+            let input_width = temp_horizontal[1].width;
+            let inner_width = input_width.saturating_sub(2);
+
+            let total_chars = u16::try_from(input.len().saturating_add(3)).unwrap_or(u16::MAX);
+            let num_lines = if inner_width > 0 {
+                total_chars.div_ceil(inner_width)
+            } else {
+                1
+            };
+            let box_height = num_lines.saturating_add(2); // +2 for borders
+
             let vertical_chunks = Layout::default()
                 .constraints([
                     Constraint::Percentage(20),
-                    Constraint::Min(3),
+                    Constraint::Length(box_height),
                     Constraint::Length(1),
                     Constraint::Min(0),
                 ])
@@ -95,15 +116,10 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
 
             let horizontal_chunks = Layout::default()
                 .direction(ratatui::layout::Direction::Horizontal)
-                .constraints([
-                    Constraint::Min(2),
-                    Constraint::Percentage(80),
-                    Constraint::Min(2),
-                ])
+                .constraints(horizontal_constraints)
                 .split(vertical_chunks[1]);
 
             let input_area = horizontal_chunks[1];
-            let inner_width = input_area.width.saturating_sub(2);
 
             let prompt_line = Line::from(vec![
                 Span::styled(
@@ -133,7 +149,6 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             f.render_widget(help_message, vertical_chunks[2]);
 
             // Set cursor position with wrapping support
-            let total_chars = u16::try_from(input.len().saturating_add(3)).unwrap_or(u16::MAX);
             if let Some(cursor_y) = total_chars.checked_div(inner_width) {
                 let cursor_x = total_chars % inner_width;
 
