@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
 
 use crate::model::{Agent, AppMode, Status};
 
@@ -149,6 +149,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                             .border_style(Style::default().fg(status.color()))
                             .title(Span::styled(title, Style::default().fg(status.color()))),
                     )
+                    .wrap(Wrap { trim: true })
                     .scroll((u16::try_from(scroll_offset).unwrap_or(u16::MAX), 0));
 
                 f.render_widget(paragraph, output_area);
