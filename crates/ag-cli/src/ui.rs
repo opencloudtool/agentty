@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
 use crate::model::{Agent, AppMode, Status};
 
@@ -144,7 +144,8 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     .map(|buf| buf.clone())
                     .unwrap_or_default();
 
-                let lines: Vec<Line> = output_text.lines().map(Line::from).collect();
+                let inner_width = output_area.width.saturating_sub(2) as usize;
+                let lines = wrap_lines(&output_text, inner_width);
 
                 // Auto-scroll logic or manual override
                 let final_scroll = if let Some(offset) = scroll_offset {
@@ -161,7 +162,6 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                             .border_style(Style::default().fg(status.color()))
                             .title(Span::styled(title, Style::default().fg(status.color()))),
                     )
-                    .wrap(Wrap { trim: true })
                     .scroll((final_scroll, 0));
 
                 f.render_widget(paragraph, output_area);
@@ -279,4 +279,50 @@ fn render_input_box(f: &mut Frame, title: &str, input: &str, area: ratatui::layo
         input_area.x.saturating_add(1).saturating_add(cursor_x),
         input_area.y.saturating_add(1).saturating_add(cursor_y),
     ));
+}
+
+fn wrap_lines(text: &str, width: usize) -> Vec<Line<'_>> {
+    let mut wrapped = Vec::new();
+    for line in text.split('\n') {
+        let mut current_line = String::new();
+        let mut current_width = 0;
+
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.is_empty() {
+            if line.is_empty() {
+                wrapped.push(Line::from(""));
+            } else {
+                // Preserves lines that are just whitespace if needed,
+                // but usually split_whitespace eats them.
+                // If the original line was just spaces, we might want an empty line or ignored.
+                // For a chat log, empty lines (paragraphs) are important.
+                wrapped.push(Line::from(""));
+            }
+            continue;
+        }
+
+        for word in words {
+            let word_len = word.chars().count();
+            let space_len = usize::from(current_width != 0);
+
+            if current_width + space_len + word_len > width {
+                if !current_line.is_empty() {
+                    wrapped.push(Line::from(current_line));
+                    current_line = String::new();
+                    current_width = 0;
+                }
+            }
+
+            if current_width > 0 {
+                current_line.push(' ');
+                current_width += 1;
+            }
+            current_line.push_str(word);
+            current_width += word_len;
+        }
+        if !current_line.is_empty() {
+            wrapped.push(Line::from(current_line));
+        }
+    }
+    wrapped
 }
