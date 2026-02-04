@@ -25,3 +25,6 @@ To ensure code quality, run the following commands:
   - Use a blank line between the title and the body.
   - The body (the "description") should provide more detail on *why* and *how* the change was made when it's not immediately obvious from the title.
 - Do not use conventional commit prefixes (e.g., `feat:`, `fix:`).
+
+## Agent Instructions
+- Always update this file and other `GEMINI.md` files (e.g., in sub-crates) whenever new architectural insights, project facts, or significant conventions are established or discovered during conversations. This ensures the project context remains up-to-date for future interactions.
