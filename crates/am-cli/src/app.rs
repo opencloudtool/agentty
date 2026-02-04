@@ -1,14 +1,20 @@
 use crate::model::{Agent, AppMode, Status};
 use ratatui::widgets::TableState;
 
-pub(crate) struct App {
-    pub(crate) agents: Vec<Agent>,
-    pub(crate) table_state: TableState,
-    pub(crate) mode: AppMode,
+pub struct App {
+    pub agents: Vec<Agent>,
+    pub table_state: TableState,
+    pub mode: AppMode,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let mut table_state = TableState::default();
         table_state.select(Some(0));
         Self {
@@ -31,7 +37,7 @@ impl App {
         }
     }
 
-    pub(crate) fn next(&mut self) {
+    pub fn next(&mut self) {
         let i = match self.table_state.selected() {
             Some(i) => {
                 if i >= self.agents.len() - 1 {
@@ -45,7 +51,7 @@ impl App {
         self.table_state.select(Some(i));
     }
 
-    pub(crate) fn previous(&mut self) {
+    pub fn previous(&mut self) {
         let i = match self.table_state.selected() {
             Some(i) => {
                 if i == 0 {
@@ -59,7 +65,7 @@ impl App {
         self.table_state.select(Some(i));
     }
 
-    pub(crate) fn toggle_all(&mut self) {
+    pub fn toggle_all(&mut self) {
         for agent in &mut self.agents {
             agent.status.toggle();
         }

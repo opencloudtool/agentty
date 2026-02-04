@@ -1,21 +1,17 @@
-mod app;
-mod model;
-mod ui;
-
 use std::{
     io,
     time::{Duration, Instant},
 };
 
+use am_cli::app::App;
+use am_cli::model::{Agent, AppMode, Status};
+use am_cli::ui;
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
-
-use crate::app::App;
-use crate::model::{Agent, AppMode, Status};
 
 fn main() -> io::Result<()> {
     // setup terminal

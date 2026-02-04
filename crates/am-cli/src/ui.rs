@@ -7,12 +7,7 @@ use ratatui::{
 
 use crate::model::{Agent, AppMode};
 
-pub(crate) fn render(
-    f: &mut Frame,
-    mode: &AppMode,
-    agents: &[Agent],
-    table_state: &mut TableState,
-) {
+pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut TableState) {
     let area = f.area();
     match mode {
         AppMode::List => {
