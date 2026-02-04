@@ -101,10 +101,7 @@ impl App {
     }
 
     pub fn add_agent(&mut self, prompt: String) {
-        let name = format!("Agent {}", self.agents.len() + 1);
-
         let mut hasher = DefaultHasher::new();
-        name.hash(&mut hasher);
         prompt.hash(&mut hasher);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -113,6 +110,7 @@ impl App {
         nanos.hash(&mut hasher);
         let hash = format!("{:016x}", hasher.finish());
         let short_hash = &hash[..8];
+        let name = short_hash.to_string();
 
         let folder = PathBuf::from(format!("/var/tmp/.agentty/{short_hash}"));
         let _ = std::fs::create_dir_all(&folder);
