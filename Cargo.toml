@@ -47,3 +47,9 @@ unwrap_used = "warn"
 redundant_clone = "warn"
 debug_assert_with_mut_call = "warn"
 unused_peekable = "warn"
+
+[profile.release]
+codegen-units = 1 # Allows compiler to perform better optimization.
+lto = true # Enables Link-time Optimization.
+opt-level = "s" # Prioritizes small binary size. Use `3` if you prefer speed.
+strip = true # Ensures debug symbols are removed.
