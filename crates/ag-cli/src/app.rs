@@ -22,12 +22,42 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let mut table_state = TableState::default();
-        table_state.select(None);
+        let agents = Self::load_agents();
+        if agents.is_empty() {
+            table_state.select(None);
+        } else {
+            table_state.select(Some(0));
+        }
         Self {
-            agents: Vec::new(),
+            agents,
             table_state,
             mode: AppMode::List,
         }
+    }
+
+    fn load_agents() -> Vec<Agent> {
+        let base = PathBuf::from("/var/tmp/.agentty");
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            return Vec::new();
+        };
+        let mut agents: Vec<Agent> = entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let folder = entry.path();
+                if !folder.is_dir() {
+                    return None;
+                }
+                let prompt = std::fs::read_to_string(folder.join("prompt.txt")).ok()?;
+                Some(Agent {
+                    name: folder.file_name()?.to_string_lossy().into_owned(),
+                    prompt,
+                    status: Status::InProgress,
+                    folder,
+                })
+            })
+            .collect();
+        agents.sort_by(|a, b| a.name.cmp(&b.name));
+        agents
     }
 
     pub fn next(&mut self) {
