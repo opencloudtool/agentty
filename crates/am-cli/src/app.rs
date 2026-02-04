@@ -1,6 +1,6 @@
 use ratatui::widgets::TableState;
 
-use crate::model::{Agent, AppMode};
+use crate::model::{Agent, AppMode, Status};
 
 pub struct App {
     pub agents: Vec<Agent>,
@@ -57,6 +57,18 @@ impl App {
             None => 0,
         };
         self.table_state.select(Some(i));
+    }
+
+    pub fn add_agent(&mut self, prompt: String) {
+        let name = format!("Agent {}", self.agents.len() + 1);
+        self.agents.push(Agent {
+            name,
+            prompt,
+            status: Status::InProgress,
+        });
+        if self.table_state.selected().is_none() {
+            self.table_state.select(Some(0));
+        }
     }
 
     pub fn toggle_all(&mut self) {

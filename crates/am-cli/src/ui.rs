@@ -8,6 +8,17 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use crate::model::{Agent, AppMode};
 
+fn centered_horizontal_layout(area: ratatui::layout::Rect) -> std::rc::Rc<[ratatui::layout::Rect]> {
+    Layout::default()
+        .direction(ratatui::layout::Direction::Horizontal)
+        .constraints([
+            Constraint::Min(2),
+            Constraint::Percentage(80),
+            Constraint::Min(2),
+        ])
+        .split(area)
+}
+
 pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut TableState) {
     let area = f.area();
 
@@ -31,14 +42,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     ])
                     .split(main_area);
 
-                let horizontal_chunks = Layout::default()
-                    .direction(ratatui::layout::Direction::Horizontal)
-                    .constraints([
-                        Constraint::Min(2),
-                        Constraint::Percentage(80),
-                        Constraint::Min(2),
-                    ])
-                    .split(vertical_chunks[1]);
+                let horizontal_chunks = centered_horizontal_layout(vertical_chunks[1]);
 
                 let hint = Paragraph::new(vec![
                     Line::from("Welcome to Agent Manager!"),
@@ -72,7 +76,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     ];
                     Row::new(cells).height(1)
                 });
-                let t = Table::new(rows, [Constraint::Min(20), Constraint::Length(10)])
+                let t = Table::new(rows, [Constraint::Min(20), Constraint::Length(3)])
                     .header(header)
                     .block(Block::default().borders(Borders::ALL).title("Agents"))
                     .row_highlight_style(selected_style)
@@ -87,14 +91,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
         }
         AppMode::Prompt { input } => {
             // First, determine horizontal layout to get available width
-            let horizontal_chunks = Layout::default()
-                .direction(ratatui::layout::Direction::Horizontal)
-                .constraints([
-                    Constraint::Min(2),
-                    Constraint::Percentage(80),
-                    Constraint::Min(2),
-                ])
-                .split(area);
+            let horizontal_chunks = centered_horizontal_layout(area);
             let input_width = horizontal_chunks[1].width;
             let inner_width = input_width.saturating_sub(2);
 
@@ -157,7 +154,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 display_lines.push(Line::from(prefix));
                 display_lines.push(Line::from(input.as_str()));
                 cursor_y = 1;
-                cursor_x = u16::try_from(input.len()).unwrap_or(0);
+                cursor_x = u16::try_from(input.chars().count()).unwrap_or(0);
             }
 
             let box_height = (cursor_y + 1).saturating_add(2);
@@ -171,14 +168,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 ])
                 .split(area);
 
-            let input_area = Layout::default()
-                .direction(ratatui::layout::Direction::Horizontal)
-                .constraints([
-                    Constraint::Min(2),
-                    Constraint::Percentage(80),
-                    Constraint::Min(2),
-                ])
-                .split(vertical_chunks[1])[1];
+            let input_area = centered_horizontal_layout(vertical_chunks[1])[1];
 
             let input_widget = Paragraph::new(display_lines).block(
                 Block::default()

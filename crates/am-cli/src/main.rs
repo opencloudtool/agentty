@@ -2,7 +2,7 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use am_cli::app::App;
-use am_cli::model::{Agent, AppMode, Status};
+use am_cli::model::AppMode;
 use am_cli::ui;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -51,17 +51,11 @@ fn main() -> io::Result<()> {
                     },
                     AppMode::Prompt { input } => match key.code {
                         KeyCode::Enter => {
-                            if !input.is_empty() {
-                                app.agents.push(Agent {
-                                    name: format!("Agent {}", app.agents.len() + 1),
-                                    prompt: input.clone(),
-                                    status: Status::InProgress,
-                                });
-                                if app.table_state.selected().is_none() {
-                                    app.table_state.select(Some(0));
-                                }
-                            }
+                            let prompt = input.clone();
                             app.mode = AppMode::List;
+                            if !prompt.is_empty() {
+                                app.add_agent(prompt);
+                            }
                         }
                         KeyCode::Esc => {
                             app.mode = AppMode::List;
