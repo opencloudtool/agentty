@@ -145,7 +145,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 f.render_widget(paragraph, output_area);
 
                 let help_message =
-                    Paragraph::new("Esc: back").style(Style::default().fg(Color::Gray));
+                    Paragraph::new("q: back").style(Style::default().fg(Color::Gray));
                 f.render_widget(help_message, footer_area);
             }
         }

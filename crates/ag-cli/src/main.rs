@@ -71,7 +71,7 @@ fn main() -> io::Result<()> {
                         _ => {}
                     },
                     AppMode::View { .. } => {
-                        if key.code == KeyCode::Esc {
+                        if key.code == KeyCode::Char('q') {
                             app.mode = AppMode::List;
                         }
                     }
