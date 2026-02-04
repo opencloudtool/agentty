@@ -6,14 +6,14 @@ use std::{
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Row, Table},
-    Terminal,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,7 +95,8 @@ fn main() -> io::Result<()> {
             let rows = agents.iter().map(|agent| {
                 let cells = vec![
                     Cell::from(agent.name.as_str()),
-                    Cell::from(agent.status.icon()).style(Style::default().fg(agent.status.color())),
+                    Cell::from(agent.status.icon())
+                        .style(Style::default().fg(agent.status.color())),
                 ];
                 Row::new(cells).height(1)
             });
