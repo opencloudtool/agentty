@@ -87,10 +87,8 @@ fn main() -> io::Result<()> {
                 .split(f.area());
 
             let selected_style = Style::default().bg(Color::DarkGray);
-            let normal_style = Style::default().bg(Color::Blue);
-            let header_cells = ["Agent Name", "Status"]
-                .iter()
-                .map(|h| Cell::from(*h).style(Style::default().fg(Color::Cyan)));
+            let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
+            let header_cells = ["Agent Name", "Status"].iter().map(|h| Cell::from(*h));
             let header = Row::new(header_cells)
                 .style(normal_style)
                 .height(1)
