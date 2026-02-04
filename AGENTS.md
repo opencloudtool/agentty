@@ -14,11 +14,18 @@ TUI tool to manage agents.
 - Use `ratatui` for terminal UI development.
 
 ## Quality Gates
-To ensure code quality, run the following commands with autofix enabled:
+To ensure code quality, you must pass both automated and manual gates.
+
+### Automated Checks
+Run these commands with autofix enabled:
 - **Test:** `cargo test`
 - **Lint:** `cargo clippy --fix --allow-dirty -- -D warnings`
 - **Format:** `cargo fmt --all`
 - **Coverage:** `cargo tarpaulin` (install with `cargo install cargo-tarpaulin`)
+
+### Manual Verification
+- **Test Style:** Verify *every* test function uses explicit `// Arrange`, `// Act`, and `// Assert` comments.
+- **Dependencies:** Verify all dependencies (including dev/build) are defined in the root `Cargo.toml` and referenced via `workspace = true`.
 
 ## Git Conventions
 - Before committing, review the recent commit history using an optimized command (e.g., `git log -n 5 --format="---%n%B"`) to ensure consistency with the established tone, phrasing, and level of detail while being token-efficient.
