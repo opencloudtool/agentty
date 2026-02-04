@@ -17,18 +17,18 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             if agents.is_empty() {
                 let vertical_chunks = Layout::default()
                     .constraints([
-                        Constraint::Percentage(40),
+                        Constraint::Min(0),
                         Constraint::Length(5),
-                        Constraint::Percentage(40),
+                        Constraint::Min(0),
                     ])
                     .split(rects[0]);
 
                 let horizontal_chunks = Layout::default()
                     .direction(ratatui::layout::Direction::Horizontal)
                     .constraints([
-                        Constraint::Percentage(20),
-                        Constraint::Percentage(60),
-                        Constraint::Percentage(20),
+                        Constraint::Min(2),
+                        Constraint::Percentage(80),
+                        Constraint::Min(2),
                     ])
                     .split(vertical_chunks[1]);
 
@@ -36,7 +36,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     ratatui::text::Line::from("Welcome to Agent Manager!"),
                     ratatui::text::Line::from(""),
                     ratatui::text::Line::from(ratatui::text::Span::styled(
-                        "Press 'a' to initiate your first agent with a prompt",
+                        "Press 'a' to initiate",
                         Style::default().fg(Color::Cyan),
                     )),
                 ])
@@ -45,7 +45,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Cyan))
-                        .title(" Getting Started "),
+                        .title(" AM "),
                 );
                 f.render_widget(hint, horizontal_chunks[1]);
             } else {
@@ -64,43 +64,33 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     ];
                     Row::new(cells).height(1)
                 });
-                let t = Table::new(
-                    rows,
-                    [Constraint::Percentage(50), Constraint::Percentage(50)],
-                )
-                .header(header)
-                .block(Block::default().borders(Borders::ALL).title("Agents"))
-                .row_highlight_style(selected_style)
-                .highlight_symbol(">> ");
+                let t = Table::new(rows, [Constraint::Min(20), Constraint::Length(10)])
+                    .header(header)
+                    .block(Block::default().borders(Borders::ALL).title("Agents"))
+                    .row_highlight_style(selected_style)
+                    .highlight_symbol(">> ");
 
                 f.render_stateful_widget(t, rects[0], table_state);
             }
 
-            let help_message = ratatui::widgets::Paragraph::new(
-                "Press 'a' to create agent with prompt, 'j'/'k' to navigate, 'q' to quit",
-            )
-            .style(Style::default().fg(Color::Gray));
+            let help_message = ratatui::widgets::Paragraph::new("q: quit | a: add | j/k: nav")
+                .style(Style::default().fg(Color::Gray));
             f.render_widget(help_message, rects[1]);
         }
         AppMode::Prompt { input } => {
             let rects = Layout::default()
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(0),
-                    Constraint::Length(1),
-                ])
-                .margin(2)
+                .constraints([Constraint::Min(3), Constraint::Length(1)])
+                .margin(1)
                 .split(area);
 
             let input_widget = ratatui::widgets::Paragraph::new(input.as_str())
+                .wrap(ratatui::widgets::Wrap { trim: true })
                 .block(Block::default().borders(Borders::ALL).title("Prompt"));
             f.render_widget(input_widget, rects[0]);
 
-            let help_message = ratatui::widgets::Paragraph::new(
-                "Enter the initial prompt for the agent. Press 'Enter' to confirm, 'Esc' to cancel",
-            )
-            .style(Style::default().fg(Color::Gray));
-            f.render_widget(help_message, rects[2]);
+            let help_message = ratatui::widgets::Paragraph::new("Enter: ok | Esc: cancel")
+                .style(Style::default().fg(Color::Gray));
+            f.render_widget(help_message, rects[1]);
         }
     }
 }
