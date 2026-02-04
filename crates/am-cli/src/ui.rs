@@ -100,7 +100,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
 
             // Manual wrapping logic to match Gemini/Claude CLI behavior
             let prefix = " › ";
-            let prefix_len = u16::try_from(prefix.len()).unwrap_or(0);
+            let prefix_len = u16::try_from(prefix.chars().count()).unwrap_or(0);
 
             let mut display_lines = Vec::new();
             let mut cursor_x = 0;
@@ -113,7 +113,8 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 // First line contains prefix + part of input
                 let first_line_part: String =
                     input_chars.iter().take(first_line_max_input).collect();
-                let first_line_part_len = u16::try_from(first_line_part.len()).unwrap_or(0);
+                let first_line_part_len =
+                    u16::try_from(first_line_part.chars().count()).unwrap_or(0);
 
                 display_lines.push(Line::from(vec![
                     Span::styled(
