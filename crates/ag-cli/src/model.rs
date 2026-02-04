@@ -12,9 +12,18 @@ pub enum Status {
 
 pub enum AppMode {
     List,
-    Prompt { input: String },
-    View { agent_index: usize },
-    Reply { agent_index: usize, input: String },
+    Prompt {
+        input: String,
+    },
+    View {
+        agent_index: usize,
+        scroll_offset: Option<u16>,
+    },
+    Reply {
+        agent_index: usize,
+        input: String,
+        scroll_offset: Option<u16>,
+    },
 }
 
 pub struct Agent {

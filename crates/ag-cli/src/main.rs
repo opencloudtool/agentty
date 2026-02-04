@@ -63,7 +63,10 @@ fn main() -> io::Result<()> {
                         KeyCode::Enter => {
                             if let Some(i) = app.table_state.selected() {
                                 if i < app.agents.len() {
-                                    app.mode = AppMode::View { agent_index: i };
+                                    app.mode = AppMode::View {
+                                        agent_index: i,
+                                        scroll_offset: None,
+                                    };
                                 }
                             }
                         }
@@ -85,30 +88,108 @@ fn main() -> io::Result<()> {
                         }
                         _ => {}
                     },
-                    AppMode::View { agent_index } => match key.code {
-                        KeyCode::Char('q') => {
-                            app.mode = AppMode::List;
+                    AppMode::View {
+                        agent_index,
+                        scroll_offset,
+                    } => {
+                        let agent_idx = *agent_index;
+                        let mut new_scroll = *scroll_offset;
+
+                        // Estimate view height (terminal height - margins/borders/footer)
+                        // Margin: 1 top/bottom (2) + Footer: 1 + Block borders: 2 = 5 overhead
+                        let term_height = terminal.size()?.height;
+                        let view_height = term_height.saturating_sub(5);
+                        let total_lines = u16::try_from(
+                            app.agents
+                                .get(agent_idx)
+                                .and_then(|a| a.output.lock().ok())
+                                .map(|o| o.lines().count())
+                                .unwrap_or(0),
+                        )
+                        .unwrap_or(0);
+
+                        match key.code {
+                            KeyCode::Char('q') => {
+                                app.mode = AppMode::List;
+                            }
+                            KeyCode::Char('r') => {
+                                app.mode = AppMode::Reply {
+                                    agent_index: agent_idx,
+                                    input: String::new(),
+                                    scroll_offset: new_scroll,
+                                };
+                            }
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                if let Some(current) = new_scroll {
+                                    let next = current.saturating_add(1);
+                                    if next >= total_lines.saturating_sub(view_height) {
+                                        new_scroll = None;
+                                    } else {
+                                        new_scroll = Some(next);
+                                    }
+                                }
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                let current = new_scroll
+                                    .unwrap_or_else(|| total_lines.saturating_sub(view_height));
+                                new_scroll = Some(current.saturating_sub(1));
+                            }
+                            KeyCode::Char('g') => {
+                                new_scroll = Some(0);
+                            }
+                            KeyCode::Char('G') => {
+                                new_scroll = None;
+                            }
+                            KeyCode::Char('d')
+                                if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                            {
+                                if let Some(current) = new_scroll {
+                                    let next = current.saturating_add(view_height / 2);
+                                    if next >= total_lines.saturating_sub(view_height) {
+                                        new_scroll = None;
+                                    } else {
+                                        new_scroll = Some(next);
+                                    }
+                                }
+                            }
+                            KeyCode::Char('u')
+                                if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                            {
+                                let current = new_scroll
+                                    .unwrap_or_else(|| total_lines.saturating_sub(view_height));
+                                new_scroll = Some(current.saturating_sub(view_height / 2));
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char('r') => {
-                            app.mode = AppMode::Reply {
-                                agent_index: *agent_index,
-                                input: String::new(),
-                            };
+
+                        // Update state if changed (and not switching mode)
+                        if let AppMode::View { scroll_offset, .. } = &mut app.mode {
+                            *scroll_offset = new_scroll;
                         }
-                        _ => {}
-                    },
-                    AppMode::Reply { agent_index, input } => {
+                    }
+                    AppMode::Reply {
+                        agent_index,
+                        input,
+                        scroll_offset,
+                    } => {
                         let agent_index = *agent_index;
+                        let scroll_snapshot = *scroll_offset;
                         match key.code {
                             KeyCode::Enter => {
                                 let prompt = input.clone();
-                                app.mode = AppMode::View { agent_index };
+                                app.mode = AppMode::View {
+                                    agent_index,
+                                    scroll_offset: None, // Reset scroll on new message
+                                };
                                 if !prompt.is_empty() {
                                     app.reply(agent_index, prompt);
                                 }
                             }
                             KeyCode::Esc => {
-                                app.mode = AppMode::View { agent_index };
+                                app.mode = AppMode::View {
+                                    agent_index,
+                                    scroll_offset: scroll_snapshot,
+                                };
                             }
                             KeyCode::Char(c) => {
                                 input.push(c);

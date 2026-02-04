@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
 
 use crate::model::{Agent, AppMode, Status};
 
@@ -113,7 +113,15 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     .style(Style::default().fg(Color::Gray));
             f.render_widget(help_message, footer_area);
         }
-        AppMode::View { agent_index } => {
+        AppMode::View {
+            agent_index,
+            scroll_offset,
+        }
+        | AppMode::Reply {
+            agent_index,
+            scroll_offset,
+            ..
+        } => {
             if let Some(agent) = agents.get(*agent_index) {
                 let chunks = Layout::default()
                     .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -138,9 +146,13 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
 
                 let lines: Vec<Line> = output_text.lines().map(Line::from).collect();
 
-                // Auto-scroll: calculate offset so we show the last lines
-                let inner_height = output_area.height.saturating_sub(2) as usize;
-                let scroll_offset = lines.len().saturating_sub(inner_height);
+                // Auto-scroll logic or manual override
+                let final_scroll = if let Some(offset) = scroll_offset {
+                    *offset
+                } else {
+                    let inner_height = output_area.height.saturating_sub(2) as usize;
+                    u16::try_from(lines.len().saturating_sub(inner_height)).unwrap_or(u16::MAX)
+                };
 
                 let paragraph = Paragraph::new(lines)
                     .block(
@@ -150,20 +162,21 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                             .title(Span::styled(title, Style::default().fg(status.color()))),
                     )
                     .wrap(Wrap { trim: true })
-                    .scroll((u16::try_from(scroll_offset).unwrap_or(u16::MAX), 0));
+                    .scroll((final_scroll, 0));
 
                 f.render_widget(paragraph, output_area);
 
-                let help_message =
-                    Paragraph::new("q: back | r: reply").style(Style::default().fg(Color::Gray));
+                let help_message = Paragraph::new("q: back | r: reply | j/k: scroll")
+                    .style(Style::default().fg(Color::Gray));
                 f.render_widget(help_message, footer_area);
+            }
+            // If in Reply mode, render the input box over the view
+            if let AppMode::Reply { input, .. } = mode {
+                render_input_box(f, " Reply ", input, area);
             }
         }
         AppMode::Prompt { input } => {
             render_input_box(f, " New Agent Prompt ", input, area);
-        }
-        AppMode::Reply { input, .. } => {
-            render_input_box(f, " Reply ", input, area);
         }
     }
 }
@@ -253,6 +266,7 @@ fn render_input_box(f: &mut Frame, title: &str, input: &str, area: ratatui::layo
             .border_style(Style::default().fg(Color::Cyan))
             .title(Span::styled(title, Style::default().fg(Color::Cyan))),
     );
+    f.render_widget(Clear, input_area);
     f.render_widget(input_widget, input_area);
 
     let help_message = Paragraph::new("Enter: confirm | Esc: cancel")
