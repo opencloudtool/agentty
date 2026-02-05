@@ -64,7 +64,7 @@ pub fn render(
         AppMode::List => {
             let chunks = Layout::default()
                 .constraints([Constraint::Min(0), Constraint::Length(1)])
-                .margin(2)
+                .margin(1)
                 .split(content_area);
 
             let main_area = chunks[0];
