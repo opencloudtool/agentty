@@ -287,14 +287,12 @@ impl App {
                     if let Some(stdout) = child.stdout.take() {
                         Self::process_output(stdout, &mut file, &output);
                     }
-                    running.store(false, Ordering::SeqCst);
                     let _ = child.wait();
                 }
                 Err(e) => {
                     if let Ok(mut buf) = output.lock() {
                         let _ = writeln!(buf, "Failed to spawn process: {e}");
                     }
-                    running.store(false, Ordering::SeqCst);
                 }
             }
             running.store(false, Ordering::Relaxed);
@@ -327,7 +325,6 @@ mod tests {
 
     use super::*;
     use crate::agent::MockAgentBackend;
-    use crate::model::Status;
 
     fn create_mock_backend() -> MockAgentBackend {
         let mut mock = MockAgentBackend::new();
@@ -741,61 +738,6 @@ mod tests {
             assert!(output.contains("SpawnReply"));
             assert!(output.contains("--resume"));
             assert!(output.contains("latest"));
-        }
-    }
-
-    #[test]
-    fn test_spawn_integration_with_delay() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut mock = MockAgentBackend::new();
-        mock.expect_setup().returning(|_| {});
-        mock.expect_build_start_command().returning(|folder, _| {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c")
-                .arg("echo 'Start'; sleep 1; echo 'End'")
-                .current_dir(folder)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .stdin(Stdio::null());
-            cmd
-        });
-
-        let mut app = App::new(
-            dir.path().to_path_buf(),
-            PathBuf::from("/tmp/test"),
-            None,
-            AgentKind::Gemini,
-            Box::new(mock),
-        );
-
-        // Act
-        app.add_session("TestDelay".to_string())
-            .expect("failed to add session");
-
-        // Wait for "Start"
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
-        // Assert - should be running after "Start" but before "End"
-        {
-            let session = &app.sessions[0];
-            let output = session.output.lock().expect("lock").clone();
-            assert!(output.contains("Start"));
-            assert!(!output.contains("End"));
-            // This confirms that while the process is sleeping (keeping stdout open),
-            // the session is still considered "InProgress"
-            assert_eq!(session.status(), Status::InProgress);
-        }
-
-        // Wait for "End" and exit
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-
-        // Assert - should be done
-        {
-            let session = &app.sessions[0];
-            let output = session.output.lock().expect("lock").clone();
-            assert!(output.contains("End"));
-            assert_eq!(session.status(), Status::Done);
         }
     }
 

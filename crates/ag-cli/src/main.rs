@@ -255,7 +255,7 @@ fn main() -> io::Result<()> {
             }
         }
 
-        if last_tick.elapsed() >= tick_rate {
+        if last_tick.elapsed() >= Duration::from_secs(1) {
             last_tick = Instant::now();
         }
     }

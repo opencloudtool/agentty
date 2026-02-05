@@ -44,7 +44,6 @@ impl AgentBackend for GeminiBackend {
             .arg("--model")
             .arg("gemini-3-flash-preview")
             .current_dir(folder)
-            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         cmd
@@ -63,7 +62,6 @@ impl AgentBackend for ClaudeBackend {
         cmd.arg("-p")
             .arg(prompt)
             .current_dir(folder)
-            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         cmd
@@ -75,7 +73,6 @@ impl AgentBackend for ClaudeBackend {
             .arg("-p")
             .arg(prompt)
             .current_dir(folder)
-            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         cmd
