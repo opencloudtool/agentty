@@ -11,17 +11,6 @@ use crate::model::{AppMode, Session, Status};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-fn centered_horizontal_layout(area: ratatui::layout::Rect) -> std::rc::Rc<[ratatui::layout::Rect]> {
-    Layout::default()
-        .direction(ratatui::layout::Direction::Horizontal)
-        .constraints([
-            Constraint::Min(2),
-            Constraint::Percentage(80),
-            Constraint::Min(2),
-        ])
-        .split(area)
-}
-
 pub fn render(
     f: &mut Frame,
     mode: &AppMode,
@@ -241,6 +230,22 @@ pub fn render(
     }
 }
 
+fn centered_horizontal_layout(area: ratatui::layout::Rect) -> std::rc::Rc<[ratatui::layout::Rect]> {
+    Layout::default()
+        .direction(ratatui::layout::Direction::Horizontal)
+        .constraints([
+            Constraint::Min(2),
+            Constraint::Percentage(80),
+            Constraint::Min(2),
+        ])
+        .split(area)
+}
+
+fn calculate_input_height(width: u16, input: &str) -> u16 {
+    let (_, _, cursor_y) = compute_input_layout(input, width);
+    cursor_y + 3
+}
+
 fn compute_input_layout(input: &str, width: u16) -> (Vec<Line<'static>>, u16, u16) {
     let inner_width = width.saturating_sub(2) as usize;
     let prefix = " › ";
@@ -291,25 +296,6 @@ fn compute_input_layout(input: &str, width: u16) -> (Vec<Line<'static>>, u16, u1
     )
 }
 
-fn render_chat_input(f: &mut Frame, title: &str, input: &str, area: ratatui::layout::Rect) {
-    let (display_lines, cursor_x, cursor_y) = compute_input_layout(input, area.width);
-
-    let input_widget = Paragraph::new(display_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(Span::styled(title, Style::default().fg(Color::Cyan))),
-    );
-    f.render_widget(Clear, area);
-    f.render_widget(input_widget, area);
-
-    // Set cursor position
-    f.set_cursor_position((
-        area.x.saturating_add(1).saturating_add(cursor_x),
-        area.y.saturating_add(1).saturating_add(cursor_y),
-    ));
-}
-
 fn wrap_lines(text: &str, width: usize) -> Vec<Line<'_>> {
     let mut wrapped = Vec::new();
     for line in text.split('\n') {
@@ -356,9 +342,23 @@ fn wrap_lines(text: &str, width: usize) -> Vec<Line<'_>> {
     wrapped
 }
 
-fn calculate_input_height(width: u16, input: &str) -> u16 {
-    let (_, _, cursor_y) = compute_input_layout(input, width);
-    cursor_y + 3
+fn render_chat_input(f: &mut Frame, title: &str, input: &str, area: ratatui::layout::Rect) {
+    let (display_lines, cursor_x, cursor_y) = compute_input_layout(input, area.width);
+
+    let input_widget = Paragraph::new(display_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(Span::styled(title, Style::default().fg(Color::Cyan))),
+    );
+    f.render_widget(Clear, area);
+    f.render_widget(input_widget, area);
+
+    // Set cursor position
+    f.set_cursor_position((
+        area.x.saturating_add(1).saturating_add(cursor_x),
+        area.y.saturating_add(1).saturating_add(cursor_y),
+    ));
 }
 
 #[cfg(test)]
@@ -366,32 +366,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_wrap_lines_basic() {
-        // Arrange
-        let text = "hello world";
-        let width = 20;
-
-        // Act
-        let wrapped = wrap_lines(text, width);
-
-        // Assert
-        assert_eq!(wrapped.len(), 1);
-        assert_eq!(wrapped[0].to_string(), "hello world");
-    }
-
-    #[test]
-    fn test_wrap_lines_wrapping() {
-        // Arrange
-        let text = "hello world";
-        let width = 5;
-
-        // Act
-        let wrapped = wrap_lines(text, width);
-
-        // Assert
-        assert_eq!(wrapped.len(), 2);
-        assert_eq!(wrapped[0].to_string(), "hello");
-        assert_eq!(wrapped[1].to_string(), "world");
+    fn test_calculate_input_height() {
+        // Arrange & Act & Assert
+        assert_eq!(calculate_input_height(20, ""), 3);
+        assert_eq!(calculate_input_height(12, "1234567"), 4);
+        assert_eq!(calculate_input_height(12, "12345678"), 4);
+        assert_eq!(calculate_input_height(12, "12345671234567890"), 5);
     }
 
     #[test]
@@ -477,11 +457,31 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_input_height() {
-        // Arrange & Act & Assert
-        assert_eq!(calculate_input_height(20, ""), 3);
-        assert_eq!(calculate_input_height(12, "1234567"), 4);
-        assert_eq!(calculate_input_height(12, "12345678"), 4);
-        assert_eq!(calculate_input_height(12, "12345671234567890"), 5);
+    fn test_wrap_lines_basic() {
+        // Arrange
+        let text = "hello world";
+        let width = 20;
+
+        // Act
+        let wrapped = wrap_lines(text, width);
+
+        // Assert
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped[0].to_string(), "hello world");
+    }
+
+    #[test]
+    fn test_wrap_lines_wrapping() {
+        // Arrange
+        let text = "hello world";
+        let width = 5;
+
+        // Act
+        let wrapped = wrap_lines(text, width);
+
+        // Assert
+        assert_eq!(wrapped.len(), 2);
+        assert_eq!(wrapped[0].to_string(), "hello");
+        assert_eq!(wrapped[1].to_string(), "world");
     }
 }

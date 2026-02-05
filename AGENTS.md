@@ -14,6 +14,11 @@ TUI tool to manage agents.
 - **Release Profile:** Maintain optimized release settings in `Cargo.toml` (`codegen-units=1`, `lto=true`, `opt-level="s"`, `strip=true`) to minimize binary size.
 - Use `ratatui` for terminal UI development.
 - **Constructors:** Only add `new()` and `Default` when there is actual initialization logic or fields with meaningful defaults. For unit structs or zero-field structs, construct directly (e.g., `MyStruct`) — do not add boilerplate `new()` / `Default` impls.
+- **Function Ordering:** Order functions to allow reading from top to bottom (caller before callee):
+    - Public functions first.
+    - Followed by less public functions (e.g., `pub(crate)`).
+    - Private functions last.
+    - If a function has multiple callees, they should appear in the order they are first called within that function.
 
 ## Quality Gates
 To ensure code quality, you must pass both automated and manual gates.
@@ -27,6 +32,7 @@ Run these commands with autofix enabled:
 
 ### Manual Verification
 - **Test Style:** Verify *every* test function uses explicit `// Arrange`, `// Act`, and `// Assert` comments.
+- **Test Ordering:** Verify tests follow the same order as the functions they test.
 - **Dependencies:** Verify all dependencies (including dev/build) are defined in the root `Cargo.toml` and referenced via `workspace = true`.
 
 ## Git Conventions

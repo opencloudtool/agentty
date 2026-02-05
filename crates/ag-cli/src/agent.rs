@@ -31,6 +31,12 @@ impl AgentBackend for GeminiBackend {
         let _ = std::fs::write(gemini_dir.join("settings.json"), settings);
     }
 
+    fn build_resume_command(&self, folder: &Path, prompt: &str) -> Command {
+        let mut cmd = self.build_start_command(folder, prompt);
+        cmd.arg("--resume").arg("latest");
+        cmd
+    }
+
     fn build_start_command(&self, folder: &Path, prompt: &str) -> Command {
         let mut cmd = Command::new("gemini");
         cmd.arg("--prompt")
@@ -40,12 +46,6 @@ impl AgentBackend for GeminiBackend {
             .current_dir(folder)
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        cmd
-    }
-
-    fn build_resume_command(&self, folder: &Path, prompt: &str) -> Command {
-        let mut cmd = self.build_start_command(folder, prompt);
-        cmd.arg("--resume").arg("latest");
         cmd
     }
 }
@@ -147,21 +147,20 @@ mod tests {
     }
 
     #[test]
-    fn test_claude_setup_creates_no_files() {
+    fn test_gemini_resume_command_args() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        let backend = ClaudeBackend;
+        let backend = GeminiBackend;
 
         // Act
-        backend.setup(dir.path());
+        let cmd = backend.build_resume_command(dir.path(), "follow-up");
 
         // Assert
-        assert_eq!(
-            std::fs::read_dir(dir.path())
-                .expect("failed to read dir")
-                .count(),
-            0
-        );
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("--prompt"));
+        assert!(debug.contains("follow-up"));
+        assert!(debug.contains("--resume"));
+        assert!(debug.contains("latest"));
     }
 
     #[test]
@@ -183,20 +182,21 @@ mod tests {
     }
 
     #[test]
-    fn test_gemini_resume_command_args() {
+    fn test_claude_setup_creates_no_files() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        let backend = GeminiBackend;
+        let backend = ClaudeBackend;
 
         // Act
-        let cmd = backend.build_resume_command(dir.path(), "follow-up");
+        backend.setup(dir.path());
 
         // Assert
-        let debug = format!("{cmd:?}");
-        assert!(debug.contains("--prompt"));
-        assert!(debug.contains("follow-up"));
-        assert!(debug.contains("--resume"));
-        assert!(debug.contains("latest"));
+        assert_eq!(
+            std::fs::read_dir(dir.path())
+                .expect("failed to read dir")
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -231,6 +231,41 @@ mod tests {
         assert!(debug.contains("-c"));
         assert!(debug.contains("-p"));
         assert!(debug.contains("follow-up"));
+    }
+
+    #[test]
+    fn test_agent_kind_from_env_default() {
+        // Arrange — ensure env var is not set
+        // We can't safely remove env vars in tests, so we test the parsing logic
+        // via from_str which from_env delegates to.
+
+        // Act & Assert
+        assert_eq!(
+            "gemini".parse::<AgentKind>().expect("parse"),
+            AgentKind::Gemini
+        );
+    }
+
+    #[test]
+    fn test_agent_kind_from_env_reads_var() {
+        // Arrange
+        // from_env reads AGENTTY_AGENT — exercise both branches.
+        // The env var may or may not be set in CI, so we just call from_env
+        // and verify it returns a valid variant.
+
+        // Act
+        let kind = AgentKind::from_env();
+
+        // Assert
+        assert!(kind == AgentKind::Gemini || kind == AgentKind::Claude);
+    }
+
+    #[test]
+    fn test_agent_kind_create_backend() {
+        // Arrange & Act & Assert
+        // Just verify create_backend returns without panicking
+        let _gemini = AgentKind::Gemini.create_backend();
+        let _claude = AgentKind::Claude.create_backend();
     }
 
     #[test]
@@ -270,40 +305,5 @@ mod tests {
             let parsed: AgentKind = s.parse().expect("roundtrip parse");
             assert_eq!(parsed, kind);
         }
-    }
-
-    #[test]
-    fn test_agent_kind_from_env_default() {
-        // Arrange — ensure env var is not set
-        // We can't safely remove env vars in tests, so we test the parsing logic
-        // via from_str which from_env delegates to.
-
-        // Act & Assert
-        assert_eq!(
-            "gemini".parse::<AgentKind>().expect("parse"),
-            AgentKind::Gemini
-        );
-    }
-
-    #[test]
-    fn test_agent_kind_from_env_reads_var() {
-        // Arrange
-        // from_env reads AGENTTY_AGENT — exercise both branches.
-        // The env var may or may not be set in CI, so we just call from_env
-        // and verify it returns a valid variant.
-
-        // Act
-        let kind = AgentKind::from_env();
-
-        // Assert
-        assert!(kind == AgentKind::Gemini || kind == AgentKind::Claude);
-    }
-
-    #[test]
-    fn test_agent_kind_create_backend() {
-        // Arrange & Act & Assert
-        // Just verify create_backend returns without panicking
-        let _gemini = AgentKind::Gemini.create_backend();
-        let _claude = AgentKind::Claude.create_backend();
     }
 }

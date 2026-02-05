@@ -47,37 +47,6 @@ impl App {
         self.agent_kind
     }
 
-    fn load_sessions(base: &PathBuf) -> Vec<Session> {
-        let Ok(entries) = std::fs::read_dir(base) else {
-            return Vec::new();
-        };
-        let mut sessions: Vec<Session> = entries
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let folder = entry.path();
-                if !folder.is_dir() {
-                    return None;
-                }
-                let prompt = std::fs::read_to_string(folder.join("prompt.txt")).ok()?;
-                let output_text =
-                    std::fs::read_to_string(folder.join("output.txt")).unwrap_or_default();
-                let agent = std::fs::read_to_string(folder.join("agent.txt"))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|_| "unknown".to_string());
-                Some(Session {
-                    name: folder.file_name()?.to_string_lossy().into_owned(),
-                    prompt,
-                    folder,
-                    agent,
-                    output: Arc::new(Mutex::new(output_text)),
-                    running: Arc::new(AtomicBool::new(false)),
-                })
-            })
-            .collect();
-        sessions.sort_by(|a, b| a.name.cmp(&b.name));
-        sessions
-    }
-
     pub fn next(&mut self) {
         if self.sessions.is_empty() {
             return;
@@ -183,6 +152,59 @@ impl App {
         Self::spawn_session_task(folder, cmd, output, running);
     }
 
+    pub fn selected_session(&self) -> Option<&Session> {
+        self.table_state
+            .selected()
+            .and_then(|i| self.sessions.get(i))
+    }
+
+    pub fn delete_selected_session(&mut self) {
+        let Some(i) = self.table_state.selected() else {
+            return;
+        };
+        if i >= self.sessions.len() {
+            return;
+        }
+        let session = self.sessions.remove(i);
+        let _ = std::fs::remove_dir_all(&session.folder);
+        if self.sessions.is_empty() {
+            self.table_state.select(None);
+        } else if i >= self.sessions.len() {
+            self.table_state.select(Some(self.sessions.len() - 1));
+        }
+    }
+
+    fn load_sessions(base: &PathBuf) -> Vec<Session> {
+        let Ok(entries) = std::fs::read_dir(base) else {
+            return Vec::new();
+        };
+        let mut sessions: Vec<Session> = entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let folder = entry.path();
+                if !folder.is_dir() {
+                    return None;
+                }
+                let prompt = std::fs::read_to_string(folder.join("prompt.txt")).ok()?;
+                let output_text =
+                    std::fs::read_to_string(folder.join("output.txt")).unwrap_or_default();
+                let agent = std::fs::read_to_string(folder.join("agent.txt"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+                Some(Session {
+                    name: folder.file_name()?.to_string_lossy().into_owned(),
+                    prompt,
+                    folder,
+                    agent,
+                    output: Arc::new(Mutex::new(output_text)),
+                    running: Arc::new(AtomicBool::new(false)),
+                })
+            })
+            .collect();
+        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        sessions
+    }
+
     fn spawn_session_task(
         folder: PathBuf,
         mut cmd: Command,
@@ -226,28 +248,6 @@ impl App {
                 buf.push_str(&line);
                 buf.push('\n');
             }
-        }
-    }
-
-    pub fn selected_session(&self) -> Option<&Session> {
-        self.table_state
-            .selected()
-            .and_then(|i| self.sessions.get(i))
-    }
-
-    pub fn delete_selected_session(&mut self) {
-        let Some(i) = self.table_state.selected() else {
-            return;
-        };
-        if i >= self.sessions.len() {
-            return;
-        }
-        let session = self.sessions.remove(i);
-        let _ = std::fs::remove_dir_all(&session.folder);
-        if self.sessions.is_empty() {
-            self.table_state.select(None);
-        } else if i >= self.sessions.len() {
-            self.table_state.select(Some(self.sessions.len() - 1));
         }
     }
 }
@@ -301,6 +301,70 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_kind_getter() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let app = new_test_app(dir.path().to_path_buf());
+
+        // Act & Assert
+        assert_eq!(app.agent_kind(), AgentKind::Gemini);
+    }
+
+    #[test]
+    fn test_navigation() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(dir.path().to_path_buf());
+        app.add_session("A".to_string());
+        app.add_session("B".to_string());
+
+        // Act & Assert (Next)
+        app.table_state.select(Some(0));
+        app.next();
+        assert_eq!(app.table_state.selected(), Some(1));
+        app.next();
+        assert_eq!(app.table_state.selected(), Some(0)); // Loop back
+
+        // Act & Assert (Previous)
+        app.previous();
+        assert_eq!(app.table_state.selected(), Some(1)); // Loop back
+        app.previous();
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_navigation_empty() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(dir.path().to_path_buf());
+
+        // Act & Assert
+        app.next();
+        assert_eq!(app.table_state.selected(), None);
+
+        app.previous();
+        assert_eq!(app.table_state.selected(), None);
+    }
+
+    #[test]
+    fn test_navigation_recovery() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(dir.path().to_path_buf());
+        app.add_session("A".to_string());
+
+        // Act & Assert — next recovers from None
+        app.table_state.select(None);
+        app.next();
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        // Act & Assert — previous recovers from None
+        app.table_state.select(None);
+        app.previous();
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
     fn test_add_session() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
@@ -328,25 +392,33 @@ mod tests {
     }
 
     #[test]
-    fn test_navigation() {
+    fn test_reply() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_session("A".to_string());
-        app.add_session("B".to_string());
+        app.add_session("Initial".to_string());
 
-        // Act & Assert (Next)
-        app.table_state.select(Some(0));
-        app.next();
-        assert_eq!(app.table_state.selected(), Some(1));
-        app.next();
-        assert_eq!(app.table_state.selected(), Some(0)); // Loop back
+        // Act
+        app.reply(0, "Reply");
 
-        // Act & Assert (Previous)
-        app.previous();
-        assert_eq!(app.table_state.selected(), Some(1)); // Loop back
-        app.previous();
-        assert_eq!(app.table_state.selected(), Some(0));
+        // Assert
+        let session = &app.sessions[0];
+        let output = session.output.lock().expect("failed to lock output");
+        assert!(output.contains("Reply"));
+    }
+
+    #[test]
+    fn test_selected_session() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(dir.path().to_path_buf());
+        app.add_session("Test".to_string());
+
+        // Act & Assert
+        assert!(app.selected_session().is_some());
+
+        app.table_state.select(None);
+        assert!(app.selected_session().is_none());
     }
 
     #[test]
@@ -368,89 +440,6 @@ mod tests {
                 .count(),
             0
         );
-    }
-
-    #[test]
-    fn test_reply() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_session("Initial".to_string());
-
-        // Act
-        app.reply(0, "Reply");
-
-        // Assert
-        let session = &app.sessions[0];
-        let output = session.output.lock().expect("failed to lock output");
-        assert!(output.contains("Reply"));
-    }
-
-    #[test]
-    fn test_load_existing_sessions() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let session_dir = dir.path().join("12345678");
-        std::fs::create_dir(&session_dir).expect("failed to create session dir");
-        std::fs::write(session_dir.join("prompt.txt"), "Existing").expect("failed to write prompt");
-        std::fs::write(session_dir.join("output.txt"), "Output").expect("failed to write output");
-        std::fs::write(session_dir.join("agent.txt"), "claude").expect("failed to write agent");
-
-        // Add some garbage files to test filter logic
-        std::fs::write(dir.path().join("ignored_file.txt"), "")
-            .expect("failed to write ignored file");
-        let ignored_dir = dir.path().join("ignored_dir");
-        std::fs::create_dir(&ignored_dir).expect("failed to create ignored dir");
-
-        // Act
-        let app = new_test_app(dir.path().to_path_buf());
-
-        // Assert
-        assert_eq!(app.sessions.len(), 1);
-        assert_eq!(app.sessions[0].name, "12345678");
-        assert_eq!(app.sessions[0].prompt, "Existing");
-        assert_eq!(app.sessions[0].agent, "claude");
-        assert_eq!(app.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn test_load_sessions_invalid_path() {
-        // Arrange
-        let path = PathBuf::from("/invalid/path/that/does/not/exist");
-
-        // Act
-        let app = new_test_app(path);
-
-        // Assert
-        assert!(app.sessions.is_empty());
-    }
-
-    #[test]
-    fn test_navigation_empty() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app(dir.path().to_path_buf());
-
-        // Act & Assert
-        app.next();
-        assert_eq!(app.table_state.selected(), None);
-
-        app.previous();
-        assert_eq!(app.table_state.selected(), None);
-    }
-
-    #[test]
-    fn test_selected_session() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_session("Test".to_string());
-
-        // Act & Assert
-        assert!(app.selected_session().is_some());
-
-        app.table_state.select(None);
-        assert!(app.selected_session().is_none());
     }
 
     #[test]
@@ -493,61 +482,42 @@ mod tests {
     }
 
     #[test]
-    fn test_navigation_recovery() {
+    fn test_load_existing_sessions() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_session("A".to_string());
+        let session_dir = dir.path().join("12345678");
+        std::fs::create_dir(&session_dir).expect("failed to create session dir");
+        std::fs::write(session_dir.join("prompt.txt"), "Existing").expect("failed to write prompt");
+        std::fs::write(session_dir.join("output.txt"), "Output").expect("failed to write output");
+        std::fs::write(session_dir.join("agent.txt"), "claude").expect("failed to write agent");
 
-        // Act & Assert — next recovers from None
-        app.table_state.select(None);
-        app.next();
-        assert_eq!(app.table_state.selected(), Some(0));
-
-        // Act & Assert — previous recovers from None
-        app.table_state.select(None);
-        app.previous();
-        assert_eq!(app.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn test_process_output_sync() {
-        // Arrange
-        let output = Arc::new(Mutex::new(String::new()));
-        let mut file = None;
-        let source = "Line 1\nLine 2".as_bytes();
+        // Add some garbage files to test filter logic
+        std::fs::write(dir.path().join("ignored_file.txt"), "")
+            .expect("failed to write ignored file");
+        let ignored_dir = dir.path().join("ignored_dir");
+        std::fs::create_dir(&ignored_dir).expect("failed to create ignored dir");
 
         // Act
-        App::process_output(source, &mut file, &output);
-
-        // Assert
-        let out = output.lock().expect("failed to lock output").clone();
-        assert!(out.contains("Line 1"));
-        assert!(out.contains("Line 2"));
-
-        // Arrange — with file
-        let dir = tempdir().expect("failed to create temp dir");
-        let file_path = dir.path().join("out.txt");
-        let mut file = Some(std::fs::File::create(&file_path).expect("failed to create file"));
-        let source_file = "File Line".as_bytes();
-
-        // Act
-        App::process_output(source_file, &mut file, &output);
-
-        // Assert
-        drop(file);
-        let content = std::fs::read_to_string(file_path).expect("failed to read file");
-        assert!(content.contains("File Line"));
-    }
-
-    #[test]
-    fn test_agent_kind_getter() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
         let app = new_test_app(dir.path().to_path_buf());
 
-        // Act & Assert
-        assert_eq!(app.agent_kind(), AgentKind::Gemini);
+        // Assert
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].name, "12345678");
+        assert_eq!(app.sessions[0].prompt, "Existing");
+        assert_eq!(app.sessions[0].agent, "claude");
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_load_sessions_invalid_path() {
+        // Arrange
+        let path = PathBuf::from("/invalid/path/that/does/not/exist");
+
+        // Act
+        let app = new_test_app(path);
+
+        // Assert
+        assert!(app.sessions.is_empty());
     }
 
     #[test]
@@ -633,5 +603,35 @@ mod tests {
             assert!(output.contains("--resume"));
             assert!(output.contains("latest"));
         }
+    }
+
+    #[test]
+    fn test_process_output_sync() {
+        // Arrange
+        let output = Arc::new(Mutex::new(String::new()));
+        let mut file = None;
+        let source = "Line 1\nLine 2".as_bytes();
+
+        // Act
+        App::process_output(source, &mut file, &output);
+
+        // Assert
+        let out = output.lock().expect("failed to lock output").clone();
+        assert!(out.contains("Line 1"));
+        assert!(out.contains("Line 2"));
+
+        // Arrange — with file
+        let dir = tempdir().expect("failed to create temp dir");
+        let file_path = dir.path().join("out.txt");
+        let mut file = Some(std::fs::File::create(&file_path).expect("failed to create file"));
+        let source_file = "File Line".as_bytes();
+
+        // Act
+        App::process_output(source_file, &mut file, &output);
+
+        // Assert
+        drop(file);
+        let content = std::fs::read_to_string(file_path).expect("failed to read file");
+        assert!(content.contains("File Line"));
     }
 }

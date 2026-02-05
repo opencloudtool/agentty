@@ -66,20 +66,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_status_icon() {
-        // Arrange & Act & Assert
-        assert_eq!(Status::InProgress.icon(), "⏳");
-        assert_eq!(Status::Done.icon(), "✅");
-    }
-
-    #[test]
-    fn test_status_color() {
-        // Arrange & Act & Assert
-        assert_eq!(Status::InProgress.color(), Color::Yellow);
-        assert_eq!(Status::Done.color(), Color::Green);
-    }
-
-    #[test]
     fn test_session_status() {
         // Arrange
         let session = Session {
@@ -101,5 +87,19 @@ mod tests {
 
         // Assert (Done)
         assert_eq!(session.status(), Status::Done);
+    }
+
+    #[test]
+    fn test_status_icon() {
+        // Arrange & Act & Assert
+        assert_eq!(Status::InProgress.icon(), "⏳");
+        assert_eq!(Status::Done.icon(), "✅");
+    }
+
+    #[test]
+    fn test_status_color() {
+        // Arrange & Act & Assert
+        assert_eq!(Status::InProgress.color(), Color::Yellow);
+        assert_eq!(Status::Done.color(), Color::Green);
     }
 }
