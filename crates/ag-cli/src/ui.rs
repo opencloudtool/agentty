@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
+use crate::agent::AgentKind;
 use crate::model::{AppMode, Session, Status};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -21,15 +22,50 @@ fn centered_horizontal_layout(area: ratatui::layout::Rect) -> std::rc::Rc<[ratat
         .split(area)
 }
 
-pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: &mut TableState) {
+pub fn render(
+    f: &mut Frame,
+    mode: &AppMode,
+    sessions: &[Session],
+    table_state: &mut TableState,
+    agent_kind: AgentKind,
+) {
     let area = f.area();
+
+    // Top status bar (all modes)
+    let outer_chunks = Layout::default()
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let status_bar_area = outer_chunks[0];
+    let content_area = outer_chunks[1];
+
+    let version = env!("CARGO_PKG_VERSION");
+    let left_text = Span::styled(
+        format!(" Agentty v{version}"),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    let right_text = format!("Agent: {agent_kind} ");
+    let left_width = u16::try_from(left_text.width()).unwrap_or(u16::MAX);
+    let right_width = u16::try_from(right_text.len()).unwrap_or(u16::MAX);
+    let padding = status_bar_area
+        .width
+        .saturating_sub(left_width.saturating_add(right_width));
+    let status_bar = Paragraph::new(Line::from(vec![
+        left_text,
+        Span::raw(" ".repeat(padding as usize)),
+        Span::styled(right_text, Style::default().fg(Color::Gray)),
+    ]))
+    .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    f.render_widget(status_bar, status_bar_area);
 
     match mode {
         AppMode::List => {
             let chunks = Layout::default()
                 .constraints([Constraint::Min(0), Constraint::Length(1)])
                 .margin(2)
-                .split(area);
+                .split(content_area);
 
             let main_area = chunks[0];
             let footer_area = chunks[1];
@@ -46,16 +82,12 @@ pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: 
 
                 let horizontal_chunks = centered_horizontal_layout(vertical_chunks[1]);
 
-                let version = env!("CARGO_PKG_VERSION");
-                let title = Line::from(vec![
-                    Span::styled(
-                        " Agentty ",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("v{version} "), Style::default().fg(Color::DarkGray)),
-                ]);
+                let title = Span::styled(
+                    " Agentty ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                );
                 let hint = Paragraph::new(vec![
                     Line::from(""),
                     Line::from(Span::styled(
@@ -74,9 +106,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: 
             } else {
                 let selected_style = Style::default().bg(Color::DarkGray);
                 let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
-                let header_cells = ["Session", "Folder", "Status"]
-                    .iter()
-                    .map(|h| Cell::from(*h));
+                let header_cells = ["Session", "Status"].iter().map(|h| Cell::from(*h));
                 let header = Row::new(header_cells)
                     .style(normal_style)
                     .height(1)
@@ -84,11 +114,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: 
                 let rows = sessions.iter().map(|session| {
                     let status = session.status();
                     let cells = vec![
-                        Cell::from(session.name.as_str()),
-                        Cell::from(Span::styled(
-                            session.folder.display().to_string(),
-                            Style::default().fg(Color::Cyan),
-                        )),
+                        Cell::from(format!("{} [{}]", session.name, session.agent)),
                         Cell::from(status.icon()).style(Style::default().fg(status.color())),
                     ];
                     Row::new(cells).height(1)
@@ -96,7 +122,6 @@ pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: 
                 let t = Table::new(
                     rows,
                     [
-                        Constraint::Length(15),
                         Constraint::Min(0),
                         Constraint::Max(6),
                         Constraint::Length(1),
@@ -126,7 +151,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: 
         } => {
             if let Some(session) = sessions.get(*session_index) {
                 let bottom_height = if let AppMode::Reply { input, .. } = mode {
-                    calculate_input_height(area.width.saturating_sub(2), input)
+                    calculate_input_height(content_area.width.saturating_sub(2), input)
                 } else {
                     1
                 };
@@ -134,7 +159,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: 
                 let chunks = Layout::default()
                     .constraints([Constraint::Min(0), Constraint::Length(bottom_height)])
                     .margin(1)
-                    .split(area);
+                    .split(content_area);
 
                 let output_area = chunks[0];
                 let bottom_area = chunks[1];
@@ -204,11 +229,11 @@ pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: 
             }
         }
         AppMode::Prompt { input } => {
-            let input_height = calculate_input_height(area.width.saturating_sub(2), input);
+            let input_height = calculate_input_height(content_area.width.saturating_sub(2), input);
             let chunks = Layout::default()
                 .constraints([Constraint::Min(0), Constraint::Length(input_height)])
                 .margin(1)
-                .split(area);
+                .split(content_area);
 
             // Top area (chunks[0]) remains empty for "New Chat" feel
             render_chat_input(f, " New Chat ", input, chunks[1]);

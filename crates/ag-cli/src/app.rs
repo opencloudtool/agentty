@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::widgets::TableState;
 
-use crate::agent::AgentBackend;
+use crate::agent::{AgentBackend, AgentKind};
 use crate::model::{AppMode, Session};
 
 pub const DEFAULT_BASE_PATH: &str = "/var/tmp/.agentty";
@@ -20,11 +20,12 @@ pub struct App {
     pub table_state: TableState,
     pub mode: AppMode,
     base_path: PathBuf,
+    agent_kind: AgentKind,
     backend: Box<dyn AgentBackend>,
 }
 
 impl App {
-    pub fn new(base_path: PathBuf, backend: Box<dyn AgentBackend>) -> Self {
+    pub fn new(base_path: PathBuf, agent_kind: AgentKind, backend: Box<dyn AgentBackend>) -> Self {
         let mut table_state = TableState::default();
         let sessions = Self::load_sessions(&base_path);
         if sessions.is_empty() {
@@ -37,8 +38,13 @@ impl App {
             table_state,
             mode: AppMode::List,
             base_path,
+            agent_kind,
             backend,
         }
+    }
+
+    pub fn agent_kind(&self) -> AgentKind {
+        self.agent_kind
     }
 
     fn load_sessions(base: &PathBuf) -> Vec<Session> {
@@ -55,10 +61,14 @@ impl App {
                 let prompt = std::fs::read_to_string(folder.join("prompt.txt")).ok()?;
                 let output_text =
                     std::fs::read_to_string(folder.join("output.txt")).unwrap_or_default();
+                let agent = std::fs::read_to_string(folder.join("agent.txt"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
                 Some(Session {
                     name: folder.file_name()?.to_string_lossy().into_owned(),
                     prompt,
                     folder,
+                    agent,
                     output: Arc::new(Mutex::new(output_text)),
                     running: Arc::new(AtomicBool::new(false)),
                 })
@@ -117,6 +127,7 @@ impl App {
         let folder = self.base_path.join(short_hash);
         let _ = std::fs::create_dir_all(&folder);
         let _ = std::fs::write(folder.join("prompt.txt"), &prompt);
+        let _ = std::fs::write(folder.join("agent.txt"), self.agent_kind.to_string());
 
         let initial_output = format!(" › {prompt}\n\n");
         let _ = std::fs::write(folder.join("output.txt"), &initial_output);
@@ -138,6 +149,7 @@ impl App {
             name: name.clone(),
             prompt,
             folder,
+            agent: self.agent_kind.to_string(),
             output,
             running,
         });
@@ -272,7 +284,7 @@ mod tests {
     }
 
     fn new_test_app(path: PathBuf) -> App {
-        App::new(path, Box::new(create_mock_backend()))
+        App::new(path, AgentKind::Gemini, Box::new(create_mock_backend()))
     }
 
     #[test]
@@ -302,11 +314,17 @@ mod tests {
         assert_eq!(app.sessions[0].prompt, "Hello");
         assert_eq!(app.table_state.selected(), Some(0));
 
+        assert_eq!(app.sessions[0].agent, "gemini");
+
         // Check filesystem
         let session_dir = &app.sessions[0].folder;
         assert!(session_dir.exists());
         assert!(session_dir.join("prompt.txt").exists());
         assert!(session_dir.join("output.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(session_dir.join("agent.txt")).expect("agent.txt"),
+            "gemini"
+        );
     }
 
     #[test]
@@ -376,6 +394,7 @@ mod tests {
         std::fs::create_dir(&session_dir).expect("failed to create session dir");
         std::fs::write(session_dir.join("prompt.txt"), "Existing").expect("failed to write prompt");
         std::fs::write(session_dir.join("output.txt"), "Output").expect("failed to write output");
+        std::fs::write(session_dir.join("agent.txt"), "claude").expect("failed to write agent");
 
         // Add some garbage files to test filter logic
         std::fs::write(dir.path().join("ignored_file.txt"), "")
@@ -390,6 +409,7 @@ mod tests {
         assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.sessions[0].name, "12345678");
         assert_eq!(app.sessions[0].prompt, "Existing");
+        assert_eq!(app.sessions[0].agent, "claude");
         assert_eq!(app.table_state.selected(), Some(0));
     }
 
@@ -521,6 +541,32 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_kind_getter() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let app = new_test_app(dir.path().to_path_buf());
+
+        // Act & Assert
+        assert_eq!(app.agent_kind(), AgentKind::Gemini);
+    }
+
+    #[test]
+    fn test_load_session_without_agent_txt_defaults_to_unknown() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let session_dir = dir.path().join("noagent01");
+        std::fs::create_dir(&session_dir).expect("failed to create session dir");
+        std::fs::write(session_dir.join("prompt.txt"), "Test").expect("failed to write prompt");
+
+        // Act
+        let app = new_test_app(dir.path().to_path_buf());
+
+        // Assert
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].agent, "unknown");
+    }
+
+    #[test]
     fn test_spawn_integration() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
@@ -552,7 +598,7 @@ mod tests {
                     .stderr(Stdio::null());
                 cmd
             });
-        let mut app = App::new(dir.path().to_path_buf(), Box::new(mock));
+        let mut app = App::new(dir.path().to_path_buf(), AgentKind::Gemini, Box::new(mock));
 
         // Act — add session (start command)
         app.add_session("SpawnInit".to_string());

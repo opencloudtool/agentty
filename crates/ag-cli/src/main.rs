@@ -37,13 +37,23 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let backend = AgentKind::from_env().create_backend();
-    let mut app = App::new(base_path, backend);
+    let agent_kind = AgentKind::from_env();
+    let backend = agent_kind.create_backend();
+    let mut app = App::new(base_path, agent_kind, backend);
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(100);
 
     loop {
-        terminal.draw(|f| ui::render(f, &app.mode, &app.sessions, &mut app.table_state))?;
+        let current_agent_kind = app.agent_kind();
+        terminal.draw(|f| {
+            ui::render(
+                f,
+                &app.mode,
+                &app.sessions,
+                &mut app.table_state,
+                current_agent_kind,
+            );
+        })?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())

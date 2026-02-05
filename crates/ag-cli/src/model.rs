@@ -30,6 +30,7 @@ pub struct Session {
     pub name: String,
     pub prompt: String,
     pub folder: PathBuf,
+    pub agent: String,
     pub output: Arc<Mutex<String>>,
     pub running: Arc<AtomicBool>,
 }
@@ -85,6 +86,7 @@ mod tests {
             name: "test".to_string(),
             prompt: "prompt".to_string(),
             folder: PathBuf::new(),
+            agent: "gemini".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             running: Arc::new(AtomicBool::new(true)),
         };
