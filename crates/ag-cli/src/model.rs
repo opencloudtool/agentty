@@ -30,6 +30,11 @@ pub enum AppMode {
         input: String,
         scroll_offset: Option<u16>,
     },
+    Diff {
+        session_index: usize,
+        diff: String,
+        scroll_offset: u16,
+    },
 }
 
 pub struct Session {

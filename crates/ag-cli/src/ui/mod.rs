@@ -95,5 +95,15 @@ pub fn render(
         AppMode::Prompt { input } => {
             pages::new_session::NewSessionPage::new(input).render(f, content_area);
         }
+        AppMode::Diff {
+            session_index,
+            diff,
+            scroll_offset,
+        } => {
+            if let Some(session) = sessions.get(*session_index) {
+                pages::diff::DiffPage::new(session, diff.clone(), *scroll_offset)
+                    .render(f, content_area);
+            }
+        }
     }
 }

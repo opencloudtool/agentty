@@ -185,6 +185,25 @@ fn main() -> io::Result<()> {
                                     .unwrap_or_else(|| total_lines.saturating_sub(view_height));
                                 new_scroll = Some(current.saturating_sub(view_height / 2));
                             }
+                            KeyCode::Char('d')
+                                if !key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                            {
+                                if let Some(session) = app.sessions.get(session_idx) {
+                                    let output = Command::new("git")
+                                        .arg("diff")
+                                        .current_dir(&session.folder)
+                                        .output()
+                                        .ok();
+                                    let diff = output
+                                        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                                        .unwrap_or_else(|| "Failed to run git diff".to_string());
+                                    app.mode = AppMode::Diff {
+                                        session_index: session_idx,
+                                        diff,
+                                        scroll_offset: 0,
+                                    };
+                                }
+                            }
                             _ => {}
                         }
 
@@ -248,6 +267,25 @@ fn main() -> io::Result<()> {
                         }
                         KeyCode::Backspace => {
                             input.pop();
+                        }
+                        _ => {}
+                    },
+                    AppMode::Diff {
+                        session_index,
+                        diff: _,
+                        scroll_offset,
+                    } => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            app.mode = AppMode::View {
+                                session_index: *session_index,
+                                scroll_offset: None,
+                            };
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            *scroll_offset = scroll_offset.saturating_add(1);
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            *scroll_offset = scroll_offset.saturating_sub(1);
                         }
                         _ => {}
                     },
