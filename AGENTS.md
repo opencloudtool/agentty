@@ -7,7 +7,7 @@ TUI tool to manage agents.
 - The `crates/` directory contains all workspace members.
 - All workspace crates use the `ag-` prefix (e.g., `ag-cli`).
 - `ag-cli`: A binary crate providing the CLI interface using Ratatui.
-- **Workflow**: Agents are run with auto-approval flags (`--yolo` for Gemini, `--permission-mode bypassPermissions` for Claude) because they operate in isolated git worktrees.
+- **Workflow**: Agents are run in isolated git worktrees.
 - **Review**: Users review changes using the Diff view (`d` key in chat) which shows the output of `git diff` in the session's worktree.
 - **Output**: Agent `stdout` and `stderr` are captured in parallel using multiple threads to ensure prompts and errors are visible.
 
