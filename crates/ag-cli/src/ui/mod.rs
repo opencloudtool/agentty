@@ -5,11 +5,16 @@ pub mod util;
 pub mod view;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
 use crate::agent::AgentKind;
 use crate::model::{AppMode, Session};
+
+/// A trait for UI screens that enforces a standard rendering interface.
+pub trait Screen {
+    fn render(&mut self, f: &mut Frame, area: Rect);
+}
 
 pub fn render(
     f: &mut Frame,
@@ -31,7 +36,9 @@ pub fn render(
     components::render_status_bar(f, status_bar_area, agent_kind);
 
     match mode {
-        AppMode::List => list::render(f, content_area, sessions, table_state),
+        AppMode::List => {
+            list::ListScreen::new(sessions, table_state).render(f, content_area);
+        }
         AppMode::View {
             session_index,
             scroll_offset,
@@ -41,17 +48,11 @@ pub fn render(
             scroll_offset,
             ..
         } => {
-            view::render(
-                f,
-                content_area,
-                sessions,
-                *session_index,
-                *scroll_offset,
-                mode,
-            );
+            view::ViewScreen::new(sessions, *session_index, *scroll_offset, mode)
+                .render(f, content_area);
         }
         AppMode::Prompt { input } => {
-            prompt::render(f, content_area, input);
+            prompt::PromptScreen::new(input).render(f, content_area);
         }
     }
 }
