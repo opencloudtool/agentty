@@ -287,13 +287,14 @@ impl App {
                     if let Some(stdout) = child.stdout.take() {
                         Self::process_output(stdout, &mut file, &output);
                     }
-                    running.store(false, Ordering::Relaxed);
+                    running.store(false, Ordering::SeqCst);
                     let _ = child.wait();
                 }
                 Err(e) => {
                     if let Ok(mut buf) = output.lock() {
                         let _ = writeln!(buf, "Failed to spawn process: {e}");
                     }
+                    running.store(false, Ordering::SeqCst);
                 }
             }
             running.store(false, Ordering::Relaxed);
