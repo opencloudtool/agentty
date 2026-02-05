@@ -13,4 +13,5 @@ ratatui.workspace = true
 crossterm.workspace = true
 
 [dev-dependencies]
+mockall.workspace = true
 tempfile.workspace = true

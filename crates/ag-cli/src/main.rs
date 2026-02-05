@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use ag_cli::agent::AgentKind;
 use ag_cli::app::{App, DEFAULT_BASE_PATH};
 use ag_cli::model::AppMode;
 use ag_cli::ui;
@@ -36,7 +37,8 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(base_path);
+    let backend = AgentKind::from_env().create_backend();
+    let mut app = App::new(base_path, backend);
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(100);
 
@@ -185,7 +187,7 @@ fn main() -> io::Result<()> {
                                     scroll_offset: None, // Reset scroll on new message
                                 };
                                 if !prompt.is_empty() {
-                                    app.reply(agent_index, prompt);
+                                    app.reply(agent_index, &prompt);
                                 }
                             }
                             KeyCode::Esc => {
