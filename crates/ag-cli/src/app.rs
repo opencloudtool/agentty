@@ -287,6 +287,7 @@ impl App {
                     if let Some(stdout) = child.stdout.take() {
                         Self::process_output(stdout, &mut file, &output);
                     }
+                    running.store(false, Ordering::Relaxed);
                     let _ = child.wait();
                 }
                 Err(e) => {
