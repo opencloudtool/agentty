@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
-use crate::model::{Agent, AppMode, Status};
+use crate::model::{AppMode, Session, Status};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -21,7 +21,7 @@ fn centered_horizontal_layout(area: ratatui::layout::Rect) -> std::rc::Rc<[ratat
         .split(area)
 }
 
-pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut TableState) {
+pub fn render(f: &mut Frame, mode: &AppMode, sessions: &[Session], table_state: &mut TableState) {
     let area = f.area();
 
     match mode {
@@ -35,7 +35,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             let footer_area = chunks[1];
 
             // 1. Render Main Area (List or Welcome Hint)
-            if agents.is_empty() {
+            if sessions.is_empty() {
                 let vertical_chunks = Layout::default()
                     .constraints([
                         Constraint::Min(0),
@@ -74,19 +74,19 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             } else {
                 let selected_style = Style::default().bg(Color::DarkGray);
                 let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
-                let header_cells = ["Agent Name", "Folder", "Status"]
+                let header_cells = ["Session", "Folder", "Status"]
                     .iter()
                     .map(|h| Cell::from(*h));
                 let header = Row::new(header_cells)
                     .style(normal_style)
                     .height(1)
                     .bottom_margin(1);
-                let rows = agents.iter().map(|agent| {
-                    let status = agent.status();
+                let rows = sessions.iter().map(|session| {
+                    let status = session.status();
                     let cells = vec![
-                        Cell::from(agent.name.as_str()),
+                        Cell::from(session.name.as_str()),
                         Cell::from(Span::styled(
-                            agent.folder.display().to_string(),
+                            session.folder.display().to_string(),
                             Style::default().fg(Color::Cyan),
                         )),
                         Cell::from(status.icon()).style(Style::default().fg(status.color())),
@@ -103,7 +103,7 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                     ],
                 )
                 .header(header)
-                .block(Block::default().borders(Borders::ALL).title("Agents"))
+                .block(Block::default().borders(Borders::ALL).title("Sessions"))
                 .row_highlight_style(selected_style)
                 .highlight_symbol(">> ");
 
@@ -116,15 +116,15 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
             f.render_widget(help_message, footer_area);
         }
         AppMode::View {
-            agent_index,
+            session_index,
             scroll_offset,
         }
         | AppMode::Reply {
-            agent_index,
+            session_index,
             scroll_offset,
             ..
         } => {
-            if let Some(agent) = agents.get(*agent_index) {
+            if let Some(session) = sessions.get(*session_index) {
                 let bottom_height = if let AppMode::Reply { input, .. } = mode {
                     calculate_input_height(area.width.saturating_sub(2), input)
                 } else {
@@ -139,14 +139,14 @@ pub fn render(f: &mut Frame, mode: &AppMode, agents: &[Agent], table_state: &mut
                 let output_area = chunks[0];
                 let bottom_area = chunks[1];
 
-                let status = agent.status();
+                let status = session.status();
                 let status_label = match status {
                     Status::InProgress => "In Progress",
                     Status::Done => "Done",
                 };
-                let title = format!(" {} — {} ", agent.name, status_label);
+                let title = format!(" {} — {} ", session.name, status_label);
 
-                let output_text = agent
+                let output_text = session
                     .output
                     .lock()
                     .map(|buf| buf.clone())

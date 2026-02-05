@@ -11,12 +11,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ratatui::widgets::TableState;
 
 use crate::agent::AgentBackend;
-use crate::model::{Agent, AppMode};
+use crate::model::{AppMode, Session};
 
 pub const DEFAULT_BASE_PATH: &str = "/var/tmp/.agentty";
 
 pub struct App {
-    pub agents: Vec<Agent>,
+    pub sessions: Vec<Session>,
     pub table_state: TableState,
     pub mode: AppMode,
     base_path: PathBuf,
@@ -26,14 +26,14 @@ pub struct App {
 impl App {
     pub fn new(base_path: PathBuf, backend: Box<dyn AgentBackend>) -> Self {
         let mut table_state = TableState::default();
-        let agents = Self::load_agents(&base_path);
-        if agents.is_empty() {
+        let sessions = Self::load_sessions(&base_path);
+        if sessions.is_empty() {
             table_state.select(None);
         } else {
             table_state.select(Some(0));
         }
         Self {
-            agents,
+            sessions,
             table_state,
             mode: AppMode::List,
             base_path,
@@ -41,11 +41,11 @@ impl App {
         }
     }
 
-    fn load_agents(base: &PathBuf) -> Vec<Agent> {
+    fn load_sessions(base: &PathBuf) -> Vec<Session> {
         let Ok(entries) = std::fs::read_dir(base) else {
             return Vec::new();
         };
-        let mut agents: Vec<Agent> = entries
+        let mut sessions: Vec<Session> = entries
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let folder = entry.path();
@@ -55,7 +55,7 @@ impl App {
                 let prompt = std::fs::read_to_string(folder.join("prompt.txt")).ok()?;
                 let output_text =
                     std::fs::read_to_string(folder.join("output.txt")).unwrap_or_default();
-                Some(Agent {
+                Some(Session {
                     name: folder.file_name()?.to_string_lossy().into_owned(),
                     prompt,
                     folder,
@@ -64,17 +64,17 @@ impl App {
                 })
             })
             .collect();
-        agents.sort_by(|a, b| a.name.cmp(&b.name));
-        agents
+        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        sessions
     }
 
     pub fn next(&mut self) {
-        if self.agents.is_empty() {
+        if self.sessions.is_empty() {
             return;
         }
         let i = match self.table_state.selected() {
             Some(i) => {
-                if i >= self.agents.len() - 1 {
+                if i >= self.sessions.len() - 1 {
                     0
                 } else {
                     i + 1
@@ -86,13 +86,13 @@ impl App {
     }
 
     pub fn previous(&mut self) {
-        if self.agents.is_empty() {
+        if self.sessions.is_empty() {
             return;
         }
         let i = match self.table_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.agents.len() - 1
+                    self.sessions.len() - 1
                 } else {
                     i - 1
                 }
@@ -102,7 +102,7 @@ impl App {
         self.table_state.select(Some(i));
     }
 
-    pub fn add_agent(&mut self, prompt: String) {
+    pub fn add_session(&mut self, prompt: String) {
         let mut hasher = DefaultHasher::new();
         prompt.hash(&mut hasher);
         let nanos = SystemTime::now()
@@ -127,35 +127,35 @@ impl App {
         let running = Arc::new(AtomicBool::new(true));
 
         let cmd = self.backend.build_start_command(&folder, &prompt);
-        Self::spawn_agent_task(
+        Self::spawn_session_task(
             folder.clone(),
             cmd,
             Arc::clone(&output),
             Arc::clone(&running),
         );
 
-        self.agents.push(Agent {
+        self.sessions.push(Session {
             name: name.clone(),
             prompt,
             folder,
             output,
             running,
         });
-        self.agents.sort_by(|a, b| a.name.cmp(&b.name));
+        self.sessions.sort_by(|a, b| a.name.cmp(&b.name));
 
-        if let Some(index) = self.agents.iter().position(|a| a.name == name) {
+        if let Some(index) = self.sessions.iter().position(|a| a.name == name) {
             self.table_state.select(Some(index));
         }
     }
 
-    pub fn reply(&mut self, agent_index: usize, prompt: &str) {
-        let Some(agent) = self.agents.get_mut(agent_index) else {
+    pub fn reply(&mut self, session_index: usize, prompt: &str) {
+        let Some(session) = self.sessions.get_mut(session_index) else {
             return;
         };
 
-        let folder = agent.folder.clone();
-        let output = Arc::clone(&agent.output);
-        let running = Arc::clone(&agent.running);
+        let folder = session.folder.clone();
+        let output = Arc::clone(&session.output);
+        let running = Arc::clone(&session.running);
 
         let reply_line = format!("\n › {prompt}\n\n");
         if let Ok(mut buf) = output.lock() {
@@ -168,10 +168,10 @@ impl App {
 
         running.store(true, Ordering::Relaxed);
         let cmd = self.backend.build_resume_command(&folder, prompt);
-        Self::spawn_agent_task(folder, cmd, output, running);
+        Self::spawn_session_task(folder, cmd, output, running);
     }
 
-    fn spawn_agent_task(
+    fn spawn_session_task(
         folder: PathBuf,
         mut cmd: Command,
         output: Arc<Mutex<String>>,
@@ -217,23 +217,25 @@ impl App {
         }
     }
 
-    pub fn selected_agent(&self) -> Option<&Agent> {
-        self.table_state.selected().and_then(|i| self.agents.get(i))
+    pub fn selected_session(&self) -> Option<&Session> {
+        self.table_state
+            .selected()
+            .and_then(|i| self.sessions.get(i))
     }
 
-    pub fn delete_selected_agent(&mut self) {
+    pub fn delete_selected_session(&mut self) {
         let Some(i) = self.table_state.selected() else {
             return;
         };
-        if i >= self.agents.len() {
+        if i >= self.sessions.len() {
             return;
         }
-        let agent = self.agents.remove(i);
-        let _ = std::fs::remove_dir_all(&agent.folder);
-        if self.agents.is_empty() {
+        let session = self.sessions.remove(i);
+        let _ = std::fs::remove_dir_all(&session.folder);
+        if self.sessions.is_empty() {
             self.table_state.select(None);
-        } else if i >= self.agents.len() {
-            self.table_state.select(Some(self.agents.len() - 1));
+        } else if i >= self.sessions.len() {
+            self.table_state.select(Some(self.sessions.len() - 1));
         }
     }
 }
@@ -282,29 +284,29 @@ mod tests {
         let app = new_test_app(dir.path().to_path_buf());
 
         // Assert
-        assert!(app.agents.is_empty());
+        assert!(app.sessions.is_empty());
         assert_eq!(app.table_state.selected(), None);
     }
 
     #[test]
-    fn test_add_agent() {
+    fn test_add_session() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
 
         // Act
-        app.add_agent("Hello".to_string());
+        app.add_session("Hello".to_string());
 
         // Assert
-        assert_eq!(app.agents.len(), 1);
-        assert_eq!(app.agents[0].prompt, "Hello");
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].prompt, "Hello");
         assert_eq!(app.table_state.selected(), Some(0));
 
         // Check filesystem
-        let agent_dir = &app.agents[0].folder;
-        assert!(agent_dir.exists());
-        assert!(agent_dir.join("prompt.txt").exists());
-        assert!(agent_dir.join("output.txt").exists());
+        let session_dir = &app.sessions[0].folder;
+        assert!(session_dir.exists());
+        assert!(session_dir.join("prompt.txt").exists());
+        assert!(session_dir.join("output.txt").exists());
     }
 
     #[test]
@@ -312,8 +314,8 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_agent("A".to_string());
-        app.add_agent("B".to_string());
+        app.add_session("A".to_string());
+        app.add_session("B".to_string());
 
         // Act & Assert (Next)
         app.table_state.select(Some(0));
@@ -330,17 +332,17 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_agent() {
+    fn test_delete_session() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_agent("A".to_string());
+        app.add_session("A".to_string());
 
         // Act
-        app.delete_selected_agent();
+        app.delete_selected_session();
 
         // Assert
-        assert!(app.agents.is_empty());
+        assert!(app.sessions.is_empty());
         assert_eq!(app.table_state.selected(), None);
         assert_eq!(
             std::fs::read_dir(dir.path())
@@ -355,25 +357,25 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_agent("Initial".to_string());
+        app.add_session("Initial".to_string());
 
         // Act
         app.reply(0, "Reply");
 
         // Assert
-        let agent = &app.agents[0];
-        let output = agent.output.lock().expect("failed to lock output");
+        let session = &app.sessions[0];
+        let output = session.output.lock().expect("failed to lock output");
         assert!(output.contains("Reply"));
     }
 
     #[test]
-    fn test_load_existing_agents() {
+    fn test_load_existing_sessions() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        let agent_dir = dir.path().join("12345678");
-        std::fs::create_dir(&agent_dir).expect("failed to create agent dir");
-        std::fs::write(agent_dir.join("prompt.txt"), "Existing").expect("failed to write prompt");
-        std::fs::write(agent_dir.join("output.txt"), "Output").expect("failed to write output");
+        let session_dir = dir.path().join("12345678");
+        std::fs::create_dir(&session_dir).expect("failed to create session dir");
+        std::fs::write(session_dir.join("prompt.txt"), "Existing").expect("failed to write prompt");
+        std::fs::write(session_dir.join("output.txt"), "Output").expect("failed to write output");
 
         // Add some garbage files to test filter logic
         std::fs::write(dir.path().join("ignored_file.txt"), "")
@@ -385,14 +387,14 @@ mod tests {
         let app = new_test_app(dir.path().to_path_buf());
 
         // Assert
-        assert_eq!(app.agents.len(), 1);
-        assert_eq!(app.agents[0].name, "12345678");
-        assert_eq!(app.agents[0].prompt, "Existing");
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].name, "12345678");
+        assert_eq!(app.sessions[0].prompt, "Existing");
         assert_eq!(app.table_state.selected(), Some(0));
     }
 
     #[test]
-    fn test_load_agents_invalid_path() {
+    fn test_load_sessions_invalid_path() {
         // Arrange
         let path = PathBuf::from("/invalid/path/that/does/not/exist");
 
@@ -400,7 +402,7 @@ mod tests {
         let app = new_test_app(path);
 
         // Assert
-        assert!(app.agents.is_empty());
+        assert!(app.sessions.is_empty());
     }
 
     #[test]
@@ -418,55 +420,55 @@ mod tests {
     }
 
     #[test]
-    fn test_selected_agent() {
+    fn test_selected_session() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_agent("Test".to_string());
+        app.add_session("Test".to_string());
 
         // Act & Assert
-        assert!(app.selected_agent().is_some());
+        assert!(app.selected_session().is_some());
 
         app.table_state.select(None);
-        assert!(app.selected_agent().is_none());
+        assert!(app.selected_session().is_none());
     }
 
     #[test]
-    fn test_delete_selected_agent_edge_cases() {
+    fn test_delete_selected_session_edge_cases() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_agent("1".to_string());
-        app.add_agent("2".to_string());
+        app.add_session("1".to_string());
+        app.add_session("2".to_string());
 
         // Act & Assert — index out of bounds
         app.table_state.select(Some(99));
-        app.delete_selected_agent();
-        assert_eq!(app.agents.len(), 2);
+        app.delete_selected_session();
+        assert_eq!(app.sessions.len(), 2);
 
         // Act & Assert — None selected
         app.table_state.select(None);
-        app.delete_selected_agent();
-        assert_eq!(app.agents.len(), 2);
+        app.delete_selected_session();
+        assert_eq!(app.sessions.len(), 2);
     }
 
     #[test]
-    fn test_delete_last_agent_update_selection() {
+    fn test_delete_last_session_update_selection() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_agent("1".to_string());
-        app.add_agent("2".to_string());
+        app.add_session("1".to_string());
+        app.add_session("2".to_string());
 
         // Act & Assert — delete last item
         app.table_state.select(Some(1));
-        app.delete_selected_agent();
-        assert_eq!(app.agents.len(), 1);
+        app.delete_selected_session();
+        assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.table_state.selected(), Some(0));
 
         // Act & Assert — delete remaining item
-        app.delete_selected_agent();
-        assert!(app.agents.is_empty());
+        app.delete_selected_session();
+        assert!(app.sessions.is_empty());
         assert_eq!(app.table_state.selected(), None);
     }
 
@@ -475,7 +477,7 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf());
-        app.add_agent("A".to_string());
+        app.add_session("A".to_string());
 
         // Act & Assert — next recovers from None
         app.table_state.select(None);
@@ -552,14 +554,18 @@ mod tests {
             });
         let mut app = App::new(dir.path().to_path_buf(), Box::new(mock));
 
-        // Act — add agent (start command)
-        app.add_agent("SpawnInit".to_string());
+        // Act — add session (start command)
+        app.add_session("SpawnInit".to_string());
         std::thread::sleep(std::time::Duration::from_millis(300));
 
         // Assert
         {
-            let agent = &app.agents[0];
-            let output = agent.output.lock().expect("failed to lock output").clone();
+            let session = &app.sessions[0];
+            let output = session
+                .output
+                .lock()
+                .expect("failed to lock output")
+                .clone();
             assert!(output.contains("--prompt"));
             assert!(output.contains("SpawnInit"));
             assert!(!output.contains("--resume"));
@@ -571,8 +577,12 @@ mod tests {
 
         // Assert
         {
-            let agent = &app.agents[0];
-            let output = agent.output.lock().expect("failed to lock output").clone();
+            let session = &app.sessions[0];
+            let output = session
+                .output
+                .lock()
+                .expect("failed to lock output")
+                .clone();
             assert!(output.contains("SpawnReply"));
             assert!(output.contains("--resume"));
             assert!(output.contains("latest"));

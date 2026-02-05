@@ -16,17 +16,17 @@ pub enum AppMode {
         input: String,
     },
     View {
-        agent_index: usize,
+        session_index: usize,
         scroll_offset: Option<u16>,
     },
     Reply {
-        agent_index: usize,
+        session_index: usize,
         input: String,
         scroll_offset: Option<u16>,
     },
 }
 
-pub struct Agent {
+pub struct Session {
     pub name: String,
     pub prompt: String,
     pub folder: PathBuf,
@@ -34,7 +34,7 @@ pub struct Agent {
     pub running: Arc<AtomicBool>,
 }
 
-impl Agent {
+impl Session {
     pub fn status(&self) -> Status {
         if self.running.load(std::sync::atomic::Ordering::Relaxed) {
             Status::InProgress
@@ -79,9 +79,9 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_status() {
+    fn test_session_status() {
         // Arrange
-        let agent = Agent {
+        let session = Session {
             name: "test".to_string(),
             prompt: "prompt".to_string(),
             folder: PathBuf::new(),
@@ -90,14 +90,14 @@ mod tests {
         };
 
         // Act & Assert (InProgress)
-        assert_eq!(agent.status(), Status::InProgress);
+        assert_eq!(session.status(), Status::InProgress);
 
         // Act
-        agent
+        session
             .running
             .store(false, std::sync::atomic::Ordering::Relaxed);
 
         // Assert (Done)
-        assert_eq!(agent.status(), Status::Done);
+        assert_eq!(session.status(), Status::Done);
     }
 }

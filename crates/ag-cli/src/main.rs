@@ -43,7 +43,7 @@ fn main() -> io::Result<()> {
     let tick_rate = Duration::from_millis(100);
 
     loop {
-        terminal.draw(|f| ui::render(f, &app.mode, &app.agents, &mut app.table_state))?;
+        terminal.draw(|f| ui::render(f, &app.mode, &app.sessions, &mut app.table_state))?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
@@ -67,20 +67,20 @@ fn main() -> io::Result<()> {
                         }
                         KeyCode::Enter => {
                             if let Some(i) = app.table_state.selected() {
-                                if i < app.agents.len() {
+                                if i < app.sessions.len() {
                                     app.mode = AppMode::View {
-                                        agent_index: i,
+                                        session_index: i,
                                         scroll_offset: None,
                                     };
                                 }
                             }
                         }
                         KeyCode::Char('d') => {
-                            app.delete_selected_agent();
+                            app.delete_selected_session();
                         }
                         KeyCode::Char('o') => {
-                            if let Some(agent) = app.selected_agent() {
-                                let folder = agent.folder.clone();
+                            if let Some(session) = app.selected_session() {
+                                let folder = session.folder.clone();
                                 disable_raw_mode()?;
                                 execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                                 let shell =
@@ -94,10 +94,10 @@ fn main() -> io::Result<()> {
                         _ => {}
                     },
                     AppMode::View {
-                        agent_index,
+                        session_index,
                         scroll_offset,
                     } => {
-                        let agent_idx = *agent_index;
+                        let session_idx = *session_index;
                         let mut new_scroll = *scroll_offset;
 
                         // Estimate view height (terminal height - margins/borders/footer)
@@ -105,8 +105,8 @@ fn main() -> io::Result<()> {
                         let term_height = terminal.size()?.height;
                         let view_height = term_height.saturating_sub(5);
                         let total_lines = u16::try_from(
-                            app.agents
-                                .get(agent_idx)
+                            app.sessions
+                                .get(session_idx)
                                 .and_then(|a| a.output.lock().ok())
                                 .map(|o| o.lines().count())
                                 .unwrap_or(0),
@@ -119,7 +119,7 @@ fn main() -> io::Result<()> {
                             }
                             KeyCode::Char('r') => {
                                 app.mode = AppMode::Reply {
-                                    agent_index: agent_idx,
+                                    session_index: session_idx,
                                     input: String::new(),
                                     scroll_offset: new_scroll,
                                 };
@@ -173,26 +173,26 @@ fn main() -> io::Result<()> {
                         }
                     }
                     AppMode::Reply {
-                        agent_index,
+                        session_index,
                         input,
                         scroll_offset,
                     } => {
-                        let agent_index = *agent_index;
+                        let session_index = *session_index;
                         let scroll_snapshot = *scroll_offset;
                         match key.code {
                             KeyCode::Enter => {
                                 let prompt = input.clone();
                                 app.mode = AppMode::View {
-                                    agent_index,
+                                    session_index,
                                     scroll_offset: None, // Reset scroll on new message
                                 };
                                 if !prompt.is_empty() {
-                                    app.reply(agent_index, &prompt);
+                                    app.reply(session_index, &prompt);
                                 }
                             }
                             KeyCode::Esc => {
                                 app.mode = AppMode::View {
-                                    agent_index,
+                                    session_index,
                                     scroll_offset: scroll_snapshot,
                                 };
                             }
@@ -210,7 +210,7 @@ fn main() -> io::Result<()> {
                             let prompt = input.clone();
                             app.mode = AppMode::List;
                             if !prompt.is_empty() {
-                                app.add_agent(prompt);
+                                app.add_session(prompt);
                             }
                         }
                         KeyCode::Esc => {
