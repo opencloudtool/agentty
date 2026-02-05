@@ -111,7 +111,7 @@ impl Page for SessionChatPage<'_> {
             if let AppMode::Reply { input, .. } = self.mode {
                 ChatInput::new(" Reply ", input).render(f, bottom_area);
             } else {
-                let help_message = Paragraph::new("q: back | r: reply | j/k: scroll")
+                let help_message = Paragraph::new("q: back | r: reply | d: diff | j/k: scroll")
                     .style(Style::default().fg(Color::Gray));
                 f.render_widget(help_message, bottom_area);
             }
