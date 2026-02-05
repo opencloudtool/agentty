@@ -45,6 +45,7 @@ fn main() -> io::Result<()> {
 
     loop {
         let current_agent_kind = app.agent_kind();
+        let current_tab = app.current_tab;
         terminal.draw(|f| {
             ui::render(
                 f,
@@ -52,6 +53,7 @@ fn main() -> io::Result<()> {
                 &app.sessions,
                 &mut app.table_state,
                 current_agent_kind,
+                current_tab,
             );
         })?;
 
@@ -64,6 +66,9 @@ fn main() -> io::Result<()> {
                 match &mut app.mode {
                     AppMode::List => match key.code {
                         KeyCode::Char('q') => break,
+                        KeyCode::Tab => {
+                            app.next_tab();
+                        }
                         KeyCode::Char('a') => {
                             app.mode = AppMode::Prompt {
                                 input: String::new(),

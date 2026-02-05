@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ratatui::widgets::TableState;
 
 use crate::agent::{AgentBackend, AgentKind};
-use crate::model::{AppMode, Session};
+use crate::model::{AppMode, Session, Tab};
 
 pub const AGENTTY_WORKSPACE: &str = "/var/tmp/.agentty";
 
@@ -19,6 +19,7 @@ pub struct App {
     pub sessions: Vec<Session>,
     pub table_state: TableState,
     pub mode: AppMode,
+    pub current_tab: Tab,
     base_path: PathBuf,
     agent_kind: AgentKind,
     backend: Box<dyn AgentBackend>,
@@ -37,6 +38,7 @@ impl App {
             sessions,
             table_state,
             mode: AppMode::List,
+            current_tab: Tab::Sessions,
             base_path,
             agent_kind,
             backend,
@@ -45,6 +47,10 @@ impl App {
 
     pub fn agent_kind(&self) -> AgentKind {
         self.agent_kind
+    }
+
+    pub fn next_tab(&mut self) {
+        self.current_tab = self.current_tab.next();
     }
 
     pub fn next(&mut self) {
@@ -633,5 +639,19 @@ mod tests {
         drop(file);
         let content = std::fs::read_to_string(file_path).expect("failed to read file");
         assert!(content.contains("File Line"));
+    }
+
+    #[test]
+    fn test_next_tab() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(dir.path().to_path_buf());
+
+        // Act & Assert
+        assert_eq!(app.current_tab, Tab::Sessions);
+        app.next_tab();
+        assert_eq!(app.current_tab, Tab::Roadmap);
+        app.next_tab();
+        assert_eq!(app.current_tab, Tab::Sessions);
     }
 }

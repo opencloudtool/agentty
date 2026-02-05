@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
 use crate::agent::AgentKind;
-use crate::model::{AppMode, Session};
+use crate::model::{AppMode, Session, Tab};
 
 /// A trait for UI pages that enforces a standard rendering interface.
 pub trait Page {
@@ -25,6 +25,7 @@ pub fn render(
     sessions: &[Session],
     table_state: &mut TableState,
     agent_kind: AgentKind,
+    current_tab: Tab,
 ) {
     let area = f.area();
 
@@ -40,8 +41,25 @@ pub fn render(
 
     match mode {
         AppMode::List => {
-            pages::sessions_list::SessionsListPage::new(sessions, table_state)
-                .render(f, content_area);
+            // Split content area for tabs and main content
+            let chunks = Layout::default()
+                .constraints([Constraint::Length(2), Constraint::Min(0)])
+                .split(content_area);
+
+            let tabs_area = chunks[0];
+            let main_area = chunks[1];
+
+            components::tabs::Tabs::new(current_tab).render(f, tabs_area);
+
+            match current_tab {
+                Tab::Sessions => {
+                    pages::sessions_list::SessionsListPage::new(sessions, table_state)
+                        .render(f, main_area);
+                }
+                Tab::Roadmap => {
+                    pages::roadmap::RoadmapPage.render(f, main_area);
+                }
+            }
         }
         AppMode::View {
             session_index,

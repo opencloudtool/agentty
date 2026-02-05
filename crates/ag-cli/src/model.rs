@@ -5,6 +5,12 @@ use std::sync::{Arc, Mutex};
 use ratatui::style::Color;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tab {
+    Sessions,
+    Roadmap,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
     InProgress,
     Done,
@@ -41,6 +47,23 @@ impl Session {
             Status::InProgress
         } else {
             Status::Done
+        }
+    }
+}
+
+impl Tab {
+    pub fn title(self) -> &'static str {
+        match self {
+            Tab::Sessions => "Sessions",
+            Tab::Roadmap => "Roadmap",
+        }
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Tab::Sessions => Tab::Roadmap,
+            Tab::Roadmap => Tab::Sessions,
         }
     }
 }
@@ -101,5 +124,19 @@ mod tests {
         // Arrange & Act & Assert
         assert_eq!(Status::InProgress.color(), Color::Yellow);
         assert_eq!(Status::Done.color(), Color::Green);
+    }
+
+    #[test]
+    fn test_tab_title() {
+        // Arrange & Act & Assert
+        assert_eq!(Tab::Sessions.title(), "Sessions");
+        assert_eq!(Tab::Roadmap.title(), "Roadmap");
+    }
+
+    #[test]
+    fn test_tab_next() {
+        // Arrange & Act & Assert
+        assert_eq!(Tab::Sessions.next(), Tab::Roadmap);
+        assert_eq!(Tab::Roadmap.next(), Tab::Sessions);
     }
 }
