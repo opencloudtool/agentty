@@ -15,7 +15,7 @@ When launched from within a git repository, Agentty automatically creates isolat
 
 - **Isolated Branches:** Each session gets its own branch named `agentty/<hash>` based on your current branch
 - **Separate Working Directory:** Sessions work in isolated directories under `/var/tmp/.agentty/`
-- **Automatic Cleanup:** Worktrees are automatically removed when sessions are deleted
+- **Automatic Cleanup:** Worktrees and branches are automatically removed when sessions are deleted
 - **No Git Interference:** Works seamlessly in non-git directories without any special configuration
 
 This allows agents to work on code changes without affecting your main working directory.

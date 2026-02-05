@@ -114,35 +114,37 @@ impl App {
             .as_nanos();
         nanos.hash(&mut hasher);
         let hash = format!("{:016x}", hasher.finish());
-        let short_hash = &hash[..8];
-        let name = short_hash.to_string();
+        let name = hash.clone();
 
-        let folder = self.base_path.join(short_hash);
-        let _ = std::fs::create_dir_all(&folder);
-        let _ = std::fs::write(folder.join("prompt.txt"), &prompt);
-        let _ = std::fs::write(folder.join("agent.txt"), self.agent_kind.to_string());
+        let folder = self.base_path.join(&hash);
+        if folder.exists() {
+            return Err(format!("Session folder {hash} already exists"));
+        }
 
         // Create git worktree if in a git repo
         if let Some(ref branch) = self.git_branch {
             use crate::git;
 
-            let worktree_branch = format!("agentty/{short_hash}");
+            let worktree_branch = format!("agentty/{hash}");
 
             // Find git repo root (may be different from working_dir if in subdirectory)
             let Some(repo_root) = git::find_git_repo_root(&self.working_dir) else {
-                let _ = std::fs::remove_dir_all(&folder);
                 return Err("Failed to find git repository root".to_string());
             };
 
-            // Create worktree, clean up session folder on error
+            // Create worktree (this also creates the folder)
             if let Err(e) = git::create_worktree(&repo_root, &folder, &worktree_branch, branch) {
-                let _ = std::fs::remove_dir_all(&folder);
                 return Err(format!("Failed to create git worktree: {e}"));
             }
+        } else {
+            let _ = std::fs::create_dir_all(&folder);
         }
 
+        let _ = std::fs::write(folder.join("prompt.txt"), &prompt);
+        let _ = std::fs::write(folder.join("agent.txt"), self.agent_kind.to_string());
+
         let initial_output = if self.git_branch.is_some() {
-            format!(" › {prompt}\n\n[Git worktree: agentty/{short_hash}]\n\n")
+            format!(" › {prompt}\n\n[Git worktree: agentty/{hash}]\n\n")
         } else {
             format!(" › {prompt}\n\n")
         };
@@ -216,11 +218,19 @@ impl App {
         }
         let session = self.sessions.remove(i);
 
-        // Remove git worktree if in a git repo (ignore errors - folder removal will
-        // clean up)
+        // Remove git worktree and branch if in a git repo
         if self.git_branch.is_some() {
             use crate::git;
-            let _ = git::remove_worktree(&session.folder);
+            let branch_name = format!("agentty/{}", session.name);
+
+            // Find repo root for branch deletion
+            if let Some(repo_root) = git::find_git_repo_root(&self.working_dir) {
+                // Ignore errors during cleanup
+                let _ = git::remove_worktree(&session.folder);
+                let _ = git::delete_branch(&repo_root, &branch_name);
+            } else {
+                let _ = git::remove_worktree(&session.folder);
+            }
         }
 
         let _ = std::fs::remove_dir_all(&session.folder);

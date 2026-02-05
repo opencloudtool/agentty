@@ -134,6 +134,31 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Deletes a git branch.
+///
+/// Uses -D to force deletion even if not merged.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository root
+/// * `branch_name` - Name of the branch to delete
+///
+/// # Returns
+/// Ok(()) on success, Err(msg) with detailed error message on failure
+pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> {
+    let output = Command::new("git")
+        .args(["branch", "-D", branch_name])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Git branch deletion failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -351,6 +376,32 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         assert!(!worktree_path.exists());
+    }
+
+    #[test]
+    fn test_delete_branch_success() {
+        // Arrange
+        let temp = TempDir::new().expect("test setup failed");
+        setup_test_git_repo(temp.path()).expect("test setup failed");
+        let branch_name = "test-branch";
+        Command::new("git")
+            .args(["branch", branch_name])
+            .current_dir(temp.path())
+            .output()
+            .expect("test setup failed");
+
+        // Act
+        let result = delete_branch(temp.path(), branch_name);
+
+        // Assert
+        assert!(result.is_ok());
+        let output = Command::new("git")
+            .args(["branch"])
+            .current_dir(temp.path())
+            .output()
+            .expect("test execution failed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.contains(branch_name));
     }
 
     #[test]
