@@ -85,7 +85,27 @@ git worktree prune
 
 ## Agent Instructions
 - **MANDATORY:** After every user instruction that establishes a preference, convention, or workflow change (e.g., "run checks with autofix", "use X instead of Y", "always do Z"), immediately update the relevant `AGENTS.md` file so the instruction persists across sessions. If unsure whether something qualifies, update anyway — over-documenting is better than losing context. Both `CLAUDE.md` and `GEMINI.md` are symlinks to `AGENTS.md`, so a single update keeps all AI assistants in sync.
+- **Directory Indexing:** Maintain the "Directory Index" section in the local `AGENTS.md`. If you create, rename, or delete a file/directory, update the index immediately to reflect the change.
+- **Context First:** Before listing a directory or reading source code, ALWAYS read the local `AGENTS.md` first. This provides immediate context on the folder structure and file purposes, reducing the need for broad discovery actions.
+- **Test Coverage:** Try to maintain 100% test coverage when it makes sense. Ensure critical logic is always covered, but pragmatic exceptions are allowed for boilerplate or untestable I/O.
+- **Readability:** Use descriptive variable names. Do NOT use single-letter variables (e.g., `f`, `p`, `c`) or single-letter prefixes. Code should be self-documenting.
 - Always cover all touched code with auto tests to prevent regressions and ensure stability.
 - Structure tests using "Arrange, Act, Assert" comments to clearly separate setup, execution, and verification phases.
 - When creating a new `AGENTS.md` file in any directory, always create corresponding symlinks: `ln -s AGENTS.md CLAUDE.md && ln -s AGENTS.md GEMINI.md` in the same directory.
 - Keep the root `README.md` up to date whenever new information is relevant to end users (e.g., new crates, features, usage instructions, or prerequisites).
+
+## Directory Index
+- [.claude/](.claude/) - Claude AI specific settings.
+- [.git-town.toml](.git-town.toml) - Git Town configuration.
+- [.gitignore](.gitignore) - Git ignore patterns.
+- [.pre-commit-config.yaml](.pre-commit-config.yaml) - Pre-commit hooks configuration.
+- [.rustfmt.toml](.rustfmt.toml) - Rustfmt configuration.
+- [crates/](crates/) - Workspace member crates.
+- [AGENTS.md](AGENTS.md) - Context and instructions for AI agents.
+- [Cargo.lock](Cargo.lock) - Exact version pins for dependencies.
+- [Cargo.toml](Cargo.toml) - Workspace root configuration and dependency definitions.
+- [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.
+- [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
+- [LICENSE](LICENSE) - Project license file.
+- [README.md](README.md) - Main project documentation.
+- [rust-toolchain.toml](rust-toolchain.toml) - Rust toolchain version pinning.

@@ -30,3 +30,9 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: agents-index-check
+        name: agents index check
+        description: Verifies that all AGENTS.md files have an up-to-date Directory Index.
+        entry: cargo run -p ag-xtask
+        language: system
+        pass_filenames: false

@@ -38,3 +38,13 @@ When working within `crates/ag-cli/src/ui/`:
 
 - **Unit Tests**: Focus heavily on `util.rs`. Test layout logic, string manipulation, and input height calculations.
 - **Integration**: Verifying actual `render` output is difficult. Rely on visual verification for broad changes, but ensure the underlying logic in `util` is rock-solid with comprehensive tests.
+
+## Directory Index
+- [components/](components/) - Reusable UI components.
+- [pages/](pages/) - Full-screen page implementations.
+- [AGENTS.md](AGENTS.md) - UI specific instructions.
+- [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.
+- [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
+- [mod.rs](mod.rs) - UI module definition and main render loop.
+- [README.md](README.md) - Additional documentation.
+- [util.rs](util.rs) - Shared UI utilities and layout logic.
