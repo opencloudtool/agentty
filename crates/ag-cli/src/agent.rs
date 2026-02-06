@@ -46,7 +46,8 @@ impl AgentBackend for GeminiBackend {
             .arg(prompt)
             .arg("--model")
             .arg("gemini-3-flash-preview")
-            .arg("--yolo")
+            .arg("--approval-mode")
+            .arg("auto_edit")
             .current_dir(folder)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -186,7 +187,8 @@ mod tests {
         assert!(debug.contains("--prompt"));
         assert!(debug.contains("hello"));
         assert!(debug.contains("gemini-3-flash-preview"));
-        assert!(debug.contains("--yolo"));
+        assert!(debug.contains("--approval-mode"));
+        assert!(debug.contains("auto_edit"));
         assert!(!debug.contains("--resume"));
     }
 
