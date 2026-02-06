@@ -134,6 +134,78 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Performs a squash merge from a source branch to a target branch.
+///
+/// This function:
+/// 1. Checks out the target branch
+/// 2. Performs `git merge --squash` from the source branch
+/// 3. Commits the squashed changes
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository root
+/// * `source_branch` - Name of the branch to merge from (e.g.,
+///   `agentty/abc123`)
+/// * `target_branch` - Name of the branch to merge into (e.g., `main`)
+/// * `commit_message` - Message for the squash commit
+///
+/// # Returns
+/// Ok(()) on success, Err(msg) with detailed error message on failure
+pub fn squash_merge(
+    repo_path: &Path,
+    source_branch: &str,
+    target_branch: &str,
+    commit_message: &str,
+) -> Result<(), String> {
+    // Checkout target branch
+    let output = Command::new("git")
+        .args(["checkout", target_branch])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Failed to checkout {target_branch}: {}",
+            stderr.trim()
+        ));
+    }
+
+    // Perform squash merge
+    let output = Command::new("git")
+        .args(["merge", "--squash", source_branch])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Failed to squash merge {source_branch}: {}",
+            stderr.trim()
+        ));
+    }
+
+    // Commit the squashed changes
+    let output = Command::new("git")
+        .args(["commit", "-m", commit_message])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Check if there's nothing to commit (no changes) - message appears on stdout
+        if stdout.contains("nothing to commit") || stderr.contains("nothing to commit") {
+            return Err("Nothing to merge: no changes detected".to_string());
+        }
+        return Err(format!("Failed to commit squash merge: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
 /// Deletes a git branch.
 ///
 /// Uses -D to force deletion even if not merged.
@@ -163,31 +235,31 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> 
 mod tests {
     use std::fs;
 
-    use tempfile::TempDir;
+    use tempfile::tempdir;
 
     use super::*;
 
     #[test]
     fn test_find_git_repo_exists() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let git_dir = temp.path().join(".git");
+        let dir = tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
         fs::create_dir(&git_dir).expect("test setup failed");
 
         // Act
-        let result = find_git_repo(temp.path());
+        let result = find_git_repo(dir.path());
 
         // Assert
-        assert_eq!(result, Some(temp.path().to_path_buf()));
+        assert_eq!(result, Some(dir.path().to_path_buf()));
     }
 
     #[test]
     fn test_find_git_repo_not_exists() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
+        let dir = tempdir().expect("failed to create temp dir");
 
         // Act
-        let result = find_git_repo(temp.path());
+        let result = find_git_repo(dir.path());
 
         // Assert
         assert_eq!(result, None);
@@ -196,30 +268,30 @@ mod tests {
     #[test]
     fn test_find_git_repo_parent() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let git_dir = temp.path().join(".git");
+        let dir = tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
         fs::create_dir(&git_dir).expect("test setup failed");
-        let subdir = temp.path().join("subdir");
+        let subdir = dir.path().join("subdir");
         fs::create_dir(&subdir).expect("test setup failed");
 
         // Act
         let result = find_git_repo(&subdir);
 
         // Assert
-        assert_eq!(result, Some(temp.path().to_path_buf()));
+        assert_eq!(result, Some(dir.path().to_path_buf()));
     }
 
     #[test]
     fn test_get_git_branch_normal() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let git_dir = temp.path().join(".git");
+        let dir = tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
         fs::create_dir(&git_dir).expect("test setup failed");
         let head_path = git_dir.join("HEAD");
         fs::write(&head_path, "ref: refs/heads/main\n").expect("test setup failed");
 
         // Act
-        let result = get_git_branch(temp.path());
+        let result = get_git_branch(dir.path());
 
         // Assert
         assert_eq!(result, Some("main".to_string()));
@@ -228,15 +300,15 @@ mod tests {
     #[test]
     fn test_get_git_branch_detached() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let git_dir = temp.path().join(".git");
+        let dir = tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
         fs::create_dir(&git_dir).expect("test setup failed");
         let head_path = git_dir.join("HEAD");
         fs::write(&head_path, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\n")
             .expect("test setup failed");
 
         // Act
-        let result = get_git_branch(temp.path());
+        let result = get_git_branch(dir.path());
 
         // Assert
         assert_eq!(result, Some("HEAD@a1b2c3d".to_string()));
@@ -245,14 +317,14 @@ mod tests {
     #[test]
     fn test_get_git_branch_invalid() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let git_dir = temp.path().join(".git");
+        let dir = tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
         fs::create_dir(&git_dir).expect("test setup failed");
         let head_path = git_dir.join("HEAD");
         fs::write(&head_path, "invalid content\n").expect("test setup failed");
 
         // Act
-        let result = get_git_branch(temp.path());
+        let result = get_git_branch(dir.path());
 
         // Assert
         assert_eq!(result, None);
@@ -261,14 +333,14 @@ mod tests {
     #[test]
     fn test_detect_git_info_full_flow() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let git_dir = temp.path().join(".git");
+        let dir = tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
         fs::create_dir(&git_dir).expect("test setup failed");
         let head_path = git_dir.join("HEAD");
         fs::write(&head_path, "ref: refs/heads/feature-branch\n").expect("test setup failed");
 
         // Act
-        let result = detect_git_info(temp.path());
+        let result = detect_git_info(dir.path());
 
         // Assert
         assert_eq!(result, Some("feature-branch".to_string()));
@@ -277,10 +349,10 @@ mod tests {
     #[test]
     fn test_detect_git_info_no_repo() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
+        let dir = tempdir().expect("failed to create temp dir");
 
         // Act
-        let result = detect_git_info(temp.path());
+        let result = detect_git_info(dir.path());
 
         // Assert
         assert_eq!(result, None);
@@ -289,28 +361,28 @@ mod tests {
     #[test]
     fn test_find_git_repo_root() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let git_dir = temp.path().join(".git");
+        let dir = tempdir().expect("failed to create temp dir");
+        let git_dir = dir.path().join(".git");
         fs::create_dir(&git_dir).expect("test setup failed");
 
         // Act
-        let result = find_git_repo_root(temp.path());
+        let result = find_git_repo_root(dir.path());
 
         // Assert
-        assert_eq!(result, Some(temp.path().to_path_buf()));
+        assert_eq!(result, Some(dir.path().to_path_buf()));
     }
 
     #[test]
     fn test_create_worktree_success() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        setup_test_git_repo(temp.path()).expect("test setup failed");
-        let worktree_path = temp.path().join("worktree");
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        let worktree_path = dir.path().join("worktree");
         let branch_name = "agentty/test123";
         let base_branch = "main";
 
         // Act
-        let result = create_worktree(temp.path(), &worktree_path, branch_name, base_branch);
+        let result = create_worktree(dir.path(), &worktree_path, branch_name, base_branch);
 
         // Assert
         assert!(result.is_ok());
@@ -321,13 +393,13 @@ mod tests {
     #[test]
     fn test_create_worktree_invalid_repo() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let worktree_path = temp.path().join("worktree");
+        let dir = tempdir().expect("failed to create temp dir");
+        let worktree_path = dir.path().join("worktree");
         let branch_name = "agentty/test123";
         let base_branch = "main";
 
         // Act
-        let result = create_worktree(temp.path(), &worktree_path, branch_name, base_branch);
+        let result = create_worktree(dir.path(), &worktree_path, branch_name, base_branch);
 
         // Assert
         assert!(result.is_err());
@@ -341,14 +413,14 @@ mod tests {
     #[test]
     fn test_create_worktree_branch_exists() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        setup_test_git_repo(temp.path()).expect("test setup failed");
-        let worktree_path = temp.path().join("worktree");
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        let worktree_path = dir.path().join("worktree");
         let branch_name = "main"; // Branch already exists
         let base_branch = "main";
 
         // Act
-        let result = create_worktree(temp.path(), &worktree_path, branch_name, base_branch);
+        let result = create_worktree(dir.path(), &worktree_path, branch_name, base_branch);
 
         // Assert
         assert!(result.is_err());
@@ -362,12 +434,12 @@ mod tests {
     #[test]
     fn test_remove_worktree_success() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        setup_test_git_repo(temp.path()).expect("test setup failed");
-        let worktree_path = temp.path().join("worktree");
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        let worktree_path = dir.path().join("worktree");
         let branch_name = "agentty/test123";
         let base_branch = "main";
-        create_worktree(temp.path(), &worktree_path, branch_name, base_branch)
+        create_worktree(dir.path(), &worktree_path, branch_name, base_branch)
             .expect("test setup failed");
 
         // Act
@@ -381,23 +453,23 @@ mod tests {
     #[test]
     fn test_delete_branch_success() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        setup_test_git_repo(temp.path()).expect("test setup failed");
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
         let branch_name = "test-branch";
         Command::new("git")
             .args(["branch", branch_name])
-            .current_dir(temp.path())
+            .current_dir(dir.path())
             .output()
             .expect("test setup failed");
 
         // Act
-        let result = delete_branch(temp.path(), branch_name);
+        let result = delete_branch(dir.path(), branch_name);
 
         // Assert
         assert!(result.is_ok());
         let output = Command::new("git")
             .args(["branch"])
-            .current_dir(temp.path())
+            .current_dir(dir.path())
             .output()
             .expect("test execution failed");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -407,8 +479,8 @@ mod tests {
     #[test]
     fn test_remove_worktree_not_exists() {
         // Arrange
-        let temp = TempDir::new().expect("test setup failed");
-        let worktree_path = temp.path().join("nonexistent");
+        let dir = tempdir().expect("failed to create temp dir");
+        let worktree_path = dir.path().join("nonexistent");
 
         // Act
         let result = remove_worktree(&worktree_path);
@@ -416,6 +488,112 @@ mod tests {
         // Assert
         // Should fail because worktree doesn't exist
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_squash_merge_success() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+
+        // Create a feature branch and add a commit
+        Command::new("git")
+            .args(["checkout", "-b", "feature-branch"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        fs::write(dir.path().join("feature.txt"), "feature content").expect("test setup failed");
+        Command::new("git")
+            .args(["add", "feature.txt"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["commit", "-m", "Add feature"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+
+        // Act
+        let result = squash_merge(dir.path(), "feature-branch", "main", "Squash merge feature");
+
+        // Assert
+        assert!(result.is_ok());
+
+        // Verify we're on main branch
+        let output = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test execution failed");
+        let current_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(current_branch, "main");
+
+        // Verify the file exists on main
+        assert!(dir.path().join("feature.txt").exists());
+    }
+
+    #[test]
+    fn test_squash_merge_no_changes() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+
+        // Create a branch without any new commits
+        Command::new("git")
+            .args(["branch", "empty-branch"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+
+        // Act
+        let result = squash_merge(dir.path(), "empty-branch", "main", "Empty merge");
+
+        // Assert - git merge --squash succeeds with "nothing to squash", then commit
+        // fails with "nothing to commit", which we report as "Nothing to merge:
+        // no changes detected"
+        assert!(result.is_err());
+        let error = result.expect_err("should be error");
+        assert!(
+            error.contains("Nothing to merge"),
+            "Expected 'Nothing to merge', got: {error}"
+        );
+    }
+
+    #[test]
+    fn test_squash_merge_invalid_source_branch() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+
+        // Act
+        let result = squash_merge(dir.path(), "nonexistent-branch", "main", "Test merge");
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("Failed to squash merge")
+        );
+    }
+
+    #[test]
+    fn test_squash_merge_invalid_target_branch() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+
+        // Act
+        let result = squash_merge(dir.path(), "main", "nonexistent-branch", "Test merge");
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("Failed to checkout")
+        );
     }
 
     /// Helper function to set up a test git repository with an initial commit

@@ -141,6 +141,9 @@ impl App {
 
         let _ = std::fs::write(folder.join("prompt.txt"), &prompt);
         let _ = std::fs::write(folder.join("agent.txt"), self.agent_kind.to_string());
+        if let Some(ref branch) = self.git_branch {
+            let _ = std::fs::write(folder.join("base_branch.txt"), branch);
+        }
 
         let initial_output = if self.git_branch.is_some() {
             format!(" › {prompt}\n\n[Git worktree: agentty/{hash}]\n\n")
@@ -237,6 +240,37 @@ impl App {
         } else if i >= self.sessions.len() {
             self.table_state.select(Some(self.sessions.len() - 1));
         }
+    }
+
+    pub fn merge_session(&self, session_index: usize) -> Result<String, String> {
+        let session = self
+            .sessions
+            .get(session_index)
+            .ok_or_else(|| "Session not found".to_string())?;
+
+        // Read base branch from session folder
+        let base_branch_path = session.folder.join("base_branch.txt");
+        let base_branch = std::fs::read_to_string(&base_branch_path)
+            .map_err(|_| "No git worktree for this session".to_string())?
+            .trim()
+            .to_string();
+
+        // Find repo root
+        let repo_root = git::find_git_repo_root(&self.working_dir)
+            .ok_or_else(|| "Failed to find git repository root".to_string())?;
+
+        // Build source branch name
+        let source_branch = format!("agentty/{}", session.name);
+
+        // Build commit message from session prompt
+        let commit_message = format!("Merge session: {}", session.prompt);
+
+        // Perform squash merge
+        git::squash_merge(&repo_root, &source_branch, &base_branch, &commit_message)?;
+
+        Ok(format!(
+            "Successfully merged {source_branch} into {base_branch}"
+        ))
     }
 
     fn load_sessions(base: &PathBuf) -> Vec<Session> {
@@ -893,5 +927,43 @@ mod tests {
 
         // Assert
         assert_eq!(app.sessions.len(), 0);
+    }
+
+    #[test]
+    fn test_merge_session_no_git() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(dir.path().to_path_buf());
+        app.add_session("Test".to_string())
+            .expect("failed to add session");
+
+        // Act
+        let result = app.merge_session(0);
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("No git worktree")
+        );
+    }
+
+    #[test]
+    fn test_merge_session_invalid_index() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let app = new_test_app(dir.path().to_path_buf());
+
+        // Act
+        let result = app.merge_session(99);
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("Session not found")
+        );
     }
 }

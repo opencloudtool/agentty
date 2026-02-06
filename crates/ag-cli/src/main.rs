@@ -204,6 +204,24 @@ fn main() -> io::Result<()> {
                                     };
                                 }
                             }
+                            KeyCode::Char('m') => {
+                                if let Some(session) = app.sessions.get(session_idx) {
+                                    let result_message = match app.merge_session(session_idx) {
+                                        Ok(msg) => format!("\n[Merge] {msg}\n"),
+                                        Err(err) => format!("\n[Merge Error] {err}\n"),
+                                    };
+                                    if let Ok(mut buf) = session.output.lock() {
+                                        buf.push_str(&result_message);
+                                    }
+                                    let _ = std::fs::OpenOptions::new()
+                                        .append(true)
+                                        .open(session.folder.join("output.txt"))
+                                        .and_then(|mut f| {
+                                            use std::io::Write;
+                                            write!(f, "{result_message}")
+                                        });
+                                }
+                            }
                             _ => {}
                         }
 
