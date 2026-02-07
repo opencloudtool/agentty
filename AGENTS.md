@@ -143,6 +143,7 @@ already applied — just re-run to confirm everything passes.
   - The first line should be a concise summary (the "title") in present simple tense (e.g., "Fix cursor offset" not "Fixed cursor offset").
   - Use a blank line between the title and the body.
   - The body (the "description") should provide more detail on *why* and *how* in present simple tense. It is not needed when the title is self-explanatory.
+  - When the description has multiple points, format them as a `-` list (one point per line).
 - Do not use conventional commit prefixes (e.g., `feat:`, `fix:`).
 - Never use `--no-verify` with git commands to bypass `pre-commit` hooks.
 - Do not add `Co-Authored-By` trailers or any AI attribution to commit messages.
