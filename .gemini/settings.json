@@ -1,0 +1,9 @@
+{
+  "context.loadMemoryFromIncludeDirectories": false,
+  "context.fileFiltering.respectGitIgnore": false,
+  "context.discoveryMaxDirs": 1,
+  "context.fileFiltering.enableRecursiveFileSearch": false,
+  "skills.enabled": false,
+  "hooksConfig.enabled": false,
+  "general.enablePromptCompletion": false
+}
