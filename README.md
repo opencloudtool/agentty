@@ -57,7 +57,7 @@ cargo run # Builds and runs the 'agentty' binary
 cargo test
 cargo clippy -- -D warnings
 cargo fmt --all -- --check
-cargo machete
+cargo shear
 ```
 
 ## License

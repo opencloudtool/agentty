@@ -66,7 +66,7 @@ Run these commands with autofix enabled:
 - **Lint:** `cargo clippy --fix --allow-dirty -- -D warnings`
 - **Format:** `cargo fmt --all`
 - **Coverage:** `cargo tarpaulin` (install with `cargo install cargo-tarpaulin`)
-- **Unused Deps:** `cargo machete` (install with `cargo install cargo-machete`)
+- **Unused Deps:** `cargo shear` (install with `cargo install cargo-shear`)
 
 ### Manual Verification
 - **Test Style:** Verify *every* test function uses explicit `// Arrange`, `// Act`, and `// Assert` comments.

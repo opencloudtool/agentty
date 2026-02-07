@@ -30,10 +30,10 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
-      - id: cargo-machete
-        name: cargo-machete
+      - id: cargo-shear
+        name: cargo-shear
         description: Check for unused dependencies.
-        entry: cargo machete
+        entry: cargo shear
         language: system
         types: [rust]
         pass_filenames: false
