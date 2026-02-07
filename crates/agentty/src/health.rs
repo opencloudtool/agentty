@@ -2,9 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use sqlx::SqlitePool;
 
+use crate::agent::AgentKind;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HealthCheckKind {
     AgentClaude,
+    AgentCodex,
     AgentGemini,
     Database,
     GitHubCli,
@@ -18,11 +21,13 @@ impl HealthCheckKind {
         HealthCheckKind::GitHubCli,
         HealthCheckKind::AgentClaude,
         HealthCheckKind::AgentGemini,
+        HealthCheckKind::AgentCodex,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             HealthCheckKind::AgentClaude => "Claude Code",
+            HealthCheckKind::AgentCodex => "Codex CLI",
             HealthCheckKind::AgentGemini => "Gemini CLI",
             HealthCheckKind::Database => "Database",
             HealthCheckKind::GitHubCli => "GitHub CLI",
@@ -90,8 +95,13 @@ pub fn run_health_checks(
                 HealthCheckKind::Database => check_database(&pool).await.into(),
                 HealthCheckKind::GitRepo => check_git_repo(git_branch.as_ref()).into(),
                 HealthCheckKind::GitHubCli => check_github_cli().await,
-                HealthCheckKind::AgentClaude => check_cli_tool("claude").await.into(),
-                HealthCheckKind::AgentGemini => check_cli_tool("gemini").await.into(),
+                HealthCheckKind::AgentClaude => {
+                    check_agent_cli_tool(AgentKind::Claude).await.into()
+                }
+                HealthCheckKind::AgentGemini => {
+                    check_agent_cli_tool(AgentKind::Gemini).await.into()
+                }
+                HealthCheckKind::AgentCodex => check_agent_cli_tool(AgentKind::Codex).await.into(),
             };
 
             apply_result(&shared_bg, index, result);
@@ -153,6 +163,33 @@ async fn check_github_cli() -> HealthResult {
     }
 }
 
+async fn check_agent_cli_tool(agent_kind: AgentKind) -> (HealthStatus, String) {
+    let command = agent_kind.to_string();
+
+    match tokio::process::Command::new(&command)
+        .arg("--version")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let raw_version = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string();
+
+            let version = normalize_agent_cli_version(agent_kind, &raw_version);
+
+            (HealthStatus::Pass, version)
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            (HealthStatus::Warn, format!("Exit code error: {stderr}"))
+        }
+        Err(_) => (HealthStatus::Warn, "Not found in PATH".to_string()),
+    }
+}
+
 async fn check_cli_tool(command: &str) -> (HealthStatus, String) {
     match tokio::process::Command::new(command)
         .arg("--version")
@@ -165,8 +202,8 @@ async fn check_cli_tool(command: &str) -> (HealthStatus, String) {
                 .next()
                 .unwrap_or("")
                 .trim()
-                .trim_end_matches(" (Claude Code)")
                 .to_string();
+
             (HealthStatus::Pass, version)
         }
         Ok(output) => {
@@ -175,6 +212,20 @@ async fn check_cli_tool(command: &str) -> (HealthStatus, String) {
         }
         Err(_) => (HealthStatus::Warn, "Not found in PATH".to_string()),
     }
+}
+
+fn normalize_agent_cli_version(agent_kind: AgentKind, raw_version: &str) -> String {
+    let trimmed_version = raw_version.trim();
+
+    let normalized_version = match agent_kind {
+        AgentKind::Claude => trimmed_version.trim_end_matches(" (Claude Code)"),
+        AgentKind::Codex => trimmed_version
+            .strip_prefix("codex-cli ")
+            .unwrap_or(trimmed_version),
+        AgentKind::Gemini => trimmed_version,
+    };
+
+    normalized_version.to_string()
 }
 
 async fn check_github_auth() -> HealthEntry {
@@ -222,7 +273,7 @@ mod tests {
     #[test]
     fn test_health_check_kind_all_count() {
         // Arrange & Act & Assert
-        assert_eq!(HealthCheckKind::ALL.len(), 5);
+        assert_eq!(HealthCheckKind::ALL.len(), 6);
     }
 
     #[test]
@@ -233,6 +284,7 @@ mod tests {
         assert_eq!(HealthCheckKind::GitHubCli.label(), "GitHub CLI");
         assert_eq!(HealthCheckKind::AgentClaude.label(), "Claude Code");
         assert_eq!(HealthCheckKind::AgentGemini.label(), "Gemini CLI");
+        assert_eq!(HealthCheckKind::AgentCodex.label(), "Codex CLI");
     }
 
     #[test]
@@ -408,6 +460,56 @@ mod tests {
         // Assert
         assert_eq!(status, HealthStatus::Warn);
         assert_eq!(message, "Not found in PATH");
+    }
+
+    #[tokio::test]
+    async fn test_check_codex_cli_result() {
+        // Arrange & Act
+        let (status, message) = check_agent_cli_tool(AgentKind::Codex).await;
+
+        // Assert
+        assert!(
+            status == HealthStatus::Pass || status == HealthStatus::Warn,
+            "Expected Pass or Warn, got {:?}",
+            status
+        );
+        assert!(!message.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_agent_cli_version_for_codex() {
+        // Arrange
+        let raw_version = "codex-cli 0.1.0";
+
+        // Act
+        let version = normalize_agent_cli_version(AgentKind::Codex, raw_version);
+
+        // Assert
+        assert_eq!(version, "0.1.0");
+    }
+
+    #[test]
+    fn test_normalize_agent_cli_version_for_claude() {
+        // Arrange
+        let raw_version = "1.2.3 (Claude Code)";
+
+        // Act
+        let version = normalize_agent_cli_version(AgentKind::Claude, raw_version);
+
+        // Assert
+        assert_eq!(version, "1.2.3");
+    }
+
+    #[test]
+    fn test_normalize_agent_cli_version_for_gemini() {
+        // Arrange
+        let raw_version = "gemini 9.9.9";
+
+        // Act
+        let version = normalize_agent_cli_version(AgentKind::Gemini, raw_version);
+
+        // Assert
+        assert_eq!(version, "gemini 9.9.9");
     }
 
     #[tokio::test]
