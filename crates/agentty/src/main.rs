@@ -98,7 +98,7 @@ async fn main() -> io::Result<()> {
                             app.mode = AppMode::CommandPalette {
                                 input: String::new(),
                                 selected_index: 0,
-                                focus: PaletteFocus::Input,
+                                focus: PaletteFocus::Dropdown,
                             };
                         }
                         KeyCode::Char('a') => {
@@ -381,7 +381,7 @@ async fn main() -> io::Result<()> {
                         selected_index,
                         focus,
                     } => match focus {
-                        PaletteFocus::Input => match key.code {
+                        PaletteFocus::Input | PaletteFocus::Dropdown => match key.code {
                             KeyCode::Char('c')
                                 if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                             {
@@ -389,39 +389,37 @@ async fn main() -> io::Result<()> {
                             }
                             KeyCode::Char(c) => {
                                 input.push(c);
-                                *selected_index = 0;
-                            }
-                            KeyCode::Backspace => {
-                                input.pop();
-                                *selected_index = 0;
-                            }
-                            KeyCode::Tab => {
                                 let filtered = PaletteCommand::filter(input);
-                                if !filtered.is_empty() {
+                                if filtered.is_empty() {
+                                    *focus = PaletteFocus::Input;
+                                } else {
+                                    *selected_index = 0;
                                     *focus = PaletteFocus::Dropdown;
                                 }
                             }
-                            KeyCode::Esc => {
-                                app.mode = AppMode::List;
-                            }
-                            _ => {}
-                        },
-                        PaletteFocus::Dropdown => match key.code {
-                            KeyCode::Char('c')
-                                if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                            {
-                                app.mode = AppMode::List;
-                            }
-                            KeyCode::Char('j') | KeyCode::Down => {
+                            KeyCode::Backspace => {
+                                input.pop();
                                 let filtered = PaletteCommand::filter(input);
-                                if !filtered.is_empty() {
-                                    *selected_index = (*selected_index + 1).min(filtered.len() - 1);
+                                if input.is_empty() || filtered.is_empty() {
+                                    *selected_index = 0;
+                                    *focus = PaletteFocus::Input;
+                                } else {
+                                    *selected_index = 0;
+                                    *focus = PaletteFocus::Dropdown;
                                 }
                             }
-                            KeyCode::Char('k') | KeyCode::Up => {
+                            KeyCode::Up if *focus == PaletteFocus::Dropdown => {
                                 *selected_index = selected_index.saturating_sub(1);
                             }
-                            KeyCode::Enter => {
+                            KeyCode::Down if *focus == PaletteFocus::Dropdown => {
+                                let filtered = PaletteCommand::filter(input);
+                                if !filtered.is_empty() && *selected_index >= filtered.len() - 1 {
+                                    *focus = PaletteFocus::Input;
+                                } else {
+                                    *selected_index += 1;
+                                }
+                            }
+                            KeyCode::Enter if *focus == PaletteFocus::Dropdown => {
                                 let filtered = PaletteCommand::filter(input);
                                 if let Some(&command) = filtered.get(*selected_index) {
                                     match command {
@@ -438,8 +436,12 @@ async fn main() -> io::Result<()> {
                                     }
                                 }
                             }
-                            KeyCode::Esc | KeyCode::Tab => {
-                                *focus = PaletteFocus::Input;
+                            KeyCode::Esc => {
+                                if *focus == PaletteFocus::Dropdown {
+                                    *focus = PaletteFocus::Input;
+                                } else {
+                                    app.mode = AppMode::List;
+                                }
                             }
                             _ => {}
                         },
@@ -480,7 +482,7 @@ async fn main() -> io::Result<()> {
                             app.mode = AppMode::CommandPalette {
                                 input: String::new(),
                                 selected_index: 0,
-                                focus: PaletteFocus::Input,
+                                focus: PaletteFocus::Dropdown,
                             };
                         }
                         _ => {}

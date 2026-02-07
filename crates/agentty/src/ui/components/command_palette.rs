@@ -27,7 +27,7 @@ impl<'a> CommandPaletteInput<'a> {
 impl Component for CommandPaletteInput<'_> {
     fn render(&self, f: &mut Frame, area: Rect) {
         let filtered = PaletteCommand::filter(self.input);
-        let show_dropdown = !self.input.is_empty() && !filtered.is_empty();
+        let show_dropdown = !filtered.is_empty();
         let dropdown_height = if show_dropdown {
             u16::try_from(filtered.len()).unwrap_or(0) + 2 // +2 for borders
         } else {

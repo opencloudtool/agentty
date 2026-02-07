@@ -71,11 +71,13 @@ impl PaletteCommand {
 
     pub fn filter(query: &str) -> Vec<PaletteCommand> {
         let query_lower = query.to_lowercase();
-        Self::ALL
+        let mut results: Vec<PaletteCommand> = Self::ALL
             .iter()
             .filter(|cmd| cmd.label().contains(&query_lower))
             .copied()
-            .collect()
+            .collect();
+        results.sort_by_key(|cmd| cmd.label());
+        results
     }
 }
 
