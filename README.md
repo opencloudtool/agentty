@@ -28,6 +28,19 @@ npx @opencloudtool/agentty
 
 - Rust nightly toolchain (configured via `rust-toolchain.toml`)
 - Git (optional, for automatic worktree integration)
+- One supported agent CLI installed: `gemini`, `claude`, or `codex`
+
+## Agent Selection
+
+Use `AGENTTY_AGENT` to choose the backend:
+
+```sh
+AGENTTY_AGENT=gemini agentty
+AGENTTY_AGENT=claude agentty
+AGENTTY_AGENT=codex agentty
+```
+
+If not set, Agentty defaults to `gemini`.
 
 ## Features
 

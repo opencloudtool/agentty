@@ -77,15 +77,53 @@ impl AgentBackend for ClaudeBackend {
     }
 }
 
+/// Uses non-interactive Codex commands so Agentty can capture piped output.
+///
+/// Interactive `codex` requires a TTY and fails in this app with
+/// `Error: stdout is not a terminal`, so we run `codex exec --full-auto`
+/// and `codex exec resume --last --full-auto` instead.
+pub struct CodexBackend;
+
+impl AgentBackend for CodexBackend {
+    fn setup(&self, _folder: &Path) {
+        // Codex CLI needs no config files
+    }
+
+    fn build_start_command(&self, folder: &Path, prompt: &str) -> Command {
+        let mut cmd = Command::new("codex");
+        cmd.arg("exec")
+            .arg("--full-auto")
+            .arg(prompt)
+            .current_dir(folder)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    fn build_resume_command(&self, folder: &Path, prompt: &str) -> Command {
+        let mut cmd = Command::new("codex");
+        cmd.arg("exec")
+            .arg("resume")
+            .arg("--last")
+            .arg("--full-auto")
+            .arg(prompt)
+            .current_dir(folder)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKind {
     Gemini,
     Claude,
+    Codex,
 }
 
 impl AgentKind {
     /// All available agent kinds, in display order.
-    pub const ALL: &[AgentKind] = &[AgentKind::Gemini, AgentKind::Claude];
+    pub const ALL: &[AgentKind] = &[AgentKind::Gemini, AgentKind::Claude, AgentKind::Codex];
 
     /// Parse from `AGENTTY_AGENT` env var, defaulting to Gemini.
     pub fn from_env() -> Self {
@@ -100,6 +138,7 @@ impl AgentKind {
         match self {
             Self::Gemini => Box::new(GeminiBackend),
             Self::Claude => Box::new(ClaudeBackend),
+            Self::Codex => Box::new(CodexBackend),
         }
     }
 }
@@ -109,6 +148,7 @@ impl fmt::Display for AgentKind {
         match self {
             Self::Gemini => write!(f, "gemini"),
             Self::Claude => write!(f, "claude"),
+            Self::Codex => write!(f, "codex"),
         }
     }
 }
@@ -120,6 +160,7 @@ impl FromStr for AgentKind {
         match s.to_lowercase().as_str() {
             "gemini" => Ok(Self::Gemini),
             "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
             other => Err(format!("unknown agent kind: {other}")),
         }
     }
@@ -243,11 +284,69 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_setup_creates_no_files() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = CodexBackend;
+
+        // Act
+        backend.setup(dir.path());
+
+        // Assert
+        assert_eq!(
+            std::fs::read_dir(dir.path())
+                .expect("failed to read dir")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_codex_start_command_args() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = CodexBackend;
+
+        // Act
+        let cmd = backend.build_start_command(dir.path(), "hello");
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("codex"));
+        assert!(debug.contains("exec"));
+        assert!(debug.contains("hello"));
+        assert!(debug.contains("--full-auto"));
+        assert!(!debug.contains("--dangerously-bypass-approvals-and-sandbox"));
+        assert!(!debug.contains("resume"));
+    }
+
+    #[test]
+    fn test_codex_resume_command_args() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = CodexBackend;
+
+        // Act
+        let cmd = backend.build_resume_command(dir.path(), "follow-up");
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("codex"));
+        assert!(debug.contains("exec"));
+        assert!(debug.contains("resume"));
+        assert!(debug.contains("--last"));
+        assert!(debug.contains("--full-auto"));
+        assert!(debug.contains("follow-up"));
+        assert!(!debug.contains("--dangerously-bypass-approvals-and-sandbox"));
+    }
+
+    #[test]
     fn test_agent_kind_all() {
         // Arrange & Act & Assert
-        assert_eq!(AgentKind::ALL.len(), 2);
+        assert_eq!(AgentKind::ALL.len(), 3);
         assert_eq!(AgentKind::ALL[0], AgentKind::Gemini);
         assert_eq!(AgentKind::ALL[1], AgentKind::Claude);
+        assert_eq!(AgentKind::ALL[2], AgentKind::Codex);
     }
 
     #[test]
@@ -274,7 +373,7 @@ mod tests {
         let kind = AgentKind::from_env();
 
         // Assert
-        assert!(kind == AgentKind::Gemini || kind == AgentKind::Claude);
+        assert!(kind == AgentKind::Gemini || kind == AgentKind::Claude || kind == AgentKind::Codex);
     }
 
     #[test]
@@ -283,6 +382,7 @@ mod tests {
         // Just verify create_backend returns without panicking
         let _gemini = AgentKind::Gemini.create_backend();
         let _claude = AgentKind::Claude.create_backend();
+        let _codex = AgentKind::Codex.create_backend();
     }
 
     #[test]
@@ -290,6 +390,7 @@ mod tests {
         // Arrange & Act & Assert
         assert_eq!(AgentKind::Gemini.to_string(), "gemini");
         assert_eq!(AgentKind::Claude.to_string(), "claude");
+        assert_eq!(AgentKind::Codex.to_string(), "codex");
     }
 
     #[test]
@@ -311,13 +412,21 @@ mod tests {
             "CLAUDE".parse::<AgentKind>().expect("parse"),
             AgentKind::Claude
         );
+        assert_eq!(
+            "codex".parse::<AgentKind>().expect("parse"),
+            AgentKind::Codex
+        );
+        assert_eq!(
+            "CODEX".parse::<AgentKind>().expect("parse"),
+            AgentKind::Codex
+        );
         assert!("unknown".parse::<AgentKind>().is_err());
     }
 
     #[test]
     fn test_agent_kind_roundtrip() {
         // Arrange & Act & Assert
-        for kind in [AgentKind::Gemini, AgentKind::Claude] {
+        for kind in [AgentKind::Gemini, AgentKind::Claude, AgentKind::Codex] {
             let s = kind.to_string();
             let parsed: AgentKind = s.parse().expect("roundtrip parse");
             assert_eq!(parsed, kind);
