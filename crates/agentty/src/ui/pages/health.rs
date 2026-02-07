@@ -41,28 +41,11 @@ impl Page for HealthPage<'_> {
         lines.push(Line::from(""));
 
         for entry in &entries {
-            let (icon, icon_color) = match entry.status {
-                HealthStatus::Pending => (Icon::Pending, Color::DarkGray),
-                HealthStatus::Running => (Icon::current_spinner(), Color::Cyan),
-                HealthStatus::Pass => (Icon::Check, Color::Green),
-                HealthStatus::Warn => (Icon::Warn, Color::Yellow),
-                HealthStatus::Fail => (Icon::Cross, Color::Red),
-            };
+            lines.push(render_entry_line(entry, "   "));
 
-            let label = format!("{:<18}", entry.kind.label());
-            let message = if entry.message.is_empty() {
-                String::new()
-            } else {
-                entry.message.clone()
-            };
-
-            lines.push(Line::from(vec![
-                Span::raw("   "),
-                Span::styled(icon.as_str(), Style::default().fg(icon_color)),
-                Span::raw("  "),
-                Span::styled(label, Style::default().fg(Color::White)),
-                Span::styled(message, Style::default().fg(Color::Gray)),
-            ]));
+            for child in &entry.children {
+                lines.push(render_entry_line(child, "      "));
+            }
         }
 
         let block = Block::default()
@@ -77,4 +60,29 @@ impl Page for HealthPage<'_> {
             Paragraph::new("q: back | r: rerun").style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, footer_area);
     }
+}
+
+fn render_entry_line<'a>(entry: &HealthEntry, indent: &'a str) -> Line<'a> {
+    let (icon, icon_color) = match entry.status {
+        HealthStatus::Pending => (Icon::Pending, Color::DarkGray),
+        HealthStatus::Running => (Icon::current_spinner(), Color::Cyan),
+        HealthStatus::Pass => (Icon::Check, Color::Green),
+        HealthStatus::Warn => (Icon::Warn, Color::Yellow),
+        HealthStatus::Fail => (Icon::Cross, Color::Red),
+    };
+
+    let label = format!("{:<18}", entry.label);
+    let message = if entry.message.is_empty() {
+        String::new()
+    } else {
+        entry.message.clone()
+    };
+
+    Line::from(vec![
+        Span::raw(indent),
+        Span::styled(icon.as_str(), Style::default().fg(icon_color)),
+        Span::raw("  "),
+        Span::styled(label, Style::default().fg(Color::White)),
+        Span::styled(message, Style::default().fg(Color::Gray)),
+    ])
 }

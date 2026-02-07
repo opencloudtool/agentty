@@ -7,6 +7,7 @@ pub enum HealthCheckKind {
     AgentClaude,
     AgentGemini,
     Database,
+    GitHubCli,
     GitRepo,
 }
 
@@ -14,6 +15,7 @@ impl HealthCheckKind {
     pub const ALL: &[HealthCheckKind] = &[
         HealthCheckKind::Database,
         HealthCheckKind::GitRepo,
+        HealthCheckKind::GitHubCli,
         HealthCheckKind::AgentClaude,
         HealthCheckKind::AgentGemini,
     ];
@@ -23,6 +25,7 @@ impl HealthCheckKind {
             HealthCheckKind::AgentClaude => "Claude CLI",
             HealthCheckKind::AgentGemini => "Gemini CLI",
             HealthCheckKind::Database => "Database",
+            HealthCheckKind::GitHubCli => "GitHub CLI",
             HealthCheckKind::GitRepo => "Git Repository",
         }
     }
@@ -39,9 +42,26 @@ pub enum HealthStatus {
 
 #[derive(Clone, Debug)]
 pub struct HealthEntry {
-    pub kind: HealthCheckKind,
+    pub children: Vec<HealthEntry>,
+    pub label: String,
     pub message: String,
     pub status: HealthStatus,
+}
+
+struct HealthResult {
+    children: Vec<HealthEntry>,
+    message: String,
+    status: HealthStatus,
+}
+
+impl From<(HealthStatus, String)> for HealthResult {
+    fn from((status, message): (HealthStatus, String)) -> Self {
+        Self {
+            children: Vec::new(),
+            message,
+            status,
+        }
+    }
 }
 
 pub fn run_health_checks(
@@ -51,7 +71,8 @@ pub fn run_health_checks(
     let entries: Vec<HealthEntry> = HealthCheckKind::ALL
         .iter()
         .map(|&kind| HealthEntry {
-            kind,
+            children: Vec::new(),
+            label: kind.label().to_string(),
             message: String::new(),
             status: HealthStatus::Pending,
         })
@@ -62,24 +83,25 @@ pub fn run_health_checks(
 
     tokio::spawn(async move {
         for (index, &kind) in HealthCheckKind::ALL.iter().enumerate() {
-            update_entry(&shared_bg, index, HealthStatus::Running, "Checking...");
+            update_status(&shared_bg, index, HealthStatus::Running, "Checking...");
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
-            let (status, message) = match kind {
-                HealthCheckKind::Database => check_database(&pool).await,
-                HealthCheckKind::GitRepo => check_git_repo(git_branch.as_ref()),
-                HealthCheckKind::AgentClaude => check_cli_tool("claude").await,
-                HealthCheckKind::AgentGemini => check_cli_tool("gemini").await,
+            let result: HealthResult = match kind {
+                HealthCheckKind::Database => check_database(&pool).await.into(),
+                HealthCheckKind::GitRepo => check_git_repo(git_branch.as_ref()).into(),
+                HealthCheckKind::GitHubCli => check_github_cli().await,
+                HealthCheckKind::AgentClaude => check_cli_tool("claude").await.into(),
+                HealthCheckKind::AgentGemini => check_cli_tool("gemini").await.into(),
             };
 
-            update_entry(&shared_bg, index, status, &message);
+            apply_result(&shared_bg, index, result);
         }
     });
 
     shared
 }
 
-fn update_entry(
+fn update_status(
     entries: &Arc<Mutex<Vec<HealthEntry>>>,
     index: usize,
     status: HealthStatus,
@@ -89,6 +111,16 @@ fn update_entry(
         if let Some(entry) = lock.get_mut(index) {
             entry.status = status;
             entry.message = message.to_string();
+        }
+    }
+}
+
+fn apply_result(entries: &Arc<Mutex<Vec<HealthEntry>>>, index: usize, result: HealthResult) {
+    if let Ok(mut lock) = entries.lock() {
+        if let Some(entry) = lock.get_mut(index) {
+            entry.children = result.children;
+            entry.message = result.message;
+            entry.status = result.status;
         }
     }
 }
@@ -107,6 +139,20 @@ fn check_git_repo(git_branch: Option<&String>) -> (HealthStatus, String) {
     }
 }
 
+async fn check_github_cli() -> HealthResult {
+    let (status, message) = check_cli_tool("gh").await;
+    if status != HealthStatus::Pass {
+        return (status, message).into();
+    }
+
+    let auth_entry = check_github_auth().await;
+    HealthResult {
+        children: vec![auth_entry],
+        message,
+        status,
+    }
+}
+
 async fn check_cli_tool(command: &str) -> (HealthStatus, String) {
     match tokio::process::Command::new(command)
         .arg("--version")
@@ -114,7 +160,12 @@ async fn check_cli_tool(command: &str) -> (HealthStatus, String) {
         .await
     {
         Ok(output) if output.status.success() => {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let version = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
             (HealthStatus::Pass, version)
         }
         Ok(output) => {
@@ -125,6 +176,48 @@ async fn check_cli_tool(command: &str) -> (HealthStatus, String) {
     }
 }
 
+async fn check_github_auth() -> HealthEntry {
+    let (status, message) = match tokio::process::Command::new("gh")
+        .args(["auth", "status"])
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let account = parse_auth_field(&stdout, "Logged in to");
+            let scopes = parse_auth_field(&stdout, "Token scopes:");
+            let detail = match (account, scopes) {
+                (Some(account), Some(scopes)) => format!("{account} | scopes: {scopes}"),
+                (Some(account), None) => account.to_string(),
+                _ => "Authenticated".to_string(),
+            };
+            (HealthStatus::Pass, detail)
+        }
+        Ok(_) => (HealthStatus::Warn, "Not authenticated".to_string()),
+        Err(_) => (HealthStatus::Warn, "gh not found".to_string()),
+    };
+
+    HealthEntry {
+        children: Vec::new(),
+        label: "Auth Status".to_string(),
+        message,
+        status,
+    }
+}
+
+fn parse_auth_field<'a>(output: &'a str, prefix: &str) -> Option<&'a str> {
+    output
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix('-')
+                .unwrap_or(line.trim())
+                .trim()
+                .strip_prefix(prefix)
+        })
+        .map(str::trim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,7 +225,7 @@ mod tests {
     #[test]
     fn test_health_check_kind_all_count() {
         // Arrange & Act & Assert
-        assert_eq!(HealthCheckKind::ALL.len(), 4);
+        assert_eq!(HealthCheckKind::ALL.len(), 5);
     }
 
     #[test]
@@ -140,6 +233,7 @@ mod tests {
         // Arrange & Act & Assert
         assert_eq!(HealthCheckKind::Database.label(), "Database");
         assert_eq!(HealthCheckKind::GitRepo.label(), "Git Repository");
+        assert_eq!(HealthCheckKind::GitHubCli.label(), "GitHub CLI");
         assert_eq!(HealthCheckKind::AgentClaude.label(), "Claude CLI");
         assert_eq!(HealthCheckKind::AgentGemini.label(), "Gemini CLI");
     }
@@ -148,28 +242,31 @@ mod tests {
     fn test_health_entry_defaults() {
         // Arrange & Act
         let entry = HealthEntry {
-            kind: HealthCheckKind::Database,
+            children: Vec::new(),
+            label: "Database".to_string(),
             message: String::new(),
             status: HealthStatus::Pending,
         };
 
         // Assert
-        assert_eq!(entry.kind, HealthCheckKind::Database);
+        assert_eq!(entry.label, "Database");
         assert_eq!(entry.status, HealthStatus::Pending);
         assert!(entry.message.is_empty());
+        assert!(entry.children.is_empty());
     }
 
     #[test]
-    fn test_update_entry() {
+    fn test_update_status() {
         // Arrange
         let entries = Arc::new(Mutex::new(vec![HealthEntry {
-            kind: HealthCheckKind::Database,
+            children: Vec::new(),
+            label: "Database".to_string(),
             message: String::new(),
             status: HealthStatus::Pending,
         }]));
 
         // Act
-        update_entry(&entries, 0, HealthStatus::Pass, "OK");
+        update_status(&entries, 0, HealthStatus::Pass, "OK");
 
         // Assert
         let lock = entries.lock().expect("failed to lock");
@@ -178,20 +275,73 @@ mod tests {
     }
 
     #[test]
-    fn test_update_entry_out_of_bounds() {
+    fn test_update_status_out_of_bounds() {
         // Arrange
         let entries = Arc::new(Mutex::new(vec![HealthEntry {
-            kind: HealthCheckKind::Database,
+            children: Vec::new(),
+            label: "Database".to_string(),
             message: String::new(),
             status: HealthStatus::Pending,
         }]));
 
         // Act — should not panic
-        update_entry(&entries, 99, HealthStatus::Fail, "Error");
+        update_status(&entries, 99, HealthStatus::Fail, "Error");
 
         // Assert — original entry unchanged
         let lock = entries.lock().expect("failed to lock");
         assert_eq!(lock[0].status, HealthStatus::Pending);
+    }
+
+    #[test]
+    fn test_apply_result() {
+        // Arrange
+        let entries = Arc::new(Mutex::new(vec![HealthEntry {
+            children: Vec::new(),
+            label: "Database".to_string(),
+            message: String::new(),
+            status: HealthStatus::Pending,
+        }]));
+
+        // Act
+        apply_result(&entries, 0, (HealthStatus::Pass, "OK".to_string()).into());
+
+        // Assert
+        let lock = entries.lock().expect("failed to lock");
+        assert_eq!(lock[0].status, HealthStatus::Pass);
+        assert_eq!(lock[0].message, "OK");
+        assert!(lock[0].children.is_empty());
+    }
+
+    #[test]
+    fn test_apply_result_with_children() {
+        // Arrange
+        let entries = Arc::new(Mutex::new(vec![HealthEntry {
+            children: Vec::new(),
+            label: "GitHub CLI".to_string(),
+            message: String::new(),
+            status: HealthStatus::Pending,
+        }]));
+        let result = HealthResult {
+            children: vec![HealthEntry {
+                children: Vec::new(),
+                label: "Auth Status".to_string(),
+                message: "Authenticated".to_string(),
+                status: HealthStatus::Pass,
+            }],
+            message: "gh version 2.0".to_string(),
+            status: HealthStatus::Pass,
+        };
+
+        // Act
+        apply_result(&entries, 0, result);
+
+        // Assert
+        let lock = entries.lock().expect("failed to lock");
+        assert_eq!(lock[0].status, HealthStatus::Pass);
+        assert_eq!(lock[0].message, "gh version 2.0");
+        assert_eq!(lock[0].children.len(), 1);
+        assert_eq!(lock[0].children[0].label, "Auth Status");
+        assert_eq!(lock[0].children[0].status, HealthStatus::Pass);
     }
 
     #[test]
@@ -234,6 +384,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_check_github_cli_result() {
+        // Arrange & Act
+        let result = check_github_cli().await;
+
+        // Assert — result depends on whether gh is installed
+        assert!(
+            result.status == HealthStatus::Pass || result.status == HealthStatus::Warn,
+            "Expected Pass or Warn, got {:?}",
+            result.status
+        );
+        assert!(!result.message.is_empty());
+
+        // If the binary was found, there should be an auth child
+        if result.status == HealthStatus::Pass {
+            assert_eq!(result.children.len(), 1);
+            assert_eq!(result.children[0].label, "Auth Status");
+        }
+    }
+
+    #[tokio::test]
     async fn test_check_cli_tool_nonexistent() {
         // Arrange & Act
         let (status, message) = check_cli_tool("nonexistent_tool_xyz_123").await;
@@ -241,6 +411,47 @@ mod tests {
         // Assert
         assert_eq!(status, HealthStatus::Warn);
         assert_eq!(message, "Not found in PATH");
+    }
+
+    #[tokio::test]
+    async fn test_check_github_auth_returns_entry() {
+        // Arrange & Act
+        let entry = check_github_auth().await;
+
+        // Assert
+        assert_eq!(entry.label, "Auth Status");
+        assert!(
+            entry.status == HealthStatus::Pass || entry.status == HealthStatus::Warn,
+            "Expected Pass or Warn, got {:?}",
+            entry.status
+        );
+        assert!(!entry.message.is_empty());
+    }
+
+    #[test]
+    fn test_parse_auth_field_found() {
+        // Arrange
+        let output = "  - Active account: true\n  - Token scopes: 'repo', 'read:org'\n";
+
+        // Act
+        let account = parse_auth_field(output, "Active account:");
+        let scopes = parse_auth_field(output, "Token scopes:");
+
+        // Assert
+        assert_eq!(account, Some("true"));
+        assert_eq!(scopes, Some("'repo', 'read:org'"));
+    }
+
+    #[test]
+    fn test_parse_auth_field_missing() {
+        // Arrange
+        let output = "  - Active account: true\n";
+
+        // Act
+        let result = parse_auth_field(output, "Token scopes:");
+
+        // Assert
+        assert_eq!(result, None);
     }
 
     #[tokio::test]
@@ -284,7 +495,7 @@ mod tests {
             assert!(
                 entry.status != HealthStatus::Pending && entry.status != HealthStatus::Running,
                 "Expected completed status for {:?}, got {:?}",
-                entry.kind,
+                entry.label,
                 entry.status
             );
         }
