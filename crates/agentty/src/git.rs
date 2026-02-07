@@ -272,6 +272,58 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// Fetches from the configured remote.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository root
+///
+/// # Returns
+/// Ok(()) on success, Err(msg) with detailed error message on failure
+pub fn fetch_remote(repo_path: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .arg("fetch")
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Git fetch failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+/// Returns the number of commits ahead and behind the upstream branch.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository root
+///
+/// # Returns
+/// Ok((ahead, behind)) on success, Err(msg) on failure (e.g., no upstream)
+pub fn get_ahead_behind(repo_path: &Path) -> Result<(u32, u32), String> {
+    let output = Command::new("git")
+        .args(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Git rev-list failed: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = stdout.split_whitespace().collect();
+    if parts.len() >= 2 {
+        let ahead = parts[0].parse().unwrap_or(0);
+        let behind = parts[1].parse().unwrap_or(0);
+        Ok((ahead, behind))
+    } else {
+        Err("Unexpected output format from git rev-list".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

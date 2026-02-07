@@ -63,6 +63,8 @@ fn main() -> io::Result<()> {
         let current_tab = app.current_tab;
         let current_working_dir = app.working_dir().clone();
         let current_git_branch = app.git_branch().map(std::string::ToString::to_string);
+        let current_git_status = app.git_status_info();
+
         terminal.draw(|f| {
             ui::render(
                 f,
@@ -73,6 +75,7 @@ fn main() -> io::Result<()> {
                 current_tab,
                 &current_working_dir,
                 current_git_branch.as_deref(),
+                current_git_status,
             );
         })?;
 

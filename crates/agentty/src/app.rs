@@ -26,6 +26,7 @@ pub struct App {
     base_path: PathBuf,
     working_dir: PathBuf,
     git_branch: Option<String>,
+    git_status: Arc<Mutex<Option<(u32, u32)>>>,
     agent_kind: AgentKind,
     backend: Box<dyn AgentBackend>,
     db: Database,
@@ -47,6 +48,29 @@ impl App {
         } else {
             table_state.select(Some(0));
         }
+
+        let git_status = Arc::new(Mutex::new(None));
+
+        if git_branch.is_some() {
+            let status_clone = Arc::clone(&git_status);
+            let dir_clone = working_dir.clone();
+
+            std::thread::spawn(move || {
+                let repo_root = git::find_git_repo_root(&dir_clone).unwrap_or(dir_clone);
+
+                loop {
+                    let _ = git::fetch_remote(&repo_root);
+
+                    let status = git::get_ahead_behind(&repo_root).ok();
+                    if let Ok(mut lock) = status_clone.lock() {
+                        *lock = status;
+                    }
+
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                }
+            });
+        }
+
         Self {
             sessions,
             table_state,
@@ -55,6 +79,7 @@ impl App {
             base_path,
             working_dir,
             git_branch,
+            git_status,
             agent_kind,
             backend,
             db,
@@ -76,6 +101,10 @@ impl App {
 
     pub fn git_branch(&self) -> Option<&str> {
         self.git_branch.as_deref()
+    }
+
+    pub fn git_status_info(&self) -> Option<(u32, u32)> {
+        self.git_status.lock().ok().and_then(|s| *s)
     }
 
     pub fn next_tab(&mut self) {

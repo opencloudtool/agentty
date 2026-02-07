@@ -29,6 +29,7 @@ pub fn render(
     current_tab: Tab,
     working_dir: &std::path::Path,
     git_branch: Option<&str>,
+    git_status: Option<(u32, u32)>,
 ) {
     let area = f.area();
 
@@ -50,6 +51,7 @@ pub fn render(
     components::footer_bar::FooterBar::new(
         working_dir.to_string_lossy().to_string(),
         git_branch.map(std::string::ToString::to_string),
+        git_status,
     )
     .render(f, footer_bar_area);
 

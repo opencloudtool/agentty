@@ -11,13 +11,19 @@ const GIT_BRANCH_INDICATOR: char = '\u{25cf}'; // ●
 pub struct FooterBar {
     working_dir: String,
     git_branch: Option<String>,
+    git_status: Option<(u32, u32)>,
 }
 
 impl FooterBar {
-    pub fn new(working_dir: String, git_branch: Option<String>) -> Self {
+    pub fn new(
+        working_dir: String,
+        git_branch: Option<String>,
+        git_status: Option<(u32, u32)>,
+    ) -> Self {
         Self {
             working_dir,
             git_branch,
+            git_status,
         }
     }
 }
@@ -45,7 +51,18 @@ impl Component for FooterBar {
 
         if let Some(branch) = &self.git_branch {
             let left_width = format!(" Working Dir: {display_path}").len();
-            let branch_text = format!("{GIT_BRANCH_INDICATOR} {branch}");
+
+            let status_text = if let Some((ahead, behind)) = self.git_status {
+                if ahead == 0 && behind == 0 {
+                    "✓ ".to_string()
+                } else {
+                    format!("↓{behind} ↑{ahead} ")
+                }
+            } else {
+                String::new()
+            };
+
+            let branch_text = format!("{status_text}{GIT_BRANCH_INDICATOR} {branch}");
             let branch_width = branch_text.len();
             let total_width = area.width as usize;
 
@@ -79,11 +96,12 @@ mod tests {
         let branch = Some("main".to_string());
 
         // Act
-        let footer = FooterBar::new(path.clone(), branch.clone());
+        let footer = FooterBar::new(path.clone(), branch.clone(), None);
 
         // Assert
         assert_eq!(footer.working_dir, path);
         assert_eq!(footer.git_branch, branch);
+        assert_eq!(footer.git_status, None);
     }
 
     #[test]
@@ -92,11 +110,12 @@ mod tests {
         let path = "/home/user/project".to_string();
 
         // Act
-        let footer = FooterBar::new(path.clone(), None);
+        let footer = FooterBar::new(path.clone(), None, None);
 
         // Assert
         assert_eq!(footer.working_dir, path);
         assert_eq!(footer.git_branch, None);
+        assert_eq!(footer.git_status, None);
     }
 
     #[test]
@@ -109,7 +128,7 @@ mod tests {
         } else {
             "/tmp/project".to_string()
         };
-        let footer = FooterBar::new(path, Some("main".to_string()));
+        let footer = FooterBar::new(path, Some("main".to_string()), None);
 
         // Act
         terminal
@@ -132,12 +151,37 @@ mod tests {
     }
 
     #[test]
+    fn test_footer_bar_render_with_git_status() {
+        // Arrange
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).expect("failed to create terminal");
+        let path = "/tmp/project".to_string();
+        // 1 ahead, 2 behind
+        let footer = FooterBar::new(path, Some("main".to_string()), Some((1, 2)));
+
+        // Act
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                footer.render(f, area);
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let buffer = terminal.backend().buffer();
+        let content = buffer.content();
+        let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(text.contains("↓2 ↑1"));
+        assert!(text.contains("main"));
+    }
+
+    #[test]
     fn test_footer_bar_render_without_git_branch() {
         // Arrange
         let backend = TestBackend::new(80, 3);
         let mut terminal = Terminal::new(backend).expect("failed to create terminal");
         let path = "/tmp/other-project".to_string();
-        let footer = FooterBar::new(path, None);
+        let footer = FooterBar::new(path, None, None);
 
         // Act
         terminal
