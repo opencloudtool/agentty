@@ -1,6 +1,6 @@
 # UI Agent Instructions
 
-When working within `crates/ag-cli/src/ui/`:
+When working within `crates/agentty/src/ui/`:
 
 ## Core Rules
 

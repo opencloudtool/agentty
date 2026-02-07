@@ -3,17 +3,6 @@
 version = 4
 
 [[package]]
-name = "ag-cli"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "libc",
- "mockall",
- "ratatui",
- "tempfile",
-]
-
-[[package]]
 name = "ag-xtask"
 version = "0.1.0"
 dependencies = [
@@ -21,6 +10,17 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "agentty"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "libc",
+ "mockall",
+ "ratatui",
+ "tempfile",
 ]
 
 [[package]]

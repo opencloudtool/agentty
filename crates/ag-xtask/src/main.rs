@@ -211,7 +211,7 @@ mod tests {
             "Cargo.toml".to_string(),
             "src/main.rs".to_string(),
             "AGENTS.md".to_string(),
-            "crates/ag-cli/Cargo.toml".to_string(),
+            "crates/agentty/Cargo.toml".to_string(),
         ];
 
         // Act
@@ -224,10 +224,10 @@ mod tests {
     #[test]
     fn test_get_local_entries_windows_paths() {
         // Arrange
-        let directory = Path::new("crates/ag-cli");
+        let directory = Path::new("crates/agentty");
         let tracked_files = vec![
-            "crates\\ag-cli\\Cargo.toml".to_string(),
-            "crates\\ag-cli\\src\\main.rs".to_string(),
+            "crates\\agentty\\Cargo.toml".to_string(),
+            "crates\\agentty\\src\\main.rs".to_string(),
         ];
 
         // Act
@@ -240,12 +240,12 @@ mod tests {
     #[test]
     fn test_get_local_entries_subdir() {
         // Arrange
-        let directory = Path::new("crates/ag-cli");
+        let directory = Path::new("crates/agentty");
         let tracked_files = vec![
             "Cargo.toml".to_string(),
-            "crates/ag-cli/Cargo.toml".to_string(),
-            "crates/ag-cli/src/main.rs".to_string(),
-            "crates/ag-cli/AGENTS.md".to_string(),
+            "crates/agentty/Cargo.toml".to_string(),
+            "crates/agentty/src/main.rs".to_string(),
+            "crates/agentty/AGENTS.md".to_string(),
         ];
 
         // Act

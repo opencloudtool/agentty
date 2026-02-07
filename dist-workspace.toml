@@ -1,5 +1,5 @@
 [workspace]
-members = ["cargo:crates/ag-cli"]
+members = ["cargo:crates/agentty"]
 
 # Config for 'dist'
 [dist]

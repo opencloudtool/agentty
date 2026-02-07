@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use ag_cli::agent::AgentKind;
-use ag_cli::app::{AGENTTY_WORKSPACE, App, SESSION_DATA_DIR};
-use ag_cli::model::AppMode;
-use ag_cli::ui;
+use agentty::agent::AgentKind;
+use agentty::app::{AGENTTY_WORKSPACE, App, SESSION_DATA_DIR};
+use agentty::model::AppMode;
+use agentty::ui;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -18,9 +18,9 @@ use ratatui::backend::CrosstermBackend;
 fn main() -> io::Result<()> {
     let base_path = PathBuf::from(AGENTTY_WORKSPACE);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let git_branch = ag_cli::git::detect_git_info(&working_dir);
+    let git_branch = agentty::git::detect_git_info(&working_dir);
     let lock_path = base_path.join("lock");
-    let _lock = match ag_cli::lock::acquire_lock(&lock_path) {
+    let _lock = match agentty::lock::acquire_lock(&lock_path) {
         Ok(file) => file,
         Err(e) => {
             #[allow(clippy::print_stderr)]
