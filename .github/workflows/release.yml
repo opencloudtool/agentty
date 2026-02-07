@@ -295,7 +295,6 @@ jobs:
           persist-credentials: true
           repository: "opencloudtool/agentty"
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          ref: "main"
       # So we have access to the formula
       - name: Fetch homebrew formulae
         uses: actions/download-artifact@v4
