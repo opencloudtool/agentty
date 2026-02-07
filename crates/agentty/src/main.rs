@@ -65,6 +65,7 @@ async fn main() -> io::Result<()> {
         let current_working_dir = app.working_dir().clone();
         let current_git_branch = app.git_branch().map(std::string::ToString::to_string);
         let current_git_status = app.git_status_info();
+        let health_checks = app.health_checks().clone();
 
         terminal.draw(|f| {
             ui::render(
@@ -77,6 +78,7 @@ async fn main() -> io::Result<()> {
                 &current_working_dir,
                 current_git_branch.as_deref(),
                 current_git_status,
+                &health_checks,
             );
         })?;
 
@@ -422,10 +424,18 @@ async fn main() -> io::Result<()> {
                             KeyCode::Enter => {
                                 let filtered = PaletteCommand::filter(input);
                                 if let Some(&command) = filtered.get(*selected_index) {
-                                    app.mode = AppMode::CommandOption {
-                                        command,
-                                        selected_index: 0,
-                                    };
+                                    match command {
+                                        PaletteCommand::Health => {
+                                            app.start_health_checks();
+                                            app.mode = AppMode::Health;
+                                        }
+                                        PaletteCommand::Agents => {
+                                            app.mode = AppMode::CommandOption {
+                                                command,
+                                                selected_index: 0,
+                                            };
+                                        }
+                                    }
                                 }
                             }
                             KeyCode::Esc | KeyCode::Tab => {
@@ -446,6 +456,7 @@ async fn main() -> io::Result<()> {
                         KeyCode::Char('j') | KeyCode::Down => {
                             let option_count = match command {
                                 PaletteCommand::Agents => AgentKind::ALL.len(),
+                                PaletteCommand::Health => 0,
                             };
                             if option_count > 0 {
                                 *selected_index = (*selected_index + 1).min(option_count - 1);
@@ -461,6 +472,7 @@ async fn main() -> io::Result<()> {
                                         app.set_agent_kind(agent_kind);
                                     }
                                 }
+                                PaletteCommand::Health => {}
                             }
                             app.mode = AppMode::List;
                         }
@@ -470,6 +482,20 @@ async fn main() -> io::Result<()> {
                                 selected_index: 0,
                                 focus: PaletteFocus::Input,
                             };
+                        }
+                        _ => {}
+                    },
+                    AppMode::Health => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            app.mode = AppMode::List;
+                        }
+                        KeyCode::Char('c')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            app.mode = AppMode::List;
+                        }
+                        KeyCode::Char('r') => {
+                            app.start_health_checks();
                         }
                         _ => {}
                     },

@@ -111,6 +111,7 @@ impl CommandOptionList {
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect(),
+            PaletteCommand::Health => Vec::new(),
         }
     }
 }

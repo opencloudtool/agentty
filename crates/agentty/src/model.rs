@@ -44,6 +44,7 @@ pub enum AppMode {
         command: PaletteCommand,
         selected_index: usize,
     },
+    Health,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -55,14 +56,16 @@ pub enum PaletteFocus {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PaletteCommand {
     Agents,
+    Health,
 }
 
 impl PaletteCommand {
-    pub const ALL: &[PaletteCommand] = &[PaletteCommand::Agents];
+    pub const ALL: &[PaletteCommand] = &[PaletteCommand::Agents, PaletteCommand::Health];
 
     pub fn label(self) -> &'static str {
         match self {
             PaletteCommand::Agents => "agents",
+            PaletteCommand::Health => "health",
         }
     }
 
@@ -174,13 +177,15 @@ mod tests {
     fn test_palette_command_label() {
         // Arrange & Act & Assert
         assert_eq!(PaletteCommand::Agents.label(), "agents");
+        assert_eq!(PaletteCommand::Health.label(), "health");
     }
 
     #[test]
     fn test_palette_command_all() {
         // Arrange & Act & Assert
-        assert_eq!(PaletteCommand::ALL.len(), 1);
+        assert_eq!(PaletteCommand::ALL.len(), 2);
         assert_eq!(PaletteCommand::ALL[0], PaletteCommand::Agents);
+        assert_eq!(PaletteCommand::ALL[1], PaletteCommand::Health);
     }
 
     #[test]

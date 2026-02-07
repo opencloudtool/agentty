@@ -2,11 +2,14 @@ pub mod components;
 pub mod pages;
 pub mod util;
 
+use std::sync::{Arc, Mutex};
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
 use crate::agent::AgentKind;
+use crate::health::HealthEntry;
 use crate::model::{AppMode, Session, Tab};
 
 /// A trait for UI pages that enforces a standard rendering interface.
@@ -30,6 +33,7 @@ pub fn render(
     working_dir: &std::path::Path,
     git_branch: Option<&str>,
     git_status: Option<(u32, u32)>,
+    health_checks: &Arc<Mutex<Vec<HealthEntry>>>,
 ) {
     let area = f.area();
 
@@ -111,6 +115,9 @@ pub fn render(
             // Overlay option list at the bottom
             components::command_palette::CommandOptionList::new(*command, *selected_index)
                 .render(f, content_area);
+        }
+        AppMode::Health => {
+            pages::health::HealthPage::new(health_checks).render(f, content_area);
         }
     }
 }

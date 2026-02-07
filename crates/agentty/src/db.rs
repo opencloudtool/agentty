@@ -49,6 +49,10 @@ pub struct SessionRow {
 }
 
 impl Database {
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     pub async fn open(db_path: &Path) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)

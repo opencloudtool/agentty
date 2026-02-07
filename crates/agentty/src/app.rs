@@ -14,6 +14,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use crate::agent::{AgentBackend, AgentKind};
 use crate::db::Database;
 use crate::git;
+use crate::health::{self, HealthEntry};
 use crate::model::{AppMode, Session, Tab};
 
 pub const AGENTTY_WORKSPACE: &str = "/var/tmp/.agentty";
@@ -30,6 +31,7 @@ pub struct App {
     db: Database,
     git_branch: Option<String>,
     git_status: Arc<Mutex<Option<(u32, u32)>>>,
+    health_checks: Arc<Mutex<Vec<HealthEntry>>>,
     working_dir: PathBuf,
 }
 
@@ -83,6 +85,7 @@ impl App {
             db,
             git_branch,
             git_status,
+            health_checks: Arc::new(Mutex::new(Vec::new())),
             working_dir,
         }
     }
@@ -106,6 +109,15 @@ impl App {
 
     pub fn git_status_info(&self) -> Option<(u32, u32)> {
         self.git_status.lock().ok().and_then(|s| *s)
+    }
+
+    pub fn health_checks(&self) -> &Arc<Mutex<Vec<HealthEntry>>> {
+        &self.health_checks
+    }
+
+    pub fn start_health_checks(&mut self) {
+        self.health_checks =
+            health::run_health_checks(self.db.pool().clone(), self.git_branch.clone());
     }
 
     pub fn next_tab(&mut self) {
