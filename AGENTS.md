@@ -135,7 +135,7 @@ already applied — just re-run to confirm everything passes.
 - This improves readability and clearly distinguishes code from prose.
 
 ## Git Conventions
-- When preparing a commit, gather context in a single tool call by chaining independent commands: `git status && git diff && git log -n 5 --format="---%n%B"`. This provides working tree status, staged/unstaged changes, and recent commit history for style consistency — all in one invocation.
+- When preparing a commit, gather context in a single tool call by chaining independent commands: `git status && git diff && git log -n 3 --format="---%n%B"`. This provides working tree status, staged/unstaged changes, and recent commit history for style consistency — all in one invocation.
 - Follow the "commit title and description" style:
   - The first line should be a concise summary (the "title") in present simple tense (e.g., "Fix cursor offset" not "Fixed cursor offset").
   - Use a blank line between the title and the body.
