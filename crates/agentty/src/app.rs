@@ -715,11 +715,16 @@ impl App {
         name: String,
     ) {
         let mut tokio_cmd = tokio::process::Command::from(cmd);
+        // Prevent the child process from inheriting the TUI's terminal on
+        // stdin.  On macOS the child can otherwise disturb crossterm's raw-mode
+        // settings, causing the event reader to stall and the UI to freeze.
+        tokio_cmd.stdin(std::process::Stdio::null());
         tokio::spawn(async move {
             let file = std::fs::OpenOptions::new()
                 .append(true)
                 .open(folder.join(SESSION_DATA_DIR).join("output.txt"))
-                .ok();
+                .ok()
+                .map(std::io::BufWriter::new);
             let file = Arc::new(Mutex::new(file));
 
             match tokio_cmd.spawn() {
@@ -769,7 +774,7 @@ impl App {
 
     async fn process_output<R: AsyncRead + Unpin>(
         source: R,
-        file: &Arc<Mutex<Option<std::fs::File>>>,
+        file: &Arc<Mutex<Option<std::io::BufWriter<std::fs::File>>>>,
         output: &Arc<Mutex<String>>,
     ) {
         let mut reader = tokio::io::BufReader::new(source).lines();
@@ -1373,7 +1378,8 @@ mod tests {
     async fn test_process_output() {
         // Arrange
         let output = Arc::new(Mutex::new(String::new()));
-        let file: Arc<Mutex<Option<std::fs::File>>> = Arc::new(Mutex::new(None));
+        let file: Arc<Mutex<Option<std::io::BufWriter<std::fs::File>>>> =
+            Arc::new(Mutex::new(None));
         let source = "Line 1\nLine 2".as_bytes();
 
         // Act
@@ -1388,7 +1394,7 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let file_path = dir.path().join("out.txt");
         let f = std::fs::File::create(&file_path).expect("failed to create file");
-        let file = Arc::new(Mutex::new(Some(f)));
+        let file = Arc::new(Mutex::new(Some(std::io::BufWriter::new(f))));
         let source_file = "File Line".as_bytes();
 
         // Act

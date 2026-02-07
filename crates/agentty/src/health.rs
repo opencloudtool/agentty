@@ -470,8 +470,7 @@ mod tests {
         // Assert
         assert!(
             status == HealthStatus::Pass || status == HealthStatus::Warn,
-            "Expected Pass or Warn, got {:?}",
-            status
+            "Expected Pass or Warn, got {status:?}"
         );
         assert!(!message.is_empty());
     }
