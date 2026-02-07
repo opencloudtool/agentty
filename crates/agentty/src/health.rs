@@ -22,7 +22,7 @@ impl HealthCheckKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            HealthCheckKind::AgentClaude => "Claude CLI",
+            HealthCheckKind::AgentClaude => "Claude Code",
             HealthCheckKind::AgentGemini => "Gemini CLI",
             HealthCheckKind::Database => "Database",
             HealthCheckKind::GitHubCli => "GitHub CLI",
@@ -165,6 +165,7 @@ async fn check_cli_tool(command: &str) -> (HealthStatus, String) {
                 .next()
                 .unwrap_or("")
                 .trim()
+                .trim_end_matches(" (Claude Code)")
                 .to_string();
             (HealthStatus::Pass, version)
         }
@@ -230,7 +231,7 @@ mod tests {
         assert_eq!(HealthCheckKind::Database.label(), "Database");
         assert_eq!(HealthCheckKind::GitRepo.label(), "Git Repository");
         assert_eq!(HealthCheckKind::GitHubCli.label(), "GitHub CLI");
-        assert_eq!(HealthCheckKind::AgentClaude.label(), "Claude CLI");
+        assert_eq!(HealthCheckKind::AgentClaude.label(), "Claude Code");
         assert_eq!(HealthCheckKind::AgentGemini.label(), "Gemini CLI");
     }
 
