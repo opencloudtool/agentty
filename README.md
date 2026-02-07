@@ -16,24 +16,12 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/opencloudtool/agentty/r
 npm install -g @opencloudtool/agentty
 ```
 
-To install a specific version:
-
-```sh
-npm install -g @opencloudtool/agentty@VERSION
-```
-
 ### npx
 
 Run without installing:
 
 ```sh
 npx @opencloudtool/agentty
-```
-
-To run a specific version:
-
-```sh
-npx @opencloudtool/agentty@VERSION
 ```
 
 ## Prerequisites
