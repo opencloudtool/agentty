@@ -108,12 +108,14 @@ The project uses `tokio` as its async runtime. The binary entry point uses `#[to
 To ensure code quality, you must pass both automated and manual gates.
 
 ### Automated Checks
-Run these commands with autofix enabled:
-- **Test:** `cargo test`
-- **Lint:** `cargo clippy --fix --allow-dirty -- -D warnings`
-- **Format:** `cargo fmt --all`
-- **Coverage:** `cargo tarpaulin` (install with `cargo install cargo-tarpaulin`)
-- **Unused Deps:** `cargo shear` (install with `cargo install cargo-shear`)
+Run these commands after making changes:
+1. **Autofix + Validate:** `pre-commit run --all-files`
+2. **Test:** `cargo test -q`
+
+The `pre-commit` command auto-fixes formatting and clippy issues, then validates
+unused dependencies, compilation, and directory indexes — all with minimal output
+(errors only). If a hook reports "Failed" after auto-fixing files, the fixes are
+already applied — just re-run to confirm everything passes.
 
 ### Manual Verification
 - **Test Style:** Verify *every* test function uses explicit `// Arrange`, `// Act`, and `// Assert` comments.

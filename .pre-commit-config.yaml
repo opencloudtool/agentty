@@ -11,22 +11,22 @@ repos:
     hooks:
       - id: rustfmt
         name: rustfmt
-        description: Check if the code is formatted.
-        entry: cargo fmt --all -- --check
+        description: Format the code with rustfmt.
+        entry: cargo fmt --all
         language: system
         types: [rust]
         pass_filenames: false
       - id: cargo-check
         name: cargo check
         description: Check the package for errors.
-        entry: cargo check --all-targets --all-features
+        entry: cargo check -q --all-targets --all-features
         language: system
         types: [rust]
         pass_filenames: false
       - id: clippy
         name: clippy
-        description: Lints the code using clippy.
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        description: Lint and auto-fix the code using clippy.
+        entry: cargo clippy --fix --allow-dirty -q --all-targets --all-features -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
@@ -40,6 +40,6 @@ repos:
       - id: agents-index-check
         name: agents index check
         description: Verifies that all AGENTS.md files have an up-to-date Directory Index.
-        entry: cargo run -p ag-xtask
+        entry: cargo run -q -p ag-xtask
         language: system
         pass_filenames: false
