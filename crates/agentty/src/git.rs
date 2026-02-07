@@ -358,6 +358,7 @@ pub fn create_pr(
         .args([
             "pr",
             "create",
+            "--draft",
             "--base",
             target_branch,
             "--head",
