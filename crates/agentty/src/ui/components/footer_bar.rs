@@ -41,7 +41,7 @@ impl Component for FooterBar {
         };
 
         let left_text = Span::styled(
-            format!(" Working Dir: {display_path}"),
+            format!(" {display_path}"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::DIM),
@@ -50,7 +50,7 @@ impl Component for FooterBar {
         let mut spans = vec![left_text];
 
         if let Some(branch) = &self.git_branch {
-            let left_width = format!(" Working Dir: {display_path}").len();
+            let left_width = format!(" {display_path}").len();
 
             let status_text = if let Some((ahead, behind)) = self.git_status {
                 if ahead == 0 && behind == 0 {
@@ -143,9 +143,9 @@ mod tests {
         let content = buffer.content();
         let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
         if dirs::home_dir().is_some() {
-            assert!(text.contains("Working Dir: ~/project"));
+            assert!(text.contains("~/project"));
         } else {
-            assert!(text.contains("Working Dir: /tmp/project"));
+            assert!(text.contains("/tmp/project"));
         }
         assert!(text.contains("main"));
     }
@@ -195,6 +195,6 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let content = buffer.content();
         let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
-        assert!(text.contains("Working Dir: /tmp/other-project"));
+        assert!(text.contains("/tmp/other-project"));
     }
 }
