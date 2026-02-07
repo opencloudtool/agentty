@@ -1,6 +1,5 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use ratatui::style::Color;
@@ -20,6 +19,29 @@ pub enum Status {
     InProgress,
     Processing,
     Done,
+}
+
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::InProgress => write!(f, "InProgress"),
+            Status::Processing => write!(f, "Processing"),
+            Status::Done => write!(f, "Done"),
+        }
+    }
+}
+
+impl std::str::FromStr for Status {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "InProgress" => Ok(Status::InProgress),
+            "Processing" => Ok(Status::Processing),
+            "Done" => Ok(Status::Done),
+            _ => Err(format!("Unknown status: {s}")),
+        }
+    }
 }
 
 pub enum AppMode {
@@ -93,22 +115,15 @@ pub struct Session {
     pub name: String,
     pub output: Arc<Mutex<String>>,
     pub prompt: String,
-    pub running: Arc<AtomicBool>,
-    pub is_creating_pr: Arc<AtomicBool>,
+    pub status: Arc<Mutex<Status>>,
 }
 
 impl Session {
     pub fn status(&self) -> Status {
-        if self.running.load(std::sync::atomic::Ordering::Relaxed) {
-            Status::InProgress
-        } else if self
-            .is_creating_pr
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            Status::Processing
-        } else {
-            Status::Done
-        }
+        *self
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn append_output(&self, message: &str) {
@@ -173,25 +188,24 @@ mod tests {
             name: "test".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             prompt: "prompt".to_string(),
-            running: Arc::new(AtomicBool::new(true)),
-            is_creating_pr: Arc::new(AtomicBool::new(false)),
+            status: Arc::new(Mutex::new(Status::InProgress)),
         };
 
-        // Act & Assert (InProgress because running)
+        // Act & Assert (InProgress)
         assert_eq!(session.status(), Status::InProgress);
 
         // Act
-        session
-            .running
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut status) = session.status.lock() {
+            *status = Status::Done;
+        }
 
         // Assert (Done)
         assert_eq!(session.status(), Status::Done);
 
         // Act
-        session
-            .is_creating_pr
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut status) = session.status.lock() {
+            *status = Status::Processing;
+        }
 
         // Assert (Processing because creating PR)
         assert_eq!(session.status(), Status::Processing);
@@ -211,8 +225,7 @@ mod tests {
             name: "test".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             prompt: "prompt".to_string(),
-            running: Arc::new(AtomicBool::new(false)),
-            is_creating_pr: Arc::new(AtomicBool::new(false)),
+            status: Arc::new(Mutex::new(Status::Done)),
         };
 
         // Act

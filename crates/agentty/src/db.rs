@@ -38,6 +38,7 @@ use sqlx::{Row, SqlitePool};
 pub const DB_DIR: &str = "db";
 pub const DB_FILE: &str = "agentty.db";
 
+#[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
 }
@@ -46,6 +47,7 @@ pub struct SessionRow {
     pub agent: String,
     pub base_branch: String,
     pub name: String,
+    pub status: String,
 }
 
 impl Database {
@@ -84,11 +86,13 @@ impl Database {
         name: &str,
         agent: &str,
         base_branch: &str,
+        status: &str,
     ) -> Result<(), String> {
-        sqlx::query("INSERT INTO session (name, agent, base_branch) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO session (name, agent, base_branch, status) VALUES (?, ?, ?, ?)")
             .bind(name)
             .bind(agent)
             .bind(base_branch)
+            .bind(status)
             .execute(&self.pool)
             .await
             .map_err(|err| format!("Failed to insert session: {err}"))?;
@@ -96,10 +100,11 @@ impl Database {
     }
 
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
-        let rows = sqlx::query("SELECT name, agent, base_branch FROM session ORDER BY name")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|err| format!("Failed to load sessions: {err}"))?;
+        let rows =
+            sqlx::query("SELECT name, agent, base_branch, status FROM session ORDER BY name")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|err| format!("Failed to load sessions: {err}"))?;
 
         Ok(rows
             .iter()
@@ -107,8 +112,19 @@ impl Database {
                 agent: row.get("agent"),
                 base_branch: row.get("base_branch"),
                 name: row.get("name"),
+                status: row.get("status"),
             })
             .collect())
+    }
+
+    pub async fn update_session_status(&self, name: &str, status: &str) -> Result<(), String> {
+        sqlx::query("UPDATE session SET status = ? WHERE name = ?")
+            .bind(status)
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| format!("Failed to update session status: {err}"))?;
+        Ok(())
     }
 
     pub async fn delete_session(&self, name: &str) -> Result<(), String> {
@@ -187,7 +203,7 @@ mod tests {
         let db = Database::open_in_memory().await.expect("failed to open db");
 
         // Act
-        let result = db.insert_session("sess1", "claude", "main").await;
+        let result = db.insert_session("sess1", "claude", "main", "Done").await;
 
         // Assert
         assert!(result.is_ok());
@@ -197,12 +213,14 @@ mod tests {
     async fn test_insert_duplicate_session_fails() {
         // Arrange
         let db = Database::open_in_memory().await.expect("failed to open db");
-        db.insert_session("sess1", "claude", "main")
+        db.insert_session("sess1", "claude", "main", "Done")
             .await
             .expect("failed to insert");
 
         // Act
-        let result = db.insert_session("sess1", "gemini", "develop").await;
+        let result = db
+            .insert_session("sess1", "gemini", "develop", "Done")
+            .await;
 
         // Assert
         assert!(result.is_err());
@@ -224,10 +242,10 @@ mod tests {
     async fn test_load_sessions_ordered_by_name() {
         // Arrange
         let db = Database::open_in_memory().await.expect("failed to open db");
-        db.insert_session("beta", "claude", "main")
+        db.insert_session("beta", "claude", "main", "Done")
             .await
             .expect("failed to insert");
-        db.insert_session("alpha", "gemini", "develop")
+        db.insert_session("alpha", "gemini", "develop", "InProgress")
             .await
             .expect("failed to insert");
 
@@ -239,16 +257,35 @@ mod tests {
         assert_eq!(sessions[0].name, "alpha");
         assert_eq!(sessions[0].agent, "gemini");
         assert_eq!(sessions[0].base_branch, "develop");
+        assert_eq!(sessions[0].status, "InProgress");
         assert_eq!(sessions[1].name, "beta");
         assert_eq!(sessions[1].agent, "claude");
         assert_eq!(sessions[1].base_branch, "main");
+        assert_eq!(sessions[1].status, "Done");
+    }
+
+    #[tokio::test]
+    async fn test_update_session_status() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        db.insert_session("sess1", "claude", "main", "InProgress")
+            .await
+            .expect("failed to insert");
+
+        // Act
+        let result = db.update_session_status("sess1", "Done").await;
+
+        // Assert
+        assert!(result.is_ok());
+        let sessions = db.load_sessions().await.expect("failed to load");
+        assert_eq!(sessions[0].status, "Done");
     }
 
     #[tokio::test]
     async fn test_delete_session() {
         // Arrange
         let db = Database::open_in_memory().await.expect("failed to open db");
-        db.insert_session("sess1", "claude", "main")
+        db.insert_session("sess1", "claude", "main", "Done")
             .await
             .expect("failed to insert");
 
@@ -277,7 +314,7 @@ mod tests {
     async fn test_get_base_branch_exists() {
         // Arrange
         let db = Database::open_in_memory().await.expect("failed to open db");
-        db.insert_session("sess1", "claude", "main")
+        db.insert_session("sess1", "claude", "main", "Done")
             .await
             .expect("failed to insert");
 

@@ -4,7 +4,6 @@ use std::hash::{Hash, Hasher};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +14,7 @@ use crate::agent::{AgentBackend, AgentKind};
 use crate::db::Database;
 use crate::git;
 use crate::health::{self, HealthEntry};
-use crate::model::{AppMode, SESSION_DATA_DIR, Session, Tab};
+use crate::model::{AppMode, SESSION_DATA_DIR, Session, Status, Tab};
 
 pub const AGENTTY_WORKSPACE: &str = "/var/tmp/.agentty";
 
@@ -200,7 +199,12 @@ impl App {
 
         let _ = std::fs::write(data_dir.join("prompt.txt"), &prompt);
         self.db
-            .insert_session(&name, &self.agent_kind.to_string(), base_branch)
+            .insert_session(
+                &name,
+                &self.agent_kind.to_string(),
+                base_branch,
+                &Status::InProgress.to_string(),
+            )
             .await
             .map_err(|err| format!("Failed to save session metadata: {err}"))?;
 
@@ -210,14 +214,16 @@ impl App {
         self.backend.setup(&folder);
 
         let output = Arc::new(Mutex::new(initial_output));
-        let running = Arc::new(AtomicBool::new(true));
+        let status = Arc::new(Mutex::new(Status::InProgress));
 
         let cmd = self.backend.build_start_command(&folder, &prompt);
         Self::spawn_session_task(
             folder.clone(),
             cmd,
             Arc::clone(&output),
-            Arc::clone(&running),
+            Arc::clone(&status),
+            self.db.clone(),
+            name.clone(),
         );
 
         self.sessions.push(Session {
@@ -226,8 +232,7 @@ impl App {
             name: name.clone(),
             output,
             prompt,
-            running,
-            is_creating_pr: Arc::new(AtomicBool::new(false)),
+            status,
         });
         self.sessions.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -263,11 +268,21 @@ impl App {
 
         let folder = session.folder.clone();
         let output = Arc::clone(&session.output);
-        let running = Arc::clone(&session.running);
+        let status = Arc::clone(&session.status);
+        let name = session.name.clone();
+        let db = self.db.clone();
 
-        running.store(true, Ordering::Relaxed);
+        {
+            let status = Arc::clone(&status);
+            let db = db.clone();
+            let name = name.clone();
+            tokio::spawn(async move {
+                Self::update_status(&status, &db, &name, Status::InProgress).await;
+            });
+        }
+
         let cmd = backend.build_resume_command(&folder, prompt);
-        Self::spawn_session_task(folder, cmd, output, running);
+        Self::spawn_session_task(folder, cmd, output, status, db, name);
     }
 
     pub fn selected_session(&self) -> Option<&Session> {
@@ -383,10 +398,7 @@ impl App {
             .get(session_index)
             .ok_or_else(|| "Session not found".to_string())?;
 
-        if session
-            .is_creating_pr
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if session.status() != Status::Done {
             return Err("Already processing a request".to_string());
         }
 
@@ -412,11 +424,20 @@ impl App {
             .unwrap_or("New Session")
             .to_string();
 
-        let is_creating_pr = Arc::clone(&session.is_creating_pr);
+        let status = Arc::clone(&session.status);
         let output = Arc::clone(&session.output);
         let folder = session.folder.clone();
+        let db = self.db.clone();
+        let name = session.name.clone();
 
-        is_creating_pr.store(true, std::sync::atomic::Ordering::Relaxed);
+        {
+            let status = Arc::clone(&status);
+            let db = db.clone();
+            let name = name.clone();
+            tokio::spawn(async move {
+                Self::update_status(&status, &db, &name, Status::Processing).await;
+            });
+        }
 
         // Perform PR creation in background
         tokio::spawn(async move {
@@ -432,7 +453,7 @@ impl App {
             };
 
             Session::write_output(&output, &folder, &result_message);
-            is_creating_pr.store(false, std::sync::atomic::Ordering::Relaxed);
+            Self::update_status(&status, &db, &name, Status::Done).await;
         });
 
         Ok(())
@@ -451,14 +472,14 @@ impl App {
                 let prompt = std::fs::read_to_string(data_dir.join("prompt.txt")).ok()?;
                 let output_text =
                     std::fs::read_to_string(data_dir.join("output.txt")).unwrap_or_default();
+                let status = row.status.parse::<Status>().unwrap_or(Status::Done);
                 Some(Session {
                     agent: row.agent,
                     folder,
                     name: row.name,
                     output: Arc::new(Mutex::new(output_text)),
                     prompt,
-                    running: Arc::new(AtomicBool::new(false)),
-                    is_creating_pr: Arc::new(AtomicBool::new(false)),
+                    status: Arc::new(Mutex::new(status)),
                 })
             })
             .collect();
@@ -470,7 +491,9 @@ impl App {
         folder: PathBuf,
         cmd: Command,
         output: Arc<Mutex<String>>,
-        running: Arc<AtomicBool>,
+        status: Arc<Mutex<Status>>,
+        db: Database,
+        name: String,
     ) {
         let mut tokio_cmd = tokio::process::Command::from(cmd);
         tokio::spawn(async move {
@@ -513,8 +536,16 @@ impl App {
                     }
                 }
             }
-            running.store(false, Ordering::Relaxed);
+
+            Self::update_status(&status, &db, &name, Status::Done).await;
         });
+    }
+
+    async fn update_status(status: &Mutex<Status>, db: &Database, name: &str, new: Status) {
+        if let Ok(mut s) = status.lock() {
+            *s = new;
+        }
+        let _ = db.update_session_status(name, &new.to_string()).await;
     }
 
     async fn process_output<R: AsyncRead + Unpin>(
@@ -646,8 +677,7 @@ mod tests {
             name: name.to_string(),
             output: Arc::new(Mutex::new(String::new())),
             prompt: prompt.to_string(),
-            running: Arc::new(AtomicBool::new(false)),
-            is_creating_pr: Arc::new(AtomicBool::new(false)),
+            status: Arc::new(Mutex::new(Status::Done)),
         });
         if app.table_state.selected().is_none() {
             app.table_state.select(Some(0));
@@ -942,7 +972,7 @@ mod tests {
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        db.insert_session("12345678", "claude", "main")
+        db.insert_session("12345678", "claude", "main", "Done")
             .await
             .expect("failed to insert");
 
@@ -991,7 +1021,7 @@ mod tests {
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        db.insert_session("missing01", "gemini", "main")
+        db.insert_session("missing01", "gemini", "main", "Done")
             .await
             .expect("failed to insert");
 
@@ -1073,6 +1103,7 @@ mod tests {
             assert!(output.contains("--prompt"));
             assert!(output.contains("SpawnInit"));
             assert!(!output.contains("--resume"));
+            assert_eq!(session.status(), Status::Done);
         }
 
         // Act — reply (resume command)
@@ -1106,6 +1137,7 @@ mod tests {
             assert!(output.contains("SpawnReply"));
             assert!(output.contains("--resume"));
             assert!(output.contains("latest"));
+            assert_eq!(session.status(), Status::Done);
         }
     }
 
