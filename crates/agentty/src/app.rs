@@ -228,6 +228,7 @@ impl App {
             output,
             prompt,
             running,
+            is_creating_pr: Arc::new(AtomicBool::new(false)),
         });
         self.sessions.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -383,6 +384,77 @@ impl App {
         ))
     }
 
+    pub async fn create_pr_session(&self, session_index: usize) -> Result<(), String> {
+        let session = self
+            .sessions
+            .get(session_index)
+            .ok_or_else(|| "Session not found".to_string())?;
+
+        if session
+            .is_creating_pr
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err("Already processing a request".to_string());
+        }
+
+        // Read base branch from DB
+        let base_branch = self
+            .db
+            .get_base_branch(&session.name)
+            .await?
+            .ok_or_else(|| "No git worktree for this session".to_string())?;
+
+        // Find repo root
+        let repo_root = git::find_git_repo_root(&self.working_dir)
+            .ok_or_else(|| "Failed to find git repository root".to_string())?;
+
+        // Build source branch name
+        let source_branch = format!("agentty/{}", session.name);
+
+        // Build PR title from session prompt (first line only)
+        let title = session
+            .prompt
+            .lines()
+            .next()
+            .unwrap_or("New Session")
+            .to_string();
+
+        let is_creating_pr = Arc::clone(&session.is_creating_pr);
+        let output = Arc::clone(&session.output);
+        let folder = session.folder.clone();
+
+        is_creating_pr.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // Perform PR creation in background
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                git::create_pr(&repo_root, &source_branch, &base_branch, &title)
+            })
+            .await;
+
+            let result_message = match result {
+                Ok(Ok(msg)) => format!("\n[PR] {msg}\n"),
+                Ok(Err(err)) => format!("\n[PR Error] {err}\n"),
+                Err(e) => format!("\n[PR Error] Join error: {e}\n"),
+            };
+
+            if let Ok(mut buf) = output.lock() {
+                buf.push_str(&result_message);
+            }
+            let _ = std::fs::OpenOptions::new()
+                .append(true)
+                .open(folder.join(SESSION_DATA_DIR).join("output.txt"))
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    write!(f, "{result_message}")
+                });
+
+            is_creating_pr.store(false, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        Ok(())
+    }
+
     async fn load_sessions(base: &Path, db: &Database) -> Vec<Session> {
         let db_rows = db.load_sessions().await.unwrap_or_default();
         let mut sessions: Vec<Session> = db_rows
@@ -403,6 +475,7 @@ impl App {
                     output: Arc::new(Mutex::new(output_text)),
                     prompt,
                     running: Arc::new(AtomicBool::new(false)),
+                    is_creating_pr: Arc::new(AtomicBool::new(false)),
                 })
             })
             .collect();
@@ -591,6 +664,7 @@ mod tests {
             output: Arc::new(Mutex::new(String::new())),
             prompt: prompt.to_string(),
             running: Arc::new(AtomicBool::new(false)),
+            is_creating_pr: Arc::new(AtomicBool::new(false)),
         });
         if app.table_state.selected().is_none() {
             app.table_state.select(Some(0));
@@ -1263,6 +1337,25 @@ mod tests {
             result
                 .expect_err("should be error")
                 .contains("Session not found")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_pr_session_no_git() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(dir.path().to_path_buf()).await;
+        add_manual_session(&mut app, dir.path(), "manual01", "Test");
+
+        // Act
+        let result = app.create_pr_session(0).await;
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("No git worktree")
         );
     }
 }

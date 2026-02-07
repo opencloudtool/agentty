@@ -324,6 +324,78 @@ pub fn get_ahead_behind(repo_path: &Path) -> Result<(u32, u32), String> {
     }
 }
 
+/// Pushes the source branch to origin and creates a Pull Request via GitHub
+/// CLI.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository root
+/// * `source_branch` - Name of the branch to push and create PR from
+/// * `target_branch` - Name of the base branch for the PR
+/// * `title` - Title for the Pull Request
+///
+/// # Returns
+/// Ok(url) on success, Err(msg) with detailed error message on failure
+pub fn create_pr(
+    repo_path: &Path,
+    source_branch: &str,
+    target_branch: &str,
+    title: &str,
+) -> Result<String, String> {
+    // 1. Push source branch to origin
+    let output = Command::new("git")
+        .args(["push", "-u", "origin", source_branch])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git push: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Git push failed: {}", stderr.trim()));
+    }
+
+    // 2. Create PR via gh
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "create",
+            "--base",
+            target_branch,
+            "--head",
+            source_branch,
+            "--title",
+            title,
+            "--body",
+            "Created by Agentty",
+        ])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute gh pr create: {e}"))?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // 3. If PR already exists, fetch its URL
+    if stderr.contains("already exists") {
+        let view_output = Command::new("gh")
+            .args(["pr", "view", source_branch, "--json", "url", "--jq", ".url"])
+            .current_dir(repo_path)
+            .output()
+            .map_err(|e| format!("Failed to execute gh pr view: {e}"))?;
+
+        if view_output.status.success() {
+            let url = String::from_utf8_lossy(&view_output.stdout)
+                .trim()
+                .to_string();
+            return Ok(format!("Updated existing PR: {url}"));
+        }
+    }
+
+    Err(format!("GitHub CLI failed: {}", stderr.trim()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

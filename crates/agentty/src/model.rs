@@ -90,11 +90,16 @@ pub struct Session {
     pub output: Arc<Mutex<String>>,
     pub prompt: String,
     pub running: Arc<AtomicBool>,
+    pub is_creating_pr: Arc<AtomicBool>,
 }
 
 impl Session {
     pub fn status(&self) -> Status {
-        if self.running.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.running.load(std::sync::atomic::Ordering::Relaxed)
+            || self
+                .is_creating_pr
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
             Status::InProgress
         } else {
             Status::Done
@@ -149,9 +154,10 @@ mod tests {
             output: Arc::new(Mutex::new(String::new())),
             prompt: "prompt".to_string(),
             running: Arc::new(AtomicBool::new(true)),
+            is_creating_pr: Arc::new(AtomicBool::new(false)),
         };
 
-        // Act & Assert (InProgress)
+        // Act & Assert (InProgress because running)
         assert_eq!(session.status(), Status::InProgress);
 
         // Act
@@ -161,6 +167,14 @@ mod tests {
 
         // Assert (Done)
         assert_eq!(session.status(), Status::Done);
+
+        // Act
+        session
+            .is_creating_pr
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // Assert (InProgress because processing)
+        assert_eq!(session.status(), Status::InProgress);
     }
 
     #[test]

@@ -278,6 +278,29 @@ async fn main() -> io::Result<()> {
                                         });
                                 }
                             }
+                            KeyCode::Char('p') => {
+                                if let Err(e) = app.create_pr_session(session_idx).await {
+                                    // Log immediate errors (e.g. "Already processing") to output
+                                    if let Some(session) = app.sessions.get(session_idx) {
+                                        let err_msg = format!("\n[PR Error] {e}\n");
+                                        if let Ok(mut buf) = session.output.lock() {
+                                            buf.push_str(&err_msg);
+                                        }
+                                        let _ = std::fs::OpenOptions::new()
+                                            .append(true)
+                                            .open(
+                                                session
+                                                    .folder
+                                                    .join(SESSION_DATA_DIR)
+                                                    .join("output.txt"),
+                                            )
+                                            .and_then(|mut f| {
+                                                use std::io::Write;
+                                                write!(f, "{err_msg}")
+                                            });
+                                    }
+                                }
+                            }
                             _ => {}
                         }
 

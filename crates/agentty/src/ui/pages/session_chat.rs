@@ -73,8 +73,17 @@ impl Page for SessionChatPage<'_> {
                     }
                 }
 
+                let msg = if session
+                    .is_creating_pr
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    "Creating PR..."
+                } else {
+                    "Thinking..."
+                };
+
                 lines.push(Line::from(vec![Span::styled(
-                    format!("{} Thinking...", Icon::current_spinner()),
+                    format!("{} {}", Icon::current_spinner(), msg),
                     Style::default().fg(Color::Yellow),
                 )]));
             }
@@ -102,7 +111,7 @@ impl Page for SessionChatPage<'_> {
                 ChatInput::new(" Reply ", input).render(f, bottom_area);
             } else {
                 let help_message = Paragraph::new(
-                    "q: back | r: reply | d: diff | c: commit | m: merge | j/k: scroll",
+                    "q: back | r: reply | d: diff | c: commit | p: pr | m: merge | j/k: scroll",
                 )
                 .style(Style::default().fg(Color::Gray));
                 f.render_widget(help_message, bottom_area);
