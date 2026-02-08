@@ -6,7 +6,7 @@ use std::time::Duration;
 use agentty::agent::AgentKind;
 use agentty::app::{AGENTTY_WORKSPACE, App};
 use agentty::db::{DB_DIR, DB_FILE, Database};
-use agentty::model::{AppMode, PaletteCommand, PaletteFocus};
+use agentty::model::{AppMode, InputState, PaletteCommand, PaletteFocus};
 use agentty::ui;
 use crossterm::cursor::Show;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -30,8 +30,8 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
         let mut stdout = io::stdout();
+        let _ = disable_raw_mode();
         let _ = execute!(stdout, LeaveAlternateScreen, Show);
     }
 }
@@ -228,7 +228,7 @@ async fn handle_key_event(
             }
             KeyCode::Char('a') => {
                 app.mode = AppMode::Prompt {
-                    input: String::new(),
+                    input: InputState::new(),
                 };
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -291,7 +291,7 @@ async fn handle_key_event(
                 KeyCode::Char('r') => {
                     app.mode = AppMode::Reply {
                         session_index: session_idx,
-                        input: String::new(),
+                        input: InputState::new(),
                         scroll_offset: new_scroll,
                     };
                 }
@@ -386,11 +386,14 @@ async fn handle_key_event(
             let session_index = *session_index;
             let scroll_snapshot = *scroll_offset;
             match key.code {
+                KeyCode::Enter if should_insert_newline(key) => {
+                    input.insert_newline();
+                }
                 KeyCode::Enter => {
-                    let prompt = input.clone();
+                    let prompt = input.take_text();
                     app.mode = AppMode::View {
                         session_index,
-                        scroll_offset: None, // Reset scroll on new message
+                        scroll_offset: None,
                     };
                     if !prompt.is_empty() {
                         app.reply(session_index, &prompt);
@@ -408,23 +411,47 @@ async fn handle_key_event(
                         scroll_offset: scroll_snapshot,
                     };
                 }
-                KeyCode::Char(c) => {
-                    input.push(c);
+                KeyCode::Left => {
+                    input.move_left();
+                }
+                KeyCode::Right => {
+                    input.move_right();
+                }
+                KeyCode::Up => {
+                    input.move_up();
+                }
+                KeyCode::Down => {
+                    input.move_down();
+                }
+                KeyCode::Home => {
+                    input.move_home();
+                }
+                KeyCode::End => {
+                    input.move_end();
                 }
                 KeyCode::Backspace => {
-                    input.pop();
+                    input.delete_backward();
+                }
+                KeyCode::Delete => {
+                    input.delete_forward();
+                }
+                KeyCode::Char(c) => {
+                    input.insert_char(c);
                 }
                 _ => {}
             }
         }
         AppMode::Prompt { input } => match key.code {
+            KeyCode::Enter if should_insert_newline(key) => {
+                input.insert_newline();
+            }
             KeyCode::Enter => {
-                let prompt = input.clone();
+                let prompt = input.take_text();
                 app.mode = AppMode::List;
                 if !prompt.is_empty() {
                     if let Err(error) = app.add_session(prompt).await {
                         app.mode = AppMode::Prompt {
-                            input: format!("Error: {error}"),
+                            input: InputState::with_text(format!("Error: {error}")),
                         };
                     }
                 }
@@ -435,11 +462,32 @@ async fn handle_key_event(
             KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                 app.mode = AppMode::List;
             }
-            KeyCode::Char(c) => {
-                input.push(c);
+            KeyCode::Left => {
+                input.move_left();
+            }
+            KeyCode::Right => {
+                input.move_right();
+            }
+            KeyCode::Up => {
+                input.move_up();
+            }
+            KeyCode::Down => {
+                input.move_down();
+            }
+            KeyCode::Home => {
+                input.move_home();
+            }
+            KeyCode::End => {
+                input.move_end();
             }
             KeyCode::Backspace => {
-                input.pop();
+                input.delete_backward();
+            }
+            KeyCode::Delete => {
+                input.delete_forward();
+            }
+            KeyCode::Char(c) => {
+                input.insert_char(c);
             }
             _ => {}
         },
@@ -590,4 +638,176 @@ async fn handle_key_event(
         },
     }
     Ok(EventResult::Continue)
+}
+
+fn should_insert_newline(key: KeyEvent) -> bool {
+    is_enter_key(key.code) && key.modifiers.contains(event::KeyModifiers::ALT)
+}
+
+fn is_enter_key(key_code: KeyCode) -> bool {
+    matches!(key_code, KeyCode::Enter | KeyCode::Char('\r' | '\n'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_should_insert_newline_for_alt_enter() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::ALT);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_should_insert_newline_for_alt_shift_enter() {
+        // Arrange
+        let key = KeyEvent::new(
+            KeyCode::Enter,
+            event::KeyModifiers::ALT | event::KeyModifiers::SHIFT,
+        );
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_should_insert_newline_for_alt_carriage_return() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('\r'), event::KeyModifiers::ALT);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_should_insert_newline_for_alt_line_feed() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('\n'), event::KeyModifiers::ALT);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_should_not_insert_newline_for_plain_enter() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::NONE);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_should_not_insert_newline_for_shift_enter() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::SHIFT);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_should_not_insert_newline_for_shift_carriage_return() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('\r'), event::KeyModifiers::SHIFT);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_should_not_insert_newline_for_shift_line_feed() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('\n'), event::KeyModifiers::SHIFT);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_should_not_insert_newline_for_control_enter() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::CONTROL);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_should_not_insert_newline_for_non_enter_key() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('x'), event::KeyModifiers::SHIFT);
+
+        // Act
+        let result = should_insert_newline(key);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_is_enter_key_for_enter() {
+        // Arrange & Act
+        let result = is_enter_key(KeyCode::Enter);
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_enter_key_for_carriage_return() {
+        // Arrange & Act
+        let result = is_enter_key(KeyCode::Char('\r'));
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_enter_key_for_line_feed() {
+        // Arrange & Act
+        let result = is_enter_key(KeyCode::Char('\n'));
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_enter_key_for_other_key() {
+        // Arrange & Act
+        let result = is_enter_key(KeyCode::Char('x'));
+
+        // Assert
+        assert!(!result);
+    }
 }

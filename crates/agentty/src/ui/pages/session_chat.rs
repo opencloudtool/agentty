@@ -37,7 +37,7 @@ impl Page for SessionChatPage<'_> {
     fn render(&mut self, f: &mut Frame, area: Rect) {
         if let Some(session) = self.sessions.get(self.session_index) {
             let bottom_height = if let AppMode::Reply { input, .. } = self.mode {
-                calculate_input_height(area.width.saturating_sub(2), input)
+                calculate_input_height(area.width.saturating_sub(2), input.text())
             } else {
                 1
             };
@@ -104,7 +104,8 @@ impl Page for SessionChatPage<'_> {
             f.render_widget(paragraph, output_area);
 
             if let AppMode::Reply { input, .. } = self.mode {
-                ChatInput::new(" Reply ", input).render(f, bottom_area);
+                ChatInput::new(" Reply ", input.text(), input.cursor, "Type your message")
+                    .render(f, bottom_area);
             } else {
                 let help_message = Paragraph::new(
                     "q: back | r: reply | d: diff | c: commit | p: pr | m: merge | j/k: scroll",

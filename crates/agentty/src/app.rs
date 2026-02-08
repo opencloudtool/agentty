@@ -1648,7 +1648,7 @@ mod tests {
         assert!(
             app.projects
                 .iter()
-                .any(|project| project.path == PathBuf::from("/tmp/test"))
+                .any(|project| project.path == Path::new("/tmp/test"))
         );
     }
 
