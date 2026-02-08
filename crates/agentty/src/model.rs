@@ -319,9 +319,15 @@ pub struct Session {
     pub project_name: String,
     pub prompt: String,
     pub status: Arc<Mutex<Status>>,
+    pub title: Option<String>,
 }
 
 impl Session {
+    /// Returns the display title for this session.
+    pub fn display_title(&self) -> &str {
+        self.title.as_deref().unwrap_or("No title")
+    }
+
     pub fn status(&self) -> Status {
         *self
             .status
@@ -406,6 +412,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_display_title() {
+        // Arrange
+        let session = Session {
+            agent: "gemini".to_string(),
+            folder: PathBuf::new(),
+            name: "abc123".to_string(),
+            output: Arc::new(Mutex::new(String::new())),
+            project_name: String::new(),
+            prompt: String::new(),
+            status: Arc::new(Mutex::new(Status::New)),
+            title: Some("Fix the login bug".to_string()),
+        };
+
+        // Act & Assert
+        assert_eq!(session.display_title(), "Fix the login bug");
+    }
+
+    #[test]
+    fn test_display_title_none() {
+        // Arrange
+        let session = Session {
+            agent: "gemini".to_string(),
+            folder: PathBuf::new(),
+            name: "abc123".to_string(),
+            output: Arc::new(Mutex::new(String::new())),
+            project_name: String::new(),
+            prompt: String::new(),
+            status: Arc::new(Mutex::new(Status::New)),
+            title: None,
+        };
+
+        // Act & Assert
+        assert_eq!(session.display_title(), "No title");
+    }
+
+    #[test]
     fn test_session_status() {
         // Arrange
         let session = Session {
@@ -416,6 +458,7 @@ mod tests {
             project_name: String::new(),
             prompt: "prompt".to_string(),
             status: Arc::new(Mutex::new(Status::Review)),
+            title: None,
         };
 
         // Act & Assert (Review)
@@ -454,6 +497,7 @@ mod tests {
             project_name: String::new(),
             prompt: "prompt".to_string(),
             status: Arc::new(Mutex::new(Status::Done)),
+            title: None,
         };
 
         // Act

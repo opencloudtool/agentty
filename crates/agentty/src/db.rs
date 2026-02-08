@@ -56,6 +56,7 @@ pub struct SessionRow {
     pub name: String,
     pub project_id: Option<i64>,
     pub status: String,
+    pub title: Option<String>,
     pub updated_at: i64,
 }
 
@@ -203,13 +204,14 @@ VALUES (?, ?, ?, ?, ?)
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to insert session: {err}"))?;
+
         Ok(())
     }
 
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
         let rows = sqlx::query(
             r#"
-SELECT name, agent, base_branch, status, project_id, created_at, updated_at
+SELECT name, agent, base_branch, status, title, project_id, created_at, updated_at
 FROM session
 ORDER BY updated_at DESC, name
 "#,
@@ -227,6 +229,7 @@ ORDER BY updated_at DESC, name
                 name: row.get("name"),
                 project_id: row.get("project_id"),
                 status: row.get("status"),
+                title: row.get("title"),
                 updated_at: row.get("updated_at"),
             })
             .collect())
@@ -245,6 +248,23 @@ WHERE name = ?
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to update session status: {err}"))?;
+        Ok(())
+    }
+
+    pub async fn update_session_title(&self, name: &str, title: &str) -> Result<(), String> {
+        sqlx::query(
+            r#"
+UPDATE session
+SET title = ?
+WHERE name = ?
+"#,
+        )
+        .bind(title)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to update session title: {err}"))?;
+
         Ok(())
     }
 
@@ -608,6 +628,46 @@ WHERE name = 'beta'
             sessions[0].updated_at > initial_updated_at,
             "updated_at should be updated by trigger"
         );
+    }
+
+    #[tokio::test]
+    async fn test_update_session_title() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session("sess1", "claude", "main", "New", project_id)
+            .await
+            .expect("failed to insert");
+
+        // Act
+        let result = db.update_session_title("sess1", "Fix the login bug").await;
+
+        // Assert
+        assert!(result.is_ok());
+        let sessions = db.load_sessions().await.expect("failed to load");
+        assert_eq!(sessions[0].title, Some("Fix the login bug".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_insert_session_title_is_null_by_default() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session("sess1", "claude", "main", "New", project_id)
+            .await
+            .expect("failed to insert");
+
+        // Act
+        let sessions = db.load_sessions().await.expect("failed to load");
+
+        // Assert
+        assert_eq!(sessions[0].title, None);
     }
 
     #[tokio::test]

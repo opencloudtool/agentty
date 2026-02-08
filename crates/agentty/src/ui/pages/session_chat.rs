@@ -51,7 +51,7 @@ impl Page for SessionChatPage<'_> {
             let bottom_area = chunks[1];
 
             let status = session.status();
-            let title = format!(" {} — {status} ", session.name);
+            let title = format!(" {} — {status} ", session.display_title());
 
             let output_text = session
                 .output

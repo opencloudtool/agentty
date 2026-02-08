@@ -77,8 +77,10 @@ impl Page for SessionListPage<'_> {
                 let status = session.status();
                 let cells = vec![
                     Cell::from(format!(
-                        "{} [{}][{}]",
-                        session.name, session.project_name, session.agent
+                        "\"{}\" [{}][{}]",
+                        session.display_title(),
+                        session.project_name,
+                        session.agent
                     )),
                     Cell::from(format!("{status}")).style(Style::default().fg(status.color())),
                 ];

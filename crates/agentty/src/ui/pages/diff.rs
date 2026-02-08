@@ -34,7 +34,7 @@ impl Page for DiffPage<'_> {
         let output_area = chunks[0];
         let footer_area = chunks[1];
 
-        let title = format!(" Diff — {} ", self.session.name);
+        let title = format!(" Diff — {} ", self.session.display_title());
 
         let inner_width = output_area.width.saturating_sub(2) as usize;
         let mut lines = Vec::new();

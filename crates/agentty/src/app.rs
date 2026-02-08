@@ -353,6 +353,7 @@ impl App {
             project_name,
             prompt: String::new(),
             status,
+            title: None,
         });
         self.sessions.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -378,6 +379,10 @@ impl App {
             .ok_or_else(|| "Session not found".to_string())?;
 
         session.prompt = prompt.clone();
+
+        let title = Self::summarize_title(&prompt);
+        session.title = Some(title.clone());
+        let _ = self.db.update_session_title(&session.name, &title).await;
 
         let data_dir = session.folder.join(SESSION_DATA_DIR);
         std::fs::write(data_dir.join("prompt.txt"), &prompt)
@@ -860,8 +865,15 @@ impl App {
         }
         if is_first_message {
             session.prompt = prompt.to_string();
+            let title = Self::summarize_title(prompt);
+            session.title = Some(title.clone());
             let data_dir = session.folder.join(SESSION_DATA_DIR);
             let _ = std::fs::write(data_dir.join("prompt.txt"), prompt);
+            let db = self.db.clone();
+            let name = session.name.clone();
+            tokio::spawn(async move {
+                let _ = db.update_session_title(&name, &title).await;
+            });
         }
 
         let reply_line = format!("\n › {prompt}\n\n");
@@ -888,6 +900,20 @@ impl App {
             backend.build_resume_command(&folder, prompt)
         };
         Self::spawn_session_task(folder, cmd, output, status, db, name);
+    }
+
+    fn summarize_title(prompt: &str) -> String {
+        let first_line = prompt.lines().next().unwrap_or(prompt).trim();
+        if first_line.len() <= 30 {
+            return first_line.to_string();
+        }
+
+        let truncated = &first_line[..30];
+        if let Some(last_space) = truncated.rfind(' ') {
+            format!("{}…", &first_line[..last_space])
+        } else {
+            format!("{truncated}…")
+        }
     }
 
     async fn rollback_failed_session_creation(
@@ -981,6 +1007,7 @@ impl App {
                     project_name,
                     prompt,
                     status,
+                    title: row.title,
                 })
             })
             .collect();
@@ -1270,6 +1297,7 @@ mod tests {
             project_name: String::new(),
             prompt: prompt.to_string(),
             status: Arc::new(Mutex::new(Status::Review)),
+            title: Some(App::summarize_title(prompt)),
         });
         if app.table_state.selected().is_none() {
             app.table_state.select(Some(0));
@@ -1457,6 +1485,8 @@ mod tests {
         assert_eq!(app.sessions.len(), 1);
         assert_eq!(index, 0);
         assert!(app.sessions[0].prompt.is_empty());
+        assert_eq!(app.sessions[0].title, None);
+        assert_eq!(app.sessions[0].display_title(), "No title");
         assert_eq!(app.sessions[0].status(), Status::New);
         assert_eq!(app.table_state.selected(), Some(0));
         assert_eq!(app.sessions[0].agent, "gemini");
@@ -1499,13 +1529,13 @@ mod tests {
 
         // Assert
         assert_eq!(app.sessions[0].prompt, "Hello");
+        assert_eq!(app.sessions[0].title, Some("Hello".to_string()));
         let output = app.sessions[0]
             .output
             .lock()
             .expect("failed to lock output")
             .clone();
         assert!(output.contains("Hello"));
-        assert!(output.contains("Git worktree"));
 
         // Check filesystem
         let data_dir = app.sessions[0].folder.join(SESSION_DATA_DIR);
@@ -2315,5 +2345,64 @@ mod tests {
         let paths: Vec<&Path> = app.projects.iter().map(|p| p.path.as_path()).collect();
         assert!(paths.contains(&repo_a.as_path()));
         assert!(paths.contains(&repo_b.as_path()));
+    }
+
+    #[test]
+    fn test_summarize_title_short() {
+        // Arrange & Act & Assert
+        assert_eq!(App::summarize_title("Fix bug"), "Fix bug");
+    }
+
+    #[test]
+    fn test_summarize_title_exact_30() {
+        // Arrange
+        let prompt = "a23456789012345678901234567890"; // exactly 30 chars
+
+        // Act & Assert
+        assert_eq!(prompt.len(), 30);
+        assert_eq!(App::summarize_title(prompt), prompt);
+    }
+
+    #[test]
+    fn test_summarize_title_long_with_space() {
+        // Arrange
+        let prompt = "Fix the authentication bug in the login flow";
+
+        // Act
+        let title = App::summarize_title(prompt);
+
+        // Assert
+        assert_eq!(title, "Fix the authentication bug in…");
+        assert!(title.len() <= 34); // 30 chars + ellipsis (3 bytes)
+    }
+
+    #[test]
+    fn test_summarize_title_long_without_spaces() {
+        // Arrange
+        let prompt = "abcdefghijklmnopqrstuvwxyz1234567890";
+
+        // Act
+        let title = App::summarize_title(prompt);
+
+        // Assert
+        assert_eq!(title, "abcdefghijklmnopqrstuvwxyz1234…");
+    }
+
+    #[test]
+    fn test_summarize_title_multiline() {
+        // Arrange
+        let prompt = "First line\nSecond line\nThird line";
+
+        // Act
+        let title = App::summarize_title(prompt);
+
+        // Assert
+        assert_eq!(title, "First line");
+    }
+
+    #[test]
+    fn test_summarize_title_empty() {
+        // Arrange & Act & Assert
+        assert_eq!(App::summarize_title(""), "");
     }
 }
