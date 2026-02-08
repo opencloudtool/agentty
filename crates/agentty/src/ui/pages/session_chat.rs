@@ -51,13 +51,7 @@ impl Page for SessionChatPage<'_> {
             let bottom_area = chunks[1];
 
             let status = session.status();
-            let status_label = match status {
-                Status::InProgress => "In Progress",
-                Status::Review => "Review",
-                Status::PullRequest => "Pull Request",
-                Status::Done => "Done",
-            };
-            let title = format!(" {} — {} ", session.name, status_label);
+            let title = format!(" {} — {status} ", session.name);
 
             let output_text = session
                 .output

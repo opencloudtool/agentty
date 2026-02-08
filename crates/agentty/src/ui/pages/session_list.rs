@@ -80,8 +80,7 @@ impl Page for SessionListPage<'_> {
                         "{} [{}][{}]",
                         session.name, session.project_name, session.agent
                     )),
-                    Cell::from(format!("{}", status.icon()))
-                        .style(Style::default().fg(status.color())),
+                    Cell::from(format!("{status}")).style(Style::default().fg(status.color())),
                 ];
                 Row::new(cells).height(1)
             });
@@ -89,7 +88,7 @@ impl Page for SessionListPage<'_> {
                 rows,
                 [
                     Constraint::Min(0),
-                    Constraint::Max(6),
+                    Constraint::Max(14),
                     Constraint::Length(1),
                 ],
             )
