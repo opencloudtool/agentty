@@ -383,8 +383,7 @@ impl App {
         std::fs::write(data_dir.join("prompt.txt"), &prompt)
             .map_err(|err| format!("Failed to write session prompt: {err}"))?;
 
-        let hash = session.name.clone();
-        let initial_output = format!(" › {prompt}\n\n[Git worktree: agentty/{hash}]\n\n");
+        let initial_output = format!(" › {prompt}\n\n");
         session.append_output(&initial_output);
 
         let folder = session.folder.clone();
