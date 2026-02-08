@@ -290,7 +290,13 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> 
     Ok(())
 }
 
-/// Returns the output of `git diff` for the given repository path.
+/// Returns the output of `git diff` for the given repository path, including
+/// all changes (created, modified, and deleted files).
+///
+/// Uses `git add --intent-to-add` to mark untracked files in the index, then
+/// `git diff HEAD` to compare the working tree against the last commit. This
+/// shows all changes regardless of staging state. Finally resets the index to
+/// restore the original state.
 ///
 /// # Arguments
 /// * `repo_path` - Path to the git repository or worktree
@@ -298,13 +304,37 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> 
 /// # Returns
 /// The diff output as a string, or an error message on failure
 pub fn diff(repo_path: &Path) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("diff")
+    let intent_to_add = Command::new("git")
+        .args(["add", "-A", "--intent-to-add"])
         .current_dir(repo_path)
         .output()
         .map_err(|e| format!("Failed to execute git: {e}"))?;
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    if !intent_to_add.status.success() {
+        let stderr = String::from_utf8_lossy(&intent_to_add.stderr);
+
+        return Err(format!("Git add --intent-to-add failed: {}", stderr.trim()));
+    }
+
+    let diff_output = Command::new("git")
+        .args(["diff", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {e}"))?;
+
+    let reset = Command::new("git")
+        .arg("reset")
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("Failed to execute git: {e}"))?;
+
+    if !reset.status.success() {
+        let stderr = String::from_utf8_lossy(&reset.stderr);
+
+        return Err(format!("Git reset failed: {}", stderr.trim()));
+    }
+
+    Ok(String::from_utf8_lossy(&diff_output.stdout).into_owned())
 }
 
 /// Fetches from the configured remote.
@@ -1013,6 +1043,62 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         assert!(result.expect("should succeed").is_empty());
+    }
+
+    #[test]
+    fn test_diff_includes_untracked_files() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        fs::write(dir.path().join("new_file.txt"), "hello world").expect("test setup failed");
+
+        // Act
+        let result = diff(dir.path());
+
+        // Assert
+        let output = result.expect("should succeed");
+        assert!(
+            output.contains("new_file.txt"),
+            "Expected untracked file in diff, got: {output}"
+        );
+        assert!(
+            output.contains("hello world"),
+            "Expected file content in diff, got: {output}"
+        );
+
+        // Verify file remains untracked after diff
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git status failed");
+        let status_output = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            status_output.contains("?? new_file.txt"),
+            "Expected file to remain untracked, got: {status_output}"
+        );
+    }
+
+    #[test]
+    fn test_diff_includes_deleted_files() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        fs::remove_file(dir.path().join("README.md")).expect("test setup failed");
+
+        // Act
+        let result = diff(dir.path());
+
+        // Assert
+        let output = result.expect("should succeed");
+        assert!(
+            output.contains("deleted file"),
+            "Expected deleted file in diff, got: {output}"
+        );
+        assert!(
+            output.contains("README.md"),
+            "Expected deleted filename in diff, got: {output}"
+        );
     }
 
     #[test]
