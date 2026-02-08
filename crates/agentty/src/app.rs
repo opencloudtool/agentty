@@ -337,25 +337,14 @@ impl App {
 
         self.backend.setup(&folder);
 
-        let output = Arc::new(Mutex::new(String::new()));
-        let status = Arc::new(Mutex::new(Status::New));
-
-        let project_name = self
-            .working_dir
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
-        self.sessions.push(Session {
-            agent: self.agent_kind.to_string(),
-            folder,
-            name: name.clone(),
-            output,
-            project_name,
-            prompt: String::new(),
-            status,
-            title: None,
-        });
-        self.sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        let existing_sessions = std::mem::take(&mut self.sessions);
+        self.sessions = Self::load_sessions(
+            &self.base_path,
+            &self.db,
+            &self.projects,
+            &existing_sessions,
+        )
+        .await;
 
         let index = self
             .sessions
@@ -966,7 +955,7 @@ impl App {
             .collect();
 
         let db_rows = db.load_sessions().await.unwrap_or_default();
-        let mut sessions: Vec<Session> = db_rows
+        let sessions: Vec<Session> = db_rows
             .into_iter()
             .filter_map(|row| {
                 let folder = base.join(&row.name);
@@ -1011,7 +1000,7 @@ impl App {
                 })
             })
             .collect();
-        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+
         sessions
     }
 
@@ -1693,6 +1682,78 @@ mod tests {
         assert_eq!(app.sessions[0].prompt, "Existing");
         assert_eq!(app.sessions[0].agent, "claude");
         assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_load_existing_sessions_ordered_by_updated_at_desc() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/test", None)
+            .await
+            .expect("failed to upsert project");
+        db.insert_session("alpha", "claude", "main", "Done", project_id)
+            .await
+            .expect("failed to insert alpha");
+        db.insert_session("beta", "gemini", "main", "Done", project_id)
+            .await
+            .expect("failed to insert beta");
+
+        sqlx::query(
+            r#"
+UPDATE session
+SET updated_at = ?
+WHERE name = ?
+"#,
+        )
+        .bind(1_i64)
+        .bind("alpha")
+        .execute(db.pool())
+        .await
+        .expect("failed to update alpha timestamp");
+        sqlx::query(
+            r#"
+UPDATE session
+SET updated_at = ?
+WHERE name = ?
+"#,
+        )
+        .bind(2_i64)
+        .bind("beta")
+        .execute(db.pool())
+        .await
+        .expect("failed to update beta timestamp");
+
+        for session_name in ["alpha", "beta"] {
+            let session_dir = dir.path().join(session_name);
+            let data_dir = session_dir.join(SESSION_DATA_DIR);
+            std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
+            std::fs::write(data_dir.join("prompt.txt"), session_name)
+                .expect("failed to write prompt");
+            std::fs::write(data_dir.join("output.txt"), "output").expect("failed to write output");
+        }
+
+        // Act
+        let app = App::new(
+            dir.path().to_path_buf(),
+            PathBuf::from("/tmp/test"),
+            None,
+            AgentKind::Gemini,
+            Box::new(create_mock_backend()),
+            db,
+        )
+        .await;
+
+        // Assert
+        let session_names: Vec<&str> = app
+            .sessions
+            .iter()
+            .map(|session| session.name.as_str())
+            .collect();
+        assert_eq!(session_names, vec!["beta", "alpha"]);
     }
 
     #[tokio::test]
