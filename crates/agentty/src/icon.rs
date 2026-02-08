@@ -3,19 +3,30 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// A collection of icons used throughout the terminal UI.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
+    /// A downward arrow symbol (↓).
     ArrowDown,
+    /// An upward arrow symbol (↑).
     ArrowUp,
+    /// A check mark symbol (✓).
     Check,
+    /// A cross mark symbol (✗).
     Cross,
+    /// A git branch symbol (●).
     GitBranch,
+    /// A pending status symbol (·).
     Pending,
+    /// A spinner symbol frame.
     Spinner(usize),
+    /// A warning symbol (!).
     Warn,
 }
 
 impl Icon {
+    /// Returns a `Spinner` icon with the frame index calculated based on
+    /// current time.
     pub fn current_spinner() -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -24,6 +35,7 @@ impl Icon {
         Icon::Spinner((now / 100) as usize)
     }
 
+    /// Returns the string representation of the icon.
     pub fn as_str(self) -> &'static str {
         match self {
             Icon::ArrowDown => "↓",
