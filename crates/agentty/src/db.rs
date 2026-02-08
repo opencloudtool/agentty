@@ -70,8 +70,12 @@ impl Database {
         git_branch: Option<&str>,
     ) -> Result<i64, String> {
         sqlx::query(
-            "INSERT INTO project (path, git_branch) VALUES (?, ?)
-             ON CONFLICT(path) DO UPDATE SET git_branch = excluded.git_branch",
+            r#"
+INSERT INTO project (path, git_branch)
+VALUES (?, ?)
+ON CONFLICT(path) DO UPDATE
+SET git_branch = excluded.git_branch
+"#,
         )
         .bind(path)
         .bind(git_branch)
@@ -79,20 +83,32 @@ impl Database {
         .await
         .map_err(|err| format!("Failed to upsert project: {err}"))?;
 
-        let row = sqlx::query("SELECT id FROM project WHERE path = ?")
-            .bind(path)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|err| format!("Failed to fetch project id: {err}"))?;
+        let row = sqlx::query(
+            r#"
+SELECT id
+FROM project
+WHERE path = ?
+"#,
+        )
+        .bind(path)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to fetch project id: {err}"))?;
 
         Ok(row.get("id"))
     }
 
     pub async fn load_projects(&self) -> Result<Vec<ProjectRow>, String> {
-        let rows = sqlx::query("SELECT id, path, git_branch FROM project ORDER BY path")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|err| format!("Failed to load projects: {err}"))?;
+        let rows = sqlx::query(
+            r#"
+SELECT id, path, git_branch
+FROM project
+ORDER BY path
+"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to load projects: {err}"))?;
 
         Ok(rows
             .iter()
@@ -105,11 +121,17 @@ impl Database {
     }
 
     pub async fn get_project(&self, id: i64) -> Result<Option<ProjectRow>, String> {
-        let row = sqlx::query("SELECT id, path, git_branch FROM project WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|err| format!("Failed to get project: {err}"))?;
+        let row = sqlx::query(
+            r#"
+SELECT id, path, git_branch
+FROM project
+WHERE id = ?
+"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to get project: {err}"))?;
 
         Ok(row.map(|row| ProjectRow {
             git_branch: row.get("git_branch"),
@@ -119,11 +141,17 @@ impl Database {
     }
 
     pub async fn backfill_sessions_project(&self, project_id: i64) -> Result<(), String> {
-        sqlx::query("UPDATE session SET project_id = ? WHERE project_id IS NULL")
-            .bind(project_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| format!("Failed to backfill sessions: {err}"))?;
+        sqlx::query(
+            r#"
+UPDATE session
+SET project_id = ?
+WHERE project_id IS NULL
+"#,
+        )
+        .bind(project_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to backfill sessions: {err}"))?;
         Ok(())
     }
 
@@ -162,8 +190,10 @@ impl Database {
         project_id: i64,
     ) -> Result<(), String> {
         sqlx::query(
-            "INSERT INTO session (name, agent, base_branch, status, project_id) VALUES (?, ?, ?, \
-             ?, ?)",
+            r#"
+INSERT INTO session (name, agent, base_branch, status, project_id)
+VALUES (?, ?, ?, ?, ?)
+"#,
         )
         .bind(name)
         .bind(agent)
@@ -178,8 +208,11 @@ impl Database {
 
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
         let rows = sqlx::query(
-            "SELECT name, agent, base_branch, status, project_id, created_at, updated_at FROM \
-             session ORDER BY updated_at DESC, name",
+            r#"
+SELECT name, agent, base_branch, status, project_id, created_at, updated_at
+FROM session
+ORDER BY updated_at DESC, name
+"#,
         )
         .fetch_all(&self.pool)
         .await
@@ -200,30 +233,47 @@ impl Database {
     }
 
     pub async fn update_session_status(&self, name: &str, status: &str) -> Result<(), String> {
-        sqlx::query("UPDATE session SET status = ? WHERE name = ?")
-            .bind(status)
-            .bind(name)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| format!("Failed to update session status: {err}"))?;
+        sqlx::query(
+            r#"
+UPDATE session
+SET status = ?
+WHERE name = ?
+"#,
+        )
+        .bind(status)
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to update session status: {err}"))?;
         Ok(())
     }
 
     pub async fn delete_session(&self, name: &str) -> Result<(), String> {
-        sqlx::query("DELETE FROM session WHERE name = ?")
-            .bind(name)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| format!("Failed to delete session: {err}"))?;
+        sqlx::query(
+            r#"
+DELETE FROM session
+WHERE name = ?
+"#,
+        )
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to delete session: {err}"))?;
         Ok(())
     }
 
     pub async fn get_base_branch(&self, name: &str) -> Result<Option<String>, String> {
-        let row = sqlx::query("SELECT base_branch FROM session WHERE name = ?")
-            .bind(name)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|err| format!("Failed to get base branch: {err}"))?;
+        let row = sqlx::query(
+            r#"
+SELECT base_branch
+FROM session
+WHERE name = ?
+"#,
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to get base branch: {err}"))?;
 
         Ok(row.map(|row| row.get("base_branch")))
     }
@@ -400,13 +450,18 @@ mod tests {
             .await
             .expect("failed to upsert");
         // Insert session without project_id (simulates legacy data)
-        sqlx::query("INSERT INTO session (name, agent, base_branch) VALUES (?, ?, ?)")
-            .bind("orphan")
-            .bind("claude")
-            .bind("main")
-            .execute(db.pool())
-            .await
-            .expect("failed to insert");
+        sqlx::query(
+            r#"
+INSERT INTO session (name, agent, base_branch)
+VALUES (?, ?, ?)
+"#,
+        )
+        .bind("orphan")
+        .bind("claude")
+        .bind("main")
+        .execute(db.pool())
+        .await
+        .expect("failed to insert");
 
         // Act
         db.backfill_sessions_project(project_id)
@@ -490,14 +545,26 @@ mod tests {
         db.insert_session("alpha", "gemini", "develop", "InProgress", project_id)
             .await
             .expect("failed to insert");
-        sqlx::query("UPDATE session SET updated_at = 1 WHERE name = 'alpha'")
-            .execute(db.pool())
-            .await
-            .expect("failed to set alpha timestamp");
-        sqlx::query("UPDATE session SET updated_at = 2 WHERE name = 'beta'")
-            .execute(db.pool())
-            .await
-            .expect("failed to set beta timestamp");
+        sqlx::query(
+            r#"
+UPDATE session
+SET updated_at = 1
+WHERE name = 'alpha'
+"#,
+        )
+        .execute(db.pool())
+        .await
+        .expect("failed to set alpha timestamp");
+        sqlx::query(
+            r#"
+UPDATE session
+SET updated_at = 2
+WHERE name = 'beta'
+"#,
+        )
+        .execute(db.pool())
+        .await
+        .expect("failed to set beta timestamp");
 
         // Act
         let sessions = db.load_sessions().await.expect("failed to load");
