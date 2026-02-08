@@ -17,6 +17,7 @@ TUI tool to manage agents.
 - **Release Profile:** Maintain optimized release settings in `Cargo.toml` (`codegen-units=1`, `lto=true`, `opt-level="s"`, `strip=true`) to minimize binary size.
 - Use `ratatui` for terminal UI development.
 - **Constructors:** Only add `new()` and `Default` when there is actual initialization logic or fields with meaningful defaults. For unit structs or zero-field structs, construct directly (e.g., `MyStruct`) — do not add boilerplate `new()` / `Default` impls.
+- **Constructors:** Prefer `Type::new(...)` associated constructors over standalone helper functions when constructing that type.
 - **Function Ordering:** Order functions to allow reading from top to bottom (caller before callee):
     - Public functions first.
     - Followed by less public functions (e.g., `pub(crate)`).
@@ -32,6 +33,8 @@ TUI tool to manage agents.
 - **Clippy Compliance:** Do not bypass clippy rules with `#[allow()]`. Adopt the solution that complies with the rule.
 - **Code Grouping:** Within functions, separate related code blocks with empty lines. Group lines that belong together logically and add blank lines between distinct groups.
 - **Return Spacing:** Always add an empty line before return statements, both explicit (`return`) and implicit (last expression). Exception: single-line blocks where the return is the only statement.
+- **Impl Placement:** Place each standalone/inherent `impl StructName { ... }` block immediately below its `struct` declaration, then place trait impls (e.g., `impl Trait for StructName`) after it.
+- **Helper Placement:** Place helper functions used by only one struct inside that struct’s `impl`; keep only shared helpers at file scope.
 
 ## Database Standards (SQLx + SQLite)
 
@@ -138,6 +141,7 @@ already applied — just re-run to confirm everything passes.
   - File names: `model.rs`, `AGENTS.md`
   - Configuration values: `workspace = true`
 - This improves readability and clearly distinguishes code from prose.
+- **Rust Docs:** Add `///` doc comments to structs and all public functions/types in touched Rust files.
 
 ## Git Conventions
 - When preparing a commit, gather context in a single tool call by chaining independent commands: `git status && git diff && git log -n 3 --format="---%n%B"`. This provides working tree status, staged/unstaged changes, and recent commit history for style consistency — all in one invocation.
@@ -175,7 +179,7 @@ git worktree prune
 ```
 
 ## Agent Instructions
-- **MANDATORY:** After every user instruction that establishes a preference, convention, or workflow change (e.g., "run checks with autofix", "use X instead of Y", "always do Z"), immediately update the relevant `AGENTS.md` file so the instruction persists across sessions. If unsure whether something qualifies, update anyway — over-documenting is better than losing context. Both `CLAUDE.md` and `GEMINI.md` are symlinks to `AGENTS.md`, so a single update keeps all AI assistants in sync.
+- **MANDATORY:** Update the relevant `AGENTS.md` file only when a user instruction establishes a critical, persistent preference, convention, or workflow rule that should apply across future sessions (e.g., quality gates, coding standards, review policy, process constraints). Do not update `AGENTS.md` for routine one-off implementation requests in regular source files. Both `CLAUDE.md` and `GEMINI.md` are symlinks to `AGENTS.md`, so a single update keeps all AI assistants in sync.
 - **Directory Indexing:** Maintain the "Directory Index" section in the local `AGENTS.md`. If you create, rename, or delete a file/directory, update the index immediately to reflect the change.
 - **Context First:** Before listing a directory or reading source code, ALWAYS read the local `AGENTS.md` first. This provides immediate context on the folder structure and file purposes, reducing the need for broad discovery actions.
 - **Test Coverage:** Try to maintain 100% test coverage when it makes sense. Ensure critical logic is always covered, but pragmatic exceptions are allowed for boilerplate or untestable I/O.

@@ -137,8 +137,7 @@ impl App {
     }
 
     pub fn start_health_checks(&mut self) {
-        self.health_checks =
-            health::run_health_checks(self.db.pool().clone(), self.git_branch.clone());
+        self.health_checks = health::run_health_checks(self.git_branch.clone());
     }
 
     pub async fn switch_project(&mut self, project_id: i64) -> Result<(), String> {

@@ -10,11 +10,13 @@ use crate::health::{HealthEntry, HealthStatus};
 use crate::icon::Icon;
 use crate::ui::Page;
 
+/// Health page renderer for showing current health checks and statuses.
 pub struct HealthPage<'a> {
     health_checks: &'a Arc<Mutex<Vec<HealthEntry>>>,
 }
 
 impl<'a> HealthPage<'a> {
+    /// Creates a new health page bound to shared health-check entries.
     pub fn new(health_checks: &'a Arc<Mutex<Vec<HealthEntry>>>) -> Self {
         Self { health_checks }
     }
@@ -42,10 +44,6 @@ impl Page for HealthPage<'_> {
 
         for entry in &entries {
             lines.push(render_entry_line(entry, "   "));
-
-            for child in &entry.children {
-                lines.push(render_entry_line(child, "      "));
-            }
         }
 
         let block = Block::default()
@@ -67,7 +65,6 @@ fn render_entry_line<'a>(entry: &HealthEntry, indent: &'a str) -> Line<'a> {
         HealthStatus::Pending => (Icon::Pending, Color::DarkGray),
         HealthStatus::Running => (Icon::current_spinner(), Color::Cyan),
         HealthStatus::Pass => (Icon::Check, Color::Green),
-        HealthStatus::Warn => (Icon::Warn, Color::Yellow),
         HealthStatus::Fail => (Icon::Cross, Color::Red),
     };
 
