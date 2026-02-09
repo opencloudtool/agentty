@@ -11,7 +11,7 @@ use ratatui::widgets::TableState;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use uuid::Uuid;
 
-use crate::agent::{AgentBackend, AgentKind};
+use crate::agent::{AgentBackend, AgentKind, AgentModel};
 use crate::db::Database;
 use crate::git;
 use crate::health::{self, HealthEntry};
@@ -21,6 +21,17 @@ pub const AGENTTY_WORKSPACE: &str = "/var/tmp/.agentty";
 const PR_MERGE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 type SessionHandles = (Arc<Mutex<String>>, Arc<Mutex<Status>>);
+
+struct PrPollTaskInput {
+    db: Database,
+    folder: PathBuf,
+    id: String,
+    output: Arc<Mutex<String>>,
+    status: Arc<Mutex<Status>>,
+    source_branch: String,
+    repo_root: Option<PathBuf>,
+    pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
 
 /// Holds all in-memory state related to session listing and refresh tracking.
 pub struct SessionState {
@@ -55,8 +66,6 @@ pub struct App {
     pub projects: Vec<Project>,
     pub session_state: SessionState,
     active_project_id: i64,
-    agent_kind: AgentKind,
-    backend: Box<dyn AgentBackend>,
     base_path: PathBuf,
     db: Database,
     git_branch: Option<String>,
@@ -73,8 +82,6 @@ impl App {
         base_path: PathBuf,
         working_dir: PathBuf,
         git_branch: Option<String>,
-        agent_kind: AgentKind,
-        backend: Box<dyn AgentBackend>,
         db: Database,
     ) -> Self {
         let active_project_id = db
@@ -121,8 +128,6 @@ impl App {
                 sessions_updated_at_max,
             ),
             active_project_id,
-            agent_kind,
-            backend,
             base_path,
             db,
             git_branch,
@@ -141,15 +146,6 @@ impl App {
 
     pub fn active_project_id(&self) -> i64 {
         self.active_project_id
-    }
-
-    pub fn agent_kind(&self) -> AgentKind {
-        self.agent_kind
-    }
-
-    pub fn set_agent_kind(&mut self, agent_kind: AgentKind) {
-        self.agent_kind = agent_kind;
-        self.backend = agent_kind.create_backend();
     }
 
     pub fn working_dir(&self) -> &PathBuf {
@@ -382,7 +378,8 @@ impl App {
             .db
             .insert_session(
                 &session_id,
-                &self.agent_kind.to_string(),
+                &AgentKind::Gemini.to_string(),
+                AgentKind::Gemini.default_model().as_str(),
                 base_branch,
                 &Status::New.to_string(),
                 self.active_project_id,
@@ -401,7 +398,7 @@ impl App {
             return Err(format!("Failed to save session metadata: {err}"));
         }
 
-        self.backend.setup(&folder);
+        AgentKind::Gemini.create_backend().setup(&folder);
 
         let existing_sessions = std::mem::take(&mut self.session_state.sessions);
         self.session_state.sessions = Self::load_sessions(
@@ -435,7 +432,7 @@ impl App {
             .get_mut(session_index)
             .ok_or_else(|| "Session not found".to_string())?;
 
-        session.prompt = prompt.clone();
+        session.prompt.clone_from(&prompt);
 
         let title = Self::summarize_title(&prompt);
         session.title = Some(title.clone());
@@ -453,10 +450,15 @@ impl App {
         let status = Arc::clone(&session.status);
         let name = session.id.clone();
         let db = self.db.clone();
+        let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
 
         let _ = Self::update_status(&status, &db, &name, Status::InProgress).await;
 
-        let cmd = self.backend.build_start_command(&folder, &prompt);
+        let cmd = session_agent.create_backend().build_start_command(
+            &folder,
+            &prompt,
+            session_model.as_str(),
+        );
         Self::spawn_session_task(folder, cmd, output, status, db, name);
 
         Ok(())
@@ -467,14 +469,45 @@ impl App {
         let Some(session_index) = self.session_index_for_id(session_id) else {
             return;
         };
-        let session_agent = self
-            .session_state
-            .sessions
-            .get(session_index)
-            .and_then(|s| s.agent.parse::<AgentKind>().ok())
-            .unwrap_or(self.agent_kind);
+        let Some(session) = self.session_state.sessions.get(session_index) else {
+            return;
+        };
+        let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
         let backend = session_agent.create_backend();
-        self.reply_with_backend(session_id, prompt, backend.as_ref());
+        self.reply_with_backend(session_id, prompt, backend.as_ref(), session_model.as_str());
+    }
+
+    /// Updates and persists the agent/model pair for a single session.
+    pub fn set_session_agent_and_model(
+        &mut self,
+        session_id: &str,
+        session_agent: AgentKind,
+        session_model: AgentModel,
+    ) -> Result<(), String> {
+        if session_model.kind() != session_agent {
+            return Err("Model does not belong to selected agent".to_string());
+        }
+
+        let Some(session_index) = self.session_index_for_id(session_id) else {
+            return Err("Session not found".to_string());
+        };
+        let Some(session) = self.session_state.sessions.get_mut(session_index) else {
+            return Err("Session not found".to_string());
+        };
+
+        let agent = session_agent.to_string();
+        let model = session_model.as_str().to_string();
+
+        session.agent.clone_from(&agent);
+        session.model.clone_from(&model);
+
+        let db = self.db.clone();
+        let id = session_id.to_string();
+        tokio::spawn(async move {
+            let _ = db.update_session_agent_and_model(&id, &agent, &model).await;
+        });
+
+        Ok(())
     }
 
     pub fn selected_session(&self) -> Option<&Session> {
@@ -710,16 +743,16 @@ impl App {
                     Session::write_output(&output, &folder, &format!("\n[PR] {message}\n"));
                     if Self::update_status(&status, &db, &name, Status::PullRequest).await {
                         let repo_root = Self::resolve_repo_root_from_worktree(&folder);
-                        Self::spawn_pr_poll_task(
+                        Self::spawn_pr_poll_task(PrPollTaskInput {
                             db,
                             folder,
-                            name.clone(),
+                            id: name.clone(),
                             output,
                             status,
                             source_branch,
                             repo_root,
                             pr_poll_cancel,
-                        );
+                        });
                     } else {
                         Session::write_output(
                             &output,
@@ -755,16 +788,16 @@ impl App {
             }
 
             let source_branch = format!("agentty/{}", session.id);
-            Self::spawn_pr_poll_task(
-                self.db.clone(),
-                session.folder.clone(),
-                session.id.clone(),
-                Arc::clone(&session.output),
-                Arc::clone(&session.status),
+            Self::spawn_pr_poll_task(PrPollTaskInput {
+                db: self.db.clone(),
+                folder: session.folder.clone(),
+                id: session.id.clone(),
+                output: Arc::clone(&session.output),
+                status: Arc::clone(&session.status),
                 source_branch,
-                Self::resolve_repo_root_from_worktree(&session.folder),
-                Arc::clone(&self.pr_poll_cancel),
-            );
+                repo_root: Self::resolve_repo_root_from_worktree(&session.folder),
+                pr_poll_cancel: Arc::clone(&self.pr_poll_cancel),
+            });
         }
     }
 
@@ -811,16 +844,18 @@ impl App {
         }
     }
 
-    fn spawn_pr_poll_task(
-        db: Database,
-        folder: PathBuf,
-        id: String,
-        output: Arc<Mutex<String>>,
-        status: Arc<Mutex<Status>>,
-        source_branch: String,
-        repo_root: Option<PathBuf>,
-        pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    ) {
+    fn spawn_pr_poll_task(input: PrPollTaskInput) {
+        let PrPollTaskInput {
+            db,
+            folder,
+            id,
+            output,
+            status,
+            source_branch,
+            repo_root,
+            pr_poll_cancel,
+        } = input;
+
         let cancel = Arc::new(AtomicBool::new(false));
         if let Ok(mut polling) = pr_poll_cancel.lock() {
             if polling.contains_key(&id) {
@@ -934,7 +969,13 @@ impl App {
         git_dir.parent()?.parent()?.parent().map(Path::to_path_buf)
     }
 
-    fn reply_with_backend(&mut self, session_id: &str, prompt: &str, backend: &dyn AgentBackend) {
+    fn reply_with_backend(
+        &mut self,
+        session_id: &str,
+        prompt: &str,
+        backend: &dyn AgentBackend,
+        model: &str,
+    ) {
         let Some(session_index) = self.session_index_for_id(session_id) else {
             return;
         };
@@ -984,11 +1025,23 @@ impl App {
         }
 
         let cmd = if is_first_message {
-            backend.build_start_command(&folder, prompt)
+            backend.build_start_command(&folder, prompt, model)
         } else {
-            backend.build_resume_command(&folder, prompt)
+            backend.build_resume_command(&folder, prompt, model)
         };
         Self::spawn_session_task(folder, cmd, output, status, db, name);
+    }
+
+    fn resolve_session_agent_and_model(session: &Session) -> (AgentKind, AgentModel) {
+        let session_agent = session
+            .agent
+            .parse::<AgentKind>()
+            .unwrap_or(AgentKind::Gemini);
+        let session_model = session_agent
+            .parse_model(&session.model)
+            .unwrap_or_else(|| session_agent.default_model());
+
+        (session_agent, session_model)
     }
 
     fn summarize_title(prompt: &str) -> String {
@@ -1124,6 +1177,12 @@ impl App {
                 let output_text =
                     std::fs::read_to_string(data_dir.join("output.txt")).unwrap_or_default();
                 let status = row.status.parse::<Status>().unwrap_or(Status::Done);
+                let session_agent = row.agent.parse::<AgentKind>().unwrap_or(AgentKind::Gemini);
+                let session_model = session_agent
+                    .parse_model(&row.model)
+                    .unwrap_or_else(|| session_agent.default_model())
+                    .as_str()
+                    .to_string();
                 let project_name = row
                     .project_id
                     .and_then(|id| project_names.get(&id))
@@ -1149,6 +1208,7 @@ impl App {
                     agent: row.agent,
                     folder,
                     id: row.id,
+                    model: session_model,
                     output,
                     project_name,
                     prompt,
@@ -1343,18 +1403,9 @@ mod tests {
 
     fn create_mock_backend() -> MockAgentBackend {
         let mut mock = MockAgentBackend::new();
-        mock.expect_setup().returning(|_| {});
-        mock.expect_build_start_command().returning(|folder, _| {
+        mock.expect_build_start_command().returning(|folder, _, _| {
             let mut cmd = Command::new("echo");
             cmd.arg("mock-start")
-                .current_dir(folder)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
-            cmd
-        });
-        mock.expect_build_resume_command().returning(|folder, _| {
-            let mut cmd = Command::new("echo");
-            cmd.arg("mock-resume")
                 .current_dir(folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -1368,15 +1419,7 @@ mod tests {
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        App::new(
-            path,
-            working_dir,
-            None,
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
-            db,
-        )
-        .await
+        App::new(path, working_dir, None, db).await
     }
 
     fn setup_test_git_repo(path: &Path) {
@@ -1422,8 +1465,6 @@ mod tests {
             path.to_path_buf(),
             path.to_path_buf(),
             Some("main".to_string()),
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
             db,
         )
         .await
@@ -1439,6 +1480,7 @@ mod tests {
             agent: "gemini".to_string(),
             folder,
             id: id.to_string(),
+            model: "gemini-3-flash-preview".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: prompt.to_string(),
@@ -1457,9 +1499,13 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        app.start_session(&session_id, prompt.to_string())
-            .await
-            .expect("failed to start session");
+        let start_backend = create_mock_backend();
+        app.reply_with_backend(
+            &session_id,
+            prompt,
+            &start_backend,
+            "gemini-3-flash-preview",
+        );
     }
 
     async fn wait_for_status(session: &Session, expected: Status) {
@@ -1487,16 +1533,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_kind_getter() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let app = new_test_app(dir.path().to_path_buf()).await;
-
-        // Act & Assert
-        assert_eq!(app.agent_kind(), AgentKind::Gemini);
-    }
-
-    #[tokio::test]
     async fn test_working_dir_getter() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
@@ -1521,8 +1557,6 @@ mod tests {
             dir.path().to_path_buf(),
             working_dir,
             Some("main".to_string()),
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
             db,
         )
         .await;
@@ -1545,20 +1579,6 @@ mod tests {
 
         // Assert
         assert_eq!(branch, None);
-    }
-
-    #[tokio::test]
-    async fn test_set_agent_kind() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app(dir.path().to_path_buf()).await;
-        assert_eq!(app.agent_kind(), AgentKind::Gemini);
-
-        // Act
-        app.set_agent_kind(AgentKind::Claude);
-
-        // Assert
-        assert_eq!(app.agent_kind(), AgentKind::Claude);
     }
 
     #[tokio::test]
@@ -1818,9 +1838,16 @@ mod tests {
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session("12345678", "claude", "main", "Done", project_id)
-            .await
-            .expect("failed to insert");
+        db.insert_session(
+            "12345678",
+            "claude",
+            "claude-opus-4-6",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert");
 
         let session_dir = dir.path().join("12345678");
         let data_dir = session_dir.join(SESSION_DATA_DIR);
@@ -1834,8 +1861,6 @@ mod tests {
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
             db,
         )
         .await;
@@ -1859,12 +1884,26 @@ mod tests {
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session("alpha", "claude", "main", "Done", project_id)
-            .await
-            .expect("failed to insert alpha");
-        db.insert_session("beta", "gemini", "main", "Done", project_id)
-            .await
-            .expect("failed to insert beta");
+        db.insert_session(
+            "alpha",
+            "claude",
+            "claude-opus-4-6",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert alpha");
+        db.insert_session(
+            "beta",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert beta");
 
         sqlx::query(
             r#"
@@ -1905,8 +1944,6 @@ WHERE id = ?
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
             db,
         )
         .await;
@@ -1932,12 +1969,26 @@ WHERE id = ?
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session("alpha", "gemini", "main", "InProgress", project_id)
-            .await
-            .expect("failed to insert alpha");
-        db.insert_session("beta", "claude", "main", "Done", project_id)
-            .await
-            .expect("failed to insert beta");
+        db.insert_session(
+            "alpha",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert alpha");
+        db.insert_session(
+            "beta",
+            "claude",
+            "claude-opus-4-6",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert beta");
         sqlx::query(
             r#"
 UPDATE session
@@ -1970,8 +2021,6 @@ WHERE id = 'beta'
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
             db,
         )
         .await;
@@ -2007,12 +2056,26 @@ WHERE id = 'beta'
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session("alpha", "gemini", "main", "InProgress", project_id)
-            .await
-            .expect("failed to insert alpha");
-        db.insert_session("beta", "claude", "main", "Done", project_id)
-            .await
-            .expect("failed to insert beta");
+        db.insert_session(
+            "alpha",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert alpha");
+        db.insert_session(
+            "beta",
+            "claude",
+            "claude-opus-4-6",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert beta");
         sqlx::query(
             r#"
 UPDATE session
@@ -2045,8 +2108,6 @@ WHERE id = 'beta'
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
             db,
         )
         .await;
@@ -2096,17 +2157,22 @@ WHERE id = 'beta'
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session("missing01", "gemini", "main", "Done", project_id)
-            .await
-            .expect("failed to insert");
+        db.insert_session(
+            "missing01",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert");
 
         // Act
         let app = App::new(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
             db,
         )
         .await;
@@ -2124,28 +2190,13 @@ WHERE id = 'beta'
             .await
             .expect("failed to open in-memory db");
         let mut mock = MockAgentBackend::new();
-        mock.expect_setup().returning(|_| {});
         mock.expect_build_start_command()
-            .returning(|folder, prompt| {
+            .returning(|folder, prompt, _| {
                 let mut cmd = Command::new("echo");
                 cmd.arg("--prompt")
                     .arg(prompt)
                     .arg("--model")
                     .arg("gemini-3-flash-preview")
-                    .current_dir(folder)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null());
-                cmd
-            });
-        mock.expect_build_resume_command()
-            .returning(|folder, prompt| {
-                let mut cmd = Command::new("echo");
-                cmd.arg("--prompt")
-                    .arg(prompt)
-                    .arg("--model")
-                    .arg("gemini-3-flash-preview")
-                    .arg("--resume")
-                    .arg("latest")
                     .current_dir(folder)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
@@ -2155,14 +2206,16 @@ WHERE id = 'beta'
             dir.path().to_path_buf(),
             dir.path().to_path_buf(),
             Some("main".to_string()),
-            AgentKind::Gemini,
-            Box::new(mock),
             db,
         )
         .await;
 
         // Act — create and start session (start command)
-        create_and_start_session(&mut app, "SpawnInit").await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        app.reply_with_backend(&session_id, "SpawnInit", &mock, "gemini-3-flash-preview");
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Assert
@@ -2183,7 +2236,7 @@ WHERE id = 'beta'
         let mut resume_mock = MockAgentBackend::new();
         resume_mock
             .expect_build_resume_command()
-            .returning(|folder, prompt| {
+            .returning(|folder, prompt, _| {
                 let mut cmd = Command::new("echo");
                 cmd.arg("--prompt")
                     .arg(prompt)
@@ -2197,7 +2250,12 @@ WHERE id = 'beta'
                 cmd
             });
         let session_id = app.session_state.sessions[0].id.clone();
-        app.reply_with_backend(&session_id, "SpawnReply", &resume_mock);
+        app.reply_with_backend(
+            &session_id,
+            "SpawnReply",
+            &resume_mock,
+            "gemini-3-flash-preview",
+        );
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Assert
@@ -2287,13 +2345,10 @@ WHERE id = 'beta'
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mock = MockAgentBackend::new();
         let mut app = App::new(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             Some("main".to_string()),
-            AgentKind::Gemini,
-            Box::new(mock),
             db,
         )
         .await;
@@ -2317,13 +2372,10 @@ WHERE id = 'beta'
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mock = MockAgentBackend::new();
         let mut app = App::new(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             Some("main".to_string()),
-            AgentKind::Gemini,
-            Box::new(mock),
             db,
         )
         .await;
@@ -2714,8 +2766,6 @@ WHERE id = 'beta'
             parent.path().to_path_buf(),
             repo_a.clone(),
             Some("main".to_string()),
-            AgentKind::Gemini,
-            Box::new(create_mock_backend()),
             db,
         )
         .await;

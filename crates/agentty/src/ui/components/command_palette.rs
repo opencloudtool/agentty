@@ -4,7 +4,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::agent::AgentKind;
 use crate::model::{PaletteCommand, PaletteFocus, Project};
 use crate::ui::Component;
 
@@ -116,10 +115,6 @@ impl<'a> CommandOptionList<'a> {
 
     fn options(&self) -> Vec<String> {
         match self.command {
-            PaletteCommand::Agents => AgentKind::ALL
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
             PaletteCommand::Health => Vec::new(),
             PaletteCommand::Projects => self
                 .projects

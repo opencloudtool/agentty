@@ -4,9 +4,10 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::agent::AgentKind;
 use crate::icon::Icon;
-use crate::model::{AppMode, Session, Status};
-use crate::ui::components::chat_input::ChatInput;
+use crate::model::{AppMode, PromptSlashStage, Session, Status};
+use crate::ui::components::chat_input::{ChatInput, SlashMenu};
 use crate::ui::util::{calculate_input_height, wrap_lines};
 use crate::ui::{Component, Page};
 
@@ -31,13 +32,81 @@ impl<'a> SessionChatPage<'a> {
             sessions,
         }
     }
+
+    fn build_slash_menu(
+        input: &str,
+        stage: PromptSlashStage,
+        selected_agent: Option<AgentKind>,
+        session: &Session,
+    ) -> Option<SlashMenu<'static>> {
+        if !input.starts_with('/') {
+            return None;
+        }
+
+        let (title, options): (&'static str, Vec<String>) = match stage {
+            PromptSlashStage::Command => {
+                let lowered = input.to_lowercase();
+                let commands = ["/model"]
+                    .iter()
+                    .copied()
+                    .filter(|command| command.starts_with(&lowered))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+
+                ("", commands)
+            }
+            PromptSlashStage::Agent => (
+                "/model > agent",
+                AgentKind::ALL
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+            ),
+            PromptSlashStage::Model => {
+                let session_agent = selected_agent.unwrap_or_else(|| {
+                    session
+                        .agent
+                        .parse::<AgentKind>()
+                        .unwrap_or(AgentKind::Gemini)
+                });
+                let models = session_agent
+                    .models()
+                    .iter()
+                    .map(|model| model.as_str().to_string())
+                    .collect::<Vec<_>>();
+
+                ("/model > model", models)
+            }
+        };
+        if options.is_empty() {
+            return None;
+        }
+
+        Some(SlashMenu {
+            options,
+            selected_index: 0,
+            title,
+        })
+    }
 }
 
 impl Page for SessionChatPage<'_> {
     fn render(&mut self, f: &mut Frame, area: Rect) {
         if let Some(session) = self.sessions.get(self.session_index) {
-            let bottom_height = if let AppMode::Prompt { input, .. } = self.mode {
+            let bottom_height = if let AppMode::Prompt {
+                input, slash_state, ..
+            } = self.mode
+            {
+                let slash_option_count = Self::build_slash_menu(
+                    input.text(),
+                    slash_state.stage,
+                    slash_state.selected_agent,
+                    session,
+                )
+                .map(|menu| menu.options.len() + usize::from(!menu.title.is_empty()))
+                .unwrap_or(0);
                 calculate_input_height(area.width.saturating_sub(2), input.text())
+                    .saturating_add(u16::try_from(slash_option_count).unwrap_or(u16::MAX))
             } else {
                 1
             };
@@ -51,7 +120,12 @@ impl Page for SessionChatPage<'_> {
             let bottom_area = chunks[1];
 
             let status = session.status();
-            let title = format!(" {} — {status} ", session.display_title());
+            let title = format!(
+                " {} — {status} [{}:{}] ",
+                session.display_title(),
+                session.agent,
+                session.model
+            );
 
             let output_text = session
                 .output
@@ -101,14 +175,34 @@ impl Page for SessionChatPage<'_> {
 
             f.render_widget(paragraph, output_area);
 
-            if let AppMode::Prompt { input, .. } = self.mode {
+            if let AppMode::Prompt {
+                input, slash_state, ..
+            } = self.mode
+            {
                 let title = if session.prompt.is_empty() {
                     " New Chat "
                 } else {
                     " Reply "
                 };
-                ChatInput::new(title, input.text(), input.cursor, "Type your message")
-                    .render(f, bottom_area);
+                let slash_menu = Self::build_slash_menu(
+                    input.text(),
+                    slash_state.stage,
+                    slash_state.selected_agent,
+                    session,
+                )
+                .map(|mut menu| {
+                    let max_index = menu.options.len().saturating_sub(1);
+                    menu.selected_index = slash_state.selected_index.min(max_index);
+                    menu
+                });
+                ChatInput::new(
+                    title,
+                    input.text(),
+                    input.cursor,
+                    "Type your message",
+                    slash_menu,
+                )
+                .render(f, bottom_area);
             } else {
                 let help_message = Paragraph::new(
                     "q: back | r: reply | d: diff | c: commit | p: pr | m: merge | j/k: scroll",

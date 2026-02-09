@@ -9,7 +9,6 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
-use crate::agent::AgentKind;
 use crate::health::HealthEntry;
 use crate::model::{AppMode, Project, Session, Tab};
 
@@ -25,7 +24,6 @@ pub trait Component {
 
 pub struct RenderContext<'a> {
     pub active_project_id: i64,
-    pub agent_kind: AgentKind,
     pub current_tab: Tab,
     pub git_branch: Option<&'a str>,
     pub git_status: Option<(u32, u32)>,
@@ -40,7 +38,6 @@ pub struct RenderContext<'a> {
 pub fn render(f: &mut Frame, context: RenderContext<'_>) {
     let RenderContext {
         active_project_id,
-        agent_kind,
         current_tab,
         git_branch,
         git_status,
@@ -67,7 +64,7 @@ pub fn render(f: &mut Frame, context: RenderContext<'_>) {
     let content_area = outer_chunks[1];
     let footer_bar_area = outer_chunks[2];
 
-    components::status_bar::StatusBar::new(agent_kind).render(f, status_bar_area);
+    components::status_bar::StatusBar.render(f, status_bar_area);
 
     components::footer_bar::FooterBar::new(
         working_dir.to_string_lossy().to_string(),

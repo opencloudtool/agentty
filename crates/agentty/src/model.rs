@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use ratatui::style::Color;
 
+use crate::agent::AgentKind;
 use crate::icon::Icon;
 
 pub const SESSION_DATA_DIR: &str = ".agentty";
@@ -246,6 +247,7 @@ impl Default for InputState {
 pub enum AppMode {
     List,
     Prompt {
+        slash_state: PromptSlashState,
         session_id: String,
         input: InputState,
         scroll_offset: Option<u16>,
@@ -271,6 +273,46 @@ pub enum AppMode {
     Health,
 }
 
+/// Steps in prompt slash command selection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PromptSlashStage {
+    Agent,
+    Command,
+    Model,
+}
+
+/// UI state for prompt-only slash command selection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PromptSlashState {
+    pub selected_agent: Option<AgentKind>,
+    pub selected_index: usize,
+    pub stage: PromptSlashStage,
+}
+
+impl PromptSlashState {
+    /// Creates a new slash state at command selection.
+    pub fn new() -> Self {
+        Self {
+            selected_agent: None,
+            selected_index: 0,
+            stage: PromptSlashStage::Command,
+        }
+    }
+
+    /// Resets slash state back to command selection.
+    pub fn reset(&mut self) {
+        self.selected_agent = None;
+        self.selected_index = 0;
+        self.stage = PromptSlashStage::Command;
+    }
+}
+
+impl Default for PromptSlashState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PaletteFocus {
     Input,
@@ -279,21 +321,15 @@ pub enum PaletteFocus {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PaletteCommand {
-    Agents,
     Health,
     Projects,
 }
 
 impl PaletteCommand {
-    pub const ALL: &[PaletteCommand] = &[
-        PaletteCommand::Agents,
-        PaletteCommand::Health,
-        PaletteCommand::Projects,
-    ];
+    pub const ALL: &[PaletteCommand] = &[PaletteCommand::Health, PaletteCommand::Projects];
 
     pub fn label(self) -> &'static str {
         match self {
-            PaletteCommand::Agents => "agents",
             PaletteCommand::Health => "health",
             PaletteCommand::Projects => "projects",
         }
@@ -315,6 +351,7 @@ pub struct Session {
     pub agent: String,
     pub folder: PathBuf,
     pub id: String,
+    pub model: String,
     pub output: Arc<Mutex<String>>,
     pub project_name: String,
     pub prompt: String,
@@ -418,6 +455,7 @@ mod tests {
             agent: "gemini".to_string(),
             folder: PathBuf::new(),
             id: "abc123".to_string(),
+            model: "gemini-3-flash-preview".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: String::new(),
@@ -436,6 +474,7 @@ mod tests {
             agent: "gemini".to_string(),
             folder: PathBuf::new(),
             id: "abc123".to_string(),
+            model: "gemini-3-flash-preview".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: String::new(),
@@ -454,6 +493,7 @@ mod tests {
             agent: "gemini".to_string(),
             folder: PathBuf::new(),
             id: "test".to_string(),
+            model: "gemini-3-flash-preview".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: "prompt".to_string(),
@@ -493,6 +533,7 @@ mod tests {
             agent: "gemini".to_string(),
             folder: dir.path().to_path_buf(),
             id: "test".to_string(),
+            model: "gemini-3-flash-preview".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: "prompt".to_string(),
@@ -561,7 +602,6 @@ mod tests {
     #[test]
     fn test_palette_command_label() {
         // Arrange & Act & Assert
-        assert_eq!(PaletteCommand::Agents.label(), "agents");
         assert_eq!(PaletteCommand::Health.label(), "health");
         assert_eq!(PaletteCommand::Projects.label(), "projects");
     }
@@ -569,30 +609,29 @@ mod tests {
     #[test]
     fn test_palette_command_all() {
         // Arrange & Act & Assert
-        assert_eq!(PaletteCommand::ALL.len(), 3);
-        assert_eq!(PaletteCommand::ALL[0], PaletteCommand::Agents);
-        assert_eq!(PaletteCommand::ALL[1], PaletteCommand::Health);
-        assert_eq!(PaletteCommand::ALL[2], PaletteCommand::Projects);
+        assert_eq!(PaletteCommand::ALL.len(), 2);
+        assert_eq!(PaletteCommand::ALL[0], PaletteCommand::Health);
+        assert_eq!(PaletteCommand::ALL[1], PaletteCommand::Projects);
     }
 
     #[test]
     fn test_palette_command_filter() {
         // Arrange & Act
-        let results = PaletteCommand::filter("age");
+        let results = PaletteCommand::filter("heal");
 
         // Assert
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], PaletteCommand::Agents);
+        assert_eq!(results[0], PaletteCommand::Health);
     }
 
     #[test]
     fn test_palette_command_filter_case_insensitive() {
         // Arrange & Act
-        let results = PaletteCommand::filter("AGE");
+        let results = PaletteCommand::filter("HEAL");
 
         // Assert
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0], PaletteCommand::Agents);
+        assert_eq!(results[0], PaletteCommand::Health);
     }
 
     #[test]
@@ -621,6 +660,35 @@ mod tests {
 
         // Assert — empty query matches all commands
         assert_eq!(results.len(), PaletteCommand::ALL.len());
+    }
+
+    #[test]
+    fn test_prompt_slash_state_new() {
+        // Arrange & Act
+        let state = PromptSlashState::new();
+
+        // Assert
+        assert_eq!(state.stage, PromptSlashStage::Command);
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.selected_agent, None);
+    }
+
+    #[test]
+    fn test_prompt_slash_state_reset() {
+        // Arrange
+        let mut state = PromptSlashState {
+            selected_agent: Some(AgentKind::Claude),
+            selected_index: 2,
+            stage: PromptSlashStage::Model,
+        };
+
+        // Act
+        state.reset();
+
+        // Assert
+        assert_eq!(state.stage, PromptSlashStage::Command);
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.selected_agent, None);
     }
 
     #[test]

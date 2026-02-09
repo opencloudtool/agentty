@@ -21,7 +21,7 @@ The UI is built using [Ratatui](https://ratatui.rs/) and follows a **separation 
     - `session_list.rs` - Session list view (`AppMode::List`)
     - `session_chat.rs` - Session chat interface (`AppMode::View`, `AppMode::Prompt`)
 - **`components/`**: Reusable widgets implementing the `Component` trait.
-    - `status_bar.rs` - Top status bar with version and agent type
+    - `status_bar.rs` - Top status bar with version and runtime scope hint
     - `chat_input.rs` - Chat input box with cursor positioning
 - **`util.rs`**: Pure helper functions for layout calculations, text wrapping, and input handling. All complex logic that can be unit-tested goes here.
 

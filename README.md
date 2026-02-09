@@ -30,17 +30,15 @@ npx @opencloudtool/agentty
 - Git (required for session worktree integration)
 - One supported agent CLI installed: `gemini`, `claude`, or `codex`
 
-## Agent Selection
+## Session Agent and Model
 
-Use `AGENTTY_AGENT` to choose the backend:
+Agent/model configuration is session-scoped.
 
-```sh
-AGENTTY_AGENT=gemini agentty
-AGENTTY_AGENT=claude agentty
-AGENTTY_AGENT=codex agentty
-```
-
-If not set, Agentty defaults to `gemini`.
+- New sessions start with `gemini` + `gemini-3-flash-preview`.
+- In prompt mode, type `/model` as the first input token to open the multistep picker:
+  - choose agent (`gemini`, `codex`, `claude`)
+  - choose model from that agent's curated model list
+- Changes apply to that session only and are persisted.
 
 ## Features
 

@@ -251,6 +251,7 @@ struct InputLayout {
     display_lines: Vec<Line<'static>>,
 }
 
+#[derive(Clone, Copy)]
 enum VerticalDirection {
     Up,
     Down,

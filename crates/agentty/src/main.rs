@@ -6,7 +6,9 @@ use std::time::Duration;
 use agentty::agent::AgentKind;
 use agentty::app::{AGENTTY_WORKSPACE, App};
 use agentty::db::{DB_DIR, DB_FILE, Database};
-use agentty::model::{AppMode, InputState, PaletteCommand, PaletteFocus};
+use agentty::model::{
+    AppMode, InputState, PaletteCommand, PaletteFocus, PromptSlashStage, PromptSlashState,
+};
 use agentty::ui;
 use agentty::ui::util::{move_input_cursor_down, move_input_cursor_up};
 use crossterm::cursor::Show;
@@ -58,9 +60,7 @@ async fn main() -> io::Result<()> {
     let db_path = base_path.join(DB_DIR).join(DB_FILE);
     let db = Database::open(&db_path).await.map_err(io::Error::other)?;
 
-    let agent_kind = AgentKind::from_env();
-    let backend = agent_kind.create_backend();
-    let mut app = App::new(base_path, working_dir, git_branch, agent_kind, backend, db).await;
+    let mut app = App::new(base_path, working_dir, git_branch, db).await;
     let tick_rate = Duration::from_millis(50);
 
     // Spawn a dedicated thread for crossterm event reading so the main async
@@ -121,17 +121,6 @@ fn render_frame(
     app: &mut App,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> io::Result<()> {
-    let current_agent_kind = match &app.mode {
-        AppMode::CommandOption {
-            command: PaletteCommand::Agents,
-            selected_index,
-        } => AgentKind::ALL
-            .get(*selected_index)
-            .copied()
-            .unwrap_or_else(|| app.agent_kind()),
-        _ => app.agent_kind(),
-    };
-
     let current_tab = app.current_tab;
     let current_working_dir = app.working_dir().clone();
     let current_git_branch = app.git_branch().map(std::string::ToString::to_string);
@@ -144,7 +133,6 @@ fn render_frame(
             f,
             ui::RenderContext {
                 active_project_id: current_active_project_id,
-                agent_kind: current_agent_kind,
                 current_tab,
                 git_branch: current_git_branch.as_deref(),
                 git_status: current_git_status,
@@ -242,6 +230,7 @@ async fn handle_key_event(
             KeyCode::Char('a') => {
                 if let Ok(session_id) = app.create_session().await {
                     app.mode = AppMode::Prompt {
+                        slash_state: PromptSlashState::new(),
                         session_id,
                         input: InputState::new(),
                         scroll_offset: None,
@@ -318,6 +307,7 @@ async fn handle_key_event(
                 }
                 KeyCode::Char('r') => {
                     app.mode = AppMode::Prompt {
+                        slash_state: PromptSlashState::new(),
                         session_id: session_id.clone(),
                         input: InputState::new(),
                         scroll_offset: new_scroll,
@@ -410,6 +400,7 @@ async fn handle_key_event(
             session_id,
             input,
             scroll_offset,
+            slash_state,
         } => {
             let session_id = session_id.clone();
             let Some(session_idx) = app
@@ -429,12 +420,73 @@ async fn handle_key_event(
                 .get(session_idx)
                 .map(|s| s.prompt.is_empty())
                 .unwrap_or(false);
+            let is_slash_command = input.text().starts_with('/');
+            if !is_slash_command {
+                slash_state.reset();
+            }
 
             match key.code {
                 KeyCode::Enter if should_insert_newline(key) => {
                     input.insert_newline();
                 }
                 KeyCode::Enter => {
+                    if is_slash_command {
+                        match slash_state.stage {
+                            PromptSlashStage::Command => {
+                                let commands = prompt_slash_commands(input.text());
+                                if commands.is_empty() {
+                                    return Ok(EventResult::Continue);
+                                }
+
+                                slash_state.stage = PromptSlashStage::Agent;
+                                slash_state.selected_agent = None;
+                                slash_state.selected_index = 0;
+
+                                return Ok(EventResult::Continue);
+                            }
+                            PromptSlashStage::Agent => {
+                                let selected_agent =
+                                    AgentKind::ALL.get(slash_state.selected_index).copied();
+                                let Some(selected_agent) = selected_agent else {
+                                    return Ok(EventResult::Continue);
+                                };
+
+                                slash_state.selected_agent = Some(selected_agent);
+                                slash_state.stage = PromptSlashStage::Model;
+                                slash_state.selected_index = 0;
+
+                                return Ok(EventResult::Continue);
+                            }
+                            PromptSlashStage::Model => {
+                                let fallback_agent = app
+                                    .session_state
+                                    .sessions
+                                    .get(session_idx)
+                                    .and_then(|session| session.agent.parse::<AgentKind>().ok())
+                                    .unwrap_or(AgentKind::Gemini);
+                                let selected_agent =
+                                    slash_state.selected_agent.unwrap_or(fallback_agent);
+                                let selected_model = selected_agent
+                                    .models()
+                                    .get(slash_state.selected_index)
+                                    .copied();
+                                let Some(selected_model) = selected_model else {
+                                    return Ok(EventResult::Continue);
+                                };
+
+                                input.take_text();
+                                slash_state.reset();
+                                let _ = app.set_session_agent_and_model(
+                                    &session_id,
+                                    selected_agent,
+                                    selected_model,
+                                );
+
+                                return Ok(EventResult::Continue);
+                            }
+                        }
+                    }
+
                     let prompt = input.take_text();
                     if !prompt.is_empty() {
                         if is_new_session {
@@ -456,6 +508,13 @@ async fn handle_key_event(
                     if key.code == KeyCode::Esc
                         || key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                 {
+                    if is_slash_command {
+                        input.take_text();
+                        slash_state.reset();
+
+                        return Ok(EventResult::Continue);
+                    }
+
                     if is_new_session {
                         app.delete_selected_session().await;
                         app.mode = AppMode::List;
@@ -473,11 +532,32 @@ async fn handle_key_event(
                     input.move_right();
                 }
                 KeyCode::Up => {
+                    if is_slash_command {
+                        slash_state.selected_index = slash_state.selected_index.saturating_sub(1);
+
+                        return Ok(EventResult::Continue);
+                    }
+
                     let input_width = prompt_input_width(terminal)?;
                     let next_cursor = move_input_cursor_up(input.text(), input_width, input.cursor);
                     input.cursor = next_cursor;
                 }
                 KeyCode::Down => {
+                    if is_slash_command {
+                        let option_count = prompt_slash_option_count(
+                            input.text(),
+                            slash_state.stage,
+                            slash_state.selected_agent,
+                        );
+                        if option_count > 0 {
+                            let max_index = option_count.saturating_sub(1);
+                            slash_state.selected_index =
+                                (slash_state.selected_index + 1).min(max_index);
+                        }
+
+                        return Ok(EventResult::Continue);
+                    }
+
                     let input_width = prompt_input_width(terminal)?;
                     let next_cursor =
                         move_input_cursor_down(input.text(), input_width, input.cursor);
@@ -491,12 +571,15 @@ async fn handle_key_event(
                 }
                 KeyCode::Backspace => {
                     input.delete_backward();
+                    slash_state.reset();
                 }
                 KeyCode::Delete => {
                     input.delete_forward();
+                    slash_state.reset();
                 }
                 KeyCode::Char(c) => {
                     input.insert_char(c);
+                    slash_state.reset();
                 }
                 _ => {}
             }
@@ -565,7 +648,7 @@ async fn handle_key_event(
                     let filtered = PaletteCommand::filter(input);
                     if let Some(&command) = filtered.get(*selected_index) {
                         match command {
-                            PaletteCommand::Agents | PaletteCommand::Projects => {
+                            PaletteCommand::Projects => {
                                 app.mode = AppMode::CommandOption {
                                     command,
                                     selected_index: 0,
@@ -597,7 +680,6 @@ async fn handle_key_event(
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let option_count = match command {
-                    PaletteCommand::Agents => AgentKind::ALL.len(),
                     PaletteCommand::Health => 0,
                     PaletteCommand::Projects => app.projects.len(),
                 };
@@ -610,11 +692,6 @@ async fn handle_key_event(
             }
             KeyCode::Enter => {
                 match command {
-                    PaletteCommand::Agents => {
-                        if let Some(&agent_kind) = AgentKind::ALL.get(*selected_index) {
-                            app.set_agent_kind(agent_kind);
-                        }
-                    }
                     PaletteCommand::Health => {}
                     PaletteCommand::Projects => {
                         if let Some(project) = app.projects.get(*selected_index) {
@@ -648,6 +725,26 @@ async fn handle_key_event(
         },
     }
     Ok(EventResult::Continue)
+}
+
+fn prompt_slash_commands(input: &str) -> Vec<&'static str> {
+    let lowered = input.to_lowercase();
+    let mut commands = vec!["/model"];
+    commands.retain(|command| command.starts_with(&lowered));
+
+    commands
+}
+
+fn prompt_slash_option_count(
+    input: &str,
+    stage: PromptSlashStage,
+    selected_agent: Option<AgentKind>,
+) -> usize {
+    match stage {
+        PromptSlashStage::Command => prompt_slash_commands(input).len(),
+        PromptSlashStage::Agent => AgentKind::ALL.len(),
+        PromptSlashStage::Model => selected_agent.unwrap_or(AgentKind::Gemini).models().len(),
+    }
 }
 
 fn should_insert_newline(key: KeyEvent) -> bool {
@@ -825,5 +922,42 @@ mod tests {
 
         // Assert
         assert!(!result);
+    }
+
+    #[test]
+    fn test_prompt_slash_commands_match_model() {
+        // Arrange & Act
+        let commands = prompt_slash_commands("/m");
+
+        // Assert
+        assert_eq!(commands, vec!["/model"]);
+    }
+
+    #[test]
+    fn test_prompt_slash_commands_no_match() {
+        // Arrange & Act
+        let commands = prompt_slash_commands("/x");
+
+        // Assert
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn test_prompt_slash_option_count_for_agent_stage() {
+        // Arrange & Act
+        let count = prompt_slash_option_count("/model", PromptSlashStage::Agent, None);
+
+        // Assert
+        assert_eq!(count, AgentKind::ALL.len());
+    }
+
+    #[test]
+    fn test_prompt_slash_option_count_for_model_stage() {
+        // Arrange & Act
+        let count =
+            prompt_slash_option_count("/model", PromptSlashStage::Model, Some(AgentKind::Claude));
+
+        // Assert
+        assert_eq!(count, AgentKind::Claude.models().len());
     }
 }
