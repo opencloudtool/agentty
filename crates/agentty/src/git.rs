@@ -83,6 +83,10 @@ fn resolve_git_dir(repo_dir: &Path) -> Option<PathBuf> {
 ///
 /// # Returns
 /// Ok(()) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if invoking `git` fails or the worktree command exits with
+/// a non-zero status.
 pub fn create_worktree(
     repo_path: &Path,
     worktree_path: &Path,
@@ -115,6 +119,10 @@ pub fn create_worktree(
 ///
 /// # Returns
 /// Ok(()) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if invoking `git` fails or the worktree remove command
+/// exits with a non-zero status.
 pub fn remove_worktree(worktree_path: &Path) -> Result<(), String> {
     // Read the .git file in the worktree to find the main repo
     let git_file = worktree_path.join(".git");
@@ -168,6 +176,9 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<(), String> {
 ///
 /// # Returns
 /// Ok(()) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if checkout, merge, or commit commands fail.
 pub fn squash_merge(
     repo_path: &Path,
     source_branch: &str,
@@ -232,6 +243,9 @@ pub fn squash_merge(
 ///
 /// # Returns
 /// Ok(()) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if staging or committing changes fails.
 pub fn commit_all(repo_path: &Path, commit_message: &str) -> Result<(), String> {
     // Stage all changes
     let output = Command::new("git")
@@ -275,6 +289,9 @@ pub fn commit_all(repo_path: &Path, commit_message: &str) -> Result<(), String> 
 ///
 /// # Returns
 /// Ok(()) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if the branch delete command fails.
 pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> {
     let output = Command::new("git")
         .args(["branch", "-D", branch_name])
@@ -303,6 +320,10 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> 
 ///
 /// # Returns
 /// The diff output as a string, or an error message on failure
+///
+/// # Errors
+/// Returns an error if preparing the index, generating the diff, or restoring
+/// index state fails.
 pub fn diff(repo_path: &Path) -> Result<String, String> {
     let intent_to_add = Command::new("git")
         .args(["add", "-A", "--intent-to-add"])
@@ -344,6 +365,9 @@ pub fn diff(repo_path: &Path) -> Result<String, String> {
 ///
 /// # Returns
 /// Ok(()) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if `git fetch` cannot be executed successfully.
 pub fn fetch_remote(repo_path: &Path) -> Result<(), String> {
     let output = Command::new("git")
         .arg("fetch")
@@ -366,6 +390,9 @@ pub fn fetch_remote(repo_path: &Path) -> Result<(), String> {
 ///
 /// # Returns
 /// Ok((ahead, behind)) on success, Err(msg) on failure (e.g., no upstream)
+///
+/// # Errors
+/// Returns an error if `git rev-list` fails or returns unexpected output.
 pub fn get_ahead_behind(repo_path: &Path) -> Result<(u32, u32), String> {
     let output = Command::new("git")
         .args(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
@@ -396,6 +423,9 @@ pub fn get_ahead_behind(repo_path: &Path) -> Result<(u32, u32), String> {
 ///
 /// # Returns
 /// Ok(url) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if the remote URL cannot be read via `git remote get-url`.
 pub fn repo_url(repo_path: &Path) -> Result<String, String> {
     let output = Command::new("git")
         .args(["remote", "get-url", "origin"])
@@ -435,6 +465,9 @@ fn normalize_repo_url(remote: &str) -> String {
 ///
 /// # Returns
 /// Ok(url) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if branch push or PR creation fails.
 pub fn create_pr(
     repo_path: &Path,
     source_branch: &str,
@@ -505,6 +538,9 @@ pub fn create_pr(
 ///
 /// # Returns
 /// Ok(true) when merged, Ok(false) when still open, Err(msg) on failure
+///
+/// # Errors
+/// Returns an error if `gh pr view` fails or returns an unexpected value.
 pub fn is_pr_merged(repo_path: &Path, source_branch: &str) -> Result<bool, String> {
     let output = Command::new("gh")
         .args([

@@ -168,6 +168,11 @@ impl App {
         self.health_checks = health::run_health_checks(self.git_branch.clone());
     }
 
+    /// Switches the active project context and reloads project sessions.
+    ///
+    /// # Errors
+    /// Returns an error if the project does not exist or session state cannot
+    /// be reloaded from persisted storage.
     pub async fn switch_project(&mut self, project_id: i64) -> Result<(), String> {
         let project = self
             .db
@@ -304,6 +309,10 @@ impl App {
     /// Returns the identifier of the newly created session.
     /// The session is created with `New` status and no agent is started —
     /// call [`start_session`] to submit a prompt and launch the agent.
+    ///
+    /// # Errors
+    /// Returns an error if the worktree, session files, or database record
+    /// cannot be created.
     pub async fn create_session(&mut self) -> Result<String, String> {
         let base_branch = self
             .git_branch
@@ -422,6 +431,9 @@ impl App {
     }
 
     /// Submits the first prompt for a blank session and starts the agent.
+    ///
+    /// # Errors
+    /// Returns an error if the session is missing or prompt persistence fails.
     pub async fn start_session(&mut self, session_id: &str, prompt: String) -> Result<(), String> {
         let session_index = self
             .session_index_for_id(session_id)
@@ -478,6 +490,10 @@ impl App {
     }
 
     /// Updates and persists the agent/model pair for a single session.
+    ///
+    /// # Errors
+    /// Returns an error if the session is missing or the model does not belong
+    /// to the selected agent.
     pub fn set_session_agent_and_model(
         &mut self,
         session_id: &str,
@@ -579,6 +595,10 @@ impl App {
     }
 
     /// Commits all changes in a session worktree.
+    ///
+    /// # Errors
+    /// Returns an error if the session has no worktree or the git commit
+    /// operation fails.
     pub async fn commit_session(&self, session_id: &str) -> Result<String, String> {
         let session = self
             .session_state
@@ -603,6 +623,10 @@ impl App {
     }
 
     /// Squash-merges a reviewed session branch into its base branch.
+    ///
+    /// # Errors
+    /// Returns an error if the session is invalid for merge, required git
+    /// metadata is missing, or the merge/cleanup steps fail.
     pub async fn merge_session(&self, session_id: &str) -> Result<String, String> {
         let session = self
             .session_state
@@ -665,6 +689,10 @@ impl App {
     }
 
     /// Creates a pull request for a reviewed session branch.
+    ///
+    /// # Errors
+    /// Returns an error if the session is not eligible for PR creation or git
+    /// metadata for the worktree is unavailable.
     pub async fn create_pr_session(&self, session_id: &str) -> Result<(), String> {
         let session = self
             .session_state
@@ -1903,11 +1931,11 @@ mod tests {
         .expect("failed to insert beta");
 
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = ?
 WHERE id = ?
-"#,
+",
         )
         .bind(1_i64)
         .bind("alpha")
@@ -1915,11 +1943,11 @@ WHERE id = ?
         .await
         .expect("failed to update alpha timestamp");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = ?
 WHERE id = ?
-"#,
+",
         )
         .bind(2_i64)
         .bind("beta")
@@ -1987,21 +2015,21 @@ WHERE id = ?
         .await
         .expect("failed to insert beta");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = 1
 WHERE id = 'alpha'
-"#,
+",
         )
         .execute(db.pool())
         .await
         .expect("failed to set alpha timestamp");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = 2
 WHERE id = 'beta'
-"#,
+",
         )
         .execute(db.pool())
         .await
@@ -2074,21 +2102,21 @@ WHERE id = 'beta'
         .await
         .expect("failed to insert beta");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = 1
 WHERE id = 'alpha'
-"#,
+",
         )
         .execute(db.pool())
         .await
         .expect("failed to set alpha timestamp");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = 2
 WHERE id = 'beta'
-"#,
+",
         )
         .execute(db.pool())
         .await

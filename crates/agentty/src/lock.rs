@@ -29,6 +29,10 @@ impl std::fmt::Display for LockError {
 ///
 /// Returns the lock file handle which must be kept alive for the entire process
 /// lifetime. The OS releases the lock automatically on process exit or crash.
+///
+/// # Errors
+/// Returns an error if the lock file cannot be created, cannot be locked, or
+/// lock state cannot be written.
 pub fn acquire_lock(path: &Path) -> Result<File, LockError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

@@ -66,18 +66,22 @@ impl Database {
         &self.pool
     }
 
+    /// Inserts or updates a project by path and returns its identifier.
+    ///
+    /// # Errors
+    /// Returns an error if the project row cannot be written or read.
     pub async fn upsert_project(
         &self,
         path: &str,
         git_branch: Option<&str>,
     ) -> Result<i64, String> {
         sqlx::query(
-            r#"
+            r"
 INSERT INTO project (path, git_branch)
 VALUES (?, ?)
 ON CONFLICT(path) DO UPDATE
 SET git_branch = excluded.git_branch
-"#,
+",
         )
         .bind(path)
         .bind(git_branch)
@@ -86,11 +90,11 @@ SET git_branch = excluded.git_branch
         .map_err(|err| format!("Failed to upsert project: {err}"))?;
 
         let row = sqlx::query(
-            r#"
+            r"
 SELECT id
 FROM project
 WHERE path = ?
-"#,
+",
         )
         .bind(path)
         .fetch_one(&self.pool)
@@ -100,13 +104,17 @@ WHERE path = ?
         Ok(row.get("id"))
     }
 
+    /// Loads all configured projects ordered by path.
+    ///
+    /// # Errors
+    /// Returns an error if project rows cannot be read from the database.
     pub async fn load_projects(&self) -> Result<Vec<ProjectRow>, String> {
         let rows = sqlx::query(
-            r#"
+            r"
 SELECT id, path, git_branch
 FROM project
 ORDER BY path
-"#,
+",
         )
         .fetch_all(&self.pool)
         .await
@@ -122,13 +130,17 @@ ORDER BY path
             .collect())
     }
 
+    /// Looks up a project by identifier.
+    ///
+    /// # Errors
+    /// Returns an error if the project lookup query fails.
     pub async fn get_project(&self, id: i64) -> Result<Option<ProjectRow>, String> {
         let row = sqlx::query(
-            r#"
+            r"
 SELECT id, path, git_branch
 FROM project
 WHERE id = ?
-"#,
+",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -142,13 +154,17 @@ WHERE id = ?
         }))
     }
 
+    /// Sets `project_id` for sessions that do not yet reference a project.
+    ///
+    /// # Errors
+    /// Returns an error if the backfill update fails.
     pub async fn backfill_sessions_project(&self, project_id: i64) -> Result<(), String> {
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET project_id = ?
 WHERE project_id IS NULL
-"#,
+",
         )
         .bind(project_id)
         .execute(&self.pool)
@@ -157,6 +173,11 @@ WHERE project_id IS NULL
         Ok(())
     }
 
+    /// Opens the `SQLite` database and runs embedded migrations.
+    ///
+    /// # Errors
+    /// Returns an error if the directory cannot be created, the database cannot
+    /// be opened, or migrations fail.
     pub async fn open(db_path: &Path) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
@@ -183,6 +204,10 @@ WHERE project_id IS NULL
         Ok(Self { pool })
     }
 
+    /// Inserts a newly created session row.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be inserted.
     pub async fn insert_session(
         &self,
         id: &str,
@@ -193,10 +218,10 @@ WHERE project_id IS NULL
         project_id: i64,
     ) -> Result<(), String> {
         sqlx::query(
-            r#"
+            r"
 INSERT INTO session (id, agent, model, base_branch, status, project_id)
 VALUES (?, ?, ?, ?, ?, ?)
-"#,
+",
         )
         .bind(id)
         .bind(agent)
@@ -211,13 +236,17 @@ VALUES (?, ?, ?, ?, ?, ?)
         Ok(())
     }
 
+    /// Loads all sessions ordered by most recent update.
+    ///
+    /// # Errors
+    /// Returns an error if session rows cannot be read from the database.
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
         let rows = sqlx::query(
-            r#"
+            r"
 SELECT id, agent, model, base_branch, status, title, project_id, created_at, updated_at
 FROM session
 ORDER BY updated_at DESC, id
-"#,
+",
         )
         .fetch_all(&self.pool)
         .await
@@ -243,12 +272,15 @@ ORDER BY updated_at DESC, id
     ///
     /// Returns `(session_count, max_updated_at)` from the `session` table so
     /// callers can decide whether a full `load_sessions()` refresh is needed.
+    ///
+    /// # Errors
+    /// Returns an error if metadata cannot be queried from the database.
     pub async fn load_sessions_metadata(&self) -> Result<(i64, i64), String> {
         let row = sqlx::query(
-            r#"
+            r"
 SELECT COUNT(*) AS session_count, COALESCE(MAX(updated_at), 0) AS max_updated_at
 FROM session
-"#,
+",
         )
         .fetch_one(&self.pool)
         .await
@@ -260,13 +292,17 @@ FROM session
         Ok((session_count, max_updated_at))
     }
 
+    /// Updates the status for a session row.
+    ///
+    /// # Errors
+    /// Returns an error if the status update fails.
     pub async fn update_session_status(&self, id: &str, status: &str) -> Result<(), String> {
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET status = ?
 WHERE id = ?
-"#,
+",
         )
         .bind(status)
         .bind(id)
@@ -276,13 +312,17 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Updates the display title for a session row.
+    ///
+    /// # Errors
+    /// Returns an error if the title update fails.
     pub async fn update_session_title(&self, id: &str, title: &str) -> Result<(), String> {
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET title = ?
 WHERE id = ?
-"#,
+",
         )
         .bind(title)
         .bind(id)
@@ -294,6 +334,9 @@ WHERE id = ?
     }
 
     /// Updates the persisted agent/model pair for a session.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be updated.
     pub async fn update_session_agent_and_model(
         &self,
         id: &str,
@@ -301,11 +344,11 @@ WHERE id = ?
         model: &str,
     ) -> Result<(), String> {
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET agent = ?, model = ?
 WHERE id = ?
-"#,
+",
         )
         .bind(agent)
         .bind(model)
@@ -317,12 +360,16 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Deletes a session row by identifier.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be deleted.
     pub async fn delete_session(&self, id: &str) -> Result<(), String> {
         sqlx::query(
-            r#"
+            r"
 DELETE FROM session
 WHERE id = ?
-"#,
+",
         )
         .bind(id)
         .execute(&self.pool)
@@ -331,13 +378,17 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Returns the persisted base branch for a session, when present.
+    ///
+    /// # Errors
+    /// Returns an error if the base branch lookup query fails.
     pub async fn get_base_branch(&self, id: &str) -> Result<Option<String>, String> {
         let row = sqlx::query(
-            r#"
+            r"
 SELECT base_branch
 FROM session
 WHERE id = ?
-"#,
+",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -350,6 +401,10 @@ WHERE id = ?
 
 #[cfg(test)]
 impl Database {
+    /// Opens an in-memory `SQLite` database for tests and runs migrations.
+    ///
+    /// # Errors
+    /// Returns an error if the database connection or migrations fail.
     pub async fn open_in_memory() -> Result<Self, String> {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")
@@ -520,10 +575,10 @@ mod tests {
             .expect("failed to upsert");
         // Insert session without project_id (simulates legacy data)
         sqlx::query(
-            r#"
+            r"
 INSERT INTO session (id, agent, base_branch)
 VALUES (?, ?, ?)
-"#,
+",
         )
         .bind("orphan")
         .bind("claude")
@@ -651,21 +706,21 @@ VALUES (?, ?, ?)
         .await
         .expect("failed to insert");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = 1
 WHERE id = 'alpha'
-"#,
+",
         )
         .execute(db.pool())
         .await
         .expect("failed to set alpha timestamp");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = 2
 WHERE id = 'beta'
-"#,
+",
         )
         .execute(db.pool())
         .await
@@ -732,21 +787,21 @@ WHERE id = 'beta'
         .await
         .expect("failed to insert beta");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = 100
 WHERE id = 'alpha'
-"#,
+",
         )
         .execute(db.pool())
         .await
         .expect("failed to set alpha timestamp");
         sqlx::query(
-            r#"
+            r"
 UPDATE session
 SET updated_at = 200
 WHERE id = 'beta'
-"#,
+",
         )
         .execute(db.pool())
         .await
