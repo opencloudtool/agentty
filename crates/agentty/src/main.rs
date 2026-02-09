@@ -1,6 +1,5 @@
 use std::io;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use agentty::agent::AgentKind;
@@ -214,381 +213,580 @@ async fn handle_key_event(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     key: KeyEvent,
 ) -> io::Result<EventResult> {
-    match &mut app.mode {
-        AppMode::List => match key.code {
-            KeyCode::Char('q') => return Ok(EventResult::Quit),
-            KeyCode::Tab => {
-                app.next_tab();
-            }
-            KeyCode::Char('/') => {
-                app.mode = AppMode::CommandPalette {
-                    input: String::new(),
-                    selected_index: 0,
-                    focus: PaletteFocus::Dropdown,
+    match &app.mode {
+        AppMode::List => handle_list_key_event(app, key).await,
+        AppMode::View { .. } => handle_view_key_event(app, terminal, key).await,
+        AppMode::Prompt { .. } => handle_prompt_key_event(app, terminal, key).await,
+        AppMode::Diff { .. } => Ok(handle_diff_key_event(app, key)),
+        AppMode::CommandPalette { .. } => Ok(handle_command_palette_key_event(app, key)),
+        AppMode::CommandOption { .. } => handle_command_option_key_event(app, key).await,
+        AppMode::Health => Ok(handle_health_key_event(app, key)),
+    }
+}
+
+async fn handle_list_key_event(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
+    match key.code {
+        KeyCode::Char('q') => return Ok(EventResult::Quit),
+        KeyCode::Tab => {
+            app.next_tab();
+        }
+        KeyCode::Char('/') => {
+            app.mode = AppMode::CommandPalette {
+                input: String::new(),
+                selected_index: 0,
+                focus: PaletteFocus::Dropdown,
+            };
+        }
+        KeyCode::Char('a') => {
+            if let Ok(session_id) = app.create_session().await {
+                app.mode = AppMode::Prompt {
+                    slash_state: PromptSlashState::new(),
+                    session_id,
+                    input: InputState::new(),
+                    scroll_offset: None,
                 };
             }
-            KeyCode::Char('a') => {
-                if let Ok(session_id) = app.create_session().await {
-                    app.mode = AppMode::Prompt {
-                        slash_state: PromptSlashState::new(),
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.next();
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.previous();
+        }
+        KeyCode::Enter => {
+            if let Some(session_index) = app.session_state.table_state.selected() {
+                if let Some(session_id) = app.session_id_for_index(session_index) {
+                    app.mode = AppMode::View {
                         session_id,
-                        input: InputState::new(),
                         scroll_offset: None,
                     };
                 }
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                app.next();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                app.previous();
-            }
-            KeyCode::Enter => {
-                if let Some(i) = app.session_state.table_state.selected() {
-                    if let Some(session_id) = app.session_id_for_index(i) {
-                        app.mode = AppMode::View {
-                            session_id,
-                            scroll_offset: None,
-                        };
-                    }
-                }
-            }
-            KeyCode::Char('d') => {
-                app.delete_selected_session().await;
-            }
-            KeyCode::Char('o') => {
-                if let Some(session) = app.selected_session() {
-                    let folder = session.folder.clone();
-                    disable_raw_mode()?;
-                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-                    let _ = Command::new(&shell).current_dir(&folder).status();
-                    enable_raw_mode()?;
-                    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-                    terminal.clear()?;
-                }
-            }
-            _ => {}
-        },
+        }
+        KeyCode::Char('d') => {
+            app.delete_selected_session().await;
+        }
+        _ => {}
+    }
+
+    Ok(EventResult::Continue)
+}
+
+async fn handle_view_key_event(
+    app: &mut App,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    key: KeyEvent,
+) -> io::Result<EventResult> {
+    let Some(view_context) = view_context(app) else {
+        return Ok(EventResult::Continue);
+    };
+
+    let view_metrics = view_metrics(app, terminal, view_context.session_index)?;
+    let mut next_scroll_offset = view_context.scroll_offset;
+
+    match key.code {
+        KeyCode::Char('q') => {
+            app.mode = AppMode::List;
+        }
+        KeyCode::Char('r') => {
+            app.mode = AppMode::Prompt {
+                slash_state: PromptSlashState::new(),
+                session_id: view_context.session_id.clone(),
+                input: InputState::new(),
+                scroll_offset: next_scroll_offset,
+            };
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            next_scroll_offset = scroll_offset_down(next_scroll_offset, view_metrics, 1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            next_scroll_offset = Some(scroll_offset_up(next_scroll_offset, view_metrics, 1));
+        }
+        KeyCode::Char('g') => {
+            next_scroll_offset = Some(0);
+        }
+        KeyCode::Char('G') => {
+            next_scroll_offset = None;
+        }
+        KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+            next_scroll_offset = scroll_offset_down(
+                next_scroll_offset,
+                view_metrics,
+                view_metrics.view_height / 2,
+            );
+        }
+        KeyCode::Char('u') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+            next_scroll_offset = Some(scroll_offset_up(
+                next_scroll_offset,
+                view_metrics,
+                view_metrics.view_height / 2,
+            ));
+        }
+        KeyCode::Char('d') if !key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+            show_diff_for_view_session(app, &view_context).await;
+        }
+        KeyCode::Char('c') => {
+            commit_view_session(app, &view_context.session_id).await;
+        }
+        KeyCode::Char('m') => {
+            merge_view_session(app, &view_context.session_id).await;
+        }
+        KeyCode::Char('p') => {
+            create_pr_for_view_session(app, &view_context.session_id).await;
+        }
+        _ => {}
+    }
+
+    if let AppMode::View { scroll_offset, .. } = &mut app.mode {
+        *scroll_offset = next_scroll_offset;
+    }
+
+    Ok(EventResult::Continue)
+}
+
+fn view_context(app: &mut App) -> Option<ViewContext> {
+    let (session_id, scroll_offset) = match &app.mode {
         AppMode::View {
             session_id,
             scroll_offset,
-        } => {
-            let session_id = session_id.clone();
-            let Some(session_idx) = app
-                .session_state
-                .sessions
-                .iter()
-                .position(|session| session.id == session_id)
-            else {
-                app.mode = AppMode::List;
+        } => (session_id.clone(), *scroll_offset),
+        _ => return None,
+    };
 
-                return Ok(EventResult::Continue);
-            };
-            let mut new_scroll = *scroll_offset;
+    let Some(session_index) = app.session_index_for_id(&session_id) else {
+        app.mode = AppMode::List;
 
-            // Estimate view height (terminal height - margins/borders/footer)
-            // Margin: 1 top/bottom (2) + Footer: 1 + Block borders: 2 = 5 overhead
-            let term_height = terminal.size()?.height;
-            let view_height = term_height.saturating_sub(5);
-            let total_lines = u16::try_from(
-                app.session_state
-                    .sessions
-                    .get(session_idx)
-                    .and_then(|a| a.output.lock().ok())
-                    .map(|o| o.lines().count())
-                    .unwrap_or(0),
-            )
-            .unwrap_or(0);
+        return None;
+    };
 
-            match key.code {
-                KeyCode::Char('q') => {
-                    app.mode = AppMode::List;
-                }
-                KeyCode::Char('r') => {
-                    app.mode = AppMode::Prompt {
-                        slash_state: PromptSlashState::new(),
-                        session_id: session_id.clone(),
-                        input: InputState::new(),
-                        scroll_offset: new_scroll,
-                    };
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if let Some(current) = new_scroll {
-                        let next = current.saturating_add(1);
-                        if next >= total_lines.saturating_sub(view_height) {
-                            new_scroll = None;
-                        } else {
-                            new_scroll = Some(next);
-                        }
-                    }
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    let current =
-                        new_scroll.unwrap_or_else(|| total_lines.saturating_sub(view_height));
-                    new_scroll = Some(current.saturating_sub(1));
-                }
-                KeyCode::Char('g') => {
-                    new_scroll = Some(0);
-                }
-                KeyCode::Char('G') => {
-                    new_scroll = None;
-                }
-                KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    if let Some(current) = new_scroll {
-                        let next = current.saturating_add(view_height / 2);
-                        if next >= total_lines.saturating_sub(view_height) {
-                            new_scroll = None;
-                        } else {
-                            new_scroll = Some(next);
-                        }
-                    }
-                }
-                KeyCode::Char('u') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    let current =
-                        new_scroll.unwrap_or_else(|| total_lines.saturating_sub(view_height));
-                    new_scroll = Some(current.saturating_sub(view_height / 2));
-                }
-                KeyCode::Char('d') if !key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    if let Some(session) = app.session_state.sessions.get(session_idx) {
-                        let folder = session.folder.clone();
-                        let diff = tokio::task::spawn_blocking(move || agentty::git::diff(&folder))
-                            .await
-                            .unwrap_or_else(|e| Err(e.to_string()))
-                            .unwrap_or_else(|e| format!("Failed to run git diff: {e}"));
-                        app.mode = AppMode::Diff {
-                            session_id: session_id.clone(),
-                            diff,
-                            scroll_offset: 0,
-                        };
-                    }
-                }
-                KeyCode::Char('c') => {
-                    if let Some(session) = app.session_state.sessions.get(session_idx) {
-                        let result_message = match app.commit_session(&session_id).await {
-                            Ok(msg) => format!("\n[Commit] {msg}\n"),
-                            Err(err) => format!("\n[Commit Error] {err}\n"),
-                        };
-                        session.append_output(&result_message);
-                    }
-                }
-                KeyCode::Char('m') => {
-                    if let Some(session) = app.session_state.sessions.get(session_idx) {
-                        let result_message = match app.merge_session(&session_id).await {
-                            Ok(msg) => format!("\n[Merge] {msg}\n"),
-                            Err(err) => format!("\n[Merge Error] {err}\n"),
-                        };
-                        session.append_output(&result_message);
-                    }
-                }
-                KeyCode::Char('p') => {
-                    if let Err(e) = app.create_pr_session(&session_id).await {
-                        if let Some(session) = app.session_state.sessions.get(session_idx) {
-                            session.append_output(&format!("\n[PR Error] {e}\n"));
-                        }
-                    }
-                }
-                _ => {}
-            }
+    Some(ViewContext {
+        scroll_offset,
+        session_id,
+        session_index,
+    })
+}
 
-            // Update state if changed (and not switching mode)
-            if let AppMode::View { scroll_offset, .. } = &mut app.mode {
-                *scroll_offset = new_scroll;
+fn view_metrics(
+    app: &App,
+    terminal: &Terminal<CrosstermBackend<io::Stdout>>,
+    session_index: usize,
+) -> io::Result<ViewMetrics> {
+    let terminal_height = terminal.size()?.height;
+    let view_height = terminal_height.saturating_sub(5);
+    let total_lines = u16::try_from(
+        app.session_state
+            .sessions
+            .get(session_index)
+            .and_then(|session| session.output.lock().ok())
+            .map(|output| output.lines().count())
+            .unwrap_or(0),
+    )
+    .unwrap_or(0);
+
+    Ok(ViewMetrics {
+        total_lines,
+        view_height,
+    })
+}
+
+fn scroll_offset_down(scroll_offset: Option<u16>, metrics: ViewMetrics, step: u16) -> Option<u16> {
+    let current_offset = scroll_offset?;
+
+    let next_offset = current_offset.saturating_add(step.max(1));
+    if next_offset >= metrics.total_lines.saturating_sub(metrics.view_height) {
+        return None;
+    }
+
+    Some(next_offset)
+}
+
+fn scroll_offset_up(scroll_offset: Option<u16>, metrics: ViewMetrics, step: u16) -> u16 {
+    let current_offset =
+        scroll_offset.unwrap_or_else(|| metrics.total_lines.saturating_sub(metrics.view_height));
+
+    current_offset.saturating_sub(step.max(1))
+}
+
+async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) {
+    let Some(session) = app.session_state.sessions.get(view_context.session_index) else {
+        return;
+    };
+
+    let session_folder = session.folder.clone();
+    let diff = tokio::task::spawn_blocking(move || agentty::git::diff(&session_folder))
+        .await
+        .unwrap_or_else(|join_error| Err(join_error.to_string()))
+        .unwrap_or_else(|error| format!("Failed to run git diff: {error}"));
+    app.mode = AppMode::Diff {
+        session_id: view_context.session_id.clone(),
+        diff,
+        scroll_offset: 0,
+    };
+}
+
+async fn commit_view_session(app: &mut App, session_id: &str) {
+    let result_message = match app.commit_session(session_id).await {
+        Ok(message) => format!("\n[Commit] {message}\n"),
+        Err(error) => format!("\n[Commit Error] {error}\n"),
+    };
+
+    append_output_for_session(app, session_id, &result_message);
+}
+
+async fn merge_view_session(app: &mut App, session_id: &str) {
+    let result_message = match app.merge_session(session_id).await {
+        Ok(message) => format!("\n[Merge] {message}\n"),
+        Err(error) => format!("\n[Merge Error] {error}\n"),
+    };
+
+    append_output_for_session(app, session_id, &result_message);
+}
+
+async fn create_pr_for_view_session(app: &mut App, session_id: &str) {
+    if let Err(error) = app.create_pr_session(session_id).await {
+        append_output_for_session(app, session_id, &format!("\n[PR Error] {error}\n"));
+    }
+}
+
+fn append_output_for_session(app: &App, session_id: &str, output: &str) {
+    let Some(session_index) = app.session_index_for_id(session_id) else {
+        return;
+    };
+    let Some(session) = app.session_state.sessions.get(session_index) else {
+        return;
+    };
+
+    session.append_output(output);
+}
+
+async fn handle_prompt_key_event(
+    app: &mut App,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    key: KeyEvent,
+) -> io::Result<EventResult> {
+    let Some(prompt_context) = prompt_context(app) else {
+        return Ok(EventResult::Continue);
+    };
+
+    if !prompt_context.is_slash_command {
+        reset_prompt_slash_state(app);
+    }
+
+    match key.code {
+        KeyCode::Enter if should_insert_newline(key) => {
+            if let AppMode::Prompt { input, .. } = &mut app.mode {
+                input.insert_newline();
             }
         }
+        KeyCode::Enter => {
+            handle_prompt_submit_key(app, &prompt_context).await;
+        }
+        KeyCode::Esc | KeyCode::Char('c') if is_prompt_cancel_key(key) => {
+            handle_prompt_cancel_key(app, &prompt_context).await;
+        }
+        KeyCode::Left => {
+            if let AppMode::Prompt { input, .. } = &mut app.mode {
+                input.move_left();
+            }
+        }
+        KeyCode::Right => {
+            if let AppMode::Prompt { input, .. } = &mut app.mode {
+                input.move_right();
+            }
+        }
+        KeyCode::Up => {
+            handle_prompt_up_key(app, terminal, &prompt_context)?;
+        }
+        KeyCode::Down => {
+            handle_prompt_down_key(app, terminal, &prompt_context)?;
+        }
+        KeyCode::Home => {
+            if let AppMode::Prompt { input, .. } = &mut app.mode {
+                input.move_home();
+            }
+        }
+        KeyCode::End => {
+            if let AppMode::Prompt { input, .. } = &mut app.mode {
+                input.move_end();
+            }
+        }
+        KeyCode::Backspace => {
+            if let AppMode::Prompt {
+                input, slash_state, ..
+            } = &mut app.mode
+            {
+                input.delete_backward();
+                slash_state.reset();
+            }
+        }
+        KeyCode::Delete => {
+            if let AppMode::Prompt {
+                input, slash_state, ..
+            } = &mut app.mode
+            {
+                input.delete_forward();
+                slash_state.reset();
+            }
+        }
+        KeyCode::Char(character) => {
+            if let AppMode::Prompt {
+                input, slash_state, ..
+            } = &mut app.mode
+            {
+                input.insert_char(character);
+                slash_state.reset();
+            }
+        }
+        _ => {}
+    }
+
+    Ok(EventResult::Continue)
+}
+
+fn prompt_context(app: &mut App) -> Option<PromptContext> {
+    let (is_slash_command, scroll_offset, session_id) = match &app.mode {
         AppMode::Prompt {
-            session_id,
             input,
             scroll_offset,
-            slash_state,
-        } => {
-            let session_id = session_id.clone();
-            let Some(session_idx) = app
-                .session_state
-                .sessions
-                .iter()
-                .position(|session| session.id == session_id)
-            else {
-                app.mode = AppMode::List;
+            session_id,
+            ..
+        } => (
+            input.text().starts_with('/'),
+            *scroll_offset,
+            session_id.clone(),
+        ),
+        _ => return None,
+    };
 
-                return Ok(EventResult::Continue);
+    let Some(session_index) = app.session_index_for_id(&session_id) else {
+        app.mode = AppMode::List;
+
+        return None;
+    };
+
+    let is_new_session = app
+        .session_state
+        .sessions
+        .get(session_index)
+        .map(|session| session.prompt.is_empty())
+        .unwrap_or(false);
+
+    Some(PromptContext {
+        is_new_session,
+        is_slash_command,
+        scroll_offset,
+        session_id,
+        session_index,
+    })
+}
+
+fn reset_prompt_slash_state(app: &mut App) {
+    if let AppMode::Prompt { slash_state, .. } = &mut app.mode {
+        slash_state.reset();
+    }
+}
+
+fn is_prompt_cancel_key(key: KeyEvent) -> bool {
+    key.code == KeyCode::Esc || key.modifiers.contains(event::KeyModifiers::CONTROL)
+}
+
+fn handle_prompt_up_key(
+    app: &mut App,
+    terminal: &Terminal<CrosstermBackend<io::Stdout>>,
+    prompt_context: &PromptContext,
+) -> io::Result<()> {
+    if prompt_context.is_slash_command {
+        if let AppMode::Prompt { slash_state, .. } = &mut app.mode {
+            slash_state.selected_index = slash_state.selected_index.saturating_sub(1);
+        }
+
+        return Ok(());
+    }
+
+    let input_width = prompt_input_width(terminal)?;
+    if let AppMode::Prompt { input, .. } = &mut app.mode {
+        input.cursor = move_input_cursor_up(input.text(), input_width, input.cursor);
+    }
+
+    Ok(())
+}
+
+fn handle_prompt_down_key(
+    app: &mut App,
+    terminal: &Terminal<CrosstermBackend<io::Stdout>>,
+    prompt_context: &PromptContext,
+) -> io::Result<()> {
+    if prompt_context.is_slash_command {
+        advance_prompt_slash_selection(app);
+
+        return Ok(());
+    }
+
+    let input_width = prompt_input_width(terminal)?;
+    if let AppMode::Prompt { input, .. } = &mut app.mode {
+        input.cursor = move_input_cursor_down(input.text(), input_width, input.cursor);
+    }
+
+    Ok(())
+}
+
+fn advance_prompt_slash_selection(app: &mut App) {
+    let (input_text, selected_agent, selected_index, stage) = match &app.mode {
+        AppMode::Prompt {
+            input, slash_state, ..
+        } => (
+            input.text().to_string(),
+            slash_state.selected_agent,
+            slash_state.selected_index,
+            slash_state.stage,
+        ),
+        _ => return,
+    };
+
+    let option_count = prompt_slash_option_count(&input_text, stage, selected_agent);
+    if option_count == 0 {
+        return;
+    }
+
+    if let AppMode::Prompt { slash_state, .. } = &mut app.mode {
+        let max_index = option_count.saturating_sub(1);
+        slash_state.selected_index = (selected_index + 1).min(max_index);
+    }
+}
+
+async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext) {
+    if prompt_context.is_slash_command {
+        handle_prompt_slash_submit(app, prompt_context);
+
+        return;
+    }
+
+    let prompt = match &mut app.mode {
+        AppMode::Prompt { input, .. } => input.take_text(),
+        _ => String::new(),
+    };
+    if prompt.is_empty() {
+        return;
+    }
+
+    if prompt_context.is_new_session {
+        if let Err(error) = app.start_session(&prompt_context.session_id, prompt).await {
+            append_output_for_session(
+                app,
+                &prompt_context.session_id,
+                &format!("\n[Error] {error}\n"),
+            );
+        }
+    } else {
+        app.reply(&prompt_context.session_id, &prompt);
+    }
+
+    app.mode = AppMode::View {
+        session_id: prompt_context.session_id.clone(),
+        scroll_offset: None,
+    };
+}
+
+fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContext) {
+    let (input_text, selected_agent, selected_index, stage) = match &app.mode {
+        AppMode::Prompt {
+            input, slash_state, ..
+        } => (
+            input.text().to_string(),
+            slash_state.selected_agent,
+            slash_state.selected_index,
+            slash_state.stage,
+        ),
+        _ => return,
+    };
+
+    match stage {
+        PromptSlashStage::Command => {
+            let commands = prompt_slash_commands(&input_text);
+            if commands.is_empty() {
+                return;
+            }
+
+            if let AppMode::Prompt { slash_state, .. } = &mut app.mode {
+                slash_state.stage = PromptSlashStage::Agent;
+                slash_state.selected_agent = None;
+                slash_state.selected_index = 0;
+            }
+        }
+        PromptSlashStage::Agent => {
+            let Some(selected_agent) = AgentKind::ALL.get(selected_index).copied() else {
+                return;
             };
-            let scroll_snapshot = *scroll_offset;
-            let is_new_session = app
+
+            if let AppMode::Prompt { slash_state, .. } = &mut app.mode {
+                slash_state.selected_agent = Some(selected_agent);
+                slash_state.stage = PromptSlashStage::Model;
+                slash_state.selected_index = 0;
+            }
+        }
+        PromptSlashStage::Model => {
+            let fallback_agent = app
                 .session_state
                 .sessions
-                .get(session_idx)
-                .map(|s| s.prompt.is_empty())
-                .unwrap_or(false);
-            let is_slash_command = input.text().starts_with('/');
-            if !is_slash_command {
+                .get(prompt_context.session_index)
+                .and_then(|session| session.agent.parse::<AgentKind>().ok())
+                .unwrap_or(AgentKind::Gemini);
+            let selected_agent = selected_agent.unwrap_or(fallback_agent);
+            let Some(selected_model) = selected_agent.models().get(selected_index).copied() else {
+                return;
+            };
+
+            if let AppMode::Prompt {
+                input, slash_state, ..
+            } = &mut app.mode
+            {
+                input.take_text();
                 slash_state.reset();
             }
 
-            match key.code {
-                KeyCode::Enter if should_insert_newline(key) => {
-                    input.insert_newline();
-                }
-                KeyCode::Enter => {
-                    if is_slash_command {
-                        match slash_state.stage {
-                            PromptSlashStage::Command => {
-                                let commands = prompt_slash_commands(input.text());
-                                if commands.is_empty() {
-                                    return Ok(EventResult::Continue);
-                                }
-
-                                slash_state.stage = PromptSlashStage::Agent;
-                                slash_state.selected_agent = None;
-                                slash_state.selected_index = 0;
-
-                                return Ok(EventResult::Continue);
-                            }
-                            PromptSlashStage::Agent => {
-                                let selected_agent =
-                                    AgentKind::ALL.get(slash_state.selected_index).copied();
-                                let Some(selected_agent) = selected_agent else {
-                                    return Ok(EventResult::Continue);
-                                };
-
-                                slash_state.selected_agent = Some(selected_agent);
-                                slash_state.stage = PromptSlashStage::Model;
-                                slash_state.selected_index = 0;
-
-                                return Ok(EventResult::Continue);
-                            }
-                            PromptSlashStage::Model => {
-                                let fallback_agent = app
-                                    .session_state
-                                    .sessions
-                                    .get(session_idx)
-                                    .and_then(|session| session.agent.parse::<AgentKind>().ok())
-                                    .unwrap_or(AgentKind::Gemini);
-                                let selected_agent =
-                                    slash_state.selected_agent.unwrap_or(fallback_agent);
-                                let selected_model = selected_agent
-                                    .models()
-                                    .get(slash_state.selected_index)
-                                    .copied();
-                                let Some(selected_model) = selected_model else {
-                                    return Ok(EventResult::Continue);
-                                };
-
-                                input.take_text();
-                                slash_state.reset();
-                                let _ = app.set_session_agent_and_model(
-                                    &session_id,
-                                    selected_agent,
-                                    selected_model,
-                                );
-
-                                return Ok(EventResult::Continue);
-                            }
-                        }
-                    }
-
-                    let prompt = input.take_text();
-                    if !prompt.is_empty() {
-                        if is_new_session {
-                            if let Err(error) = app.start_session(&session_id, prompt).await {
-                                if let Some(session) = app.session_state.sessions.get(session_idx) {
-                                    session.append_output(&format!("\n[Error] {error}\n"));
-                                }
-                            }
-                        } else {
-                            app.reply(&session_id, &prompt);
-                        }
-                        app.mode = AppMode::View {
-                            session_id: session_id.clone(),
-                            scroll_offset: None,
-                        };
-                    }
-                }
-                KeyCode::Esc | KeyCode::Char('c')
-                    if key.code == KeyCode::Esc
-                        || key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                {
-                    if is_slash_command {
-                        input.take_text();
-                        slash_state.reset();
-
-                        return Ok(EventResult::Continue);
-                    }
-
-                    if is_new_session {
-                        app.delete_selected_session().await;
-                        app.mode = AppMode::List;
-                    } else {
-                        app.mode = AppMode::View {
-                            session_id: session_id.clone(),
-                            scroll_offset: scroll_snapshot,
-                        };
-                    }
-                }
-                KeyCode::Left => {
-                    input.move_left();
-                }
-                KeyCode::Right => {
-                    input.move_right();
-                }
-                KeyCode::Up => {
-                    if is_slash_command {
-                        slash_state.selected_index = slash_state.selected_index.saturating_sub(1);
-
-                        return Ok(EventResult::Continue);
-                    }
-
-                    let input_width = prompt_input_width(terminal)?;
-                    let next_cursor = move_input_cursor_up(input.text(), input_width, input.cursor);
-                    input.cursor = next_cursor;
-                }
-                KeyCode::Down => {
-                    if is_slash_command {
-                        let option_count = prompt_slash_option_count(
-                            input.text(),
-                            slash_state.stage,
-                            slash_state.selected_agent,
-                        );
-                        if option_count > 0 {
-                            let max_index = option_count.saturating_sub(1);
-                            slash_state.selected_index =
-                                (slash_state.selected_index + 1).min(max_index);
-                        }
-
-                        return Ok(EventResult::Continue);
-                    }
-
-                    let input_width = prompt_input_width(terminal)?;
-                    let next_cursor =
-                        move_input_cursor_down(input.text(), input_width, input.cursor);
-                    input.cursor = next_cursor;
-                }
-                KeyCode::Home => {
-                    input.move_home();
-                }
-                KeyCode::End => {
-                    input.move_end();
-                }
-                KeyCode::Backspace => {
-                    input.delete_backward();
-                    slash_state.reset();
-                }
-                KeyCode::Delete => {
-                    input.delete_forward();
-                    slash_state.reset();
-                }
-                KeyCode::Char(c) => {
-                    input.insert_char(c);
-                    slash_state.reset();
-                }
-                _ => {}
-            }
+            let _ = app.set_session_agent_and_model(
+                &prompt_context.session_id,
+                selected_agent,
+                selected_model,
+            );
         }
-        AppMode::Diff {
-            session_id,
-            diff: _,
-            scroll_offset,
-        } => match key.code {
+    }
+}
+
+async fn handle_prompt_cancel_key(app: &mut App, prompt_context: &PromptContext) {
+    if prompt_context.is_slash_command {
+        if let AppMode::Prompt {
+            input, slash_state, ..
+        } = &mut app.mode
+        {
+            input.take_text();
+            slash_state.reset();
+        }
+
+        return;
+    }
+
+    if prompt_context.is_new_session {
+        app.delete_selected_session().await;
+        app.mode = AppMode::List;
+
+        return;
+    }
+
+    app.mode = AppMode::View {
+        session_id: prompt_context.session_id.clone(),
+        scroll_offset: prompt_context.scroll_offset,
+    };
+}
+
+fn handle_diff_key_event(app: &mut App, key: KeyEvent) -> EventResult {
+    if let AppMode::Diff {
+        session_id,
+        diff: _,
+        scroll_offset,
+    } = &mut app.mode
+    {
+        match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 app.mode = AppMode::View {
                     session_id: session_id.clone(),
@@ -602,129 +800,206 @@ async fn handle_key_event(
                 *scroll_offset = scroll_offset.saturating_sub(1);
             }
             _ => {}
-        },
-        AppMode::CommandPalette {
-            input,
-            selected_index,
-            focus,
-        } => match focus {
-            PaletteFocus::Input | PaletteFocus::Dropdown => match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+        }
+    }
+
+    EventResult::Continue
+}
+
+fn handle_command_palette_key_event(app: &mut App, key: KeyEvent) -> EventResult {
+    let mut palette_action = PaletteAction::None;
+    if let AppMode::CommandPalette {
+        input,
+        selected_index,
+        focus,
+    } = &mut app.mode
+    {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                app.mode = AppMode::List;
+            }
+            KeyCode::Char(character) => {
+                input.push(character);
+                update_palette_focus(input, selected_index, focus);
+            }
+            KeyCode::Backspace => {
+                input.pop();
+                update_palette_focus(input, selected_index, focus);
+            }
+            KeyCode::Up if *focus == PaletteFocus::Dropdown => {
+                *selected_index = selected_index.saturating_sub(1);
+            }
+            KeyCode::Down if *focus == PaletteFocus::Dropdown => {
+                move_palette_selection_down(input, selected_index, focus);
+            }
+            KeyCode::Enter if *focus == PaletteFocus::Dropdown => {
+                let filtered = PaletteCommand::filter(input);
+                if let Some(&command) = filtered.get(*selected_index) {
+                    palette_action = PaletteAction::Open(command);
+                }
+            }
+            KeyCode::Esc => {
+                if *focus == PaletteFocus::Dropdown {
+                    *focus = PaletteFocus::Input;
+                } else {
                     app.mode = AppMode::List;
                 }
-                KeyCode::Char(c) => {
-                    input.push(c);
-                    let filtered = PaletteCommand::filter(input);
-                    if filtered.is_empty() {
-                        *focus = PaletteFocus::Input;
-                    } else {
-                        *selected_index = 0;
-                        *focus = PaletteFocus::Dropdown;
-                    }
-                }
-                KeyCode::Backspace => {
-                    input.pop();
-                    let filtered = PaletteCommand::filter(input);
-                    if input.is_empty() || filtered.is_empty() {
-                        *selected_index = 0;
-                        *focus = PaletteFocus::Input;
-                    } else {
-                        *selected_index = 0;
-                        *focus = PaletteFocus::Dropdown;
-                    }
-                }
-                KeyCode::Up if *focus == PaletteFocus::Dropdown => {
-                    *selected_index = selected_index.saturating_sub(1);
-                }
-                KeyCode::Down if *focus == PaletteFocus::Dropdown => {
-                    let filtered = PaletteCommand::filter(input);
-                    if !filtered.is_empty() && *selected_index >= filtered.len() - 1 {
-                        *focus = PaletteFocus::Input;
-                    } else {
-                        *selected_index += 1;
-                    }
-                }
-                KeyCode::Enter if *focus == PaletteFocus::Dropdown => {
-                    let filtered = PaletteCommand::filter(input);
-                    if let Some(&command) = filtered.get(*selected_index) {
-                        match command {
-                            PaletteCommand::Projects => {
-                                app.mode = AppMode::CommandOption {
-                                    command,
-                                    selected_index: 0,
-                                };
-                            }
-                            PaletteCommand::Health => {
-                                app.start_health_checks();
-                                app.mode = AppMode::Health;
-                            }
-                        }
-                    }
-                }
-                KeyCode::Esc => {
-                    if *focus == PaletteFocus::Dropdown {
-                        *focus = PaletteFocus::Input;
-                    } else {
-                        app.mode = AppMode::List;
-                    }
-                }
-                _ => {}
-            },
-        },
+            }
+            _ => {}
+        }
+    }
+
+    match palette_action {
+        PaletteAction::None => {}
+        PaletteAction::Open(PaletteCommand::Projects) => {
+            app.mode = AppMode::CommandOption {
+                command: PaletteCommand::Projects,
+                selected_index: 0,
+            };
+        }
+        PaletteAction::Open(PaletteCommand::Health) => {
+            app.start_health_checks();
+            app.mode = AppMode::Health;
+        }
+    }
+
+    EventResult::Continue
+}
+
+fn update_palette_focus(input: &str, selected_index: &mut usize, focus: &mut PaletteFocus) {
+    let filtered = PaletteCommand::filter(input);
+    *selected_index = 0;
+    *focus = if filtered.is_empty() {
+        PaletteFocus::Input
+    } else {
+        PaletteFocus::Dropdown
+    };
+}
+
+fn move_palette_selection_down(input: &str, selected_index: &mut usize, focus: &mut PaletteFocus) {
+    let filtered = PaletteCommand::filter(input);
+    if filtered.is_empty() {
+        *focus = PaletteFocus::Input;
+
+        return;
+    }
+    if *selected_index >= filtered.len().saturating_sub(1) {
+        *focus = PaletteFocus::Input;
+    } else {
+        *selected_index += 1;
+    }
+}
+
+async fn handle_command_option_key_event(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
+    let (command, mut selected_index) = match &app.mode {
         AppMode::CommandOption {
             command,
             selected_index,
-        } => match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                app.mode = AppMode::List;
+        } => (*command, *selected_index),
+        _ => return Ok(EventResult::Continue),
+    };
+
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+            app.mode = AppMode::List;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            let option_count = command_option_count(app, command);
+            if option_count > 0 {
+                selected_index = (selected_index + 1).min(option_count - 1);
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                let option_count = match command {
-                    PaletteCommand::Health => 0,
-                    PaletteCommand::Projects => app.projects.len(),
-                };
-                if option_count > 0 {
-                    *selected_index = (*selected_index + 1).min(option_count - 1);
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                *selected_index = selected_index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                match command {
-                    PaletteCommand::Health => {}
-                    PaletteCommand::Projects => {
-                        if let Some(project) = app.projects.get(*selected_index) {
-                            let project_id = project.id;
-                            let _ = app.switch_project(project_id).await;
-                        }
-                    }
-                }
-                app.mode = AppMode::List;
-            }
-            KeyCode::Esc => {
-                app.mode = AppMode::CommandPalette {
-                    input: String::new(),
-                    selected_index: 0,
-                    focus: PaletteFocus::Dropdown,
-                };
-            }
-            _ => {}
-        },
-        AppMode::Health => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                app.mode = AppMode::List;
-            }
-            KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                app.mode = AppMode::List;
-            }
-            KeyCode::Char('r') => {
-                app.start_health_checks();
-            }
-            _ => {}
-        },
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            selected_index = selected_index.saturating_sub(1);
+        }
+        KeyCode::Enter => {
+            handle_command_option_enter(app, command, selected_index).await;
+            app.mode = AppMode::List;
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::CommandPalette {
+                input: String::new(),
+                selected_index: 0,
+                focus: PaletteFocus::Dropdown,
+            };
+        }
+        _ => {}
     }
+
+    if let AppMode::CommandOption {
+        selected_index: mode_selected_index,
+        ..
+    } = &mut app.mode
+    {
+        *mode_selected_index = selected_index;
+    }
+
     Ok(EventResult::Continue)
+}
+
+fn command_option_count(app: &App, command: PaletteCommand) -> usize {
+    match command {
+        PaletteCommand::Health => 0,
+        PaletteCommand::Projects => app.projects.len(),
+    }
+}
+
+async fn handle_command_option_enter(
+    app: &mut App,
+    command: PaletteCommand,
+    selected_index: usize,
+) {
+    if command != PaletteCommand::Projects {
+        return;
+    }
+    let Some(project) = app.projects.get(selected_index) else {
+        return;
+    };
+
+    let _ = app.switch_project(project.id).await;
+}
+
+fn handle_health_key_event(app: &mut App, key: KeyEvent) -> EventResult {
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            app.mode = AppMode::List;
+        }
+        KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+            app.mode = AppMode::List;
+        }
+        KeyCode::Char('r') => {
+            app.start_health_checks();
+        }
+        _ => {}
+    }
+
+    EventResult::Continue
+}
+
+#[derive(Clone)]
+struct ViewContext {
+    scroll_offset: Option<u16>,
+    session_id: String,
+    session_index: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ViewMetrics {
+    total_lines: u16,
+    view_height: u16,
+}
+
+struct PromptContext {
+    is_new_session: bool,
+    is_slash_command: bool,
+    scroll_offset: Option<u16>,
+    session_id: String,
+    session_index: usize,
+}
+
+enum PaletteAction {
+    None,
+    Open(PaletteCommand),
 }
 
 fn prompt_slash_commands(input: &str) -> Vec<&'static str> {
