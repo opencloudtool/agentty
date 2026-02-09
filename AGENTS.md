@@ -155,6 +155,7 @@ already applied — just re-run to confirm everything passes.
 - Do not use conventional commit prefixes (e.g., `feat:`, `fix:`).
 - Never use `--no-verify` with git commands to bypass `pre-commit` hooks.
 - Do not add `Co-Authored-By` trailers or any AI attribution to commit messages.
+- **Tagging:** Always use the `v` prefix for version tags (e.g., `v0.1.0`).
 
 ## Git Worktree Integration
 Agentty automatically creates isolated git worktrees for sessions when launched from within a git repository:
