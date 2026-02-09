@@ -195,6 +195,7 @@ git worktree prune
 
 ## Directory Index
 - [.claude/](.claude/) - Claude AI specific settings.
+- [.codex/](.codex/) - Codex AI specific settings.
 - [.gemini/](.gemini/) - Gemini AI specific settings.
 - [.git-town.toml](.git-town.toml) - Git Town configuration.
 - [.github/](.github/) - GitHub configuration files.
@@ -213,3 +214,4 @@ git worktree prune
 - [pr-testing/](pr-testing/) - Files for pull request testing workflows.
 - [README.md](README.md) - Main project documentation.
 - [rust-toolchain.toml](rust-toolchain.toml) - Rust toolchain version pinning.
+- [skills/](skills/) - Shared agent skills.
