@@ -305,10 +305,10 @@ impl App {
 
     /// Creates a blank session with an empty prompt and output.
     ///
-    /// Returns the index of the newly created session in the sorted list.
+    /// Returns the identifier of the newly created session.
     /// The session is created with `New` status and no agent is started —
     /// call [`start_session`] to submit a prompt and launch the agent.
-    pub async fn create_session(&mut self) -> Result<usize, String> {
+    pub async fn create_session(&mut self) -> Result<SessionId, String> {
         let base_branch = self
             .git_branch
             .as_deref()
@@ -421,15 +421,14 @@ impl App {
             .unwrap_or(0);
         self.session_state.table_state.select(Some(index));
 
-        Ok(index)
+        Ok(session_id)
     }
 
     /// Submits the first prompt for a blank session and starts the agent.
-    pub async fn start_session(
-        &mut self,
-        session_index: usize,
-        prompt: String,
-    ) -> Result<(), String> {
+    pub async fn start_session(&mut self, session_id: &str, prompt: String) -> Result<(), String> {
+        let session_index = self
+            .session_index_for_id(session_id)
+            .ok_or_else(|| "Session not found".to_string())?;
         let session = self
             .session_state
             .sessions
@@ -463,7 +462,11 @@ impl App {
         Ok(())
     }
 
-    pub fn reply(&mut self, session_index: usize, prompt: &str) {
+    /// Submits a follow-up prompt to an existing session.
+    pub fn reply(&mut self, session_id: &str, prompt: &str) {
+        let Some(session_index) = self.session_index_for_id(session_id) else {
+            return;
+        };
         let session_agent = self
             .session_state
             .sessions
@@ -471,7 +474,7 @@ impl App {
             .and_then(|s| s.agent.parse::<AgentKind>().ok())
             .unwrap_or(self.agent_kind);
         let backend = session_agent.create_backend();
-        self.reply_with_backend(session_index, prompt, backend.as_ref());
+        self.reply_with_backend(session_id, prompt, backend.as_ref());
     }
 
     pub fn selected_session(&self) -> Option<&Session> {
@@ -542,11 +545,13 @@ impl App {
         self.update_sessions_metadata_cache().await;
     }
 
-    pub async fn commit_session(&self, session_index: usize) -> Result<String, String> {
+    /// Commits all changes in a session worktree.
+    pub async fn commit_session(&self, session_id: &str) -> Result<String, String> {
         let session = self
             .session_state
             .sessions
-            .get(session_index)
+            .iter()
+            .find(|session| session.id == session_id)
             .ok_or_else(|| "Session not found".to_string())?;
 
         // Verify this session has a git worktree via DB
@@ -564,11 +569,13 @@ impl App {
         Ok("Successfully committed changes".to_string())
     }
 
-    pub async fn merge_session(&self, session_index: usize) -> Result<String, String> {
+    /// Squash-merges a reviewed session branch into its base branch.
+    pub async fn merge_session(&self, session_id: &str) -> Result<String, String> {
         let session = self
             .session_state
             .sessions
-            .get(session_index)
+            .iter()
+            .find(|session| session.id == session_id)
             .ok_or_else(|| "Session not found".to_string())?;
         if !matches!(session.status(), Status::Review | Status::PullRequest) {
             return Err("Session must be in review or pull request status".to_string());
@@ -624,11 +631,13 @@ impl App {
         ))
     }
 
-    pub async fn create_pr_session(&self, session_index: usize) -> Result<(), String> {
+    /// Creates a pull request for a reviewed session branch.
+    pub async fn create_pr_session(&self, session_id: &str) -> Result<(), String> {
         let session = self
             .session_state
             .sessions
-            .get(session_index)
+            .iter()
+            .find(|session| session.id == session_id)
             .ok_or_else(|| "Session not found".to_string())?;
 
         if session.status() != Status::Review {
@@ -925,12 +934,10 @@ impl App {
         git_dir.parent()?.parent()?.parent().map(Path::to_path_buf)
     }
 
-    fn reply_with_backend(
-        &mut self,
-        session_index: usize,
-        prompt: &str,
-        backend: &dyn AgentBackend,
-    ) {
+    fn reply_with_backend(&mut self, session_id: &str, prompt: &str, backend: &dyn AgentBackend) {
+        let Some(session_index) = self.session_index_for_id(session_id) else {
+            return;
+        };
         let Some(session) = self.session_state.sessions.get_mut(session_index) else {
             return;
         };
@@ -1446,11 +1453,11 @@ mod tests {
     /// Helper: creates a session and starts it with the given prompt (two-step
     /// flow).
     async fn create_and_start_session(app: &mut App, prompt: &str) {
-        let index = app
+        let session_id = app
             .create_session()
             .await
             .expect("failed to create session");
-        app.start_session(index, prompt.to_string())
+        app.start_session(&session_id, prompt.to_string())
             .await
             .expect("failed to start session");
     }
@@ -1615,14 +1622,14 @@ mod tests {
         let mut app = new_test_app_with_git(dir.path()).await;
 
         // Act
-        let index = app
+        let session_id = app
             .create_session()
             .await
             .expect("failed to create session");
 
         // Assert — blank session
         assert_eq!(app.session_state.sessions.len(), 1);
-        assert_eq!(index, 0);
+        assert_eq!(session_id, app.session_state.sessions[0].id);
         assert!(app.session_state.sessions[0].prompt.is_empty());
         assert_eq!(app.session_state.sessions[0].title, None);
         assert_eq!(app.session_state.sessions[0].display_title(), "No title");
@@ -1656,13 +1663,13 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
-        let index = app
+        let session_id = app
             .create_session()
             .await
             .expect("failed to create session");
 
         // Act
-        app.start_session(index, "Hello".to_string())
+        app.start_session(&session_id, "Hello".to_string())
             .await
             .expect("failed to start session");
 
@@ -1691,11 +1698,14 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
-        let index = app
+        let session_id = app
             .create_session()
             .await
             .expect("failed to create session");
-        let session_folder = app.session_state.sessions[index].folder.clone();
+        let session_index = app
+            .session_index_for_id(&session_id)
+            .expect("missing session index");
+        let session_folder = app.session_state.sessions[session_index].folder.clone();
         assert!(session_folder.exists());
 
         // Act — simulate Esc: delete the blank session
@@ -1714,9 +1724,10 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Initial").await;
+        let session_id = app.session_state.sessions[0].id.clone();
 
         // Act
-        app.reply(0, "Reply");
+        app.reply(&session_id, "Reply");
 
         // Assert
         let session = &app.session_state.sessions[0];
@@ -2185,7 +2196,8 @@ WHERE id = 'beta'
                     .stderr(Stdio::null());
                 cmd
             });
-        app.reply_with_backend(0, "SpawnReply", &resume_mock);
+        let session_id = app.session_state.sessions[0].id.clone();
+        app.reply_with_backend(&session_id, "SpawnReply", &resume_mock);
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Assert
@@ -2352,7 +2364,7 @@ WHERE id = 'beta'
         add_manual_session(&mut app, dir.path(), "manual01", "Test");
 
         // Act
-        let result = app.commit_session(0).await;
+        let result = app.commit_session("manual01").await;
 
         // Assert
         assert!(result.is_err());
@@ -2364,13 +2376,13 @@ WHERE id = 'beta'
     }
 
     #[tokio::test]
-    async fn test_commit_session_invalid_index() {
+    async fn test_commit_session_invalid_id() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let app = new_test_app(dir.path().to_path_buf()).await;
 
         // Act
-        let result = app.commit_session(99).await;
+        let result = app.commit_session("missing").await;
 
         // Assert
         assert!(result.is_err());
@@ -2389,7 +2401,7 @@ WHERE id = 'beta'
         add_manual_session(&mut app, dir.path(), "manual01", "Test");
 
         // Act
-        let result = app.merge_session(0).await;
+        let result = app.merge_session("manual01").await;
 
         // Assert
         assert!(result.is_err());
@@ -2401,13 +2413,13 @@ WHERE id = 'beta'
     }
 
     #[tokio::test]
-    async fn test_merge_session_invalid_index() {
+    async fn test_merge_session_invalid_id() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let app = new_test_app(dir.path().to_path_buf()).await;
 
         // Act
-        let result = app.merge_session(99).await;
+        let result = app.merge_session("missing").await;
 
         // Assert
         assert!(result.is_err());
@@ -2425,7 +2437,8 @@ WHERE id = 'beta'
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Local merge cleanup").await;
         wait_for_status(&app.session_state.sessions[0], Status::Review).await;
-        app.commit_session(0)
+        let session_id = app.session_state.sessions[0].id.clone();
+        app.commit_session(&session_id)
             .await
             .expect("failed to commit session");
         let session_folder = app.session_state.sessions[0].folder.clone();
@@ -2433,7 +2446,7 @@ WHERE id = 'beta'
         let branch_name = format!("agentty/{session_name}");
 
         // Act
-        let result = app.merge_session(0).await;
+        let result = app.merge_session(&session_id).await;
 
         // Assert
         assert!(result.is_ok(), "merge should succeed: {:?}", result.err());
@@ -2460,7 +2473,7 @@ WHERE id = 'beta'
         add_manual_session(&mut app, dir.path(), "manual01", "Test");
 
         // Act
-        let result = app.create_pr_session(0).await;
+        let result = app.create_pr_session("manual01").await;
 
         // Assert
         assert!(result.is_err());
@@ -2482,7 +2495,7 @@ WHERE id = 'beta'
         }
 
         // Act
-        let result = app.create_pr_session(0).await;
+        let result = app.create_pr_session("manual01").await;
 
         // Assert
         assert!(result.is_err());
@@ -2494,13 +2507,13 @@ WHERE id = 'beta'
     }
 
     #[tokio::test]
-    async fn test_create_pr_session_invalid_index() {
+    async fn test_create_pr_session_invalid_id() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let app = new_test_app(dir.path().to_path_buf()).await;
 
         // Act
-        let result = app.create_pr_session(99).await;
+        let result = app.create_pr_session("missing").await;
 
         // Assert
         assert!(result.is_err());

@@ -240,16 +240,12 @@ async fn handle_key_event(
                 };
             }
             KeyCode::Char('a') => {
-                if let Ok(session_index) = app.create_session().await {
-                    if let Some(session_id) = app.session_id_for_index(session_index) {
-                        app.mode = AppMode::Prompt {
-                            session_id,
-                            input: InputState::new(),
-                            scroll_offset: None,
-                        };
-                    } else {
-                        app.mode = AppMode::List;
-                    }
+                if let Ok(session_id) = app.create_session().await {
+                    app.mode = AppMode::Prompt {
+                        session_id,
+                        input: InputState::new(),
+                        scroll_offset: None,
+                    };
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -294,7 +290,7 @@ async fn handle_key_event(
                 .session_state
                 .sessions
                 .iter()
-                .position(|session| session.id == session_id.as_str())
+                .position(|session| session.id == session_id)
             else {
                 app.mode = AppMode::List;
 
@@ -379,7 +375,7 @@ async fn handle_key_event(
                 }
                 KeyCode::Char('c') => {
                     if let Some(session) = app.session_state.sessions.get(session_idx) {
-                        let result_message = match app.commit_session(session_idx).await {
+                        let result_message = match app.commit_session(&session_id).await {
                             Ok(msg) => format!("\n[Commit] {msg}\n"),
                             Err(err) => format!("\n[Commit Error] {err}\n"),
                         };
@@ -388,7 +384,7 @@ async fn handle_key_event(
                 }
                 KeyCode::Char('m') => {
                     if let Some(session) = app.session_state.sessions.get(session_idx) {
-                        let result_message = match app.merge_session(session_idx).await {
+                        let result_message = match app.merge_session(&session_id).await {
                             Ok(msg) => format!("\n[Merge] {msg}\n"),
                             Err(err) => format!("\n[Merge Error] {err}\n"),
                         };
@@ -396,7 +392,7 @@ async fn handle_key_event(
                     }
                 }
                 KeyCode::Char('p') => {
-                    if let Err(e) = app.create_pr_session(session_idx).await {
+                    if let Err(e) = app.create_pr_session(&session_id).await {
                         if let Some(session) = app.session_state.sessions.get(session_idx) {
                             session.append_output(&format!("\n[PR Error] {e}\n"));
                         }
@@ -420,7 +416,7 @@ async fn handle_key_event(
                 .session_state
                 .sessions
                 .iter()
-                .position(|session| session.id == session_id.as_str())
+                .position(|session| session.id == session_id)
             else {
                 app.mode = AppMode::List;
 
@@ -442,13 +438,13 @@ async fn handle_key_event(
                     let prompt = input.take_text();
                     if !prompt.is_empty() {
                         if is_new_session {
-                            if let Err(error) = app.start_session(session_idx, prompt).await {
+                            if let Err(error) = app.start_session(&session_id, prompt).await {
                                 if let Some(session) = app.session_state.sessions.get(session_idx) {
                                     session.append_output(&format!("\n[Error] {error}\n"));
                                 }
                             }
                         } else {
-                            app.reply(session_idx, &prompt);
+                            app.reply(&session_id, &prompt);
                         }
                         app.mode = AppMode::View {
                             session_id: session_id.clone(),
