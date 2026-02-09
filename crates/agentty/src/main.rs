@@ -241,11 +241,15 @@ async fn handle_key_event(
             }
             KeyCode::Char('a') => {
                 if let Ok(session_index) = app.create_session().await {
-                    app.mode = AppMode::Prompt {
-                        session_index,
-                        input: InputState::new(),
-                        scroll_offset: None,
-                    };
+                    if let Some(session_id) = app.session_id_for_index(session_index) {
+                        app.mode = AppMode::Prompt {
+                            session_id,
+                            input: InputState::new(),
+                            scroll_offset: None,
+                        };
+                    } else {
+                        app.mode = AppMode::List;
+                    }
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -256,9 +260,9 @@ async fn handle_key_event(
             }
             KeyCode::Enter => {
                 if let Some(i) = app.session_state.table_state.selected() {
-                    if i < app.session_state.sessions.len() {
+                    if let Some(session_id) = app.session_id_for_index(i) {
                         app.mode = AppMode::View {
-                            session_index: i,
+                            session_id,
                             scroll_offset: None,
                         };
                     }
@@ -282,10 +286,20 @@ async fn handle_key_event(
             _ => {}
         },
         AppMode::View {
-            session_index,
+            session_id,
             scroll_offset,
         } => {
-            let session_idx = *session_index;
+            let session_id = session_id.clone();
+            let Some(session_idx) = app
+                .session_state
+                .sessions
+                .iter()
+                .position(|session| session.id == session_id.as_str())
+            else {
+                app.mode = AppMode::List;
+
+                return Ok(EventResult::Continue);
+            };
             let mut new_scroll = *scroll_offset;
 
             // Estimate view height (terminal height - margins/borders/footer)
@@ -308,7 +322,7 @@ async fn handle_key_event(
                 }
                 KeyCode::Char('r') => {
                     app.mode = AppMode::Prompt {
-                        session_index: session_idx,
+                        session_id: session_id.clone(),
                         input: InputState::new(),
                         scroll_offset: new_scroll,
                     };
@@ -357,7 +371,7 @@ async fn handle_key_event(
                             .unwrap_or_else(|e| Err(e.to_string()))
                             .unwrap_or_else(|e| format!("Failed to run git diff: {e}"));
                         app.mode = AppMode::Diff {
-                            session_index: session_idx,
+                            session_id: session_id.clone(),
                             diff,
                             scroll_offset: 0,
                         };
@@ -397,11 +411,21 @@ async fn handle_key_event(
             }
         }
         AppMode::Prompt {
-            session_index,
+            session_id,
             input,
             scroll_offset,
         } => {
-            let session_idx = *session_index;
+            let session_id = session_id.clone();
+            let Some(session_idx) = app
+                .session_state
+                .sessions
+                .iter()
+                .position(|session| session.id == session_id.as_str())
+            else {
+                app.mode = AppMode::List;
+
+                return Ok(EventResult::Continue);
+            };
             let scroll_snapshot = *scroll_offset;
             let is_new_session = app
                 .session_state
@@ -427,7 +451,7 @@ async fn handle_key_event(
                             app.reply(session_idx, &prompt);
                         }
                         app.mode = AppMode::View {
-                            session_index: session_idx,
+                            session_id: session_id.clone(),
                             scroll_offset: None,
                         };
                     }
@@ -441,7 +465,7 @@ async fn handle_key_event(
                         app.mode = AppMode::List;
                     } else {
                         app.mode = AppMode::View {
-                            session_index: session_idx,
+                            session_id: session_id.clone(),
                             scroll_offset: scroll_snapshot,
                         };
                     }
@@ -482,13 +506,13 @@ async fn handle_key_event(
             }
         }
         AppMode::Diff {
-            session_index,
+            session_id,
             diff: _,
             scroll_offset,
         } => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 app.mode = AppMode::View {
-                    session_index: *session_index,
+                    session_id: session_id.clone(),
                     scroll_offset: None,
                 };
             }

@@ -53,7 +53,7 @@ pub struct SessionRow {
     pub agent: String,
     pub base_branch: String,
     pub created_at: i64,
-    pub name: String,
+    pub id: String,
     pub project_id: Option<i64>,
     pub status: String,
     pub title: Option<String>,
@@ -184,7 +184,7 @@ WHERE project_id IS NULL
 
     pub async fn insert_session(
         &self,
-        name: &str,
+        id: &str,
         agent: &str,
         base_branch: &str,
         status: &str,
@@ -192,11 +192,11 @@ WHERE project_id IS NULL
     ) -> Result<(), String> {
         sqlx::query(
             r#"
-INSERT INTO session (name, agent, base_branch, status, project_id)
+INSERT INTO session (id, agent, base_branch, status, project_id)
 VALUES (?, ?, ?, ?, ?)
 "#,
         )
-        .bind(name)
+        .bind(id)
         .bind(agent)
         .bind(base_branch)
         .bind(status)
@@ -211,9 +211,9 @@ VALUES (?, ?, ?, ?, ?)
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
         let rows = sqlx::query(
             r#"
-SELECT name, agent, base_branch, status, title, project_id, created_at, updated_at
+SELECT id, agent, base_branch, status, title, project_id, created_at, updated_at
 FROM session
-ORDER BY updated_at DESC, name
+ORDER BY updated_at DESC, id
 "#,
         )
         .fetch_all(&self.pool)
@@ -226,7 +226,7 @@ ORDER BY updated_at DESC, name
                 agent: row.get("agent"),
                 base_branch: row.get("base_branch"),
                 created_at: row.get("created_at"),
-                name: row.get("name"),
+                id: row.get("id"),
                 project_id: row.get("project_id"),
                 status: row.get("status"),
                 title: row.get("title"),
@@ -256,32 +256,32 @@ FROM session
         Ok((session_count, max_updated_at))
     }
 
-    pub async fn update_session_status(&self, name: &str, status: &str) -> Result<(), String> {
+    pub async fn update_session_status(&self, id: &str, status: &str) -> Result<(), String> {
         sqlx::query(
             r#"
 UPDATE session
 SET status = ?
-WHERE name = ?
+WHERE id = ?
 "#,
         )
         .bind(status)
-        .bind(name)
+        .bind(id)
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to update session status: {err}"))?;
         Ok(())
     }
 
-    pub async fn update_session_title(&self, name: &str, title: &str) -> Result<(), String> {
+    pub async fn update_session_title(&self, id: &str, title: &str) -> Result<(), String> {
         sqlx::query(
             r#"
 UPDATE session
 SET title = ?
-WHERE name = ?
+WHERE id = ?
 "#,
         )
         .bind(title)
-        .bind(name)
+        .bind(id)
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to update session title: {err}"))?;
@@ -289,29 +289,29 @@ WHERE name = ?
         Ok(())
     }
 
-    pub async fn delete_session(&self, name: &str) -> Result<(), String> {
+    pub async fn delete_session(&self, id: &str) -> Result<(), String> {
         sqlx::query(
             r#"
 DELETE FROM session
-WHERE name = ?
+WHERE id = ?
 "#,
         )
-        .bind(name)
+        .bind(id)
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to delete session: {err}"))?;
         Ok(())
     }
 
-    pub async fn get_base_branch(&self, name: &str) -> Result<Option<String>, String> {
+    pub async fn get_base_branch(&self, id: &str) -> Result<Option<String>, String> {
         let row = sqlx::query(
             r#"
 SELECT base_branch
 FROM session
-WHERE name = ?
+WHERE id = ?
 "#,
         )
-        .bind(name)
+        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| format!("Failed to get base branch: {err}"))?;
@@ -493,7 +493,7 @@ mod tests {
         // Insert session without project_id (simulates legacy data)
         sqlx::query(
             r#"
-INSERT INTO session (name, agent, base_branch)
+INSERT INTO session (id, agent, base_branch)
 VALUES (?, ?, ?)
 "#,
         )
@@ -512,7 +512,7 @@ VALUES (?, ?, ?)
         // Assert
         let sessions = db.load_sessions().await.expect("failed to load");
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].name, "orphan");
+        assert_eq!(sessions[0].id, "orphan");
         assert_eq!(sessions[0].project_id, Some(project_id));
     }
 
@@ -590,7 +590,7 @@ VALUES (?, ?, ?)
             r#"
 UPDATE session
 SET updated_at = 1
-WHERE name = 'alpha'
+WHERE id = 'alpha'
 "#,
         )
         .execute(db.pool())
@@ -600,7 +600,7 @@ WHERE name = 'alpha'
             r#"
 UPDATE session
 SET updated_at = 2
-WHERE name = 'beta'
+WHERE id = 'beta'
 "#,
         )
         .execute(db.pool())
@@ -612,11 +612,11 @@ WHERE name = 'beta'
 
         // Assert
         assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].name, "beta");
+        assert_eq!(sessions[0].id, "beta");
         assert_eq!(sessions[0].agent, "claude");
         assert_eq!(sessions[0].base_branch, "main");
         assert_eq!(sessions[0].status, "Done");
-        assert_eq!(sessions[1].name, "alpha");
+        assert_eq!(sessions[1].id, "alpha");
         assert_eq!(sessions[1].agent, "gemini");
         assert_eq!(sessions[1].base_branch, "develop");
         assert_eq!(sessions[1].status, "InProgress");
@@ -655,7 +655,7 @@ WHERE name = 'beta'
             r#"
 UPDATE session
 SET updated_at = 100
-WHERE name = 'alpha'
+WHERE id = 'alpha'
 "#,
         )
         .execute(db.pool())
@@ -665,7 +665,7 @@ WHERE name = 'alpha'
             r#"
 UPDATE session
 SET updated_at = 200
-WHERE name = 'beta'
+WHERE id = 'beta'
 "#,
         )
         .execute(db.pool())
@@ -778,12 +778,12 @@ WHERE name = 'beta'
         assert!(
             sessions
                 .iter()
-                .any(|session| session.name == "sess1" && session.project_id == Some(project_a))
+                .any(|session| session.id == "sess1" && session.project_id == Some(project_a))
         );
         assert!(
             sessions
                 .iter()
-                .any(|session| session.name == "sess2" && session.project_id == Some(project_b))
+                .any(|session| session.id == "sess2" && session.project_id == Some(project_b))
         );
     }
 

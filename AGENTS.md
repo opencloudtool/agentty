@@ -65,6 +65,8 @@ TUI tool to manage agents.
 2.  **Migrations:** Embedded at compile time via `sqlx::migrate!()`.
     * Place SQL files in `crates/<crate>/migrations/` named `NNN_description.sql`.
     * Migrations run automatically on database open; no external CLI required.
+    * Never modify existing migration files. Always add a new migration file for every schema change.
+    * If `SQLite` cannot alter a structure in place (for example, changing a primary key), use a new migration that drops and recreates the table.
 3.  **Dependency Injection:** Pass `&sqlx::SqlitePool` to functions.
     * *Note:* SQLite handles cloning the pool cheaply.
 4.  **Error Handling:** Map `sqlx::Error` to domain-specific errors.

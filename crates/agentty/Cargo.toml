@@ -20,6 +20,7 @@ dirs.workspace = true
 ratatui.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 mockall.workspace = true

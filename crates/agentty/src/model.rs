@@ -246,16 +246,16 @@ impl Default for InputState {
 pub enum AppMode {
     List,
     Prompt {
-        session_index: usize,
+        session_id: SessionId,
         input: InputState,
         scroll_offset: Option<u16>,
     },
     View {
-        session_index: usize,
+        session_id: SessionId,
         scroll_offset: Option<u16>,
     },
     Diff {
-        session_index: usize,
+        session_id: SessionId,
         diff: String,
         scroll_offset: u16,
     },
@@ -270,6 +270,9 @@ pub enum AppMode {
     },
     Health,
 }
+
+/// Stable session identifier used by app modes and routing.
+pub type SessionId = String;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PaletteFocus {
@@ -314,7 +317,7 @@ impl PaletteCommand {
 pub struct Session {
     pub agent: String,
     pub folder: PathBuf,
-    pub name: String,
+    pub id: String,
     pub output: Arc<Mutex<String>>,
     pub project_name: String,
     pub prompt: String,
@@ -417,7 +420,7 @@ mod tests {
         let session = Session {
             agent: "gemini".to_string(),
             folder: PathBuf::new(),
-            name: "abc123".to_string(),
+            id: "abc123".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: String::new(),
@@ -435,7 +438,7 @@ mod tests {
         let session = Session {
             agent: "gemini".to_string(),
             folder: PathBuf::new(),
-            name: "abc123".to_string(),
+            id: "abc123".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: String::new(),
@@ -453,7 +456,7 @@ mod tests {
         let session = Session {
             agent: "gemini".to_string(),
             folder: PathBuf::new(),
-            name: "test".to_string(),
+            id: "test".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: "prompt".to_string(),
@@ -492,7 +495,7 @@ mod tests {
         let session = Session {
             agent: "gemini".to_string(),
             folder: dir.path().to_path_buf(),
-            name: "test".to_string(),
+            id: "test".to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: "prompt".to_string(),

@@ -1,22 +1,21 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::hash::{Hash, Hasher};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ratatui::widgets::TableState;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead};
+use uuid::Uuid;
 
 use crate::agent::{AgentBackend, AgentKind};
 use crate::db::Database;
 use crate::git;
 use crate::health::{self, HealthEntry};
-use crate::model::{AppMode, Project, SESSION_DATA_DIR, Session, Status, Tab};
+use crate::model::{AppMode, Project, SESSION_DATA_DIR, Session, SessionId, Status, Tab};
 
 pub const AGENTTY_WORKSPACE: &str = "/var/tmp/.agentty";
 const PR_MERGE_POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -248,8 +247,7 @@ impl App {
         let selected_index = self.session_state.table_state.selected();
         let selected_session_name = selected_index
             .and_then(|index| self.session_state.sessions.get(index))
-            .map(|session| session.name.clone());
-        let mode_session_name = self.active_mode_session_name();
+            .map(|session| session.id.clone());
 
         let existing_sessions = std::mem::take(&mut self.session_state.sessions);
         self.session_state.sessions = Self::load_sessions(
@@ -261,7 +259,7 @@ impl App {
         .await;
         self.start_pr_polling_for_pull_request_sessions();
         self.restore_table_selection(selected_session_name.as_deref(), selected_index);
-        self.restore_mode_session(mode_session_name.as_deref());
+        self.ensure_mode_session_exists();
 
         self.session_state.row_count = sessions_row_count;
         self.session_state.updated_at_max = sessions_updated_at_max;
@@ -316,22 +314,14 @@ impl App {
             .as_deref()
             .ok_or_else(|| "Git branch is required to create a session".to_string())?;
 
-        let mut hasher = DefaultHasher::new();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        nanos.hash(&mut hasher);
-        let hash = format!("{:016x}", hasher.finish());
-        let name = hash.clone();
-
-        let folder = self.base_path.join(&hash);
+        let session_id = Uuid::new_v4().to_string();
+        let folder = self.base_path.join(&session_id);
         if folder.exists() {
-            return Err(format!("Session folder {hash} already exists"));
+            return Err(format!("Session folder {session_id} already exists"));
         }
 
         // Create git worktree
-        let worktree_branch = format!("agentty/{hash}");
+        let worktree_branch = format!("agentty/{session_id}");
         let repo_root = git::find_git_repo_root(&self.working_dir)
             .ok_or_else(|| "Failed to find git repository root".to_string())?;
 
@@ -351,7 +341,7 @@ impl App {
             self.rollback_failed_session_creation(
                 &folder,
                 &repo_root,
-                &name,
+                &session_id,
                 &worktree_branch,
                 false,
             )
@@ -366,7 +356,7 @@ impl App {
             self.rollback_failed_session_creation(
                 &folder,
                 &repo_root,
-                &name,
+                &session_id,
                 &worktree_branch,
                 false,
             )
@@ -379,7 +369,7 @@ impl App {
             self.rollback_failed_session_creation(
                 &folder,
                 &repo_root,
-                &name,
+                &session_id,
                 &worktree_branch,
                 false,
             )
@@ -391,7 +381,7 @@ impl App {
         if let Err(err) = self
             .db
             .insert_session(
-                &name,
+                &session_id,
                 &self.agent_kind.to_string(),
                 base_branch,
                 &Status::New.to_string(),
@@ -402,7 +392,7 @@ impl App {
             self.rollback_failed_session_creation(
                 &folder,
                 &repo_root,
-                &name,
+                &session_id,
                 &worktree_branch,
                 false,
             )
@@ -427,7 +417,7 @@ impl App {
             .session_state
             .sessions
             .iter()
-            .position(|a| a.name == name)
+            .position(|session| session.id == session_id)
             .unwrap_or(0);
         self.session_state.table_state.select(Some(index));
 
@@ -450,7 +440,7 @@ impl App {
 
         let title = Self::summarize_title(&prompt);
         session.title = Some(title.clone());
-        let _ = self.db.update_session_title(&session.name, &title).await;
+        let _ = self.db.update_session_title(&session.id, &title).await;
 
         let data_dir = session.folder.join(SESSION_DATA_DIR);
         std::fs::write(data_dir.join("prompt.txt"), &prompt)
@@ -462,7 +452,7 @@ impl App {
         let folder = session.folder.clone();
         let output = Arc::clone(&session.output);
         let status = Arc::clone(&session.status);
-        let name = session.name.clone();
+        let name = session.id.clone();
         let db = self.db.clone();
 
         let _ = Self::update_status(&status, &db, &name, Status::InProgress).await;
@@ -491,6 +481,22 @@ impl App {
             .and_then(|i| self.session_state.sessions.get(i))
     }
 
+    /// Returns the session identifier for the given list index.
+    pub fn session_id_for_index(&self, session_index: usize) -> Option<SessionId> {
+        self.session_state
+            .sessions
+            .get(session_index)
+            .map(|session| session.id.clone())
+    }
+
+    /// Resolves a stable session identifier to the current list index.
+    pub fn session_index_for_id(&self, session_id: &str) -> Option<usize> {
+        self.session_state
+            .sessions
+            .iter()
+            .position(|session| session.id == session_id)
+    }
+
     pub async fn delete_selected_session(&mut self) {
         let Some(i) = self.session_state.table_state.selected() else {
             return;
@@ -500,13 +506,13 @@ impl App {
         }
         let session = self.session_state.sessions.remove(i);
 
-        let _ = self.db.delete_session(&session.name).await;
-        self.cancel_pr_polling_for_session(&session.name);
-        self.clear_pr_creation_in_flight(&session.name);
+        let _ = self.db.delete_session(&session.id).await;
+        self.cancel_pr_polling_for_session(&session.id);
+        self.clear_pr_creation_in_flight(&session.id);
 
         // Remove git worktree and branch if in a git repo
         if self.git_branch.is_some() {
-            let branch_name = format!("agentty/{}", session.name);
+            let branch_name = format!("agentty/{}", session.id);
 
             // Find repo root for branch deletion
             if let Some(repo_root) = git::find_git_repo_root(&self.working_dir) {
@@ -544,7 +550,7 @@ impl App {
             .ok_or_else(|| "Session not found".to_string())?;
 
         // Verify this session has a git worktree via DB
-        if self.db.get_base_branch(&session.name).await?.is_none() {
+        if self.db.get_base_branch(&session.id).await?.is_none() {
             return Err("No git worktree for this session".to_string());
         }
 
@@ -571,7 +577,7 @@ impl App {
         // Read base branch from DB
         let base_branch = self
             .db
-            .get_base_branch(&session.name)
+            .get_base_branch(&session.id)
             .await?
             .ok_or_else(|| "No git worktree for this session".to_string())?;
 
@@ -580,7 +586,7 @@ impl App {
             .ok_or_else(|| "Failed to find git repository root".to_string())?;
 
         // Build source branch name
-        let source_branch = format!("agentty/{}", session.name);
+        let source_branch = format!("agentty/{}", session.id);
 
         // Build commit message from session prompt
         let commit_message = format!("Merge session: {}", session.prompt);
@@ -599,12 +605,12 @@ impl App {
             .map_err(|err| format!("Failed to merge: {err}"))?;
         }
 
-        if !Self::update_status(&session.status, &self.db, &session.name, Status::Done).await {
+        if !Self::update_status(&session.status, &self.db, &session.id, Status::Done).await {
             return Err("Invalid status transition to Done".to_string());
         }
 
-        self.cancel_pr_polling_for_session(&session.name);
-        self.clear_pr_creation_in_flight(&session.name);
+        self.cancel_pr_polling_for_session(&session.id);
+        self.clear_pr_creation_in_flight(&session.id);
         Self::cleanup_merged_session_worktree(
             session.folder.clone(),
             source_branch.clone(),
@@ -629,23 +635,23 @@ impl App {
             return Err("Session must be in review to create a pull request".to_string());
         }
 
-        if self.is_pr_creation_in_flight(&session.name) {
+        if self.is_pr_creation_in_flight(&session.id) {
             return Err("Pull request creation is already in progress".to_string());
         }
 
-        if self.is_pr_polling_active(&session.name) {
+        if self.is_pr_polling_active(&session.id) {
             return Err("Pull request is already being tracked".to_string());
         }
 
         // Read base branch from DB
         let base_branch = self
             .db
-            .get_base_branch(&session.name)
+            .get_base_branch(&session.id)
             .await?
             .ok_or_else(|| "No git worktree for this session".to_string())?;
 
         // Build source branch name
-        let source_branch = format!("agentty/{}", session.name);
+        let source_branch = format!("agentty/{}", session.id);
 
         // Build PR title from session prompt (first line only)
         let title = session
@@ -655,13 +661,13 @@ impl App {
             .unwrap_or("New Session")
             .to_string();
 
-        self.mark_pr_creation_in_flight(&session.name)?;
+        self.mark_pr_creation_in_flight(&session.id)?;
 
         let status = Arc::clone(&session.status);
         let output = Arc::clone(&session.output);
         let folder = session.folder.clone();
         let db = self.db.clone();
-        let name = session.name.clone();
+        let name = session.id.clone();
         let repo_url = {
             let folder = folder.clone();
             match tokio::task::spawn_blocking(move || git::repo_url(&folder)).await {
@@ -739,11 +745,11 @@ impl App {
                 continue;
             }
 
-            let source_branch = format!("agentty/{}", session.name);
+            let source_branch = format!("agentty/{}", session.id);
             Self::spawn_pr_poll_task(
                 self.db.clone(),
                 session.folder.clone(),
-                session.name.clone(),
+                session.id.clone(),
                 Arc::clone(&session.output),
                 Arc::clone(&session.status),
                 source_branch,
@@ -753,44 +759,44 @@ impl App {
         }
     }
 
-    fn mark_pr_creation_in_flight(&self, name: &str) -> Result<(), String> {
+    fn mark_pr_creation_in_flight(&self, id: &str) -> Result<(), String> {
         let mut in_flight = self
             .pr_creation_in_flight
             .lock()
             .map_err(|_| "Failed to lock PR creation state".to_string())?;
 
-        if in_flight.contains(name) {
+        if in_flight.contains(id) {
             return Err("Pull request creation is already in progress".to_string());
         }
 
-        in_flight.insert(name.to_string());
+        in_flight.insert(id.to_string());
 
         Ok(())
     }
 
-    fn is_pr_creation_in_flight(&self, name: &str) -> bool {
+    fn is_pr_creation_in_flight(&self, id: &str) -> bool {
         self.pr_creation_in_flight
             .lock()
-            .map(|in_flight| in_flight.contains(name))
+            .map(|in_flight| in_flight.contains(id))
             .unwrap_or(false)
     }
 
-    fn is_pr_polling_active(&self, name: &str) -> bool {
+    fn is_pr_polling_active(&self, id: &str) -> bool {
         self.pr_poll_cancel
             .lock()
-            .map(|polling| polling.contains_key(name))
+            .map(|polling| polling.contains_key(id))
             .unwrap_or(false)
     }
 
-    fn clear_pr_creation_in_flight(&self, name: &str) {
+    fn clear_pr_creation_in_flight(&self, id: &str) {
         if let Ok(mut in_flight) = self.pr_creation_in_flight.lock() {
-            in_flight.remove(name);
+            in_flight.remove(id);
         }
     }
 
-    fn cancel_pr_polling_for_session(&self, name: &str) {
+    fn cancel_pr_polling_for_session(&self, id: &str) {
         if let Ok(mut polling) = self.pr_poll_cancel.lock() {
-            if let Some(cancel) = polling.remove(name) {
+            if let Some(cancel) = polling.remove(id) {
                 cancel.store(true, Ordering::Relaxed);
             }
         }
@@ -799,7 +805,7 @@ impl App {
     fn spawn_pr_poll_task(
         db: Database,
         folder: PathBuf,
-        name: String,
+        id: String,
         output: Arc<Mutex<String>>,
         status: Arc<Mutex<Status>>,
         source_branch: String,
@@ -808,10 +814,10 @@ impl App {
     ) {
         let cancel = Arc::new(AtomicBool::new(false));
         if let Ok(mut polling) = pr_poll_cancel.lock() {
-            if polling.contains_key(&name) {
+            if polling.contains_key(&id) {
                 return;
             }
-            polling.insert(name.clone(), Arc::clone(&cancel));
+            polling.insert(id.clone(), Arc::clone(&cancel));
         } else {
             return;
         }
@@ -837,7 +843,7 @@ impl App {
                         &folder,
                         &format!("\n[PR] Pull request from `{source_branch}` was merged\n"),
                     );
-                    if !Self::update_status(&status, &db, &name, Status::Done).await {
+                    if !Self::update_status(&status, &db, &id, Status::Done).await {
                         Session::write_output(
                             &output,
                             &folder,
@@ -870,7 +876,7 @@ impl App {
             }
 
             if let Ok(mut polling) = pr_poll_cancel.lock() {
-                polling.remove(&name);
+                polling.remove(&id);
             }
         });
     }
@@ -946,7 +952,7 @@ impl App {
             let data_dir = session.folder.join(SESSION_DATA_DIR);
             let _ = std::fs::write(data_dir.join("prompt.txt"), prompt);
             let db = self.db.clone();
-            let name = session.name.clone();
+            let name = session.id.clone();
             tokio::spawn(async move {
                 let _ = db.update_session_title(&name, &title).await;
             });
@@ -958,7 +964,7 @@ impl App {
         let folder = session.folder.clone();
         let output = Arc::clone(&session.output);
         let status = Arc::clone(&session.status);
-        let name = session.name.clone();
+        let name = session.id.clone();
         let db = self.db.clone();
 
         {
@@ -1038,7 +1044,7 @@ impl App {
                 .session_state
                 .sessions
                 .iter()
-                .position(|session| session.name == session_name)
+                .position(|session| session.id == session_name)
             {
                 self.session_state.table_state.select(Some(index));
 
@@ -1051,50 +1057,18 @@ impl App {
         self.session_state.table_state.select(restored_index);
     }
 
-    fn active_mode_session_name(&self) -> Option<String> {
-        match &self.mode {
-            AppMode::Prompt { session_index, .. }
-            | AppMode::View { session_index, .. }
-            | AppMode::Diff { session_index, .. } => self
-                .session_state
-                .sessions
-                .get(*session_index)
-                .map(|session| session.name.clone()),
+    fn ensure_mode_session_exists(&mut self) {
+        let mode_session_id = match &self.mode {
+            AppMode::Prompt { session_id, .. }
+            | AppMode::View { session_id, .. }
+            | AppMode::Diff { session_id, .. } => Some(session_id),
             _ => None,
-        }
-    }
-
-    fn restore_mode_session(&mut self, session_name: Option<&str>) {
-        let Some(session_name) = session_name else {
+        };
+        let Some(session_id) = mode_session_id else {
             return;
         };
-        let Some(session_index) = self
-            .session_state
-            .sessions
-            .iter()
-            .position(|session| session.name == session_name)
-        else {
+        if self.session_index_for_id(session_id).is_none() {
             self.mode = AppMode::List;
-
-            return;
-        };
-
-        match &mut self.mode {
-            AppMode::Prompt {
-                session_index: mode_index,
-                ..
-            }
-            | AppMode::View {
-                session_index: mode_index,
-                ..
-            }
-            | AppMode::Diff {
-                session_index: mode_index,
-                ..
-            } => {
-                *mode_index = session_index;
-            }
-            _ => {}
         }
     }
 
@@ -1124,7 +1098,7 @@ impl App {
             .iter()
             .map(|session| {
                 (
-                    session.name.clone(),
+                    session.id.clone(),
                     (Arc::clone(&session.output), Arc::clone(&session.status)),
                 )
             })
@@ -1134,7 +1108,7 @@ impl App {
         let sessions: Vec<Session> = db_rows
             .into_iter()
             .filter_map(|row| {
-                let folder = base.join(&row.name);
+                let folder = base.join(&row.id);
                 if !folder.is_dir() {
                     return None;
                 }
@@ -1149,7 +1123,7 @@ impl App {
                     .cloned()
                     .unwrap_or_default();
                 let (output, status) = if let Some((existing_output, existing_status)) =
-                    existing_sessions_by_name.get(&row.name)
+                    existing_sessions_by_name.get(&row.id)
                 {
                     if let Ok(mut output_buffer) = existing_output.lock() {
                         *output_buffer = output_text;
@@ -1167,7 +1141,7 @@ impl App {
                 Some(Session {
                     agent: row.agent,
                     folder,
-                    name: row.name,
+                    id: row.id,
                     output,
                     project_name,
                     prompt,
@@ -1256,7 +1230,7 @@ impl App {
         output: Arc<Mutex<String>>,
         status: Arc<Mutex<Status>>,
         db: Database,
-        name: String,
+        id: String,
     ) {
         let mut tokio_cmd = tokio::process::Command::from(cmd);
         // Prevent the child process from inheriting the TUI's terminal on
@@ -1305,11 +1279,11 @@ impl App {
                 }
             }
 
-            Self::update_status(&status, &db, &name, Status::Review).await;
+            Self::update_status(&status, &db, &id, Status::Review).await;
         });
     }
 
-    async fn update_status(status: &Mutex<Status>, db: &Database, name: &str, new: Status) -> bool {
+    async fn update_status(status: &Mutex<Status>, db: &Database, id: &str, new: Status) -> bool {
         let should_update = if let Ok(mut current) = status.lock() {
             if (*current).can_transition_to(new) {
                 *current = new;
@@ -1323,7 +1297,7 @@ impl App {
         if !should_update {
             return false;
         }
-        let _ = db.update_session_status(name, &new.to_string()).await;
+        let _ = db.update_session_status(id, &new.to_string()).await;
 
         true
     }
@@ -1448,8 +1422,8 @@ mod tests {
         .await
     }
 
-    fn add_manual_session(app: &mut App, base_path: &Path, name: &str, prompt: &str) {
-        let folder = base_path.join(name);
+    fn add_manual_session(app: &mut App, base_path: &Path, id: &str, prompt: &str) {
+        let folder = base_path.join(id);
         let data_dir = folder.join(SESSION_DATA_DIR);
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
         std::fs::write(data_dir.join("prompt.txt"), prompt).expect("failed to write prompt");
@@ -1457,7 +1431,7 @@ mod tests {
         app.session_state.sessions.push(Session {
             agent: "gemini".to_string(),
             folder,
-            name: name.to_string(),
+            id: id.to_string(),
             output: Arc::new(Mutex::new(String::new())),
             project_name: String::new(),
             prompt: prompt.to_string(),
@@ -1857,7 +1831,7 @@ mod tests {
 
         // Assert
         assert_eq!(app.session_state.sessions.len(), 1);
-        assert_eq!(app.session_state.sessions[0].name, "12345678");
+        assert_eq!(app.session_state.sessions[0].id, "12345678");
         assert_eq!(app.session_state.sessions[0].prompt, "Existing");
         assert_eq!(app.session_state.sessions[0].agent, "claude");
         assert_eq!(app.session_state.table_state.selected(), Some(0));
@@ -1885,7 +1859,7 @@ mod tests {
             r#"
 UPDATE session
 SET updated_at = ?
-WHERE name = ?
+WHERE id = ?
 "#,
         )
         .bind(1_i64)
@@ -1897,7 +1871,7 @@ WHERE name = ?
             r#"
 UPDATE session
 SET updated_at = ?
-WHERE name = ?
+WHERE id = ?
 "#,
         )
         .bind(2_i64)
@@ -1931,7 +1905,7 @@ WHERE name = ?
             .session_state
             .sessions
             .iter()
-            .map(|session| session.name.as_str())
+            .map(|session| session.id.as_str())
             .collect();
         assert_eq!(session_names, vec!["beta", "alpha"]);
     }
@@ -1957,7 +1931,7 @@ WHERE name = ?
             r#"
 UPDATE session
 SET updated_at = 1
-WHERE name = 'alpha'
+WHERE id = 'alpha'
 "#,
         )
         .execute(db.pool())
@@ -1967,7 +1941,7 @@ WHERE name = 'alpha'
             r#"
 UPDATE session
 SET updated_at = 2
-WHERE name = 'beta'
+WHERE id = 'beta'
 "#,
         )
         .execute(db.pool())
@@ -2002,13 +1976,13 @@ WHERE name = 'beta'
         app.refresh_sessions_if_needed().await;
 
         // Assert
-        assert_eq!(app.session_state.sessions[0].name, "alpha");
+        assert_eq!(app.session_state.sessions[0].id, "alpha");
         let selected_index = app
             .session_state
             .table_state
             .selected()
             .expect("missing selection");
-        assert_eq!(app.session_state.sessions[selected_index].name, "alpha");
+        assert_eq!(app.session_state.sessions[selected_index].id, "alpha");
     }
 
     #[tokio::test]
@@ -2032,7 +2006,7 @@ WHERE name = 'beta'
             r#"
 UPDATE session
 SET updated_at = 1
-WHERE name = 'alpha'
+WHERE id = 'alpha'
 "#,
         )
         .execute(db.pool())
@@ -2042,7 +2016,7 @@ WHERE name = 'alpha'
             r#"
 UPDATE session
 SET updated_at = 2
-WHERE name = 'beta'
+WHERE id = 'beta'
 "#,
         )
         .execute(db.pool())
@@ -2065,8 +2039,9 @@ WHERE name = 'beta'
             db,
         )
         .await;
+        let selected_session_id = app.session_state.sessions[1].id.clone();
         app.mode = AppMode::View {
-            session_index: 1,
+            session_id: selected_session_id.clone(),
             scroll_offset: None,
         };
 
@@ -2080,9 +2055,9 @@ WHERE name = 'beta'
         app.refresh_sessions_if_needed().await;
 
         // Assert
-        assert_eq!(app.session_state.sessions[0].name, "alpha");
+        assert_eq!(app.session_state.sessions[0].id, "alpha");
         match app.mode {
-            AppMode::View { session_index, .. } => assert_eq!(session_index, 0),
+            AppMode::View { session_id, .. } => assert_eq!(session_id, selected_session_id),
             _ => panic!("expected view mode"),
         }
     }
@@ -2454,7 +2429,7 @@ WHERE name = 'beta'
             .await
             .expect("failed to commit session");
         let session_folder = app.session_state.sessions[0].folder.clone();
-        let session_name = app.session_state.sessions[0].name.clone();
+        let session_name = app.session_state.sessions[0].id.clone();
         let branch_name = format!("agentty/{session_name}");
 
         // Act

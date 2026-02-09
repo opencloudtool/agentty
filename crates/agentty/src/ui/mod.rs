@@ -81,28 +81,33 @@ pub fn render(f: &mut Frame, context: RenderContext<'_>) {
             render_list_background(f, content_area, sessions, table_state, current_tab);
         }
         AppMode::View {
-            session_index,
+            session_id,
             scroll_offset,
         }
         | AppMode::Prompt {
-            session_index,
+            session_id,
             scroll_offset,
             ..
         } => {
-            pages::session_chat::SessionChatPage::new(
-                sessions,
-                *session_index,
-                *scroll_offset,
-                mode,
-            )
-            .render(f, content_area);
+            if let Some(session_index) = sessions
+                .iter()
+                .position(|session| session.id == *session_id)
+            {
+                pages::session_chat::SessionChatPage::new(
+                    sessions,
+                    session_index,
+                    *scroll_offset,
+                    mode,
+                )
+                .render(f, content_area);
+            }
         }
         AppMode::Diff {
-            session_index,
+            session_id,
             diff,
             scroll_offset,
         } => {
-            if let Some(session) = sessions.get(*session_index) {
+            if let Some(session) = sessions.iter().find(|session| session.id == *session_id) {
                 pages::diff::DiffPage::new(session, diff.clone(), *scroll_offset)
                     .render(f, content_area);
             }
