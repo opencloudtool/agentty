@@ -1,0 +1,31 @@
+use crate::agent::{AgentKind, AgentModel};
+use crate::app::App;
+use crate::model::Session;
+
+impl App {
+    pub(super) fn resolve_session_agent_and_model(session: &Session) -> (AgentKind, AgentModel) {
+        let session_agent = session
+            .agent
+            .parse::<AgentKind>()
+            .unwrap_or(AgentKind::Gemini);
+        let session_model = session_agent
+            .parse_model(&session.model)
+            .unwrap_or_else(|| session_agent.default_model());
+
+        (session_agent, session_model)
+    }
+
+    pub(super) fn summarize_title(prompt: &str) -> String {
+        let first_line = prompt.lines().next().unwrap_or(prompt).trim();
+        if first_line.len() <= 30 {
+            return first_line.to_string();
+        }
+
+        let truncated = &first_line[..30];
+        if let Some(last_space) = truncated.rfind(' ') {
+            format!("{}…", &first_line[..last_space])
+        } else {
+            format!("{truncated}…")
+        }
+    }
+}

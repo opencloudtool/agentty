@@ -1,232 +1,20 @@
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
-use std::io::Write as _;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ratatui::widgets::TableState;
-use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use uuid::Uuid;
 
 use crate::agent::{AgentBackend, AgentKind, AgentModel};
+use crate::app::App;
 use crate::db::Database;
 use crate::git;
-use crate::health::{self, HealthEntry};
-use crate::model::{AppMode, Project, SESSION_DATA_DIR, Session, Status, Tab};
+use crate::model::{AppMode, Project, SESSION_DATA_DIR, Session, Status};
 
-pub const AGENTTY_WORKSPACE: &str = "/var/tmp/.agentty";
-const PR_MERGE_POLL_INTERVAL: Duration = Duration::from_secs(30);
-const SESSION_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+pub(super) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 type SessionHandles = (Arc<Mutex<String>>, Arc<Mutex<Status>>);
 
-struct PrPollTaskInput {
-    db: Database,
-    folder: PathBuf,
-    id: String,
-    output: Arc<Mutex<String>>,
-    status: Arc<Mutex<Status>>,
-    source_branch: String,
-    repo_root: Option<PathBuf>,
-    pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-}
-
-/// Holds all in-memory state related to session listing and refresh tracking.
-pub struct SessionState {
-    pub sessions: Vec<Session>,
-    pub table_state: TableState,
-    refresh_deadline: Instant,
-    row_count: i64,
-    updated_at_max: i64,
-}
-
-impl SessionState {
-    /// Creates a new [`SessionState`] with initial refresh metadata.
-    pub fn new(
-        sessions: Vec<Session>,
-        table_state: TableState,
-        row_count: i64,
-        updated_at_max: i64,
-    ) -> Self {
-        Self {
-            sessions,
-            table_state,
-            refresh_deadline: Instant::now() + SESSION_REFRESH_INTERVAL,
-            row_count,
-            updated_at_max,
-        }
-    }
-}
-
-pub struct App {
-    pub current_tab: Tab,
-    pub mode: AppMode,
-    pub projects: Vec<Project>,
-    pub session_state: SessionState,
-    active_project_id: i64,
-    base_path: PathBuf,
-    db: Database,
-    git_branch: Option<String>,
-    git_status: Arc<Mutex<Option<(u32, u32)>>>,
-    git_status_cancel: Arc<AtomicBool>,
-    health_checks: Arc<Mutex<Vec<HealthEntry>>>,
-    pr_creation_in_flight: Arc<Mutex<HashSet<String>>>,
-    pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    working_dir: PathBuf,
-}
-
 impl App {
-    pub async fn new(
-        base_path: PathBuf,
-        working_dir: PathBuf,
-        git_branch: Option<String>,
-        db: Database,
-    ) -> Self {
-        let active_project_id = db
-            .upsert_project(&working_dir.to_string_lossy(), git_branch.as_deref())
-            .await
-            .unwrap_or(0);
-
-        let _ = db.backfill_sessions_project(active_project_id).await;
-
-        Self::discover_sibling_projects(&working_dir, &db).await;
-
-        let projects = Self::load_projects_from_db(&db).await;
-
-        let mut table_state = TableState::default();
-        let sessions = Self::load_sessions(&base_path, &db, &projects, &[]).await;
-        let (sessions_row_count, sessions_updated_at_max) =
-            db.load_sessions_metadata().await.unwrap_or((0, 0));
-        if sessions.is_empty() {
-            table_state.select(None);
-        } else {
-            table_state.select(Some(0));
-        }
-
-        let git_status = Arc::new(Mutex::new(None));
-        let git_status_cancel = Arc::new(AtomicBool::new(false));
-        let pr_creation_in_flight = Arc::new(Mutex::new(HashSet::new()));
-        let pr_poll_cancel = Arc::new(Mutex::new(HashMap::new()));
-
-        if git_branch.is_some() {
-            Self::spawn_git_status_task(
-                &working_dir,
-                Arc::clone(&git_status),
-                Arc::clone(&git_status_cancel),
-            );
-        }
-
-        let app = Self {
-            current_tab: Tab::Sessions,
-            mode: AppMode::List,
-            session_state: SessionState::new(
-                sessions,
-                table_state,
-                sessions_row_count,
-                sessions_updated_at_max,
-            ),
-            active_project_id,
-            base_path,
-            db,
-            git_branch,
-            git_status,
-            git_status_cancel,
-            health_checks: Arc::new(Mutex::new(Vec::new())),
-            pr_creation_in_flight,
-            pr_poll_cancel,
-            projects,
-            working_dir,
-        };
-
-        app.start_pr_polling_for_pull_request_sessions();
-        app
-    }
-
-    pub fn active_project_id(&self) -> i64 {
-        self.active_project_id
-    }
-
-    pub fn working_dir(&self) -> &PathBuf {
-        &self.working_dir
-    }
-
-    pub fn git_branch(&self) -> Option<&str> {
-        self.git_branch.as_deref()
-    }
-
-    pub fn git_status_info(&self) -> Option<(u32, u32)> {
-        self.git_status.lock().ok().and_then(|s| *s)
-    }
-
-    pub fn health_checks(&self) -> &Arc<Mutex<Vec<HealthEntry>>> {
-        &self.health_checks
-    }
-
-    pub fn start_health_checks(&mut self) {
-        self.health_checks = health::run_health_checks(self.git_branch.clone());
-    }
-
-    /// Switches the active project context and reloads project sessions.
-    ///
-    /// # Errors
-    /// Returns an error if the project does not exist or session state cannot
-    /// be reloaded from persisted storage.
-    pub async fn switch_project(&mut self, project_id: i64) -> Result<(), String> {
-        let project = self
-            .db
-            .get_project(project_id)
-            .await?
-            .ok_or_else(|| "Project not found".to_string())?;
-
-        // Cancel existing git status task
-        self.git_status_cancel.store(true, Ordering::Relaxed);
-
-        // Update working dir and git info
-        self.working_dir = PathBuf::from(&project.path);
-        self.git_branch.clone_from(&project.git_branch);
-        self.active_project_id = project_id;
-
-        // Reset git status
-        if let Ok(mut status) = self.git_status.lock() {
-            *status = None;
-        }
-
-        // Start new git status task
-        let new_cancel = Arc::new(AtomicBool::new(false));
-        self.git_status_cancel = new_cancel.clone();
-        if self.git_branch.is_some() {
-            Self::spawn_git_status_task(
-                &self.working_dir,
-                Arc::clone(&self.git_status),
-                new_cancel,
-            );
-        }
-
-        // Refresh project list and reload all sessions
-        self.projects = Self::load_projects_from_db(&self.db).await;
-        let existing_sessions = std::mem::take(&mut self.session_state.sessions);
-        self.session_state.sessions = Self::load_sessions(
-            &self.base_path,
-            &self.db,
-            &self.projects,
-            &existing_sessions,
-        )
-        .await;
-        self.start_pr_polling_for_pull_request_sessions();
-        if self.session_state.sessions.is_empty() {
-            self.session_state.table_state.select(None);
-        } else {
-            self.session_state.table_state.select(Some(0));
-        }
-        self.update_sessions_metadata_cache().await;
-
-        Ok(())
-    }
-
-    /// Refreshes in-memory sessions from the database when `session` metadata
-    /// changes.
     pub async fn refresh_sessions_if_needed(&mut self) {
         if !self.is_session_refresh_due() {
             return;
@@ -693,265 +481,7 @@ impl App {
     /// # Errors
     /// Returns an error if the session is not eligible for PR creation or git
     /// metadata for the worktree is unavailable.
-    pub async fn create_pr_session(&self, session_id: &str) -> Result<(), String> {
-        let session = self
-            .session_state
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .ok_or_else(|| "Session not found".to_string())?;
-
-        if session.status() != Status::Review {
-            return Err("Session must be in review to create a pull request".to_string());
-        }
-
-        if self.is_pr_creation_in_flight(&session.id) {
-            return Err("Pull request creation is already in progress".to_string());
-        }
-
-        if self.is_pr_polling_active(&session.id) {
-            return Err("Pull request is already being tracked".to_string());
-        }
-
-        // Read base branch from DB
-        let base_branch = self
-            .db
-            .get_base_branch(&session.id)
-            .await?
-            .ok_or_else(|| "No git worktree for this session".to_string())?;
-
-        // Build source branch name
-        let source_branch = format!("agentty/{}", session.id);
-
-        // Build PR title from session prompt (first line only)
-        let title = session
-            .prompt
-            .lines()
-            .next()
-            .unwrap_or("New Session")
-            .to_string();
-
-        self.mark_pr_creation_in_flight(&session.id)?;
-
-        let status = Arc::clone(&session.status);
-        let output = Arc::clone(&session.output);
-        let folder = session.folder.clone();
-        let db = self.db.clone();
-        let name = session.id.clone();
-        let repo_url = {
-            let folder = folder.clone();
-            match tokio::task::spawn_blocking(move || git::repo_url(&folder)).await {
-                Ok(Ok(url)) => url,
-                _ => "this repository".to_string(),
-            }
-        };
-
-        Session::write_output(
-            &output,
-            &folder,
-            &format!("\n[PR] Creating PR in {repo_url}\n"),
-        );
-
-        let pr_creation_in_flight = Arc::clone(&self.pr_creation_in_flight);
-        let pr_poll_cancel = Arc::clone(&self.pr_poll_cancel);
-
-        // Perform PR creation in background
-        tokio::spawn(async move {
-            let result = {
-                let folder = folder.clone();
-                let source_branch = source_branch.clone();
-                tokio::task::spawn_blocking(move || {
-                    git::create_pr(&folder, &source_branch, &base_branch, &title)
-                })
-                .await
-            };
-
-            match result {
-                Ok(Ok(message)) => {
-                    Session::write_output(&output, &folder, &format!("\n[PR] {message}\n"));
-                    if Self::update_status(&status, &db, &name, Status::PullRequest).await {
-                        let repo_root = Self::resolve_repo_root_from_worktree(&folder);
-                        Self::spawn_pr_poll_task(PrPollTaskInput {
-                            db,
-                            folder,
-                            id: name.clone(),
-                            output,
-                            status,
-                            source_branch,
-                            repo_root,
-                            pr_poll_cancel,
-                        });
-                    } else {
-                        Session::write_output(
-                            &output,
-                            &folder,
-                            "\n[PR Error] Invalid status transition to PullRequest\n",
-                        );
-                    }
-                }
-                Ok(Err(error)) => {
-                    Session::write_output(&output, &folder, &format!("\n[PR Error] {error}\n"));
-                }
-                Err(error) => {
-                    Session::write_output(
-                        &output,
-                        &folder,
-                        &format!("\n[PR Error] Join error: {error}\n"),
-                    );
-                }
-            }
-
-            if let Ok(mut in_flight) = pr_creation_in_flight.lock() {
-                in_flight.remove(&name);
-            }
-        });
-
-        Ok(())
-    }
-
-    fn start_pr_polling_for_pull_request_sessions(&self) {
-        for session in &self.session_state.sessions {
-            if session.status() != Status::PullRequest {
-                continue;
-            }
-
-            let source_branch = format!("agentty/{}", session.id);
-            Self::spawn_pr_poll_task(PrPollTaskInput {
-                db: self.db.clone(),
-                folder: session.folder.clone(),
-                id: session.id.clone(),
-                output: Arc::clone(&session.output),
-                status: Arc::clone(&session.status),
-                source_branch,
-                repo_root: Self::resolve_repo_root_from_worktree(&session.folder),
-                pr_poll_cancel: Arc::clone(&self.pr_poll_cancel),
-            });
-        }
-    }
-
-    fn mark_pr_creation_in_flight(&self, id: &str) -> Result<(), String> {
-        let mut in_flight = self
-            .pr_creation_in_flight
-            .lock()
-            .map_err(|_| "Failed to lock PR creation state".to_string())?;
-
-        if in_flight.contains(id) {
-            return Err("Pull request creation is already in progress".to_string());
-        }
-
-        in_flight.insert(id.to_string());
-
-        Ok(())
-    }
-
-    fn is_pr_creation_in_flight(&self, id: &str) -> bool {
-        self.pr_creation_in_flight
-            .lock()
-            .is_ok_and(|in_flight| in_flight.contains(id))
-    }
-
-    fn is_pr_polling_active(&self, id: &str) -> bool {
-        self.pr_poll_cancel
-            .lock()
-            .is_ok_and(|polling| polling.contains_key(id))
-    }
-
-    fn clear_pr_creation_in_flight(&self, id: &str) {
-        if let Ok(mut in_flight) = self.pr_creation_in_flight.lock() {
-            in_flight.remove(id);
-        }
-    }
-
-    fn cancel_pr_polling_for_session(&self, id: &str) {
-        if let Ok(mut polling) = self.pr_poll_cancel.lock()
-            && let Some(cancel) = polling.remove(id)
-        {
-            cancel.store(true, Ordering::Relaxed);
-        }
-    }
-
-    fn spawn_pr_poll_task(input: PrPollTaskInput) {
-        let PrPollTaskInput {
-            db,
-            folder,
-            id,
-            output,
-            status,
-            source_branch,
-            repo_root,
-            pr_poll_cancel,
-        } = input;
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        if let Ok(mut polling) = pr_poll_cancel.lock() {
-            if polling.contains_key(&id) {
-                return;
-            }
-            polling.insert(id.clone(), Arc::clone(&cancel));
-        } else {
-            return;
-        }
-
-        tokio::spawn(async move {
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let merged = {
-                    let folder = folder.clone();
-                    let source_branch = source_branch.clone();
-                    tokio::task::spawn_blocking(move || git::is_pr_merged(&folder, &source_branch))
-                        .await
-                        .ok()
-                        .and_then(std::result::Result::ok)
-                };
-
-                if merged == Some(true) {
-                    Session::write_output(
-                        &output,
-                        &folder,
-                        &format!("\n[PR] Pull request from `{source_branch}` was merged\n"),
-                    );
-                    if !Self::update_status(&status, &db, &id, Status::Done).await {
-                        Session::write_output(
-                            &output,
-                            &folder,
-                            "\n[PR Error] Invalid status transition to Done\n",
-                        );
-                    }
-                    if let Err(error) = Self::cleanup_merged_session_worktree(
-                        folder.clone(),
-                        source_branch.clone(),
-                        repo_root.clone(),
-                    )
-                    .await
-                    {
-                        Session::write_output(
-                            &output,
-                            &folder,
-                            &format!("\n[PR Error] Failed to remove merged worktree: {error}\n"),
-                        );
-                    }
-
-                    break;
-                }
-
-                for _ in 0..PR_MERGE_POLL_INTERVAL.as_secs() {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-
-            if let Ok(mut polling) = pr_poll_cancel.lock() {
-                polling.remove(&id);
-            }
-        });
-    }
-
-    async fn cleanup_merged_session_worktree(
+    pub(super) async fn cleanup_merged_session_worktree(
         folder: PathBuf,
         source_branch: String,
         repo_root: Option<PathBuf>,
@@ -973,7 +503,7 @@ impl App {
         .map_err(|error| format!("Join error: {error}"))?
     }
 
-    fn resolve_repo_root_from_worktree(worktree_path: &Path) -> Option<PathBuf> {
+    pub(super) fn resolve_repo_root_from_worktree(worktree_path: &Path) -> Option<PathBuf> {
         let git_path = worktree_path.join(".git");
         if git_path.is_dir() {
             return Some(worktree_path.to_path_buf());
@@ -1058,32 +588,6 @@ impl App {
         Self::spawn_session_task(folder, cmd, output, status, db, name);
     }
 
-    fn resolve_session_agent_and_model(session: &Session) -> (AgentKind, AgentModel) {
-        let session_agent = session
-            .agent
-            .parse::<AgentKind>()
-            .unwrap_or(AgentKind::Gemini);
-        let session_model = session_agent
-            .parse_model(&session.model)
-            .unwrap_or_else(|| session_agent.default_model());
-
-        (session_agent, session_model)
-    }
-
-    fn summarize_title(prompt: &str) -> String {
-        let first_line = prompt.lines().next().unwrap_or(prompt).trim();
-        if first_line.len() <= 30 {
-            return first_line.to_string();
-        }
-
-        let truncated = &first_line[..30];
-        if let Some(last_space) = truncated.rfind(' ') {
-            format!("{}…", &first_line[..last_space])
-        } else {
-            format!("{truncated}…")
-        }
-    }
-
     async fn rollback_failed_session_creation(
         &self,
         folder: &Path,
@@ -1157,7 +661,7 @@ impl App {
         }
     }
 
-    async fn update_sessions_metadata_cache(&mut self) {
+    pub(super) async fn update_sessions_metadata_cache(&mut self) {
         if let Ok((sessions_row_count, sessions_updated_at_max)) =
             self.db.load_sessions_metadata().await
         {
@@ -1166,7 +670,7 @@ impl App {
         }
     }
 
-    async fn load_sessions(
+    pub(super) async fn load_sessions(
         base: &Path,
         db: &Database,
         projects: &[Project],
@@ -1245,173 +749,6 @@ impl App {
 
         sessions
     }
-
-    async fn discover_sibling_projects(working_dir: &Path, db: &Database) {
-        let Some(parent) = working_dir.parent() else {
-            return;
-        };
-        let Ok(entries) = std::fs::read_dir(parent) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() || path == working_dir {
-                continue;
-            }
-            if path.join(".git").exists() {
-                let branch = git::detect_git_info(&path);
-                let _ = db
-                    .upsert_project(&path.to_string_lossy(), branch.as_deref())
-                    .await;
-            }
-        }
-    }
-
-    async fn load_projects_from_db(db: &Database) -> Vec<Project> {
-        db.load_projects()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|row| Project {
-                git_branch: row.git_branch,
-                id: row.id,
-                path: PathBuf::from(row.path),
-            })
-            .collect()
-    }
-
-    fn spawn_git_status_task(
-        working_dir: &Path,
-        git_status: Arc<Mutex<Option<(u32, u32)>>>,
-        cancel: Arc<AtomicBool>,
-    ) {
-        let dir = working_dir.to_path_buf();
-        tokio::spawn(async move {
-            let repo_root = git::find_git_repo_root(&dir).unwrap_or(dir);
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-                {
-                    let root = repo_root.clone();
-                    let _ = tokio::task::spawn_blocking(move || git::fetch_remote(&root)).await;
-                }
-                let status = {
-                    let root = repo_root.clone();
-                    tokio::task::spawn_blocking(move || git::get_ahead_behind(&root))
-                        .await
-                        .ok()
-                        .and_then(std::result::Result::ok)
-                };
-                if let Ok(mut lock) = git_status.lock() {
-                    *lock = status;
-                }
-                for _ in 0..30 {
-                    if cancel.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
-        });
-    }
-
-    fn spawn_session_task(
-        folder: PathBuf,
-        cmd: Command,
-        output: Arc<Mutex<String>>,
-        status: Arc<Mutex<Status>>,
-        db: Database,
-        id: String,
-    ) {
-        let mut tokio_cmd = tokio::process::Command::from(cmd);
-        // Prevent the child process from inheriting the TUI's terminal on
-        // stdin.  On macOS the child can otherwise disturb crossterm's raw-mode
-        // settings, causing the event reader to stall and the UI to freeze.
-        tokio_cmd.stdin(std::process::Stdio::null());
-        tokio::spawn(async move {
-            let file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(folder.join(SESSION_DATA_DIR).join("output.txt"))
-                .ok()
-                .map(std::io::BufWriter::new);
-            let file = Arc::new(Mutex::new(file));
-
-            match tokio_cmd.spawn() {
-                Ok(mut child) => {
-                    let stdout = child.stdout.take();
-                    let stderr = child.stderr.take();
-
-                    let mut handles = Vec::new();
-
-                    if let Some(stdout) = stdout {
-                        let output = Arc::clone(&output);
-                        let file = Arc::clone(&file);
-                        handles.push(tokio::spawn(async move {
-                            Self::process_output(stdout, &file, &output).await;
-                        }));
-                    }
-                    if let Some(stderr) = stderr {
-                        let output = Arc::clone(&output);
-                        let file = Arc::clone(&file);
-                        handles.push(tokio::spawn(async move {
-                            Self::process_output(stderr, &file, &output).await;
-                        }));
-                    }
-
-                    for handle in handles {
-                        let _ = handle.await;
-                    }
-                    let _ = child.wait().await;
-                }
-                Err(e) => {
-                    if let Ok(mut buf) = output.lock() {
-                        let _ = writeln!(buf, "Failed to spawn process: {e}");
-                    }
-                }
-            }
-
-            Self::update_status(&status, &db, &id, Status::Review).await;
-        });
-    }
-
-    async fn update_status(status: &Mutex<Status>, db: &Database, id: &str, new: Status) -> bool {
-        let should_update = if let Ok(mut current) = status.lock() {
-            if (*current).can_transition_to(new) {
-                *current = new;
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        if !should_update {
-            return false;
-        }
-        let _ = db.update_session_status(id, &new.to_string()).await;
-
-        true
-    }
-
-    async fn process_output<R: AsyncRead + Unpin>(
-        source: R,
-        file: &Arc<Mutex<Option<std::io::BufWriter<std::fs::File>>>>,
-        output: &Arc<Mutex<String>>,
-    ) {
-        let mut reader = tokio::io::BufReader::new(source).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if let Ok(mut f_guard) = file.lock()
-                && let Some(f) = f_guard.as_mut()
-            {
-                let _ = writeln!(f, "{line}");
-            }
-            if let Ok(mut buf) = output.lock() {
-                buf.push_str(&line);
-                buf.push('\n');
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1425,6 +762,7 @@ mod tests {
 
     use super::*;
     use crate::agent::MockAgentBackend;
+    use crate::model::Tab;
 
     fn create_mock_backend() -> MockAgentBackend {
         let mut mock = MockAgentBackend::new();
