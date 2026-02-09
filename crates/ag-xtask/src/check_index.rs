@@ -29,6 +29,17 @@ fn run_with_runner(runner: &dyn CommandRunner) -> Result<(), String> {
     let agents_files = get_agents_files(runner)?;
 
     let mut success = true;
+    let missing_agents_files = missing_agents_files(&tracked_files, &agents_files);
+    if !missing_agents_files.is_empty() {
+        for missing_agents_file in &missing_agents_files {
+            error!(
+                "Error: missing {}. Add a local AGENTS.md to index this directory.",
+                missing_agents_file.display()
+            );
+        }
+        success = false;
+    }
+
     for agents_path in agents_files {
         if !process_directory(&agents_path, &tracked_files) {
             success = false;
@@ -42,6 +53,80 @@ fn run_with_runner(runner: &dyn CommandRunner) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn missing_agents_files(tracked_files: &[String], agents_files: &[PathBuf]) -> Vec<PathBuf> {
+    let relative_tracked_files = tracked_files
+        .iter()
+        .filter(|path| is_relative_git_path(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    if relative_tracked_files.is_empty() {
+        return Vec::new();
+    }
+
+    let existing_agents_paths = agents_files
+        .iter()
+        .filter_map(|path| path.to_str())
+        .map(std::string::ToString::to_string)
+        .collect::<BTreeSet<_>>();
+
+    let directories = directories_with_indexable_entries(&relative_tracked_files);
+    let mut missing_files = Vec::new();
+    for directory in directories {
+        let expected_agents_file = if directory == Path::new(".") {
+            PathBuf::from("AGENTS.md")
+        } else {
+            directory.join("AGENTS.md")
+        };
+        if !existing_agents_paths.contains(&normalize_path(&expected_agents_file)) {
+            missing_files.push(expected_agents_file);
+        }
+    }
+
+    missing_files
+}
+
+fn directories_with_indexable_entries(tracked_files: &[String]) -> BTreeSet<PathBuf> {
+    let mut directories = BTreeSet::new();
+    directories.insert(PathBuf::from("."));
+
+    for tracked_file in tracked_files {
+        let normalized_file_path = normalize_path(Path::new(tracked_file));
+        let path_segments = normalized_file_path.split('/').collect::<Vec<_>>();
+        if path_segments.len() <= 1 {
+            continue;
+        }
+
+        let mut directory = String::new();
+        for segment in path_segments.iter().take(path_segments.len() - 1) {
+            if directory.is_empty() {
+                directory.push_str(segment);
+            } else {
+                directory.push('/');
+                directory.push_str(segment);
+            }
+            directories.insert(PathBuf::from(&directory));
+        }
+    }
+
+    directories
+        .into_iter()
+        .filter(|directory| !get_local_entries(directory.as_path(), tracked_files).is_empty())
+        .collect()
+}
+
+fn normalize_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn is_relative_git_path(path: &str) -> bool {
+    let path_bytes = path.as_bytes();
+    let has_windows_drive_prefix = path_bytes.len() >= 3
+        && path_bytes[1] == b':'
+        && (path_bytes[2] == b'\\' || path_bytes[2] == b'/');
+
+    !path.starts_with('/') && !has_windows_drive_prefix
 }
 
 fn get_tracked_files(runner: &dyn CommandRunner) -> Result<Vec<String>, String> {
@@ -441,5 +526,40 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_missing_agents_files_reports_nested_directory() {
+        // Arrange
+        let tracked_files = vec![
+            "AGENTS.md".to_string(),
+            "src/AGENTS.md".to_string(),
+            "src/runtime/mode.rs".to_string(),
+        ];
+        let agents_files = vec![PathBuf::from("AGENTS.md"), PathBuf::from("src/AGENTS.md")];
+
+        // Act
+        let missing_files = missing_agents_files(&tracked_files, &agents_files);
+
+        // Assert
+        assert_eq!(missing_files, vec![PathBuf::from("src/runtime/AGENTS.md")]);
+    }
+
+    #[test]
+    fn test_missing_agents_files_ignores_directories_without_indexable_entries() {
+        // Arrange
+        let tracked_files = vec![
+            "AGENTS.md".to_string(),
+            "docs/AGENTS.md".to_string(),
+            "docs/CLAUDE.md".to_string(),
+            "docs/GEMINI.md".to_string(),
+        ];
+        let agents_files = vec![PathBuf::from("AGENTS.md"), PathBuf::from("docs/AGENTS.md")];
+
+        // Act
+        let missing_files = missing_agents_files(&tracked_files, &agents_files);
+
+        // Assert
+        assert!(missing_files.is_empty());
     }
 }
