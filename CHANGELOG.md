@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.5] - 2026-02-08
+
+### Added
+- **Tests:** Added runtime mode handler coverage tests.
+- **Documentation:** Added local `AGENTS.md` files and enforced folder index checks.
+- **Documentation:** Added Context7-first rule for retrieving latest tool info.
+- **Documentation:** Documented dependency injection testability guidance.
+
+### Changed
+- **Architecture:** Modularized app and runtime into focused modules (`app/` and `runtime/`).
+- **Runtime:** Injected event source into the runtime event loop for better testability.
+- **Session:** Made agent and model configurations session-scoped.
+- **Linting:** Refined clippy lint configuration, tightening policies and re-enabling pedantic rules.
+- **Skills:** Symlinked the entire skills directory for agents and refactored release skill.
+- **Refactor:** Refactored long handlers to enforce clippy line limits.
+
 ## [v0.1.4] - 2026-02-08
 
 ### Added
