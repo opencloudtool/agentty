@@ -163,3 +163,209 @@ async fn handle_command_option_enter(
 
     let _ = app.switch_project(project.id).await;
 }
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::KeyModifiers;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::db::Database;
+
+    async fn new_test_app() -> (App, tempfile::TempDir) {
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let app = App::new(base_path.clone(), base_path, None, database).await;
+
+        (app, base_dir)
+    }
+
+    #[tokio::test]
+    async fn test_handle_palette_character_updates_input_and_focus() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::CommandPalette {
+            input: String::new(),
+            selected_index: 3,
+            focus: PaletteFocus::Input,
+        };
+
+        // Act
+        let event_result = handle_palette(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::CommandPalette {
+                ref input,
+                selected_index: 0,
+                focus: PaletteFocus::Dropdown
+            } if input == "p"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_palette_enter_opens_health_mode() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::CommandPalette {
+            input: String::new(),
+            selected_index: 0,
+            focus: PaletteFocus::Dropdown,
+        };
+
+        // Act
+        let event_result =
+            handle_palette(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(app.mode, AppMode::Health));
+        assert!(
+            !app.health_checks()
+                .lock()
+                .expect("lock poisoned")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_palette_enter_opens_project_options() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::CommandPalette {
+            input: "pro".to_string(),
+            selected_index: 0,
+            focus: PaletteFocus::Dropdown,
+        };
+
+        // Act
+        let event_result =
+            handle_palette(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::CommandOption {
+                command: PaletteCommand::Projects,
+                selected_index: 0
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_palette_escape_switches_focus_before_exiting() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::CommandPalette {
+            input: String::new(),
+            selected_index: 0,
+            focus: PaletteFocus::Dropdown,
+        };
+
+        // Act
+        let first_result =
+            handle_palette(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let second_result =
+            handle_palette(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        // Assert
+        assert!(matches!(first_result, EventResult::Continue));
+        assert!(matches!(second_result, EventResult::Continue));
+        assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[test]
+    fn test_update_palette_focus_sets_input_focus_when_no_match() {
+        // Arrange
+        let mut selected_index = 5;
+        let mut focus = PaletteFocus::Dropdown;
+
+        // Act
+        update_palette_focus("zzz", &mut selected_index, &mut focus);
+
+        // Assert
+        assert_eq!(selected_index, 0);
+        assert_eq!(focus, PaletteFocus::Input);
+    }
+
+    #[test]
+    fn test_move_palette_selection_down_moves_index_until_last_entry() {
+        // Arrange
+        let mut selected_index = 0;
+        let mut focus = PaletteFocus::Dropdown;
+
+        // Act
+        move_palette_selection_down("", &mut selected_index, &mut focus);
+
+        // Assert
+        assert_eq!(selected_index, 1);
+        assert_eq!(focus, PaletteFocus::Dropdown);
+    }
+
+    #[tokio::test]
+    async fn test_handle_option_escape_returns_to_command_palette() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::CommandOption {
+            command: PaletteCommand::Projects,
+            selected_index: 0,
+        };
+
+        // Act
+        let event_result = handle_option(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::CommandPalette {
+                ref input,
+                selected_index: 0,
+                focus: PaletteFocus::Dropdown
+            } if input.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_option_enter_projects_returns_to_list_mode() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::CommandOption {
+            command: PaletteCommand::Projects,
+            selected_index: 0,
+        };
+
+        // Act
+        let event_result =
+            handle_option(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                .await
+                .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_command_option_count_uses_project_count_for_projects_command() {
+        // Arrange
+        let (app, _base_dir) = new_test_app().await;
+
+        // Act
+        let option_count = command_option_count(&app, PaletteCommand::Projects);
+
+        // Assert
+        assert_eq!(option_count, app.projects.len());
+    }
+}

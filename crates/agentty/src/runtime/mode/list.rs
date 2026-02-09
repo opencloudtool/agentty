@@ -53,3 +53,196 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
 
     Ok(EventResult::Continue)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use crossterm::event::KeyModifiers;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::db::Database;
+
+    async fn new_test_app() -> (App, tempfile::TempDir) {
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let app = App::new(base_path.clone(), base_path, None, database).await;
+
+        (app, base_dir)
+    }
+
+    fn setup_test_git_repo(path: &Path) {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .expect("git init failed");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(path)
+            .output()
+            .expect("git config failed");
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(path)
+            .output()
+            .expect("git config failed");
+        std::fs::write(path.join("README.md"), "test").expect("write failed");
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .expect("git add failed");
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(path)
+            .output()
+            .expect("git commit failed");
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(path)
+            .output()
+            .expect("git branch failed");
+    }
+
+    async fn new_test_app_with_git() -> (App, tempfile::TempDir) {
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        setup_test_git_repo(base_dir.path());
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let app = App::new(
+            base_path.clone(),
+            base_path,
+            Some("main".to_string()),
+            database,
+        )
+        .await;
+
+        (app, base_dir)
+    }
+
+    #[tokio::test]
+    async fn test_handle_quit_key_returns_quit_result() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Quit));
+    }
+
+    #[tokio::test]
+    async fn test_handle_slash_key_opens_command_palette_mode() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::CommandPalette {
+                ref input,
+                selected_index: 0,
+                focus: PaletteFocus::Dropdown
+            } if input.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_add_key_creates_session_and_opens_prompt_mode() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert_eq!(app.session_state.sessions.len(), 1);
+        assert!(matches!(
+            app.mode,
+            AppMode::Prompt {
+                ref session_id,
+                scroll_offset: None,
+                ..
+            } if !session_id.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_enter_key_opens_selected_session_in_view_mode() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let expected_session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        app.session_state.table_state.select(Some(0));
+        app.mode = AppMode::List;
+
+        // Act
+        let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                ref session_id,
+                scroll_offset: None
+            } if session_id == &expected_session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_delete_key_removes_selected_session() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let _session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        app.session_state.table_state.select(Some(0));
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(app.session_state.sessions.is_empty());
+    }
+}

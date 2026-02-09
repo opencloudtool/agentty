@@ -205,3 +205,263 @@ fn append_output_for_session(app: &App, session_id: &str, output: &str) {
 
     session.append_output(output);
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::db::Database;
+
+    async fn new_test_app() -> (App, tempfile::TempDir) {
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let app = App::new(base_path.clone(), base_path, None, database).await;
+
+        (app, base_dir)
+    }
+
+    fn setup_test_git_repo(path: &Path) {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .expect("git init failed");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(path)
+            .output()
+            .expect("git config failed");
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(path)
+            .output()
+            .expect("git config failed");
+        std::fs::write(path.join("README.md"), "test").expect("write failed");
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .expect("git add failed");
+        Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(path)
+            .output()
+            .expect("git commit failed");
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(path)
+            .output()
+            .expect("git branch failed");
+    }
+
+    async fn new_test_app_with_git() -> (App, tempfile::TempDir) {
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        setup_test_git_repo(base_dir.path());
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let app = App::new(
+            base_path.clone(),
+            base_path,
+            Some("main".to_string()),
+            database,
+        )
+        .await;
+
+        (app, base_dir)
+    }
+
+    async fn new_test_app_with_session() -> (App, tempfile::TempDir, String) {
+        let (mut app, base_dir) = new_test_app_with_git().await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+
+        (app, base_dir, session_id)
+    }
+
+    #[tokio::test]
+    async fn test_view_context_returns_none_for_non_view_mode() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::List;
+
+        // Act
+        let context = view_context(&mut app);
+
+        // Assert
+        assert!(context.is_none());
+        assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_view_context_falls_back_to_list_when_session_is_missing() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::View {
+            session_id: "missing-session".to_string(),
+            scroll_offset: Some(2),
+        };
+
+        // Act
+        let context = view_context(&mut app);
+
+        // Assert
+        assert!(context.is_none());
+        assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_view_context_returns_existing_session_details() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.mode = AppMode::View {
+            session_id: session_id.clone(),
+            scroll_offset: Some(4),
+        };
+
+        // Act
+        let context = view_context(&mut app);
+
+        // Assert
+        assert!(context.is_some());
+        let context = context.expect("expected view context");
+        assert_eq!(context.session_id, session_id);
+        assert_eq!(context.scroll_offset, Some(4));
+        assert_eq!(context.session_index, 0);
+    }
+
+    #[test]
+    fn test_scroll_offset_down_returns_none_at_end_of_content() {
+        // Arrange
+        let metrics = ViewMetrics {
+            total_lines: 20,
+            view_height: 10,
+        };
+
+        // Act
+        let next_offset = scroll_offset_down(Some(9), metrics, 1);
+
+        // Assert
+        assert_eq!(next_offset, None);
+    }
+
+    #[test]
+    fn test_scroll_offset_up_uses_bottom_when_scroll_is_unset() {
+        // Arrange
+        let metrics = ViewMetrics {
+            total_lines: 30,
+            view_height: 10,
+        };
+
+        // Act
+        let next_offset = scroll_offset_up(None, metrics, 5);
+
+        // Assert
+        assert_eq!(next_offset, 15);
+    }
+
+    #[tokio::test]
+    async fn test_show_diff_for_view_session_switches_mode_to_diff() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        let context = ViewContext {
+            scroll_offset: Some(0),
+            session_id: session_id.clone(),
+            session_index: 0,
+        };
+
+        // Act
+        show_diff_for_view_session(&mut app, &context).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Diff {
+                ref session_id,
+                scroll_offset: 0,
+                ..
+            } if session_id == &context.session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_append_output_for_session_appends_text() {
+        // Arrange
+        let (app, _base_dir, session_id) = new_test_app_with_session().await;
+
+        // Act
+        append_output_for_session(&app, &session_id, "line one");
+
+        // Assert
+        let output = app.session_state.sessions[0]
+            .output
+            .lock()
+            .expect("lock poisoned")
+            .clone();
+        assert_eq!(output, "line one");
+    }
+
+    #[tokio::test]
+    async fn test_commit_view_session_appends_commit_result_output() {
+        // Arrange
+        let (app, _base_dir, session_id) = new_test_app_with_session().await;
+        let mut app = app;
+
+        // Act
+        commit_view_session(&mut app, &session_id).await;
+
+        // Assert
+        let output = app.session_state.sessions[0]
+            .output
+            .lock()
+            .expect("lock poisoned")
+            .clone();
+        assert!(output.contains("[Commit"));
+    }
+
+    #[tokio::test]
+    async fn test_merge_view_session_appends_error_output_without_git_repo() {
+        // Arrange
+        let (app, _base_dir, session_id) = new_test_app_with_session().await;
+        let mut app = app;
+
+        // Act
+        merge_view_session(&mut app, &session_id).await;
+
+        // Assert
+        let output = app.session_state.sessions[0]
+            .output
+            .lock()
+            .expect("lock poisoned")
+            .clone();
+        assert!(output.contains("[Merge Error]"));
+    }
+
+    #[tokio::test]
+    async fn test_create_pr_for_view_session_appends_error_output_without_review_status() {
+        // Arrange
+        let (app, _base_dir, session_id) = new_test_app_with_session().await;
+        let mut app = app;
+
+        // Act
+        create_pr_for_view_session(&mut app, &session_id).await;
+
+        // Assert
+        let output = app.session_state.sessions[0]
+            .output
+            .lock()
+            .expect("lock poisoned")
+            .clone();
+        assert!(output.contains("[PR Error]"));
+    }
+}
