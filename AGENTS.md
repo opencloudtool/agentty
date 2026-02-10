@@ -150,15 +150,7 @@ already applied — just re-run to confirm everything passes.
 - **Rust Docs:** Add `///` doc comments to structs and all public functions/types in touched Rust files.
 
 ## Git Conventions
-- When preparing a commit, gather context in a single tool call by chaining independent commands: `git status && git diff && git log -n 3 --format="---%n%B"`. This provides working tree status, staged/unstaged changes, and recent commit history for style consistency — all in one invocation.
-- Follow the "commit title and description" style:
-  - The first line should be a concise summary (the "title") in present simple tense (e.g., "Fix cursor offset" not "Fixed cursor offset").
-  - Use a blank line between the title and the body.
-  - The body (the "description") should provide more detail on *why* and *how* in present simple tense. It is not needed when the title is self-explanatory.
-  - When the description has multiple points, format them as a `-` list (one point per line).
-- Do not use conventional commit prefixes (e.g., `feat:`, `fix:`).
-- Never use `--no-verify` with git commands to bypass `pre-commit` hooks.
-- Do not add `Co-Authored-By` trailers or any AI attribution to commit messages.
+- For all commit preparation and commit message work, use `skills/git-commit/SKILL.md`.
 - **Tagging:** Always use the `v` prefix for version tags (e.g., `v0.1.0`).
 
 ## Git Worktree Integration
@@ -198,6 +190,13 @@ git worktree prune
 - When creating a new `AGENTS.md` file in any directory, always create corresponding symlinks: `ln -s AGENTS.md CLAUDE.md && ln -s AGENTS.md GEMINI.md` in the same directory.
 - Keep the root `README.md` up to date whenever new information is relevant to end users (e.g., new crates, features, usage instructions, or prerequisites).
 - **Changelog:** Update `CHANGELOG.md` when releasing a new version. Follow the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
+
+## Skills
+- Skills are available under `skills/`, with the canonical index in `skills/AGENTS.md`.
+- Read `skills/AGENTS.md` to discover available skills before selecting one.
+- Activate a skill when the user explicitly names it or the task intent matches the skill description.
+- Use the minimal set of skills needed for the current turn.
+- Do not carry a skill across turns unless it is explicitly requested again or clearly re-triggered by intent.
 
 ## Directory Index
 - [.claude/](.claude/) - Claude AI specific settings.
