@@ -228,7 +228,7 @@ impl<'a> SessionChatPage<'a> {
         }
 
         let help_message = Paragraph::new(
-            "q: back | r: reply | d: diff | c: commit | p: pr | m: merge | j/k: scroll",
+            "q: back | enter: reply | d: diff | c: commit | p: pr | m: merge | j/k: scroll",
         )
         .style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, bottom_area);
