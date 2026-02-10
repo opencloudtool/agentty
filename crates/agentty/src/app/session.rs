@@ -2219,9 +2219,8 @@ WHERE id = 'beta'
         let session_folder = app.session_state.sessions[0].folder.clone();
         std::fs::write(session_folder.join("session-change.txt"), "change")
             .expect("failed to write worktree change");
-        app.commit_session(&session_id)
-            .await
-            .expect("failed to commit session");
+        git::commit_all(&session_folder, "Test merge commit")
+            .expect("failed to commit session changes");
         let session_name = app.session_state.sessions[0].id.clone();
         let branch_name = format!("agentty/{session_name}");
 
