@@ -26,6 +26,7 @@ pub enum Status {
     New,
     InProgress,
     Review,
+    Committing,
     PullRequest,
     Done,
 }
@@ -36,6 +37,7 @@ impl std::fmt::Display for Status {
             Status::New => write!(f, "New"),
             Status::InProgress => write!(f, "InProgress"),
             Status::Review => write!(f, "Review"),
+            Status::Committing => write!(f, "Committing"),
             Status::PullRequest => write!(f, "PullRequest"),
             Status::Done => write!(f, "Done"),
         }
@@ -50,6 +52,7 @@ impl std::str::FromStr for Status {
             "New" => Ok(Status::New),
             "InProgress" => Ok(Status::InProgress),
             "Review" => Ok(Status::Review),
+            "Committing" => Ok(Status::Committing),
             "PullRequest" | "Processing" => Ok(Status::PullRequest),
             "Done" => Ok(Status::Done),
             _ => Err(format!("Unknown status: {s}")),
@@ -413,9 +416,9 @@ impl Status {
             (Status::New, Status::InProgress)
                 | (
                     Status::Review,
-                    Status::InProgress | Status::PullRequest | Status::Done
+                    Status::InProgress | Status::PullRequest | Status::Done | Status::Committing
                 )
-                | (Status::InProgress, Status::Review)
+                | (Status::Committing | Status::InProgress, Status::Review)
                 | (Status::PullRequest, Status::Done)
         )
     }
@@ -423,7 +426,9 @@ impl Status {
     pub fn icon(self) -> Icon {
         match self {
             Status::New | Status::Review => Icon::Pending,
-            Status::InProgress | Status::PullRequest => Icon::current_spinner(),
+            Status::InProgress | Status::PullRequest | Status::Committing => {
+                Icon::current_spinner()
+            }
             Status::Done => Icon::Check,
         }
     }
@@ -431,7 +436,7 @@ impl Status {
     pub fn color(self) -> Color {
         match self {
             Status::New => Color::DarkGray,
-            Status::InProgress => Color::Yellow,
+            Status::InProgress | Status::Committing => Color::Yellow,
             Status::Review => Color::LightBlue,
             Status::PullRequest => Color::Cyan,
             Status::Done => Color::Green,
@@ -558,6 +563,7 @@ mod tests {
         assert_eq!(Status::New.icon(), Icon::Pending);
         assert!(matches!(Status::InProgress.icon(), Icon::Spinner(_)));
         assert_eq!(Status::Review.icon(), Icon::Pending);
+        assert!(matches!(Status::Committing.icon(), Icon::Spinner(_)));
         assert!(matches!(Status::PullRequest.icon(), Icon::Spinner(_)));
         assert_eq!(Status::Done.icon(), Icon::Check);
     }
@@ -568,6 +574,7 @@ mod tests {
         assert_eq!(Status::New.color(), Color::DarkGray);
         assert_eq!(Status::InProgress.color(), Color::Yellow);
         assert_eq!(Status::Review.color(), Color::LightBlue);
+        assert_eq!(Status::Committing.color(), Color::Yellow);
         assert_eq!(Status::PullRequest.color(), Color::Cyan);
         assert_eq!(Status::Done.color(), Color::Green);
     }
@@ -589,7 +596,10 @@ mod tests {
         assert!(!Status::New.can_transition_to(Status::Done));
         assert!(Status::Review.can_transition_to(Status::InProgress));
         assert!(Status::Review.can_transition_to(Status::PullRequest));
+        assert!(Status::Review.can_transition_to(Status::Committing));
         assert!(Status::Review.can_transition_to(Status::Done));
+        assert!(Status::Committing.can_transition_to(Status::Review));
+        assert!(!Status::Committing.can_transition_to(Status::Done));
         assert!(Status::InProgress.can_transition_to(Status::Review));
         assert!(Status::PullRequest.can_transition_to(Status::Done));
         assert!(!Status::InProgress.can_transition_to(Status::Done));

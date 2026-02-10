@@ -444,17 +444,32 @@ impl App {
     /// operation fails.
     pub fn spawn_commit_session(&self, session_id: &str) -> Result<(), String> {
         let context = self.build_commit_session_context(session_id)?;
+
+        let session = self
+            .session_state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .ok_or_else(|| "Session not found".to_string())?;
+        let status = Arc::clone(&session.status);
+        let id = session.id.clone();
+
         let db = self.db.clone();
         let output = Arc::clone(&context.output);
         let folder = context.folder.clone();
 
         tokio::spawn(async move {
-            let result_message = match Self::commit_session_with_context(db, context).await {
+            Self::update_status(&status, &db, &id, Status::Committing).await;
+
+            let result_message = match Self::commit_session_with_context(db.clone(), context).await
+            {
                 Ok(message) => format!("\n[Commit] {message}\n"),
                 Err(error) => format!("\n[Commit Error] {error}\n"),
             };
 
             Session::write_output(&output, &folder, &result_message);
+
+            Self::update_status(&status, &db, &id, Status::Review).await;
         });
 
         Ok(())

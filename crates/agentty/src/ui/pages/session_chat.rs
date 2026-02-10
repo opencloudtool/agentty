@@ -157,7 +157,10 @@ impl<'a> SessionChatPage<'a> {
             .map(|line| Line::from(line.to_string()))
             .collect::<Vec<_>>();
 
-        if matches!(status, Status::InProgress | Status::PullRequest) {
+        if matches!(
+            status,
+            Status::InProgress | Status::PullRequest | Status::Committing
+        ) {
             while lines.last().is_some_and(|line| line.width() == 0) {
                 lines.pop();
             }
@@ -179,6 +182,7 @@ impl<'a> SessionChatPage<'a> {
         match status {
             Status::InProgress => "Thinking...",
             Status::PullRequest => "Waiting for PR merge...",
+            Status::Committing => "Committing...",
             Status::New | Status::Review | Status::Done => "",
         }
     }
