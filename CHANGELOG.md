@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.6] - 2026-02-10
+
+### Added
+- **Session Status:** Added a `Committing` status to make commit progress explicit in the session lifecycle.
+
+### Changed
+- **Persistence:** Persist session prompt/output history in SQLite and load it on startup so chat history survives app reloads.
+- **Session Output:** Parse agent JSON output and display only the response message in session output.
+- **GitHub Integration:** Parse GitHub PR responses using typed serde structs and move GitHub CLI logic into a dedicated `gh` module.
+- **PR Workflow:** Treat closed pull requests as canceled sessions and show a loader while PR creation is in flight.
+- **Commit Flow:** Improve asynchronous session commit handling and remove placeholder commit output in view mode.
+- **Documentation:** Extract git commit guidance into the shared skills documentation.
+
+### Fixed
+- **Tests:** Stabilized merge cleanup testing to avoid environment-dependent blocking during release verification.
+
 ## [v0.1.5] - 2026-02-08
 
 ### Added
