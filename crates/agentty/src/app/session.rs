@@ -1974,7 +1974,7 @@ WHERE id = 'beta'
         // Act & Assert
         assert_eq!(app.current_tab, Tab::Sessions);
         app.next_tab();
-        assert_eq!(app.current_tab, Tab::Roadmap);
+        assert_eq!(app.current_tab, Tab::Stats);
         app.next_tab();
         assert_eq!(app.current_tab, Tab::Sessions);
     }

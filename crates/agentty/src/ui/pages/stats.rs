@@ -5,9 +5,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::ui::Page;
 
-pub struct RoadmapPage;
+pub struct StatsPage;
 
-impl Page for RoadmapPage {
+impl Page for StatsPage {
     fn render(&mut self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -19,10 +19,10 @@ impl Page for RoadmapPage {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title("Roadmap")
+            .title("Stats")
             .style(Style::default().fg(Color::White));
 
-        let paragraph = Paragraph::new("Hello world!").block(block);
+        let paragraph = Paragraph::new("Stats coming soon...").block(block);
         f.render_widget(paragraph, main_area);
 
         let help_message = Paragraph::new("q: quit").style(Style::default().fg(Color::Gray));

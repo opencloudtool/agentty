@@ -17,7 +17,7 @@ pub struct Project {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Sessions,
-    Roadmap,
+    Stats,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -393,15 +393,15 @@ impl Tab {
     pub fn title(self) -> &'static str {
         match self {
             Tab::Sessions => "Sessions",
-            Tab::Roadmap => "Roadmap",
+            Tab::Stats => "Stats",
         }
     }
 
     #[must_use]
     pub fn next(self) -> Self {
         match self {
-            Tab::Sessions => Tab::Roadmap,
-            Tab::Roadmap => Tab::Sessions,
+            Tab::Sessions => Tab::Stats,
+            Tab::Stats => Tab::Sessions,
         }
     }
 }
@@ -732,14 +732,14 @@ mod tests {
     fn test_tab_title() {
         // Arrange & Act & Assert
         assert_eq!(Tab::Sessions.title(), "Sessions");
-        assert_eq!(Tab::Roadmap.title(), "Roadmap");
+        assert_eq!(Tab::Stats.title(), "Stats");
     }
 
     #[test]
     fn test_tab_next() {
         // Arrange & Act & Assert
-        assert_eq!(Tab::Sessions.next(), Tab::Roadmap);
-        assert_eq!(Tab::Roadmap.next(), Tab::Sessions);
+        assert_eq!(Tab::Sessions.next(), Tab::Stats);
+        assert_eq!(Tab::Stats.next(), Tab::Sessions);
     }
 
     #[test]
