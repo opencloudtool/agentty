@@ -231,7 +231,8 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
                 app,
                 &prompt_context.session_id,
                 &format!("\n[Error] {error}\n"),
-            );
+            )
+            .await;
         }
     } else {
         app.reply(&prompt_context.session_id, &prompt);
@@ -335,15 +336,8 @@ async fn handle_prompt_cancel_key(app: &mut App, prompt_context: &PromptContext)
     };
 }
 
-fn append_output_for_session(app: &App, session_id: &str, output: &str) {
-    let Some(session_index) = app.session_index_for_id(session_id) else {
-        return;
-    };
-    let Some(session) = app.session_state.sessions.get(session_index) else {
-        return;
-    };
-
-    session.append_output(output);
+async fn append_output_for_session(app: &App, session_id: &str, output: &str) {
+    app.append_output_for_session(session_id, output).await;
 }
 
 fn prompt_slash_commands(input: &str) -> Vec<&'static str> {

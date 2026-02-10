@@ -74,7 +74,7 @@ pub(crate) async fn handle(
             show_diff_for_view_session(app, &view_context).await;
         }
         KeyCode::Char('c') => {
-            commit_view_session(app, &view_context.session_id);
+            commit_view_session(app, &view_context.session_id).await;
         }
         KeyCode::Char('m') => {
             merge_view_session(app, &view_context.session_id).await;
@@ -171,9 +171,10 @@ async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) {
     };
 }
 
-fn commit_view_session(app: &mut App, session_id: &str) {
+async fn commit_view_session(app: &mut App, session_id: &str) {
     if let Err(error) = app.spawn_commit_session(session_id) {
-        append_output_for_session(app, session_id, &format!("\n[Commit Error] {error}\n"));
+        let message = format!("\n[Commit Error] {error}\n");
+        app.append_output_for_session(session_id, &message).await;
     }
 }
 
@@ -183,24 +184,15 @@ async fn merge_view_session(app: &mut App, session_id: &str) {
         Err(error) => format!("\n[Merge Error] {error}\n"),
     };
 
-    append_output_for_session(app, session_id, &result_message);
+    app.append_output_for_session(session_id, &result_message)
+        .await;
 }
 
 async fn create_pr_for_view_session(app: &mut App, session_id: &str) {
     if let Err(error) = app.create_pr_session(session_id).await {
-        append_output_for_session(app, session_id, &format!("\n[PR Error] {error}\n"));
+        app.append_output_for_session(session_id, &format!("\n[PR Error] {error}\n"))
+            .await;
     }
-}
-
-fn append_output_for_session(app: &App, session_id: &str, output: &str) {
-    let Some(session_index) = app.session_index_for_id(session_id) else {
-        return;
-    };
-    let Some(session) = app.session_state.sessions.get(session_index) else {
-        return;
-    };
-
-    session.append_output(output);
 }
 
 #[cfg(test)]
@@ -412,9 +404,10 @@ mod tests {
     async fn test_append_output_for_session_appends_text() {
         // Arrange
         let (app, _base_dir, session_id) = new_test_app_with_session().await;
+        let app = app;
 
         // Act
-        append_output_for_session(&app, &session_id, "line one");
+        app.append_output_for_session(&session_id, "line one").await;
 
         // Assert
         let output = app.session_state.sessions[0]
@@ -437,7 +430,7 @@ mod tests {
         }
 
         // Act
-        commit_view_session(&mut app, &session_id);
+        commit_view_session(&mut app, &session_id).await;
 
         // Assert
         assert!(

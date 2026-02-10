@@ -93,11 +93,11 @@ impl App {
                     let stdout_text = raw_stdout.lock().map(|buf| buf.clone()).unwrap_or_default();
                     let stderr_text = raw_stderr.lock().map(|buf| buf.clone()).unwrap_or_default();
                     let parsed = agent.parse_response(&stdout_text, &stderr_text);
-                    Session::write_output(&output, &folder, &parsed);
+                    Self::append_session_output(&output, &folder, &db, &id, &parsed).await;
                 }
                 Err(e) => {
                     let message = format!("Failed to spawn process: {e}\n");
-                    Session::write_output(&output, &folder, &message);
+                    Self::append_session_output(&output, &folder, &db, &id, &message).await;
                 }
             }
 
@@ -141,5 +141,16 @@ impl App {
                 buf.push('\n');
             }
         }
+    }
+
+    pub(super) async fn append_session_output(
+        output: &Arc<Mutex<String>>,
+        folder: &Path,
+        db: &Database,
+        id: &str,
+        message: &str,
+    ) {
+        Session::write_output(output, folder, message);
+        let _ = db.append_session_output(id, message).await;
     }
 }

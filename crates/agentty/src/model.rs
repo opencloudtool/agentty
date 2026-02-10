@@ -1,4 +1,3 @@
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -383,14 +382,10 @@ impl Session {
         Self::write_output(&self.output, &self.folder, message);
     }
 
-    pub(crate) fn write_output(output: &Mutex<String>, folder: &Path, message: &str) {
+    pub(crate) fn write_output(output: &Mutex<String>, _folder: &Path, message: &str) {
         if let Ok(mut buf) = output.lock() {
             buf.push_str(message);
         }
-        let _ = std::fs::OpenOptions::new()
-            .append(true)
-            .open(folder.join(SESSION_DATA_DIR).join("output.txt"))
-            .and_then(|mut file| write!(file, "{message}"));
     }
 }
 
@@ -545,10 +540,6 @@ mod tests {
     fn test_append_output() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        let data_dir = dir.path().join(SESSION_DATA_DIR);
-        std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-        std::fs::write(data_dir.join("output.txt"), "").expect("failed to write output");
-
         let session = Session {
             agent: "gemini".to_string(),
             folder: dir.path().to_path_buf(),
@@ -567,12 +558,6 @@ mod tests {
         // Assert — in-memory buffer
         let buf = session.output.lock().expect("lock failed");
         assert_eq!(*buf, "[Test] Hello\n");
-        drop(buf);
-
-        // Assert — file on disk
-        let content =
-            std::fs::read_to_string(data_dir.join("output.txt")).expect("failed to read output");
-        assert_eq!(content, "[Test] Hello\n");
     }
 
     #[test]

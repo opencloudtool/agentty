@@ -200,32 +200,6 @@ impl App {
             ));
         }
 
-        if let Err(err) = std::fs::write(data_dir.join("prompt.txt"), "") {
-            self.rollback_failed_session_creation(
-                &folder,
-                &repo_root,
-                &session_id,
-                &worktree_branch,
-                false,
-            )
-            .await;
-
-            return Err(format!("Failed to write session prompt: {err}"));
-        }
-
-        if let Err(err) = std::fs::write(data_dir.join("output.txt"), "") {
-            self.rollback_failed_session_creation(
-                &folder,
-                &repo_root,
-                &session_id,
-                &worktree_branch,
-                false,
-            )
-            .await;
-
-            return Err(format!("Failed to write session output: {err}"));
-        }
-
         if let Err(err) = self
             .db
             .insert_session(
@@ -292,13 +266,17 @@ impl App {
         let title = Self::summarize_title(&prompt);
         session.title = Some(title.clone());
         let _ = self.db.update_session_title(&session.id, &title).await;
-
-        let data_dir = session.folder.join(SESSION_DATA_DIR);
-        std::fs::write(data_dir.join("prompt.txt"), &prompt)
-            .map_err(|err| format!("Failed to write session prompt: {err}"))?;
+        let _ = self.db.update_session_prompt(&session.id, &prompt).await;
 
         let initial_output = format!(" › {prompt}\n\n");
-        session.append_output(&initial_output);
+        Self::append_session_output(
+            &session.output,
+            &session.folder,
+            &self.db,
+            &session.id,
+            &initial_output,
+        )
+        .await;
 
         let folder = session.folder.clone();
         let output = Arc::clone(&session.output);
@@ -467,7 +445,7 @@ impl App {
                 Err(error) => format!("\n[Commit Error] {error}\n"),
             };
 
-            Session::write_output(&output, &folder, &result_message);
+            Self::append_session_output(&output, &folder, &db, &id, &result_message).await;
 
             Self::update_status(&status, &db, &id, Status::Review).await;
         });
@@ -816,6 +794,16 @@ impl App {
             || (is_first_message && session.status() == Status::New);
         if !allowed {
             session.append_output("\n[Reply Error] Session must be in review status\n");
+            let db = self.db.clone();
+            let name = session.id.clone();
+            tokio::spawn(async move {
+                let _ = db
+                    .append_session_output(
+                        &name,
+                        "\n[Reply Error] Session must be in review status\n",
+                    )
+                    .await;
+            });
 
             return;
         }
@@ -823,17 +811,25 @@ impl App {
             session.prompt = prompt.to_string();
             let title = Self::summarize_title(prompt);
             session.title = Some(title.clone());
-            let data_dir = session.folder.join(SESSION_DATA_DIR);
-            let _ = std::fs::write(data_dir.join("prompt.txt"), prompt);
             let db = self.db.clone();
             let name = session.id.clone();
+            let prompt = prompt.to_string();
             tokio::spawn(async move {
                 let _ = db.update_session_title(&name, &title).await;
+                let _ = db.update_session_prompt(&name, &prompt).await;
             });
         }
 
         let reply_line = format!("\n › {prompt}\n\n");
         session.append_output(&reply_line);
+        {
+            let db = self.db.clone();
+            let name = session.id.clone();
+            let reply_line = reply_line;
+            tokio::spawn(async move {
+                let _ = db.append_session_output(&name, &reply_line).await;
+            });
+        }
 
         let folder = session.folder.clone();
         let output = Arc::clone(&session.output);
@@ -944,6 +940,24 @@ impl App {
         }
     }
 
+    pub(crate) async fn append_output_for_session(&self, session_id: &str, output: &str) {
+        let Some(session_index) = self.session_index_for_id(session_id) else {
+            return;
+        };
+        let Some(session) = self.session_state.sessions.get(session_index) else {
+            return;
+        };
+
+        Self::append_session_output(
+            &session.output,
+            &session.folder,
+            &self.db,
+            &session.id,
+            output,
+        )
+        .await;
+    }
+
     pub(super) async fn load_sessions(
         base: &Path,
         db: &Database,
@@ -972,14 +986,12 @@ impl App {
             .into_iter()
             .filter_map(|row| {
                 let folder = base.join(&row.id);
-                if !folder.is_dir() {
+                let status = row.status.parse::<Status>().unwrap_or(Status::Done);
+                let keep_without_folder = matches!(status, Status::Done | Status::Canceled);
+                if !folder.is_dir() && !keep_without_folder {
                     return None;
                 }
-                let data_dir = folder.join(SESSION_DATA_DIR);
-                let prompt = std::fs::read_to_string(data_dir.join("prompt.txt")).ok()?;
-                let output_text =
-                    std::fs::read_to_string(data_dir.join("output.txt")).unwrap_or_default();
-                let status = row.status.parse::<Status>().unwrap_or(Status::Done);
+
                 let session_agent = row.agent.parse::<AgentKind>().unwrap_or(AgentKind::Gemini);
                 let session_model = session_agent
                     .parse_model(&row.model)
@@ -995,18 +1007,20 @@ impl App {
                     existing_sessions_by_name.get(&row.id)
                 {
                     if let Ok(mut output_buffer) = existing_output.lock() {
-                        *output_buffer = output_text;
+                        output_buffer.clone_from(&row.output);
                     }
                     if let Ok(mut status_value) = existing_status.lock() {
                         *status_value = status;
                     }
+
                     (Arc::clone(existing_output), Arc::clone(existing_status))
                 } else {
                     (
-                        Arc::new(Mutex::new(output_text)),
+                        Arc::new(Mutex::new(row.output.clone())),
                         Arc::new(Mutex::new(status)),
                     )
                 };
+
                 Some(Session {
                     agent: row.agent,
                     folder,
@@ -1014,7 +1028,7 @@ impl App {
                     model: session_model,
                     output,
                     project_name,
-                    prompt,
+                    prompt: row.prompt,
                     status,
                     title: row.title,
                 })
@@ -1111,8 +1125,6 @@ mod tests {
         let folder = base_path.join(id);
         let data_dir = folder.join(SESSION_DATA_DIR);
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-        std::fs::write(data_dir.join("prompt.txt"), prompt).expect("failed to write prompt");
-        std::fs::write(data_dir.join("output.txt"), "").expect("failed to write output");
         app.session_state.sessions.push(Session {
             agent: "gemini".to_string(),
             folder,
@@ -1298,14 +1310,7 @@ mod tests {
         let session_dir = &app.session_state.sessions[0].folder;
         let data_dir = session_dir.join(SESSION_DATA_DIR);
         assert!(session_dir.exists());
-        assert!(data_dir.join("prompt.txt").exists());
-        assert!(data_dir.join("output.txt").exists());
-        let prompt_content =
-            std::fs::read_to_string(data_dir.join("prompt.txt")).expect("failed to read prompt");
-        assert!(prompt_content.is_empty());
-        let output_content =
-            std::fs::read_to_string(data_dir.join("output.txt")).expect("failed to read output");
-        assert!(output_content.is_empty());
+        assert!(data_dir.is_dir());
 
         // Check DB
         let db_sessions = app.db.load_sessions().await.expect("failed to load");
@@ -1342,12 +1347,9 @@ mod tests {
             .expect("failed to lock output")
             .clone();
         assert!(output.contains("Hello"));
-
-        // Check filesystem
-        let data_dir = app.session_state.sessions[0].folder.join(SESSION_DATA_DIR);
-        let prompt_content =
-            std::fs::read_to_string(data_dir.join("prompt.txt")).expect("failed to read prompt");
-        assert_eq!(prompt_content, "Hello");
+        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        assert_eq!(db_sessions[0].prompt, "Hello");
+        assert_eq!(db_sessions[0].output, " › Hello\n\n");
     }
 
     #[tokio::test]
@@ -1490,8 +1492,12 @@ mod tests {
         let data_dir = session_dir.join(SESSION_DATA_DIR);
         std::fs::create_dir(&session_dir).expect("failed to create session dir");
         std::fs::create_dir(&data_dir).expect("failed to create data dir");
-        std::fs::write(data_dir.join("prompt.txt"), "Existing").expect("failed to write prompt");
-        std::fs::write(data_dir.join("output.txt"), "Output").expect("failed to write output");
+        db.update_session_prompt("12345678", "Existing")
+            .await
+            .expect("failed to update prompt");
+        db.append_session_output("12345678", "Output")
+            .await
+            .expect("failed to update output");
 
         // Act
         let app = App::new(
@@ -1506,6 +1512,12 @@ mod tests {
         assert_eq!(app.session_state.sessions.len(), 1);
         assert_eq!(app.session_state.sessions[0].id, "12345678");
         assert_eq!(app.session_state.sessions[0].prompt, "Existing");
+        let output = app.session_state.sessions[0]
+            .output
+            .lock()
+            .expect("failed to lock output")
+            .clone();
+        assert_eq!(output, "Output");
         assert_eq!(app.session_state.sessions[0].agent, "claude");
         assert_eq!(app.session_state.table_state.selected(), Some(0));
     }
@@ -1571,9 +1583,6 @@ WHERE id = ?
             let session_dir = dir.path().join(session_name);
             let data_dir = session_dir.join(SESSION_DATA_DIR);
             std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-            std::fs::write(data_dir.join("prompt.txt"), session_name)
-                .expect("failed to write prompt");
-            std::fs::write(data_dir.join("output.txt"), "output").expect("failed to write output");
         }
 
         // Act
@@ -1650,9 +1659,6 @@ WHERE id = 'beta'
             let session_dir = dir.path().join(session_name);
             let data_dir = session_dir.join(SESSION_DATA_DIR);
             std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-            std::fs::write(data_dir.join("prompt.txt"), session_name)
-                .expect("failed to write prompt");
-            std::fs::write(data_dir.join("output.txt"), "output").expect("failed to write output");
         }
         let mut app = App::new(
             dir.path().to_path_buf(),
@@ -1737,9 +1743,6 @@ WHERE id = 'beta'
             let session_dir = dir.path().join(session_name);
             let data_dir = session_dir.join(SESSION_DATA_DIR);
             std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-            std::fs::write(data_dir.join("prompt.txt"), session_name)
-                .expect("failed to write prompt");
-            std::fs::write(data_dir.join("output.txt"), "output").expect("failed to write output");
         }
         let mut app = App::new(
             dir.path().to_path_buf(),
@@ -1784,8 +1787,8 @@ WHERE id = 'beta'
     }
 
     #[tokio::test]
-    async fn test_load_session_without_folder_skipped() {
-        // Arrange — DB has a row but no matching folder on disk
+    async fn test_load_done_session_without_folder_kept() {
+        // Arrange — DB has a terminal row but no matching folder on disk
         let dir = tempdir().expect("failed to create temp dir");
         let db = Database::open_in_memory()
             .await
@@ -1814,7 +1817,44 @@ WHERE id = 'beta'
         )
         .await;
 
-        // Assert — session is skipped because folder doesn't exist
+        // Assert — terminal session is kept even after folder cleanup
+        assert_eq!(app.session_state.sessions.len(), 1);
+        assert_eq!(app.session_state.sessions[0].id, "missing01");
+        assert_eq!(app.session_state.sessions[0].status(), Status::Done);
+    }
+
+    #[tokio::test]
+    async fn test_load_in_progress_session_without_folder_skipped() {
+        // Arrange — DB has a non-terminal row but no matching folder on disk
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/test", None)
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "missing02",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert");
+
+        // Act
+        let app = App::new(
+            dir.path().to_path_buf(),
+            PathBuf::from("/tmp/test"),
+            None,
+            db,
+        )
+        .await;
+
+        // Assert — non-terminal session is skipped because folder doesn't exist
         assert!(app.session_state.sessions.is_empty());
     }
 
@@ -2176,10 +2216,12 @@ WHERE id = 'beta'
         create_and_start_session(&mut app, "Local merge cleanup").await;
         wait_for_status(&app.session_state.sessions[0], Status::Review).await;
         let session_id = app.session_state.sessions[0].id.clone();
+        let session_folder = app.session_state.sessions[0].folder.clone();
+        std::fs::write(session_folder.join("session-change.txt"), "change")
+            .expect("failed to write worktree change");
         app.commit_session(&session_id)
             .await
             .expect("failed to commit session");
-        let session_folder = app.session_state.sessions[0].folder.clone();
         let session_name = app.session_state.sessions[0].id.clone();
         let branch_name = format!("agentty/{session_name}");
 

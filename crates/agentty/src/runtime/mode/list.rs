@@ -3,7 +3,7 @@ use std::io;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::{AppMode, InputState, PaletteFocus, PromptSlashState};
+use crate::model::{AppMode, InputState, PaletteFocus, PromptSlashState, Status};
 use crate::runtime::EventResult;
 
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
@@ -37,6 +37,8 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
         }
         KeyCode::Enter => {
             if let Some(session_index) = app.session_state.table_state.selected()
+                && let Some(session) = app.session_state.sessions.get(session_index)
+                && !matches!(session.status(), Status::Done | Status::Canceled)
                 && let Some(session_id) = app.session_id_for_index(session_index)
             {
                 app.mode = AppMode::View {
@@ -221,6 +223,58 @@ mod tests {
                 scroll_offset: None
             } if session_id == &expected_session_id
         ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_enter_key_does_not_open_done_session() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let _session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        if let Some(session) = app.session_state.sessions.first()
+            && let Ok(mut status) = session.status.lock()
+        {
+            *status = Status::Done;
+        }
+        app.session_state.table_state.select(Some(0));
+        app.mode = AppMode::List;
+
+        // Act
+        let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_handle_enter_key_does_not_open_canceled_session() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let _session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        if let Some(session) = app.session_state.sessions.first()
+            && let Ok(mut status) = session.status.lock()
+        {
+            *status = Status::Canceled;
+        }
+        app.session_state.table_state.select(Some(0));
+        app.mode = AppMode::List;
+
+        // Act
+        let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(app.mode, AppMode::List));
     }
 
     #[tokio::test]

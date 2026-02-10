@@ -11,3 +11,4 @@ SQLite migrations for the `agentty` crate.
 - [006_add_title_to_session.sql](006_add_title_to_session.sql) - Adds `title` to `session`.
 - [007_recreate_session_with_id_primary_key.sql](007_recreate_session_with_id_primary_key.sql) - Recreates `session` with text id primary key.
 - [008_add_model_to_session.sql](008_add_model_to_session.sql) - Adds model metadata to `session`.
+- [009_add_prompt_output_to_session.sql](009_add_prompt_output_to_session.sql) - Adds prompt/output persistence columns to `session`.

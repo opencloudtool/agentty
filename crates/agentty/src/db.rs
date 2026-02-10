@@ -55,7 +55,9 @@ pub struct SessionRow {
     pub created_at: i64,
     pub id: String,
     pub model: String,
+    pub output: String,
     pub project_id: Option<i64>,
+    pub prompt: String,
     pub status: String,
     pub title: Option<String>,
     pub updated_at: i64,
@@ -219,8 +221,8 @@ WHERE project_id IS NULL
     ) -> Result<(), String> {
         sqlx::query(
             r"
-INSERT INTO session (id, agent, model, base_branch, status, project_id)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO session (id, agent, model, base_branch, status, project_id, prompt, output)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ",
         )
         .bind(id)
@@ -229,6 +231,8 @@ VALUES (?, ?, ?, ?, ?, ?)
         .bind(base_branch)
         .bind(status)
         .bind(project_id)
+        .bind("")
+        .bind("")
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to insert session: {err}"))?;
@@ -243,7 +247,7 @@ VALUES (?, ?, ?, ?, ?, ?)
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
         let rows = sqlx::query(
             r"
-SELECT id, agent, model, base_branch, status, title, project_id, created_at, updated_at
+SELECT id, agent, model, base_branch, status, title, project_id, prompt, output, created_at, updated_at
 FROM session
 ORDER BY updated_at DESC, id
 ",
@@ -260,7 +264,9 @@ ORDER BY updated_at DESC, id
                 created_at: row.get("created_at"),
                 id: row.get("id"),
                 model: row.get("model"),
+                output: row.get("output"),
                 project_id: row.get("project_id"),
+                prompt: row.get("prompt"),
                 status: row.get("status"),
                 title: row.get("title"),
                 updated_at: row.get("updated_at"),
@@ -309,6 +315,48 @@ WHERE id = ?
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to update session status: {err}"))?;
+        Ok(())
+    }
+
+    /// Updates the saved prompt for a session row.
+    ///
+    /// # Errors
+    /// Returns an error if the prompt update fails.
+    pub async fn update_session_prompt(&self, id: &str, prompt: &str) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET prompt = ?
+WHERE id = ?
+",
+        )
+        .bind(prompt)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to update session prompt: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Appends text to the saved output for a session row.
+    ///
+    /// # Errors
+    /// Returns an error if the output append update fails.
+    pub async fn append_session_output(&self, id: &str, chunk: &str) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET output = output || ?
+WHERE id = ?
+",
+        )
+        .bind(chunk)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to append session output: {err}"))?;
+
         Ok(())
     }
 

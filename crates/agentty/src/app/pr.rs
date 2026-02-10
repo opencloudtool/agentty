@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::app::App;
 use crate::db::Database;
 use crate::git;
-use crate::model::{Session, Status};
+use crate::model::Status;
 
 const PR_MERGE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -95,7 +95,8 @@ impl App {
 
             match result {
                 Ok(Ok(message)) => {
-                    Session::write_output(&output, &folder, &format!("\n[PR] {message}\n"));
+                    let message = format!("\n[PR] {message}\n");
+                    Self::append_session_output(&output, &folder, &db, &name, &message).await;
                     if Self::update_status(&status, &db, &name, Status::PullRequest).await {
                         let repo_root = Self::resolve_repo_root_from_worktree(&folder);
                         Self::spawn_pr_poll_task(PrPollTaskInput {
@@ -109,24 +110,25 @@ impl App {
                             pr_poll_cancel,
                         });
                     } else {
-                        Session::write_output(
+                        Self::append_session_output(
                             &output,
                             &folder,
+                            &db,
+                            &name,
                             "\n[PR Error] Invalid status transition to PullRequest\n",
-                        );
+                        )
+                        .await;
                         let _ = Self::update_status(&status, &db, &name, Status::Review).await;
                     }
                 }
                 Ok(Err(error)) => {
-                    Session::write_output(&output, &folder, &format!("\n[PR Error] {error}\n"));
+                    let message = format!("\n[PR Error] {error}\n");
+                    Self::append_session_output(&output, &folder, &db, &name, &message).await;
                     let _ = Self::update_status(&status, &db, &name, Status::Review).await;
                 }
                 Err(error) => {
-                    Session::write_output(
-                        &output,
-                        &folder,
-                        &format!("\n[PR Error] Join error: {error}\n"),
-                    );
+                    let message = format!("\n[PR Error] Join error: {error}\n");
+                    Self::append_session_output(&output, &folder, &db, &name, &message).await;
                     let _ = Self::update_status(&status, &db, &name, Status::Review).await;
                 }
             }
@@ -238,17 +240,18 @@ impl App {
                 };
 
                 if merged == Some(true) {
-                    Session::write_output(
-                        &output,
-                        &folder,
-                        &format!("\n[PR] Pull request from `{source_branch}` was merged\n"),
-                    );
+                    let merged_message =
+                        format!("\n[PR] Pull request from `{source_branch}` was merged\n");
+                    Self::append_session_output(&output, &folder, &db, &id, &merged_message).await;
                     if !Self::update_status(&status, &db, &id, Status::Done).await {
-                        Session::write_output(
+                        Self::append_session_output(
                             &output,
                             &folder,
+                            &db,
+                            &id,
                             "\n[PR Error] Invalid status transition to Done\n",
-                        );
+                        )
+                        .await;
                     }
                     if let Err(error) = Self::cleanup_merged_session_worktree(
                         folder.clone(),
@@ -257,11 +260,9 @@ impl App {
                     )
                     .await
                     {
-                        Session::write_output(
-                            &output,
-                            &folder,
-                            &format!("\n[PR Error] Failed to remove merged worktree: {error}\n"),
-                        );
+                        let message =
+                            format!("\n[PR Error] Failed to remove merged worktree: {error}\n");
+                        Self::append_session_output(&output, &folder, &db, &id, &message).await;
                     }
 
                     break;
@@ -277,17 +278,18 @@ impl App {
                 };
 
                 if closed == Some(true) {
-                    Session::write_output(
-                        &output,
-                        &folder,
-                        &format!("\n[PR] Pull request from `{source_branch}` was closed\n"),
-                    );
+                    let closed_message =
+                        format!("\n[PR] Pull request from `{source_branch}` was closed\n");
+                    Self::append_session_output(&output, &folder, &db, &id, &closed_message).await;
                     if !Self::update_status(&status, &db, &id, Status::Canceled).await {
-                        Session::write_output(
+                        Self::append_session_output(
                             &output,
                             &folder,
+                            &db,
+                            &id,
                             "\n[PR Error] Invalid status transition to Canceled\n",
-                        );
+                        )
+                        .await;
                     }
 
                     break;
