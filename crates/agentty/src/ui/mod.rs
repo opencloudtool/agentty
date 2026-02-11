@@ -66,12 +66,30 @@ pub fn render(f: &mut Frame, context: RenderContext<'_>) {
 
     components::status_bar::StatusBar.render(f, status_bar_area);
 
-    components::footer_bar::FooterBar::new(
-        working_dir.to_string_lossy().to_string(),
-        git_branch.map(std::string::ToString::to_string),
-        git_status,
-    )
-    .render(f, footer_bar_area);
+    let session_id = match mode {
+        AppMode::View { session_id, .. }
+        | AppMode::Prompt { session_id, .. }
+        | AppMode::Diff { session_id, .. } => Some(session_id.as_str()),
+        _ => None,
+    };
+    let session_for_footer =
+        session_id.and_then(|sid| sessions.iter().find(|session| session.id == sid));
+
+    let (footer_dir, footer_branch, footer_status) = match session_for_footer {
+        Some(session) => (
+            session.folder.to_string_lossy().to_string(),
+            Some(format!("agentty/{}", session.id)),
+            None,
+        ),
+        None => (
+            working_dir.to_string_lossy().to_string(),
+            git_branch.map(std::string::ToString::to_string),
+            git_status,
+        ),
+    };
+
+    components::footer_bar::FooterBar::new(footer_dir, footer_branch, footer_status)
+        .render(f, footer_bar_area);
 
     match mode {
         AppMode::List => {
