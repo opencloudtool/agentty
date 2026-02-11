@@ -124,8 +124,14 @@ impl<'a> SessionChatPage<'a> {
 
     fn render_output_panel(&self, f: &mut Frame, output_area: Rect, session: &Session) {
         let status = session.status();
+        let commit_count = session.commit_count();
+        let commits_label = if commit_count == 1 {
+            "commit"
+        } else {
+            "commits"
+        };
         let title = format!(
-            " {} — {status} [{}:{}] ",
+            " {} — {status} - {commit_count} {commits_label} [{}:{}] ",
             session.display_title(),
             session.agent,
             session.model

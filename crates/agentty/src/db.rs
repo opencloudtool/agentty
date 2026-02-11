@@ -54,6 +54,7 @@ pub struct ProjectRow {
 pub struct SessionRow {
     pub agent: String,
     pub base_branch: String,
+    pub commit_count: i64,
     pub created_at: i64,
     pub id: String,
     pub input_tokens: Option<i64>,
@@ -252,7 +253,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         let rows = sqlx::query(
             r"
 SELECT id, agent, model, base_branch, status, title, project_id, prompt, output,
-       created_at, updated_at, input_tokens, output_tokens
+       commit_count, created_at, updated_at, input_tokens, output_tokens
 FROM session
 ORDER BY updated_at DESC, id
 ",
@@ -266,6 +267,7 @@ ORDER BY updated_at DESC, id
             .map(|row| SessionRow {
                 agent: row.get("agent"),
                 base_branch: row.get("base_branch"),
+                commit_count: row.get("commit_count"),
                 created_at: row.get("created_at"),
                 id: row.get("id"),
                 input_tokens: row.get("input_tokens"),
@@ -363,6 +365,26 @@ WHERE id = ?
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to append session output: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Increments the commit count for a session by one.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub async fn increment_commit_count(&self, id: &str) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET commit_count = commit_count + 1
+WHERE id = ?
+",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to increment commit count: {err}"))?;
 
         Ok(())
     }
@@ -928,6 +950,38 @@ WHERE id = 'beta'
             sessions[0].updated_at > initial_updated_at,
             "updated_at should be updated by trigger"
         );
+    }
+
+    #[tokio::test]
+    async fn test_increment_commit_count() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session(
+            "sess1",
+            "claude",
+            "claude-opus-4-6",
+            "main",
+            "Review",
+            project_id,
+        )
+        .await
+        .expect("failed to insert");
+
+        // Act
+        db.increment_commit_count("sess1")
+            .await
+            .expect("failed to increment");
+        db.increment_commit_count("sess1")
+            .await
+            .expect("failed to increment");
+
+        // Assert
+        let sessions = db.load_sessions().await.expect("failed to load");
+        assert_eq!(sessions[0].commit_count, 2);
     }
 
     #[tokio::test]

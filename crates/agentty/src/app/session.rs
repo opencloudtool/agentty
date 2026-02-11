@@ -33,7 +33,7 @@ BODY:
 Do not output anything before or after this block."
     )
 });
-type SessionHandles = (Arc<Mutex<String>>, Arc<Mutex<Status>>);
+type SessionHandles = (Arc<Mutex<String>>, Arc<Mutex<Status>>, Arc<Mutex<i64>>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CommitMessage {
@@ -430,6 +430,7 @@ impl App {
             .find(|session| session.id == session_id)
             .ok_or_else(|| "Session not found".to_string())?;
         let status = Arc::clone(&session.status);
+        let commit_count = Arc::clone(&session.commit_count);
         let id = session.id.clone();
 
         let db = self.db.clone();
@@ -441,7 +442,14 @@ impl App {
 
             let result_message = match Self::commit_session_with_context(db.clone(), context).await
             {
-                Ok(message) => format!("\n[Commit] {message}\n"),
+                Ok(message) => {
+                    if let Ok(mut count) = commit_count.lock() {
+                        *count += 1;
+                    }
+                    let _ = db.increment_commit_count(&id).await;
+
+                    format!("\n[Commit] {message}\n")
+                }
                 Err(error) => format!("\n[Commit Error] {error}\n"),
             };
 
@@ -976,7 +984,11 @@ impl App {
             .map(|session| {
                 (
                     session.id.clone(),
-                    (Arc::clone(&session.output), Arc::clone(&session.status)),
+                    (
+                        Arc::clone(&session.output),
+                        Arc::clone(&session.status),
+                        Arc::clone(&session.commit_count),
+                    ),
                 )
             })
             .collect();
@@ -1003,26 +1015,36 @@ impl App {
                     .and_then(|id| project_names.get(&id))
                     .cloned()
                     .unwrap_or_default();
-                let (output, status) = if let Some((existing_output, existing_status)) =
-                    existing_sessions_by_name.get(&row.id)
-                {
-                    if let Ok(mut output_buffer) = existing_output.lock() {
-                        output_buffer.clone_from(&row.output);
-                    }
-                    if let Ok(mut status_value) = existing_status.lock() {
-                        *status_value = status;
-                    }
+                let (output, status, commit_count) =
+                    if let Some((existing_output, existing_status, existing_commit_count)) =
+                        existing_sessions_by_name.get(&row.id)
+                    {
+                        if let Ok(mut output_buffer) = existing_output.lock() {
+                            output_buffer.clone_from(&row.output);
+                        }
+                        if let Ok(mut status_value) = existing_status.lock() {
+                            *status_value = status;
+                        }
+                        if let Ok(mut count) = existing_commit_count.lock() {
+                            *count = row.commit_count;
+                        }
 
-                    (Arc::clone(existing_output), Arc::clone(existing_status))
-                } else {
-                    (
-                        Arc::new(Mutex::new(row.output.clone())),
-                        Arc::new(Mutex::new(status)),
-                    )
-                };
+                        (
+                            Arc::clone(existing_output),
+                            Arc::clone(existing_status),
+                            Arc::clone(existing_commit_count),
+                        )
+                    } else {
+                        (
+                            Arc::new(Mutex::new(row.output.clone())),
+                            Arc::new(Mutex::new(status)),
+                            Arc::new(Mutex::new(row.commit_count)),
+                        )
+                    };
 
                 Some(Session {
                     agent: row.agent,
+                    commit_count,
                     folder,
                     id: row.id,
                     model: session_model,
@@ -1131,6 +1153,7 @@ mod tests {
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
         app.session_state.sessions.push(Session {
             agent: "gemini".to_string(),
+            commit_count: Arc::new(Mutex::new(0)),
             folder,
             id: id.to_string(),
             model: "gemini-3-flash-preview".to_string(),
