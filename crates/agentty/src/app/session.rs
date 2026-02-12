@@ -2607,14 +2607,14 @@ WHERE id = 'beta0000'
     #[test]
     fn test_session_folder_uses_first_8_chars() {
         // Arrange
-        let base = Path::new("/var/tmp/.agentty");
+        let base = Path::new("/home/user/.agentty/wt");
         let session_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 
         // Act
         let folder = session_folder(base, session_id);
 
         // Assert
-        assert_eq!(folder, PathBuf::from("/var/tmp/.agentty/a1b2c3d4"));
+        assert_eq!(folder, PathBuf::from("/home/user/.agentty/wt/a1b2c3d4"));
     }
 
     #[test]

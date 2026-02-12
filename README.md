@@ -49,7 +49,7 @@ Agent/model configuration is session-scoped.
 Agentty creates isolated worktrees for each session:
 
 - **Isolated Branches:** Each session gets its own branch named `agentty/<hash>` based on your current branch
-- **Separate Working Directory:** Sessions work in isolated directories under `/var/tmp/.agentty/`
+- **Separate Working Directory:** Sessions work in isolated directories under `~/.agentty/wt/`
 - **Diff View:** Press `d` in the chat view to see real-time changes made by the agent
 - **Automatic Cleanup:** Worktrees and branches are automatically removed when sessions are deleted
 

@@ -159,7 +159,7 @@ Agentty automatically creates isolated git worktrees for sessions when launched 
 - **Automatic Behavior:** When `agentty` is launched from a git repository, each new session automatically gets its own git worktree with a dedicated branch.
 - **Branch Naming:** Worktree branches follow the pattern `agentty/<hash>`, where `<hash>` is the first 8 characters of the session UUID (e.g., `agentty/a1b2c3d4`).
 - **Base Branch:** The worktree is based on the branch that was active when `agentty` was launched.
-- **Location:** Worktrees are created in the session folder (under `/var/tmp/.agentty/<hash>/`), separate from the main repository.
+- **Location:** Worktrees are created in the session folder (under `~/.agentty/wt/<hash>/`), separate from the main repository.
 - **Session Creation:** If worktree creation fails (e.g., git not installed, permission errors), session creation fails atomically and displays an error message.
 - **Cleanup:** When a session is deleted, its worktree is automatically removed using `git worktree remove --force` and the corresponding branch is deleted.
 - **Non-Git Directories:** Sessions in non-git directories work normally without worktrees.

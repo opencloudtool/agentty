@@ -15,7 +15,14 @@ pub(crate) mod session;
 mod task;
 mod title;
 
-pub const AGENTTY_WORKSPACE: &str = "/var/tmp/.agentty";
+pub const AGENTTY_WT_DIR: &str = "wt";
+
+/// Returns the agentty home directory (`~/.agentty`).
+pub fn agentty_home() -> PathBuf {
+    dirs::home_dir()
+        .expect("could not determine home directory")
+        .join(".agentty")
+}
 
 /// Holds all in-memory state related to session listing and refresh tracking.
 pub struct SessionState {
