@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.8] - 2026-02-13
+
+### Added
+- **Onboarding:** Added a full-screen onboarding page shown when no sessions exist.
+- **Tests:** Added onboarding behavior coverage for app state, list mode `Enter` handling, and UI rendering conditions.
+
+### Changed
+- **UX:** Pressing `Enter` from the onboarding view now creates a new session and opens prompt mode directly.
+- **Error Handling:** Session creation errors in list mode are now surfaced instead of being silently ignored.
+- **UI:** Kept the footer visible during onboarding and simplified session list rendering to consistently use the table layout.
+
 ## [v0.1.7] - 2026-02-12
 
 ### Added
