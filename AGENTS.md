@@ -208,6 +208,7 @@ git worktree prune
 - [.pre-commit-config.yaml](.pre-commit-config.yaml) - Pre-commit hooks configuration.
 - [.rustfmt.toml](.rustfmt.toml) - Rustfmt configuration.
 - [crates/](crates/) - Workspace member crates.
+- [docs/](docs/) - Documentation and assets.
 - [AGENTS.md](AGENTS.md) - Context and instructions for AI agents.
 - [Cargo.lock](Cargo.lock) - Exact version pins for dependencies.
 - [Cargo.toml](Cargo.toml) - Workspace root configuration and dependency definitions.
