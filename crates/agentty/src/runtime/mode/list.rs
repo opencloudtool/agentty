@@ -6,6 +6,7 @@ use crate::app::App;
 use crate::model::{AppMode, InputState, PaletteFocus, PromptSlashState, Status};
 use crate::runtime::EventResult;
 
+/// Handles key input while the app is in list mode.
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
     match key.code {
         KeyCode::Char('q') => return Ok(EventResult::Quit),
@@ -20,14 +21,14 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
             };
         }
         KeyCode::Char('a') => {
-            if let Ok(session_id) = app.create_session().await {
-                app.mode = AppMode::Prompt {
-                    slash_state: PromptSlashState::new(),
-                    session_id,
-                    input: InputState::new(),
-                    scroll_offset: None,
-                };
-            }
+            let session_id = app.create_session().await.map_err(io::Error::other)?;
+
+            app.mode = AppMode::Prompt {
+                slash_state: PromptSlashState::new(),
+                session_id,
+                input: InputState::new(),
+                scroll_offset: None,
+            };
         }
         KeyCode::Char('j') | KeyCode::Down => {
             app.next();
@@ -36,6 +37,19 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
             app.previous();
         }
         KeyCode::Enter => {
+            if app.should_show_onboarding() {
+                let session_id = app.create_session().await.map_err(io::Error::other)?;
+
+                app.mode = AppMode::Prompt {
+                    slash_state: PromptSlashState::new(),
+                    session_id,
+                    input: InputState::new(),
+                    scroll_offset: None,
+                };
+
+                return Ok(EventResult::Continue);
+            }
+
             if let Some(session_index) = app.session_state.table_state.selected()
                 && let Some(session) = app.session_state.sessions.get(session_index)
                 && !matches!(session.status(), Status::Done | Status::Canceled)
@@ -275,6 +289,30 @@ mod tests {
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_handle_enter_key_starts_session_from_onboarding() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        app.mode = AppMode::List;
+
+        // Act
+        let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert_eq!(app.session_state.sessions.len(), 1);
+        assert!(matches!(
+            app.mode,
+            AppMode::Prompt {
+                ref session_id,
+                scroll_offset: None,
+                ..
+            } if !session_id.is_empty()
+        ));
     }
 
     #[tokio::test]

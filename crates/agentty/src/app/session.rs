@@ -845,7 +845,6 @@ impl App {
         {
             let db = self.db.clone();
             let id = session.id.clone();
-            let reply_line = reply_line;
             tokio::spawn(async move {
                 let _ = db.append_session_output(&id, &reply_line).await;
             });

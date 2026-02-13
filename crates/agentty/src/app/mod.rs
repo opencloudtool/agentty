@@ -18,6 +18,10 @@ mod title;
 pub const AGENTTY_WT_DIR: &str = "wt";
 
 /// Returns the agentty home directory (`~/.agentty`).
+///
+/// # Panics
+///
+/// Panics if the home directory cannot be determined.
 pub fn agentty_home() -> PathBuf {
     dirs::home_dir()
         .expect("could not determine home directory")
@@ -157,7 +161,68 @@ impl App {
         &self.health_checks
     }
 
+    /// Returns whether the onboarding screen should be shown.
+    pub fn should_show_onboarding(&self) -> bool {
+        self.session_state.sessions.is_empty()
+    }
+
     pub fn start_health_checks(&mut self) {
         self.health_checks = health::run_health_checks(self.git_branch.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_should_show_onboarding_when_database_is_empty() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let base_path = temp_dir.path().join("wt");
+        let working_dir = temp_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+
+        // Act
+        let app = App::new(base_path, working_dir, None, database).await;
+
+        // Assert
+        assert!(app.should_show_onboarding());
+    }
+
+    #[tokio::test]
+    async fn test_should_show_onboarding_when_database_has_sessions() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let base_path = temp_dir.path().join("wt");
+        let working_dir = temp_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project(&working_dir.to_string_lossy(), None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session(
+                "seed0000",
+                "gemini",
+                "gemini-2.5-flash",
+                "main",
+                "Done",
+                project_id,
+            )
+            .await
+            .expect("failed to insert session");
+
+        // Act
+        let app = App::new(base_path, working_dir, None, database).await;
+
+        // Assert
+        assert!(!app.should_show_onboarding());
     }
 }

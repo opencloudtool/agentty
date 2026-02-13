@@ -82,6 +82,7 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
                 health_checks: &health_checks,
                 mode: &app.mode,
                 projects: &app.projects,
+                show_onboarding: app.should_show_onboarding(),
                 sessions: &app.session_state.sessions,
                 table_state: &mut app.session_state.table_state,
                 working_dir: &current_working_dir,
