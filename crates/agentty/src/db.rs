@@ -369,6 +369,25 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Replaces the full session output at once (used after ACP streaming
+    /// completes).
+    pub async fn replace_session_output(&self, id: &str, output: &str) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET output = ?, updated_at = unixepoch()
+WHERE id = ?
+",
+        )
+        .bind(output)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to replace session output: {err}"))?;
+
+        Ok(())
+    }
+
     /// Increments the commit count for a session by one.
     ///
     /// # Errors
@@ -1249,6 +1268,38 @@ WHERE id = 'beta'
         let sessions = db.load_sessions().await.expect("failed to load");
         assert_eq!(sessions[0].input_tokens, Some(1000));
         assert_eq!(sessions[0].output_tokens, Some(500));
+    }
+
+    #[tokio::test]
+    async fn test_replace_session_output() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session(
+            "sess1",
+            "claude",
+            "claude-opus-4-6",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert");
+        db.append_session_output("sess1", "initial output")
+            .await
+            .expect("failed to append");
+
+        // Act
+        db.replace_session_output("sess1", "replaced output")
+            .await
+            .expect("failed to replace");
+
+        // Assert
+        let sessions = db.load_sessions().await.expect("failed to load");
+        assert_eq!(sessions[0].output, "replaced output");
     }
 
     #[tokio::test]

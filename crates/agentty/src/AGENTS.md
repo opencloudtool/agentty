@@ -20,7 +20,8 @@
 - [app/](app/) - Application state and workflows split by concern (`session`, `project`, `pr`, `task`, `title`).
 - [runtime/](runtime/) - Runtime event loop, terminal integration, and mode key handling.
 - [ui/](ui/) - User Interface module.
-- [agent.rs](agent.rs) - `AgentBackend` trait and concrete backends (`GeminiBackend`, `ClaudeBackend`).
+- [acp.rs](acp.rs) - ACP (Agent Client Protocol) connection management and streaming.
+- [agent.rs](agent.rs) - `AgentKind` enum, model definitions, and ACP command helpers.
 - [db.rs](db.rs) - `Database` struct wrapping SQLx for session metadata persistence.
 - [gh.rs](gh.rs) - GitHub CLI integration and PR response parsing.
 - [git.rs](git.rs) - Git integration and worktree management.

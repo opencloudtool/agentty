@@ -7,7 +7,7 @@ use crossterm::event::Event;
 use mockall::{Sequence, automock, predicate::eq};
 use tokio::sync::mpsc;
 
-use crate::app::App;
+use crate::app::{AgentEvent, App};
 use crate::runtime::{EventResult, TuiTerminal, key_handler};
 
 /// Reads terminal events from an underlying event backend.
@@ -63,10 +63,12 @@ pub(crate) async fn process_events(
     app: &mut App,
     terminal: &mut TuiTerminal,
     event_rx: &mut mpsc::UnboundedReceiver<Event>,
+    agent_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     tick: &mut tokio::time::Interval,
 ) -> io::Result<EventResult> {
     enum LoopSignal {
         Event(Option<Event>),
+        Agent(Option<AgentEvent>),
         Tick,
     }
 
@@ -76,21 +78,31 @@ pub(crate) async fn process_events(
     let signal = tokio::select! {
         biased;
         event = event_rx.recv() => LoopSignal::Event(event),
+        agent = agent_rx.recv() => LoopSignal::Agent(agent),
         _ = tick.tick() => LoopSignal::Tick,
     };
-    let maybe_event = match signal {
-        LoopSignal::Event(event) => event,
+    match signal {
+        LoopSignal::Event(event) => {
+            if matches!(
+                process_event(app, terminal, event).await?,
+                EventResult::Quit
+            ) {
+                return Ok(EventResult::Quit);
+            }
+        }
+        LoopSignal::Agent(event) => {
+            if let Some(event) = event {
+                handle_agent_event(app, event).await;
+            }
+        }
         LoopSignal::Tick => {
             app.refresh_sessions_if_needed().await;
-            None
         }
-    };
+    }
 
-    if matches!(
-        process_event(app, terminal, maybe_event).await?,
-        EventResult::Quit
-    ) {
-        return Ok(EventResult::Quit);
+    // Drain remaining queued agent events
+    while let Ok(event) = agent_rx.try_recv() {
+        handle_agent_event(app, event).await;
     }
 
     // Drain remaining queued events before re-rendering so rapid key
@@ -105,6 +117,25 @@ pub(crate) async fn process_events(
     }
 
     Ok(EventResult::Continue)
+}
+
+async fn handle_agent_event(app: &App, event: AgentEvent) {
+    match event {
+        AgentEvent::Output { session_id, text } => {
+            app.append_output_for_session(&session_id, &text).await;
+        }
+        AgentEvent::Finished {
+            session_id,
+            input_tokens,
+            output_tokens,
+        } => {
+            app.finish_session_turn(&session_id, input_tokens, output_tokens)
+                .await;
+        }
+        AgentEvent::Error { session_id, error } => {
+            app.fail_session_turn(&session_id, &error).await;
+        }
+    }
 }
 
 async fn process_event(

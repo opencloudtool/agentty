@@ -1,12 +1,11 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tokio::io::{AsyncBufReadExt as _, AsyncRead};
+use tokio::sync::mpsc;
 
-use crate::agent::AgentKind;
-use crate::app::App;
+use crate::acp::AcpSessionHandle;
+use crate::app::{AgentEvent, App};
 use crate::db::Database;
 use crate::git;
 use crate::model::{Session, Status};
@@ -48,62 +47,42 @@ impl App {
         });
     }
 
-    pub(super) fn spawn_session_task(
-        folder: PathBuf,
-        cmd: Command,
-        output: Arc<Mutex<String>>,
-        status: Arc<Mutex<Status>>,
-        db: Database,
+    /// Sends a prompt to an active ACP session handle and persists the result.
+    ///
+    /// Streaming output is written to the shared `output` buffer by the
+    /// `AgenttyClient::session_notification` callback. When the prompt
+    /// completes, the final output snapshot is persisted to the database.
+    pub(super) fn spawn_acp_prompt_task(
+        handle: Arc<AcpSessionHandle>,
+        prompt: String,
+        agent_tx: mpsc::UnboundedSender<AgentEvent>,
         id: String,
-        agent: AgentKind,
     ) {
-        let mut tokio_cmd = tokio::process::Command::from(cmd);
-        // Prevent the child process from inheriting the TUI's terminal on
-        // stdin.  On macOS the child can otherwise disturb crossterm's raw-mode
-        // settings, causing the event reader to stall and the UI to freeze.
-        tokio_cmd.stdin(std::process::Stdio::null());
         tokio::spawn(async move {
-            match tokio_cmd.spawn() {
-                Ok(mut child) => {
-                    let stdout = child.stdout.take();
-                    let stderr = child.stderr.take();
+            match handle.prompt(&prompt).await {
+                Ok(response) => {
+                    let (input_tokens, output_tokens) = if let Some(usage) = response.usage {
+                        (
+                            Some(i64::try_from(usage.input_tokens).unwrap_or(0)),
+                            Some(i64::try_from(usage.output_tokens).unwrap_or(0)),
+                        )
+                    } else {
+                        (None, None)
+                    };
 
-                    let raw_stdout = Arc::new(Mutex::new(String::new()));
-                    let raw_stderr = Arc::new(Mutex::new(String::new()));
-                    let mut handles = Vec::new();
-
-                    if let Some(stdout) = stdout {
-                        let buffer = Arc::clone(&raw_stdout);
-                        handles.push(tokio::spawn(async move {
-                            Self::capture_raw_output(stdout, &buffer).await;
-                        }));
-                    }
-                    if let Some(stderr) = stderr {
-                        let buffer = Arc::clone(&raw_stderr);
-                        handles.push(tokio::spawn(async move {
-                            Self::capture_raw_output(stderr, &buffer).await;
-                        }));
-                    }
-
-                    for handle in handles {
-                        let _ = handle.await;
-                    }
-                    let _ = child.wait().await;
-
-                    let stdout_text = raw_stdout.lock().map(|buf| buf.clone()).unwrap_or_default();
-                    let stderr_text = raw_stderr.lock().map(|buf| buf.clone()).unwrap_or_default();
-                    let parsed = agent.parse_response(&stdout_text, &stderr_text);
-                    Self::append_session_output(&output, &folder, &db, &id, &parsed.content).await;
-
-                    let _ = db.update_session_stats(&id, &parsed.stats).await;
+                    let _ = agent_tx.send(AgentEvent::Finished {
+                        session_id: id,
+                        input_tokens,
+                        output_tokens,
+                    });
                 }
-                Err(e) => {
-                    let message = format!("Failed to spawn process: {e}\n");
-                    Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                Err(error) => {
+                    let _ = agent_tx.send(AgentEvent::Error {
+                        session_id: id,
+                        error,
+                    });
                 }
             }
-
-            Self::update_status(&status, &db, &id, Status::Review).await;
         });
     }
 
@@ -129,20 +108,6 @@ impl App {
         let _ = db.update_session_status(id, &new.to_string()).await;
 
         true
-    }
-
-    /// Captures raw output from a stream into an in-memory buffer.
-    pub(super) async fn capture_raw_output<R: AsyncRead + Unpin>(
-        source: R,
-        buffer: &Arc<Mutex<String>>,
-    ) {
-        let mut reader = tokio::io::BufReader::new(source).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if let Ok(mut buf) = buffer.lock() {
-                buf.push_str(&line);
-                buf.push('\n');
-            }
-        }
     }
 
     pub(super) async fn append_session_output(

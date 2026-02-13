@@ -66,7 +66,7 @@ struct AgentCliCheck {
 
 impl AgentCliCheck {
     async fn check_agent_cli_tool(agent_kind: AgentKind) -> (HealthStatus, String) {
-        let command = agent_kind.to_string();
+        let command = agent_kind.acp_command().to_string();
 
         match tokio::process::Command::new(&command)
             .arg("--version")
@@ -99,7 +99,7 @@ impl AgentCliCheck {
         let normalized_version = match agent_kind {
             AgentKind::Claude => trimmed_version.trim_end_matches(" (Claude Code)"),
             AgentKind::Codex => trimmed_version
-                .strip_prefix("codex-cli ")
+                .strip_prefix("codex-acp ")
                 .unwrap_or(trimmed_version),
             AgentKind::Gemini => trimmed_version,
         };
@@ -271,15 +271,15 @@ fn health_checks() -> Vec<Box<dyn HealthCheck>> {
         Box::new(GitHubAuthCheck),
         Box::new(AgentCliCheck {
             agent_kind: AgentKind::Claude,
-            label: "Claude Code",
+            label: "Claude ACP",
         }),
         Box::new(AgentCliCheck {
             agent_kind: AgentKind::Gemini,
-            label: "Gemini CLI",
+            label: "Gemini ACP",
         }),
         Box::new(AgentCliCheck {
             agent_kind: AgentKind::Codex,
-            label: "Codex CLI",
+            label: "Codex ACP",
         }),
     ]
 }
@@ -325,9 +325,9 @@ mod tests {
                 "Git Repository",
                 "GitHub CLI",
                 "Auth Status",
-                "Claude Code",
-                "Gemini CLI",
-                "Codex CLI"
+                "Claude ACP",
+                "Gemini ACP",
+                "Codex ACP"
             ]
         );
     }
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn test_normalize_agent_cli_version_for_codex() {
         // Arrange
-        let raw_version = "codex-cli 0.1.0";
+        let raw_version = "codex-acp 0.1.0";
 
         // Act
         let version = AgentCliCheck::normalize_agent_cli_version(AgentKind::Codex, raw_version);

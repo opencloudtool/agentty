@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use ratatui::widgets::TableState;
+use tokio::sync::mpsc;
 
 use crate::db::Database;
 use crate::health::{self, HealthEntry};
@@ -16,6 +17,23 @@ mod task;
 mod title;
 
 pub const AGENTTY_WT_DIR: &str = "wt";
+
+#[derive(Debug)]
+pub enum AgentEvent {
+    Output {
+        session_id: String,
+        text: String,
+    },
+    Error {
+        session_id: String,
+        error: String,
+    },
+    Finished {
+        session_id: String,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+    },
+}
 
 /// Returns the agentty home directory (`~/.agentty`).
 ///
@@ -57,6 +75,8 @@ impl SessionState {
 
 /// Stores application state and coordinates session/project workflows.
 pub struct App {
+    pub agent_tx: mpsc::UnboundedSender<AgentEvent>,
+    pub agent_rx: Option<mpsc::UnboundedReceiver<AgentEvent>>,
     pub current_tab: Tab,
     pub mode: AppMode,
     pub projects: Vec<Project>,
@@ -80,6 +100,7 @@ impl App {
         git_branch: Option<String>,
         db: Database,
     ) -> Self {
+        let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let active_project_id = db
             .upsert_project(&working_dir.to_string_lossy(), git_branch.as_deref())
             .await
@@ -115,6 +136,8 @@ impl App {
         }
 
         let app = Self {
+            agent_tx,
+            agent_rx: Some(agent_rx),
             current_tab: Tab::Sessions,
             mode: AppMode::List,
             session_state: SessionState::new(

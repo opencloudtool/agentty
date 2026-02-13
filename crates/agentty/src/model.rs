@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use ratatui::style::Color;
 
+use crate::acp::AcpSessionHandle;
 use crate::agent::AgentKind;
 use crate::icon::Icon;
 
@@ -361,6 +362,7 @@ pub struct SessionStats {
 }
 
 pub struct Session {
+    pub acp_handle: Option<Arc<AcpSessionHandle>>,
     pub agent: String,
     pub commit_count: Arc<Mutex<i64>>,
     pub folder: PathBuf,
@@ -484,6 +486,7 @@ mod tests {
     fn test_display_title() {
         // Arrange
         let session = Session {
+            acp_handle: None,
             agent: "gemini".to_string(),
             commit_count: Arc::new(Mutex::new(0)),
             folder: PathBuf::new(),
@@ -505,6 +508,7 @@ mod tests {
     fn test_display_title_none() {
         // Arrange
         let session = Session {
+            acp_handle: None,
             agent: "gemini".to_string(),
             commit_count: Arc::new(Mutex::new(0)),
             folder: PathBuf::new(),
@@ -526,6 +530,7 @@ mod tests {
     fn test_session_status() {
         // Arrange
         let session = Session {
+            acp_handle: None,
             agent: "gemini".to_string(),
             commit_count: Arc::new(Mutex::new(0)),
             folder: PathBuf::new(),
@@ -564,6 +569,7 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let session = Session {
+            acp_handle: None,
             agent: "gemini".to_string(),
             commit_count: Arc::new(Mutex::new(0)),
             folder: dir.path().to_path_buf(),

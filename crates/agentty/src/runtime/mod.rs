@@ -36,7 +36,8 @@ pub async fn run(app: &mut App) -> io::Result<()> {
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    run_main_loop(app, &mut terminal, &mut event_rx, &mut tick).await?;
+    let mut agent_rx = app.agent_rx.take().expect("Agent event receiver missing");
+    run_main_loop(app, &mut terminal, &mut event_rx, &mut agent_rx, &mut tick).await?;
 
     terminal.show_cursor()?;
 
@@ -47,13 +48,14 @@ async fn run_main_loop(
     app: &mut App,
     terminal: &mut TuiTerminal,
     event_rx: &mut mpsc::UnboundedReceiver<crossterm::event::Event>,
+    agent_rx: &mut mpsc::UnboundedReceiver<crate::app::AgentEvent>,
     tick: &mut tokio::time::Interval,
 ) -> io::Result<()> {
     loop {
         render_frame(app, terminal)?;
 
         if matches!(
-            event::process_events(app, terminal, event_rx, tick).await?,
+            event::process_events(app, terminal, event_rx, agent_rx, tick).await?,
             EventResult::Quit
         ) {
             break;

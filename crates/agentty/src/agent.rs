@@ -1,141 +1,5 @@
 use std::fmt;
-use std::path::Path;
-use std::process::{Command, Stdio};
 use std::str::FromStr;
-
-#[cfg(test)]
-use mockall::automock;
-use serde::Deserialize;
-
-use crate::model::SessionStats;
-
-/// Parsed agent response including content text and usage statistics.
-pub struct ParsedResponse {
-    pub content: String,
-    pub stats: SessionStats,
-}
-
-#[cfg_attr(test, automock)]
-pub trait AgentBackend: Send + Sync {
-    /// One-time setup in agent folder before first run (e.g. config files).
-    fn setup(&self, folder: &Path);
-    /// Build a Command for an initial task.
-    fn build_start_command(&self, folder: &Path, prompt: &str, model: &str) -> Command;
-    /// Build a Command for resuming/replying.
-    fn build_resume_command(&self, folder: &Path, prompt: &str, model: &str) -> Command;
-}
-
-pub struct GeminiBackend;
-
-impl AgentBackend for GeminiBackend {
-    fn setup(&self, _folder: &Path) {
-        // Gemini CLI needs no config files
-    }
-
-    fn build_resume_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
-        let mut cmd = self.build_start_command(folder, prompt, model);
-        cmd.arg("--resume").arg("latest");
-        cmd
-    }
-
-    fn build_start_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
-        let mut cmd = Command::new("gemini");
-        cmd.arg("--prompt")
-            .arg(prompt)
-            .arg("--model")
-            .arg(model)
-            .arg("--approval-mode")
-            .arg("auto_edit")
-            .arg("--output-format")
-            .arg("json")
-            .current_dir(folder)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    }
-}
-
-pub struct ClaudeBackend;
-
-impl AgentBackend for ClaudeBackend {
-    fn setup(&self, _folder: &Path) {
-        // Claude Code needs no config files
-    }
-
-    fn build_start_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
-        let mut cmd = Command::new("claude");
-        cmd.arg("-p")
-            .arg(prompt)
-            .arg("--allowedTools")
-            .arg("Edit")
-            .arg("--output-format")
-            .arg("json")
-            .env("ANTHROPIC_MODEL", model)
-            .current_dir(folder)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    }
-
-    fn build_resume_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
-        let mut cmd = Command::new("claude");
-        cmd.arg("-c")
-            .arg("-p")
-            .arg(prompt)
-            .arg("--allowedTools")
-            .arg("Edit")
-            .arg("--output-format")
-            .arg("json")
-            .env("ANTHROPIC_MODEL", model)
-            .current_dir(folder)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    }
-}
-
-/// Uses non-interactive Codex commands so Agentty can capture piped output.
-///
-/// Interactive `codex` requires a TTY and fails in this app with
-/// `Error: stdout is not a terminal`, so we run `codex exec --full-auto`
-/// and `codex exec resume --last --full-auto` instead.
-pub struct CodexBackend;
-
-impl AgentBackend for CodexBackend {
-    fn setup(&self, _folder: &Path) {
-        // Codex CLI needs no config files
-    }
-
-    fn build_start_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
-        let mut cmd = Command::new("codex");
-        cmd.arg("exec")
-            .arg("--model")
-            .arg(model)
-            .arg("--full-auto")
-            .arg("--json")
-            .arg(prompt)
-            .current_dir(folder)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    }
-
-    fn build_resume_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
-        let mut cmd = Command::new("codex");
-        cmd.arg("exec")
-            .arg("resume")
-            .arg("--last")
-            .arg("--model")
-            .arg(model)
-            .arg("--full-auto")
-            .arg("--json")
-            .arg(prompt)
-            .current_dir(folder)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKind {
@@ -270,72 +134,6 @@ impl AgentModel {
     }
 }
 
-/// Claude CLI JSON response shape (`--output-format json`).
-#[derive(Deserialize)]
-struct ClaudeResponse {
-    result: Option<String>,
-    usage: Option<ClaudeUsage>,
-}
-
-/// Token usage from a Claude CLI response.
-#[derive(Deserialize)]
-struct ClaudeUsage {
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-}
-
-/// Gemini CLI JSON response shape (`--output-format json`).
-#[derive(Deserialize)]
-struct GeminiResponse {
-    response: Option<String>,
-    stats: Option<GeminiStats>,
-}
-
-/// Top-level `stats` object from the Gemini CLI JSON output.
-#[derive(Deserialize)]
-struct GeminiStats {
-    models: Option<std::collections::HashMap<String, GeminiModelStats>>,
-}
-
-/// Per-model statistics from Gemini CLI.
-#[derive(Deserialize)]
-struct GeminiModelStats {
-    tokens: Option<GeminiTokens>,
-}
-
-/// Token counts from a single Gemini model.
-#[derive(Deserialize)]
-struct GeminiTokens {
-    /// Uncached prompt tokens (`max(0, prompt - cached)`).
-    input: Option<i64>,
-    /// Output/completion tokens generated by the model.
-    candidates: Option<i64>,
-}
-
-/// Single NDJSON event emitted by Codex CLI (`--json`).
-#[derive(Deserialize)]
-struct CodexEvent {
-    #[serde(rename = "type")]
-    event_type: Option<String>,
-    item: Option<CodexItem>,
-    usage: Option<CodexUsage>,
-}
-
-/// Token usage from a Codex `turn.completed` event.
-#[derive(Deserialize)]
-struct CodexUsage {
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-}
-
-/// Nested `item` inside a Codex event.
-#[derive(Deserialize)]
-struct CodexItem {
-    #[serde(rename = "type")]
-    item_type: Option<String>,
-    text: Option<String>,
-}
-
 impl AgentKind {
     /// All available agent kinds, in display order.
     pub const ALL: &[AgentKind] = &[AgentKind::Gemini, AgentKind::Claude, AgentKind::Codex];
@@ -348,12 +146,29 @@ impl AgentKind {
             .unwrap_or(Self::Gemini)
     }
 
-    /// Create the corresponding backend.
-    pub fn create_backend(&self) -> Box<dyn AgentBackend> {
+    /// Returns the ACP binary name for this agent.
+    pub fn acp_command(self) -> &'static str {
         match self {
-            Self::Gemini => Box::new(GeminiBackend),
-            Self::Claude => Box::new(ClaudeBackend),
-            Self::Codex => Box::new(CodexBackend),
+            Self::Claude => "claude-code-acp",
+            Self::Gemini => "gemini",
+            Self::Codex => "codex-acp",
+        }
+    }
+
+    /// Returns an install hint for the ACP binary of this agent.
+    pub fn install_hint(self) -> &'static str {
+        match self {
+            Self::Claude => "npm install -g @anthropic-ai/claude-code-acp",
+            Self::Gemini => "Install the Gemini CLI: https://github.com/google-gemini/gemini-cli",
+            Self::Codex => "Install codex-acp from https://github.com/cola-io/codex-acp",
+        }
+    }
+
+    /// Returns the ACP launch arguments for this agent.
+    pub fn acp_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Claude | Self::Codex => &[],
+            Self::Gemini => &["--experimental-acp"],
         }
     }
 
@@ -398,129 +213,6 @@ impl AgentKind {
         }
     }
 
-    /// Extracts the response message and usage statistics from raw agent JSON
-    /// output.
-    ///
-    /// Each agent CLI produces a different JSON schema. This method
-    /// dispatches to the appropriate parser and falls back to raw text
-    /// when JSON parsing fails.
-    pub fn parse_response(self, stdout: &str, stderr: &str) -> ParsedResponse {
-        match self {
-            Self::Claude => Self::parse_claude_response(stdout),
-            Self::Gemini => Self::parse_gemini_response(stdout),
-            Self::Codex => Self::parse_codex_response(stdout),
-        }
-        .unwrap_or_else(|| ParsedResponse {
-            content: Self::fallback_response(stdout, stderr),
-            stats: SessionStats::default(),
-        })
-    }
-
-    fn parse_claude_response(stdout: &str) -> Option<ParsedResponse> {
-        let response = serde_json::from_str::<ClaudeResponse>(stdout.trim()).ok()?;
-        let content = response.result?;
-        let stats = SessionStats {
-            input_tokens: response.usage.as_ref().and_then(|usage| usage.input_tokens),
-            output_tokens: response
-                .usage
-                .as_ref()
-                .and_then(|usage| usage.output_tokens),
-        };
-
-        Some(ParsedResponse { content, stats })
-    }
-
-    fn parse_gemini_response(stdout: &str) -> Option<ParsedResponse> {
-        let response = serde_json::from_str::<GeminiResponse>(stdout.trim()).ok()?;
-        let content = response.response?;
-        let stats = Self::extract_gemini_stats(response.stats);
-
-        Some(ParsedResponse { content, stats })
-    }
-
-    fn extract_gemini_stats(stats: Option<GeminiStats>) -> SessionStats {
-        let Some(models) = stats.and_then(|stat| stat.models) else {
-            return SessionStats::default();
-        };
-
-        let mut total_input: i64 = 0;
-        let mut total_output: i64 = 0;
-
-        for model_stats in models.values() {
-            if let Some(tokens) = &model_stats.tokens {
-                total_input += tokens.input.unwrap_or(0);
-                total_output += tokens.candidates.unwrap_or(0);
-            }
-        }
-
-        if total_input == 0 && total_output == 0 {
-            return SessionStats::default();
-        }
-
-        SessionStats {
-            input_tokens: Some(total_input),
-            output_tokens: Some(total_output),
-        }
-    }
-
-    fn parse_codex_response(stdout: &str) -> Option<ParsedResponse> {
-        let mut last_message: Option<String> = None;
-        let mut total_input_tokens: i64 = 0;
-        let mut total_output_tokens: i64 = 0;
-        let mut has_usage = false;
-
-        for line in stdout.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(event) = serde_json::from_str::<CodexEvent>(trimmed) else {
-                continue;
-            };
-
-            if event.event_type.as_deref() == Some("turn.completed")
-                && let Some(usage) = event.usage
-            {
-                total_input_tokens += usage.input_tokens.unwrap_or(0);
-                total_output_tokens += usage.output_tokens.unwrap_or(0);
-                has_usage = true;
-            }
-
-            if event.event_type.as_deref() != Some("item.completed") {
-                continue;
-            }
-            let Some(item) = event.item else {
-                continue;
-            };
-            if item.item_type.as_deref() != Some("agent_message") {
-                continue;
-            }
-            if let Some(text) = item.text {
-                last_message = Some(text);
-            }
-        }
-
-        let stats = if has_usage {
-            SessionStats {
-                input_tokens: Some(total_input_tokens),
-                output_tokens: Some(total_output_tokens),
-            }
-        } else {
-            SessionStats::default()
-        };
-
-        last_message.map(|content| ParsedResponse { content, stats })
-    }
-
-    fn fallback_response(stdout: &str, stderr: &str) -> String {
-        let trimmed = stdout.trim();
-        if trimmed.is_empty() {
-            return stderr.trim().to_string();
-        }
-
-        trimmed.to_string()
-    }
-
     /// Parses a provider-specific model string for this agent kind.
     pub fn parse_model(self, value: &str) -> Option<AgentModel> {
         match self {
@@ -556,226 +248,34 @@ impl FromStr for AgentKind {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-
-    use tempfile::tempdir;
-
     use super::*;
 
-    fn command_env_value(command: &Command, key: &str) -> Option<String> {
-        command.get_envs().find_map(|(name, value)| {
-            if name.to_string_lossy() != key {
-                return None;
-            }
-
-            value.map(|entry| entry.to_string_lossy().to_string())
-        })
+    #[test]
+    fn test_agent_kind_acp_command() {
+        // Arrange & Act & Assert
+        assert_eq!(AgentKind::Claude.acp_command(), "claude-code-acp");
+        assert_eq!(AgentKind::Gemini.acp_command(), "gemini");
+        assert_eq!(AgentKind::Codex.acp_command(), "codex-acp");
     }
 
     #[test]
-    fn test_gemini_setup_creates_no_files() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = GeminiBackend;
-
-        // Act
-        AgentBackend::setup(&backend, dir.path());
-
-        // Assert
-        assert_eq!(
-            std::fs::read_dir(dir.path())
-                .expect("failed to read dir")
-                .count(),
-            0
-        );
+    fn test_agent_kind_acp_args() {
+        // Arrange & Act & Assert
+        assert_eq!(AgentKind::Claude.acp_args(), &[] as &[&str]);
+        assert_eq!(AgentKind::Gemini.acp_args(), &["--experimental-acp"]);
+        assert_eq!(AgentKind::Codex.acp_args(), &[] as &[&str]);
     }
 
     #[test]
-    fn test_gemini_resume_command_args() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = GeminiBackend;
-
-        // Act
-        let cmd = AgentBackend::build_resume_command(
-            &backend,
-            dir.path(),
-            "follow-up",
-            "gemini-3-pro-preview",
-        );
-
-        // Assert
-        let debug = format!("{cmd:?}");
-        assert!(debug.contains("--prompt"));
-        assert!(debug.contains("follow-up"));
-        assert!(debug.contains("--resume"));
-        assert!(debug.contains("latest"));
-        assert!(debug.contains("gemini-3-pro-preview"));
-        assert!(debug.contains("--output-format"));
-        assert!(debug.contains("\"json\""));
-    }
-
-    #[test]
-    fn test_gemini_start_command_args() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = GeminiBackend;
-
-        // Act
-        let cmd = AgentBackend::build_start_command(
-            &backend,
-            dir.path(),
-            "hello",
-            "gemini-3-flash-preview",
-        );
-
-        // Assert
-        let debug = format!("{cmd:?}");
-        assert!(debug.contains("gemini"));
-        assert!(debug.contains("--prompt"));
-        assert!(debug.contains("hello"));
-        assert!(debug.contains("gemini-3-flash-preview"));
-        assert!(debug.contains("--approval-mode"));
-        assert!(debug.contains("auto_edit"));
-        assert!(debug.contains("--output-format"));
-        assert!(debug.contains("\"json\""));
-        assert!(!debug.contains("--resume"));
-    }
-
-    #[test]
-    fn test_claude_setup_creates_no_files() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = ClaudeBackend;
-
-        // Act
-        AgentBackend::setup(&backend, dir.path());
-
-        // Assert
-        assert_eq!(
-            std::fs::read_dir(dir.path())
-                .expect("failed to read dir")
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn test_claude_start_command_args() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = ClaudeBackend;
-
-        // Act
-        let cmd =
-            AgentBackend::build_start_command(&backend, dir.path(), "hello", "claude-opus-4-6");
-
-        // Assert
-        let debug = format!("{cmd:?}");
-        assert!(debug.contains("claude"));
-        assert!(debug.contains("-p"));
-        assert!(debug.contains("hello"));
-        assert!(debug.contains("--allowedTools"));
-        assert!(debug.contains("Edit"));
-        assert!(debug.contains("--output-format"));
-        assert!(debug.contains("\"json\""));
-        assert!(!debug.contains("-c"));
-        assert_eq!(
-            command_env_value(&cmd, "ANTHROPIC_MODEL"),
-            Some("claude-opus-4-6".to_string())
-        );
-    }
-
-    #[test]
-    fn test_claude_resume_command_args() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = ClaudeBackend;
-
-        // Act
-        let cmd = AgentBackend::build_resume_command(
-            &backend,
-            dir.path(),
-            "follow-up",
-            "claude-haiku-4-5-20251001",
-        );
-
-        // Assert
-        let debug = format!("{cmd:?}");
-        assert!(debug.contains("claude"));
-        assert!(debug.contains("-c"));
-        assert!(debug.contains("-p"));
-        assert!(debug.contains("follow-up"));
-        assert!(debug.contains("--allowedTools"));
-        assert!(debug.contains("Edit"));
-        assert!(debug.contains("--output-format"));
-        assert!(debug.contains("\"json\""));
-        assert_eq!(
-            command_env_value(&cmd, "ANTHROPIC_MODEL"),
-            Some("claude-haiku-4-5-20251001".to_string())
-        );
-    }
-
-    #[test]
-    fn test_codex_setup_creates_no_files() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = CodexBackend;
-
-        // Act
-        AgentBackend::setup(&backend, dir.path());
-
-        // Assert
-        assert_eq!(
-            std::fs::read_dir(dir.path())
-                .expect("failed to read dir")
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn test_codex_start_command_args() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = CodexBackend;
-
-        // Act
-        let cmd = AgentBackend::build_start_command(&backend, dir.path(), "hello", "gpt-5.3-codex");
-
-        // Assert
-        let debug = format!("{cmd:?}");
-        assert!(debug.contains("codex"));
-        assert!(debug.contains("exec"));
-        assert!(debug.contains("hello"));
-        assert!(debug.contains("gpt-5.3-codex"));
-        assert!(debug.contains("--full-auto"));
-        assert!(debug.contains("--json"));
-        assert!(!debug.contains("--dangerously-bypass-approvals-and-sandbox"));
-        assert!(!debug.contains("resume"));
-    }
-
-    #[test]
-    fn test_codex_resume_command_args() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let backend = CodexBackend;
-
-        // Act
-        let cmd =
-            AgentBackend::build_resume_command(&backend, dir.path(), "follow-up", "gpt-5.2-codex");
-
-        // Assert
-        let debug = format!("{cmd:?}");
-        assert!(debug.contains("codex"));
-        assert!(debug.contains("exec"));
-        assert!(debug.contains("resume"));
-        assert!(debug.contains("--last"));
-        assert!(debug.contains("gpt-5.2-codex"));
-        assert!(debug.contains("--full-auto"));
-        assert!(debug.contains("--json"));
-        assert!(debug.contains("follow-up"));
-        assert!(!debug.contains("--dangerously-bypass-approvals-and-sandbox"));
+    fn test_agent_kind_install_hint() {
+        // Arrange & Act & Assert
+        for kind in [AgentKind::Claude, AgentKind::Gemini, AgentKind::Codex] {
+            let hint = kind.install_hint();
+            assert!(
+                !hint.is_empty(),
+                "{kind} should have a non-empty install hint"
+            );
+        }
     }
 
     #[test]
@@ -812,15 +312,6 @@ mod tests {
 
         // Assert
         assert!(kind == AgentKind::Gemini || kind == AgentKind::Claude || kind == AgentKind::Codex);
-    }
-
-    #[test]
-    fn test_agent_kind_create_backend() {
-        // Arrange & Act & Assert
-        // Just verify create_backend returns without panicking
-        let _gemini = AgentKind::Gemini.create_backend();
-        let _claude = AgentKind::Claude.create_backend();
-        let _codex = AgentKind::Codex.create_backend();
     }
 
     #[test]
@@ -967,179 +458,5 @@ mod tests {
         // Assert
         assert_eq!(valid, Some("gemini-3-flash-preview"));
         assert_eq!(invalid, None);
-    }
-
-    #[test]
-    fn test_claude_parse_response_valid_json() {
-        // Arrange
-        let stdout = r#"{"type":"result","subtype":"success","result":"Hello world","total_cost_usd":0.05,"usage":{"input_tokens":100,"output_tokens":25},"is_error":false}"#;
-
-        // Act
-        let result = AgentKind::Claude.parse_response(stdout, "");
-
-        // Assert
-        assert_eq!(result.content, "Hello world");
-        assert_eq!(result.stats.input_tokens, Some(100));
-        assert_eq!(result.stats.output_tokens, Some(25));
-    }
-
-    #[test]
-    fn test_gemini_parse_response_valid_json() {
-        // Arrange
-        let stdout = r#"{"response":"Hello from Gemini","stats":{},"error":null}"#;
-
-        // Act
-        let result = AgentKind::Gemini.parse_response(stdout, "");
-
-        // Assert
-        assert_eq!(result.content, "Hello from Gemini");
-        assert_eq!(result.stats, SessionStats::default());
-    }
-
-    #[test]
-    fn test_codex_parse_response_valid_ndjson() {
-        // Arrange
-        let stdout = r#"{"type":"thread.started","thread_id":"abc123"}
-{"type":"item.started","item":{"id":"item_1","type":"command_execution","status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"First message"}}
-{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Final answer"}}
-{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
-
-        // Act
-        let result = AgentKind::Codex.parse_response(stdout, "");
-
-        // Assert
-        assert_eq!(result.content, "Final answer");
-        assert_eq!(result.stats.input_tokens, Some(100));
-        assert_eq!(result.stats.output_tokens, Some(50));
-    }
-
-    #[test]
-    fn test_codex_parse_response_no_agent_message() {
-        // Arrange
-        let stdout = r#"{"type":"thread.started","thread_id":"abc123"}
-{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
-
-        // Act
-        let result = AgentKind::Codex.parse_response(stdout, "");
-
-        // Assert — falls back to raw stdout
-        assert!(result.content.contains("thread.started"));
-    }
-
-    #[test]
-    fn test_parse_response_invalid_json_falls_back() {
-        // Arrange
-        let stdout = "This is not JSON output\nJust plain text";
-
-        // Act
-        let result = AgentKind::Claude.parse_response(stdout, "");
-
-        // Assert
-        assert_eq!(result.content, "This is not JSON output\nJust plain text");
-    }
-
-    #[test]
-    fn test_parse_response_empty_stdout_falls_back_to_stderr() {
-        // Arrange
-        let stderr = "Error: agent binary not found";
-
-        // Act
-        let result = AgentKind::Claude.parse_response("", stderr);
-
-        // Assert
-        assert_eq!(result.content, "Error: agent binary not found");
-    }
-
-    #[test]
-    fn test_parse_response_whitespace_only_stdout_falls_back_to_stderr() {
-        // Arrange
-        let stderr = "Connection failed";
-
-        // Act
-        let result = AgentKind::Gemini.parse_response("  \n  ", stderr);
-
-        // Assert
-        assert_eq!(result.content, "Connection failed");
-    }
-
-    #[test]
-    fn test_claude_parse_response_missing_result_field() {
-        // Arrange — valid JSON but no "result" key
-        let stdout = r#"{"type":"error","message":"Something went wrong"}"#;
-
-        // Act
-        let result = AgentKind::Claude.parse_response(stdout, "");
-
-        // Assert — falls back to raw stdout
-        assert!(result.content.contains("Something went wrong"));
-    }
-
-    #[test]
-    fn test_gemini_parse_response_null_response_field() {
-        // Arrange — response is null (error case)
-        let stdout = r#"{"response":null,"error":{"type":"ApiError","message":"Rate limited"}}"#;
-
-        // Act
-        let result = AgentKind::Gemini.parse_response(stdout, "");
-
-        // Assert — falls back to raw stdout since response is null
-        assert!(result.content.contains("Rate limited"));
-    }
-
-    #[test]
-    fn test_gemini_parse_response_with_stats() {
-        // Arrange
-        let stdout = r#"{
-            "response": "Done!",
-            "stats": {
-                "models": {
-                    "gemini-3-flash-preview": {
-                        "tokens": {
-                            "input": 1000,
-                            "prompt": 1500,
-                            "candidates": 200,
-                            "total": 1700,
-                            "cached": 500,
-                            "thoughts": 0,
-                            "tool": 0
-                        }
-                    }
-                }
-            }
-        }"#;
-
-        // Act
-        let result = AgentKind::Gemini.parse_response(stdout, "");
-
-        // Assert
-        assert_eq!(result.content, "Done!");
-        assert_eq!(result.stats.input_tokens, Some(1000));
-        assert_eq!(result.stats.output_tokens, Some(200));
-    }
-
-    #[test]
-    fn test_gemini_parse_response_with_multiple_models() {
-        // Arrange
-        let stdout = r#"{
-            "response": "Result",
-            "stats": {
-                "models": {
-                    "gemini-3-flash-preview": {
-                        "tokens": { "input": 1000, "candidates": 200 }
-                    },
-                    "gemini-3-pro-preview": {
-                        "tokens": { "input": 500, "candidates": 100 }
-                    }
-                }
-            }
-        }"#;
-
-        // Act
-        let result = AgentKind::Gemini.parse_response(stdout, "");
-
-        // Assert — tokens are summed across models
-        assert_eq!(result.stats.input_tokens, Some(1500));
-        assert_eq!(result.stats.output_tokens, Some(300));
     }
 }

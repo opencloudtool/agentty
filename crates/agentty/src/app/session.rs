@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-use crate::agent::{AgentBackend, AgentKind, AgentModel};
+use crate::acp::AcpSessionHandle;
+use crate::agent::{AgentKind, AgentModel};
 use crate::app::App;
 use crate::db::Database;
 use crate::git;
@@ -33,7 +33,12 @@ BODY:
 Do not output anything before or after this block."
     )
 });
-type SessionHandles = (Arc<Mutex<String>>, Arc<Mutex<Status>>, Arc<Mutex<i64>>);
+type SessionHandles = (
+    Option<Arc<AcpSessionHandle>>,
+    Arc<Mutex<String>>,
+    Arc<Mutex<Status>>,
+    Arc<Mutex<i64>>,
+);
 
 /// Returns the folder path for a session under the given base directory.
 fn session_folder(base: &Path, session_id: &str) -> PathBuf {
@@ -236,8 +241,6 @@ impl App {
             return Err(format!("Failed to save session metadata: {err}"));
         }
 
-        AgentKind::Gemini.create_backend().setup(&folder);
-
         let existing_sessions = std::mem::take(&mut self.session_state.sessions);
         self.session_state.sessions = Self::load_sessions(
             &self.base_path,
@@ -290,21 +293,41 @@ impl App {
         )
         .await;
 
-        let folder = session.folder.clone();
         let output = Arc::clone(&session.output);
         let status = Arc::clone(&session.status);
         let id = session.id.clone();
         let db = self.db.clone();
         let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
+        let folder = session.folder.clone();
+        let agent_tx = self.agent_tx.clone();
 
         let _ = Self::update_status(&status, &db, &id, Status::InProgress).await;
 
-        let cmd = session_agent.create_backend().build_start_command(
-            &folder,
-            &prompt,
-            session_model.as_str(),
-        );
-        Self::spawn_session_task(folder, cmd, output, status, db, id, session_agent);
+        // Spawn ACP initialization and first prompt in the background so the
+        // UI event loop is not blocked while the agent process starts.
+        tokio::spawn(async move {
+            match AcpSessionHandle::spawn(
+                session_agent,
+                folder,
+                session_model.as_str(),
+                agent_tx.clone(),
+            )
+            .await
+            {
+                Ok(handle) => {
+                    let handle = Arc::new(handle);
+                    Self::spawn_acp_prompt_task(handle, prompt, agent_tx, id);
+                }
+                Err(error) => {
+                    let message = format!("\n[Error] Failed to start agent: {error}\n");
+                    if let Ok(mut buf) = output.lock() {
+                        buf.push_str(&message);
+                    }
+
+                    Self::update_status(&status, &db, &id, Status::Review).await;
+                }
+            }
+        });
 
         Ok(())
     }
@@ -314,12 +337,91 @@ impl App {
         let Some(session_index) = self.session_index_for_id(session_id) else {
             return;
         };
-        let Some(session) = self.session_state.sessions.get(session_index) else {
+        let Some(session) = self.session_state.sessions.get_mut(session_index) else {
             return;
         };
+
+        // If the session was persisted with a blank prompt (e.g. app closed
+        // before first message), treat the first reply as the initial start.
+        let is_first_message = session.prompt.is_empty();
+        let allowed = session.status() == Status::Review
+            || (is_first_message && session.status() == Status::New);
+        if !allowed {
+            session.append_output("\n[Reply Error] Session must be in review status\n");
+            let db = self.db.clone();
+            let id = session.id.clone();
+            tokio::spawn(async move {
+                let _ = db
+                    .append_session_output(
+                        &id,
+                        "\n[Reply Error] Session must be in review status\n",
+                    )
+                    .await;
+            });
+
+            return;
+        }
+        if is_first_message {
+            session.prompt = prompt.to_string();
+            let title = Self::summarize_title(prompt);
+            session.title = Some(title.clone());
+            let db = self.db.clone();
+            let id = session.id.clone();
+            let prompt = prompt.to_string();
+            tokio::spawn(async move {
+                let _ = db.update_session_title(&id, &title).await;
+                let _ = db.update_session_prompt(&id, &prompt).await;
+            });
+        }
+
+        let reply_line = format!("\n › {prompt}\n\n");
+        session.append_output(&reply_line);
+        {
+            let db = self.db.clone();
+            let id = session.id.clone();
+            tokio::spawn(async move {
+                let _ = db.append_session_output(&id, &reply_line).await;
+            });
+        }
+
+        let output = Arc::clone(&session.output);
+        let status = Arc::clone(&session.status);
+        let id = session.id.clone();
+        let db = self.db.clone();
         let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
-        let backend = session_agent.create_backend();
-        self.reply_with_backend(session_id, prompt, backend.as_ref(), session_model.as_str());
+        let existing_handle = session.acp_handle.clone();
+        let folder = session.folder.clone();
+        let prompt = prompt.to_string();
+        let agent_tx = self.agent_tx.clone();
+
+        tokio::spawn(async move {
+            let handle = if let Some(existing) = existing_handle {
+                existing
+            } else {
+                match AcpSessionHandle::spawn(
+                    session_agent,
+                    folder,
+                    session_model.as_str(),
+                    agent_tx.clone(),
+                )
+                .await
+                {
+                    Ok(new_handle) => Arc::new(new_handle),
+                    Err(error) => {
+                        let message = format!("\n[Error] Failed to start agent: {error}\n");
+                        if let Ok(mut buf) = output.lock() {
+                            buf.push_str(&message);
+                        }
+
+                        return;
+                    }
+                }
+            };
+
+            Self::update_status(&status, &db, &id, Status::InProgress).await;
+
+            Self::spawn_acp_prompt_task(handle, prompt, agent_tx, id);
+        });
     }
 
     /// Updates and persists the agent/model pair for a single session.
@@ -346,6 +448,13 @@ impl App {
 
         let agent = session_agent.to_string();
         let model = session_model.as_str().to_string();
+
+        // Invalidate ACP handle when agent kind changes
+        if session.agent != agent
+            && let Some(handle) = session.acp_handle.take()
+        {
+            tokio::spawn(async move { handle.shutdown().await });
+        }
 
         session.agent.clone_from(&agent);
         session.model.clone_from(&model);
@@ -389,7 +498,12 @@ impl App {
         if i >= self.session_state.sessions.len() {
             return;
         }
-        let session = self.session_state.sessions.remove(i);
+        let mut session = self.session_state.sessions.remove(i);
+
+        // Shut down ACP connection before cleanup
+        if let Some(handle) = session.acp_handle.take() {
+            tokio::spawn(async move { handle.shutdown().await });
+        }
 
         let _ = self.db.delete_session(&session.id).await;
         self.cancel_pr_polling_for_session(&session.id);
@@ -618,44 +732,27 @@ impl App {
         session_agent: AgentKind,
         session_model: AgentModel,
     ) -> Result<CommitMessage, String> {
-        let backend = session_agent.create_backend();
-        let model = session_model.as_str().to_string();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = AcpSessionHandle::spawn(
+            session_agent,
+            session_folder,
+            session_model.as_str(),
+            agent_tx,
+        )
+        .await?;
 
-        let resume_command =
-            backend.build_resume_command(&session_folder, &COMMIT_SUMMARY_PROMPT, &model);
-        let output = if let Ok(output) = Self::run_agent_command(resume_command).await {
-            output
-        } else {
-            let start_command =
-                backend.build_start_command(&session_folder, &COMMIT_SUMMARY_PROMPT, &model);
-            Self::run_agent_command(start_command).await?
-        };
+        handle.prompt(&COMMIT_SUMMARY_PROMPT).await?;
+        handle.shutdown().await;
 
-        Self::parse_agent_commit_message(&output)
-            .ok_or_else(|| "Failed to parse commit title and body from agent output".to_string())
-    }
-
-    async fn run_agent_command(mut command: Command) -> Result<String, String> {
-        let output = tokio::task::spawn_blocking(move || command.output())
-            .await
-            .map_err(|error| format!("Failed to run agent command: {error}"))?
-            .map_err(|error| format!("Failed to execute agent command: {error}"))?;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if !output.status.success() {
-            let details = stderr.trim();
-            if details.is_empty() {
-                return Err(format!("Agent command failed: {}", stdout.trim()));
+        let mut text = String::new();
+        while let Some(event) = agent_rx.recv().await {
+            if let crate::app::AgentEvent::Output { text: chunk, .. } = event {
+                text.push_str(&chunk);
             }
-
-            return Err(format!("Agent command failed: {details}"));
-        }
-        if stdout.trim().is_empty() {
-            return Err("Agent command produced empty output".to_string());
         }
 
-        Ok(stdout)
+        Self::parse_agent_commit_message(&text)
+            .ok_or_else(|| "Failed to parse commit title and body from agent output".to_string())
     }
 
     fn parse_agent_commit_message(output: &str) -> Option<CommitMessage> {
@@ -977,6 +1074,58 @@ impl App {
         .await;
     }
 
+    pub(crate) async fn finish_session_turn(
+        &self,
+        session_id: &str,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+    ) {
+        let Some(session_index) = self.session_index_for_id(session_id) else {
+            return;
+        };
+        let Some(session) = self.session_state.sessions.get(session_index) else {
+            return;
+        };
+
+        if input_tokens.is_some() || output_tokens.is_some() {
+            let stats = SessionStats {
+                input_tokens,
+                output_tokens,
+            };
+            let _ = self.db.update_session_stats(&session.id, &stats).await;
+        }
+
+        let snapshot = session
+            .output
+            .lock()
+            .map(|buf| buf.clone())
+            .unwrap_or_default();
+        let _ = self.db.replace_session_output(&session.id, &snapshot).await;
+
+        Self::update_status(&session.status, &self.db, &session.id, Status::Review).await;
+    }
+
+    pub(crate) async fn fail_session_turn(&self, session_id: &str, error: &str) {
+        let Some(session_index) = self.session_index_for_id(session_id) else {
+            return;
+        };
+        let Some(session) = self.session_state.sessions.get(session_index) else {
+            return;
+        };
+
+        let message = format!("\n[Error] {error}\n");
+        Self::append_session_output(
+            &session.output,
+            &session.folder,
+            &self.db,
+            &session.id,
+            &message,
+        )
+        .await;
+
+        Self::update_status(&session.status, &self.db, &session.id, Status::Review).await;
+    }
+
     pub(super) async fn load_sessions(
         base: &Path,
         db: &Database,
@@ -996,6 +1145,7 @@ impl App {
                 (
                     session.id.clone(),
                     (
+                        session.acp_handle.clone(),
                         Arc::clone(&session.output),
                         Arc::clone(&session.status),
                         Arc::clone(&session.commit_count),
@@ -1026,34 +1176,41 @@ impl App {
                     .and_then(|id| project_names.get(&id))
                     .cloned()
                     .unwrap_or_default();
-                let (output, status, commit_count) =
-                    if let Some((existing_output, existing_status, existing_commit_count)) =
-                        existing_sessions_by_name.get(&row.id)
-                    {
-                        if let Ok(mut output_buffer) = existing_output.lock() {
-                            output_buffer.clone_from(&row.output);
-                        }
-                        if let Ok(mut status_value) = existing_status.lock() {
-                            *status_value = status;
-                        }
-                        if let Ok(mut count) = existing_commit_count.lock() {
-                            *count = row.commit_count;
-                        }
+                let (acp_handle, output, status, commit_count) = if let Some((
+                    existing_handle,
+                    existing_output,
+                    existing_status,
+                    existing_commit_count,
+                )) =
+                    existing_sessions_by_name.get(&row.id)
+                {
+                    if let Ok(mut output_buffer) = existing_output.lock() {
+                        output_buffer.clone_from(&row.output);
+                    }
+                    if let Ok(mut status_value) = existing_status.lock() {
+                        *status_value = status;
+                    }
+                    if let Ok(mut count) = existing_commit_count.lock() {
+                        *count = row.commit_count;
+                    }
 
-                        (
-                            Arc::clone(existing_output),
-                            Arc::clone(existing_status),
-                            Arc::clone(existing_commit_count),
-                        )
-                    } else {
-                        (
-                            Arc::new(Mutex::new(row.output.clone())),
-                            Arc::new(Mutex::new(status)),
-                            Arc::new(Mutex::new(row.commit_count)),
-                        )
-                    };
+                    (
+                        existing_handle.clone(),
+                        Arc::clone(existing_output),
+                        Arc::clone(existing_status),
+                        Arc::clone(existing_commit_count),
+                    )
+                } else {
+                    (
+                        None,
+                        Arc::new(Mutex::new(row.output.clone())),
+                        Arc::new(Mutex::new(status)),
+                        Arc::new(Mutex::new(row.commit_count)),
+                    )
+                };
 
                 Some(Session {
+                    acp_handle,
                     agent: row.agent,
                     commit_count,
                     folder,
@@ -1079,28 +1236,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
+    use std::process::Command;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
     use tempfile::tempdir;
 
     use super::*;
-    use crate::agent::MockAgentBackend;
     use crate::model::Tab;
-
-    fn create_mock_backend() -> MockAgentBackend {
-        let mut mock = MockAgentBackend::new();
-        mock.expect_build_start_command().returning(|folder, _, _| {
-            let mut cmd = Command::new("echo");
-            cmd.arg("mock-start")
-                .current_dir(folder)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
-            cmd
-        });
-        mock
-    }
 
     async fn new_test_app(path: PathBuf) -> App {
         let working_dir = PathBuf::from("/tmp/test");
@@ -1163,6 +1306,7 @@ mod tests {
         let data_dir = folder.join(SESSION_DATA_DIR);
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
         app.session_state.sessions.push(Session {
+            acp_handle: None,
             agent: "gemini".to_string(),
             commit_count: Arc::new(Mutex::new(0)),
             folder,
@@ -1180,20 +1324,29 @@ mod tests {
         }
     }
 
-    /// Helper: creates a session and starts it with the given prompt (two-step
-    /// flow).
+    /// Helper: creates a session with a prompt populated (simulates a started
+    /// session without requiring an actual ACP agent binary).
     async fn create_and_start_session(app: &mut App, prompt: &str) {
         let session_id = app
             .create_session()
             .await
             .expect("failed to create session");
-        let start_backend = create_mock_backend();
-        app.reply_with_backend(
-            &session_id,
-            prompt,
-            &start_backend,
-            "gemini-3-flash-preview",
-        );
+        let session_index = app
+            .session_index_for_id(&session_id)
+            .expect("missing session index");
+        let session = &mut app.session_state.sessions[session_index];
+        session.prompt = prompt.to_string();
+        session.title = Some(App::summarize_title(prompt));
+        let initial_output = format!(" › {prompt}\n\n");
+        session.append_output(&initial_output);
+        if let Ok(mut status) = session.status.lock() {
+            *status = Status::Review;
+        }
+        let _ = app.db.update_session_prompt(&session_id, prompt).await;
+        let _ = app
+            .db
+            .append_session_output(&session_id, &initial_output)
+            .await;
     }
 
     async fn wait_for_status(session: &Session, expected: Status) {
@@ -1360,19 +1513,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_session() {
+    async fn test_start_session_persists_metadata() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
-        let session_id = app
-            .create_session()
-            .await
-            .expect("failed to create session");
-
-        // Act
-        app.start_session(&session_id, "Hello".to_string())
-            .await
-            .expect("failed to start session");
+        create_and_start_session(&mut app, "Hello").await;
 
         // Assert
         assert_eq!(app.session_state.sessions[0].prompt, "Hello");
@@ -1898,110 +2043,25 @@ WHERE id = 'beta0000'
     }
 
     #[tokio::test]
-    async fn test_spawn_integration() {
+    async fn test_reply_rejects_non_review_status() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
-        let db = Database::open_in_memory()
-            .await
-            .expect("failed to open in-memory db");
-        let mut mock = MockAgentBackend::new();
-        mock.expect_build_start_command()
-            .returning(|folder, prompt, _| {
-                let mut cmd = Command::new("echo");
-                cmd.arg("--prompt")
-                    .arg(prompt)
-                    .arg("--model")
-                    .arg("gemini-3-flash-preview")
-                    .current_dir(folder)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null());
-                cmd
-            });
-        let mut app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db,
-        )
-        .await;
-
-        // Act — create and start session (start command)
-        let session_id = app
-            .create_session()
-            .await
-            .expect("failed to create session");
-        app.reply_with_backend(&session_id, "SpawnInit", &mock, "gemini-3-flash-preview");
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-        // Assert
-        {
-            let session = &app.session_state.sessions[0];
-            let output = session
-                .output
-                .lock()
-                .expect("failed to lock output")
-                .clone();
-            assert!(output.contains("--prompt"));
-            assert!(output.contains("SpawnInit"));
-            assert!(!output.contains("--resume"));
-            assert_eq!(session.status(), Status::Review);
+        let mut app = new_test_app(dir.path().to_path_buf()).await;
+        add_manual_session(&mut app, dir.path(), "manual01", "Test");
+        if let Ok(mut status) = app.session_state.sessions[0].status.lock() {
+            *status = Status::InProgress;
         }
-
-        // Act — reply (resume command)
-        let mut resume_mock = MockAgentBackend::new();
-        resume_mock
-            .expect_build_resume_command()
-            .returning(|folder, prompt, _| {
-                let mut cmd = Command::new("echo");
-                cmd.arg("--prompt")
-                    .arg(prompt)
-                    .arg("--model")
-                    .arg("gemini-3-flash-preview")
-                    .arg("--resume")
-                    .arg("latest")
-                    .current_dir(folder)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null());
-                cmd
-            });
-        let session_id = app.session_state.sessions[0].id.clone();
-        app.reply_with_backend(
-            &session_id,
-            "SpawnReply",
-            &resume_mock,
-            "gemini-3-flash-preview",
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-        // Assert
-        {
-            let session = &app.session_state.sessions[0];
-            let output = session
-                .output
-                .lock()
-                .expect("failed to lock output")
-                .clone();
-            assert!(output.contains("SpawnReply"));
-            assert!(output.contains("--resume"));
-            assert!(output.contains("latest"));
-            assert_eq!(session.status(), Status::Review);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_capture_raw_output() {
-        // Arrange
-        let buffer = Arc::new(Mutex::new(String::new()));
-        let source = "Line 1\nLine 2".as_bytes();
 
         // Act
-        App::capture_raw_output(source, &buffer).await;
+        app.reply("manual01", "Follow up");
 
-        // Assert
-        let out = buffer.lock().expect("failed to lock buffer").clone();
-        assert!(out.contains("Line 1"));
-        assert!(out.contains("Line 2"));
+        // Assert — error appended to output
+        let output = app.session_state.sessions[0]
+            .output
+            .lock()
+            .expect("failed to lock output")
+            .clone();
+        assert!(output.contains("[Reply Error]"));
     }
 
     #[tokio::test]
