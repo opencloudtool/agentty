@@ -786,6 +786,7 @@ impl App {
 
                 Some(Session {
                     agent: row.agent,
+                    base_branch: row.base_branch,
                     commit_count,
                     folder,
                     id: row.id,
@@ -895,6 +896,7 @@ mod tests {
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
         app.session_state.sessions.push(Session {
             agent: "gemini".to_string(),
+            base_branch: "main".to_string(),
             commit_count: Arc::new(Mutex::new(0)),
             folder,
             id: id.to_string(),

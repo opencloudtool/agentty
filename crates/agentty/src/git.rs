@@ -340,16 +340,17 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> 
     Ok(())
 }
 
-/// Returns the output of `git diff` for the given repository path, including
-/// all changes (created, modified, and deleted files).
+/// Returns the output of `git diff` for the given repository path, showing
+/// all changes (committed and uncommitted) relative to the base branch.
 ///
 /// Uses `git add --intent-to-add` to mark untracked files in the index, then
-/// `git diff HEAD` to compare the working tree against the last commit. This
-/// shows all changes regardless of staging state. Finally resets the index to
-/// restore the original state.
+/// `git diff <base_branch>` to compare the working tree against the base
+/// branch. This shows all accumulated changes across commits plus any
+/// uncommitted work. Finally resets the index to restore the original state.
 ///
 /// # Arguments
 /// * `repo_path` - Path to the git repository or worktree
+/// * `base_branch` - Branch to diff against (e.g., `main`)
 ///
 /// # Returns
 /// The diff output as a string, or an error message on failure
@@ -357,7 +358,7 @@ pub fn delete_branch(repo_path: &Path, branch_name: &str) -> Result<(), String> 
 /// # Errors
 /// Returns an error if preparing the index, generating the diff, or restoring
 /// index state fails.
-pub fn diff(repo_path: &Path) -> Result<String, String> {
+pub fn diff(repo_path: &Path, base_branch: &str) -> Result<String, String> {
     let intent_to_add = Command::new("git")
         .args(["add", "-A", "--intent-to-add"])
         .current_dir(repo_path)
@@ -371,7 +372,7 @@ pub fn diff(repo_path: &Path) -> Result<String, String> {
     }
 
     let diff_output = Command::new("git")
-        .args(["diff", "HEAD"])
+        .args(["diff", base_branch])
         .current_dir(repo_path)
         .output()
         .map_err(|e| format!("Failed to execute git: {e}"))?;
@@ -1055,7 +1056,7 @@ mod tests {
         fs::write(dir.path().join("README.md"), "modified").expect("test setup failed");
 
         // Act
-        let result = diff(dir.path());
+        let result = diff(dir.path(), "HEAD");
 
         // Assert
         assert!(result.is_ok());
@@ -1073,7 +1074,7 @@ mod tests {
         setup_test_git_repo(dir.path()).expect("test setup failed");
 
         // Act
-        let result = diff(dir.path());
+        let result = diff(dir.path(), "HEAD");
 
         // Assert
         assert!(result.is_ok());
@@ -1088,7 +1089,7 @@ mod tests {
         fs::write(dir.path().join("new_file.txt"), "hello world").expect("test setup failed");
 
         // Act
-        let result = diff(dir.path());
+        let result = diff(dir.path(), "HEAD");
 
         // Assert
         let output = result.expect("should succeed");
@@ -1122,7 +1123,7 @@ mod tests {
         fs::remove_file(dir.path().join("README.md")).expect("test setup failed");
 
         // Act
-        let result = diff(dir.path());
+        let result = diff(dir.path(), "HEAD");
 
         // Assert
         let output = result.expect("should succeed");

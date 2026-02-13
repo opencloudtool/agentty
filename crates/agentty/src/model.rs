@@ -359,6 +359,7 @@ pub struct SessionStats {
 
 pub struct Session {
     pub agent: String,
+    pub base_branch: String,
     pub commit_count: Arc<Mutex<i64>>,
     pub folder: PathBuf,
     pub id: String,
@@ -480,6 +481,7 @@ mod tests {
         // Arrange
         let session = Session {
             agent: "gemini".to_string(),
+            base_branch: String::new(),
             commit_count: Arc::new(Mutex::new(0)),
             folder: PathBuf::new(),
             id: "abc123".to_string(),
@@ -501,6 +503,7 @@ mod tests {
         // Arrange
         let session = Session {
             agent: "gemini".to_string(),
+            base_branch: String::new(),
             commit_count: Arc::new(Mutex::new(0)),
             folder: PathBuf::new(),
             id: "abc123".to_string(),
@@ -522,6 +525,7 @@ mod tests {
         // Arrange
         let session = Session {
             agent: "gemini".to_string(),
+            base_branch: String::new(),
             commit_count: Arc::new(Mutex::new(0)),
             folder: PathBuf::new(),
             id: "test".to_string(),
@@ -560,6 +564,7 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let session = Session {
             agent: "gemini".to_string(),
+            base_branch: String::new(),
             commit_count: Arc::new(Mutex::new(0)),
             folder: dir.path().to_path_buf(),
             id: "test".to_string(),
