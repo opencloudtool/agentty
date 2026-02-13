@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.9] - 2026-02-13
+
+### Added
+- **Diff View:** Added diff content wrapping to render long changed lines without truncation.
+- **Diff View:** Added structured parsing with line-number gutters (`old│new`) for unified diffs.
+- **Docs:** Added a demo GIF to the README and documented GIF generation with VHS.
+
+### Changed
+- **Diff View:** Compare against each session's base branch so review shows all accumulated changes.
+- **Workflow:** Simplified commit flow by auto-committing after agent iterations and removing manual commit mode.
+- **Release Docs:** Added contributor-list requirements and examples to the release workflow documentation.
+
+### Contributors
+- @minev-dev
+
 ## [v0.1.8] - 2026-02-13
 
 ### Added
