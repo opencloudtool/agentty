@@ -4,13 +4,14 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::agent::AgentKind;
+use crate::agent::{AgentKind, AgentSelectionMetadata};
 use crate::icon::Icon;
 use crate::model::{AppMode, PromptSlashStage, Session, Status};
-use crate::ui::components::chat_input::{ChatInput, SlashMenu};
+use crate::ui::components::chat_input::{ChatInput, SlashMenu, SlashMenuOption};
 use crate::ui::util::{calculate_input_height, wrap_lines};
 use crate::ui::{Component, Page};
 
+/// Chat page renderer for a single session.
 pub struct SessionChatPage<'a> {
     pub mode: &'a AppMode,
     pub scroll_offset: Option<u16>,
@@ -19,6 +20,7 @@ pub struct SessionChatPage<'a> {
 }
 
 impl<'a> SessionChatPage<'a> {
+    /// Creates a session chat page renderer.
     pub fn new(
         sessions: &'a [Session],
         session_index: usize,
@@ -43,23 +45,29 @@ impl<'a> SessionChatPage<'a> {
             return None;
         }
 
-        let (title, options): (&'static str, Vec<String>) = match stage {
+        let (title, options): (&'static str, Vec<SlashMenuOption>) = match stage {
             PromptSlashStage::Command => {
                 let lowered = input.to_lowercase();
                 let commands = ["/model"]
                     .iter()
                     .copied()
                     .filter(|command| command.starts_with(&lowered))
-                    .map(str::to_string)
+                    .map(|command| SlashMenuOption {
+                        description: Self::command_description(command).to_string(),
+                        label: command.to_string(),
+                    })
                     .collect::<Vec<_>>();
 
-                ("", commands)
+                ("Slash Command (j/k move, Enter select)", commands)
             }
             PromptSlashStage::Agent => (
-                "/model > agent",
+                "/model Agent (j/k move, Enter select)",
                 AgentKind::ALL
                     .iter()
-                    .map(std::string::ToString::to_string)
+                    .map(|agent| SlashMenuOption {
+                        description: agent.description().to_string(),
+                        label: agent.name().to_string(),
+                    })
                     .collect(),
             ),
             PromptSlashStage::Model => {
@@ -72,10 +80,13 @@ impl<'a> SessionChatPage<'a> {
                 let models = session_agent
                     .models()
                     .iter()
-                    .map(|model| model.as_str().to_string())
+                    .map(|model| SlashMenuOption {
+                        description: model.description().to_string(),
+                        label: model.name().to_string(),
+                    })
                     .collect::<Vec<_>>();
 
-                ("/model > model", models)
+                ("/model Model (j/k move, Enter select)", models)
             }
         };
         if options.is_empty() {
@@ -87,6 +98,13 @@ impl<'a> SessionChatPage<'a> {
             selected_index: 0,
             title,
         })
+    }
+
+    fn command_description(command: &str) -> &'static str {
+        match command {
+            "/model" => "Choose an agent and model for this session.",
+            _ => "Prompt slash command.",
+        }
     }
 
     fn render_session(&self, f: &mut Frame, area: Rect, session: &Session) {
@@ -111,9 +129,7 @@ impl<'a> SessionChatPage<'a> {
                 slash_state.selected_agent,
                 session,
             )
-            .map_or(0, |menu| {
-                menu.options.len() + usize::from(!menu.title.is_empty())
-            });
+            .map_or(0, |menu| menu.options.len().saturating_add(2));
 
             return calculate_input_height(area.width.saturating_sub(2), input.text())
                 .saturating_add(u16::try_from(slash_option_count).unwrap_or(u16::MAX));
@@ -250,5 +266,89 @@ impl Page for SessionChatPage<'_> {
         if let Some(session) = self.sessions.get(self.session_index) {
             self.render_session(f, area, session);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::model::SessionStats;
+
+    fn session_fixture() -> Session {
+        Session {
+            agent: "gemini".to_string(),
+            base_branch: "main".to_string(),
+            commit_count: Arc::new(Mutex::new(0)),
+            folder: PathBuf::new(),
+            id: "session-id".to_string(),
+            model: "gemini-3-flash-preview".to_string(),
+            output: Arc::new(Mutex::new(String::new())),
+            project_name: "project".to_string(),
+            prompt: String::new(),
+            stats: SessionStats::default(),
+            status: Arc::new(Mutex::new(Status::New)),
+            title: None,
+        }
+    }
+
+    #[test]
+    fn test_build_slash_menu_for_command_stage_has_description() {
+        // Arrange
+        let session = session_fixture();
+
+        // Act
+        let menu =
+            SessionChatPage::build_slash_menu("/m", PromptSlashStage::Command, None, &session)
+                .expect("expected slash menu");
+
+        // Assert
+        assert_eq!(menu.options.len(), 1);
+        assert_eq!(menu.options[0].label, "/model");
+        assert_eq!(
+            menu.options[0].description,
+            "Choose an agent and model for this session."
+        );
+    }
+
+    #[test]
+    fn test_build_slash_menu_for_agent_stage_has_agent_descriptions() {
+        // Arrange
+        let session = session_fixture();
+
+        // Act
+        let menu =
+            SessionChatPage::build_slash_menu("/model", PromptSlashStage::Agent, None, &session)
+                .expect("expected slash menu");
+
+        // Assert
+        assert_eq!(menu.options.len(), AgentKind::ALL.len());
+        assert_eq!(menu.options[0].label, "gemini");
+        assert_eq!(menu.options[0].description, "Google Gemini CLI agent.");
+    }
+
+    #[test]
+    fn test_build_slash_menu_for_model_stage_has_model_descriptions() {
+        // Arrange
+        let session = session_fixture();
+
+        // Act
+        let menu = SessionChatPage::build_slash_menu(
+            "/model",
+            PromptSlashStage::Model,
+            Some(AgentKind::Codex),
+            &session,
+        )
+        .expect("expected slash menu");
+
+        // Assert
+        assert_eq!(menu.options.len(), AgentKind::Codex.models().len());
+        assert_eq!(menu.options[0].label, "gpt-5.3-codex");
+        assert_eq!(
+            menu.options[0].description,
+            "Latest Codex model for coding quality."
+        );
     }
 }

@@ -57,6 +57,12 @@ pub(crate) async fn handle(
         KeyCode::Down => {
             handle_prompt_down_key(app, terminal, &prompt_context)?;
         }
+        KeyCode::Char('k') if prompt_context.is_slash_command && is_plain_char_key(key, 'k') => {
+            handle_prompt_up_key(app, terminal, &prompt_context)?;
+        }
+        KeyCode::Char('j') if prompt_context.is_slash_command && is_plain_char_key(key, 'j') => {
+            handle_prompt_down_key(app, terminal, &prompt_context)?;
+        }
         KeyCode::Home => {
             if let AppMode::Prompt { input, .. } = &mut app.mode {
                 input.move_home();
@@ -144,6 +150,10 @@ fn reset_prompt_slash_state(app: &mut App) {
 
 fn is_prompt_cancel_key(key: KeyEvent) -> bool {
     key.code == KeyCode::Esc || key.modifiers.contains(event::KeyModifiers::CONTROL)
+}
+
+fn is_plain_char_key(key: KeyEvent, character: char) -> bool {
+    key.code == KeyCode::Char(character) && key.modifiers == event::KeyModifiers::NONE
 }
 
 fn handle_prompt_up_key(
@@ -531,6 +541,42 @@ mod tests {
     fn test_is_enter_key_for_other_key() {
         // Arrange & Act
         let result = is_enter_key(KeyCode::Char('x'));
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_is_plain_char_key_for_plain_character() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('j'), event::KeyModifiers::NONE);
+
+        // Act
+        let result = is_plain_char_key(key, 'j');
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_plain_char_key_rejects_modifier_keys() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('k'), event::KeyModifiers::SHIFT);
+
+        // Act
+        let result = is_plain_char_key(key, 'k');
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_is_plain_char_key_rejects_other_character() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('j'), event::KeyModifiers::NONE);
+
+        // Act
+        let result = is_plain_char_key(key, 'k');
 
         // Assert
         assert!(!result);

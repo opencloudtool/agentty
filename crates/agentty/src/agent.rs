@@ -137,6 +137,15 @@ impl AgentBackend for CodexBackend {
     }
 }
 
+/// Human-readable metadata for slash-menu selectable items.
+pub trait AgentSelectionMetadata {
+    /// Returns a stable item name shown in menus.
+    fn name(&self) -> &'static str;
+
+    /// Returns a short descriptive subtitle shown in menus.
+    fn description(&self) -> &'static str;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKind {
     Gemini,
@@ -175,6 +184,19 @@ impl FromStr for GeminiModel {
     }
 }
 
+impl AgentSelectionMetadata for GeminiModel {
+    fn name(&self) -> &'static str {
+        (*self).as_str()
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::Gemini3FlashPreview => "Fast Gemini model for quick iterations.",
+            Self::Gemini3ProPreview => "Higher-quality Gemini model for deeper reasoning.",
+        }
+    }
+}
+
 /// Supported Codex model names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CodexModel {
@@ -202,6 +224,19 @@ impl FromStr for CodexModel {
             "gpt-5.3-codex" => Ok(Self::Gpt53Codex),
             "gpt-5.2-codex" => Ok(Self::Gpt52Codex),
             other => Err(format!("unknown Codex model: {other}")),
+        }
+    }
+}
+
+impl AgentSelectionMetadata for CodexModel {
+    fn name(&self) -> &'static str {
+        (*self).as_str()
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::Gpt53Codex => "Latest Codex model for coding quality.",
+            Self::Gpt52Codex => "Faster Codex model with lower cost.",
         }
     }
 }
@@ -244,6 +279,20 @@ impl FromStr for ClaudeModel {
     }
 }
 
+impl AgentSelectionMetadata for ClaudeModel {
+    fn name(&self) -> &'static str {
+        (*self).as_str()
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::ClaudeOpus46 => "Top-tier Claude model for complex tasks.",
+            Self::ClaudeSonnet4520250929 => "Balanced Claude model for quality and latency.",
+            Self::ClaudeHaiku4520251001 => "Fast Claude model for lighter tasks.",
+        }
+    }
+}
+
 /// Model value typed by provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentModel {
@@ -266,6 +315,20 @@ impl AgentModel {
             Self::Claude(_) => AgentKind::Claude,
             Self::Codex(_) => AgentKind::Codex,
             Self::Gemini(_) => AgentKind::Gemini,
+        }
+    }
+}
+
+impl AgentSelectionMetadata for AgentModel {
+    fn name(&self) -> &'static str {
+        (*self).as_str()
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::Claude(model) => model.description(),
+            Self::Codex(model) => model.description(),
+            Self::Gemini(model) => model.description(),
         }
     }
 }
@@ -531,13 +594,27 @@ impl AgentKind {
     }
 }
 
+impl AgentSelectionMetadata for AgentKind {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Gemini => "gemini",
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::Gemini => "Google Gemini CLI agent.",
+            Self::Claude => "Anthropic Claude Code agent.",
+            Self::Codex => "OpenAI Codex CLI agent.",
+        }
+    }
+}
+
 impl fmt::Display for AgentKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Gemini => write!(f, "gemini"),
-            Self::Claude => write!(f, "claude"),
-            Self::Codex => write!(f, "codex"),
-        }
+        write!(f, "{}", self.name())
     }
 }
 
@@ -832,6 +909,20 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_kind_metadata() {
+        // Arrange & Act & Assert
+        assert_eq!(AgentKind::Gemini.name(), "gemini");
+        assert_eq!(AgentKind::Gemini.description(), "Google Gemini CLI agent.");
+        assert_eq!(AgentKind::Claude.name(), "claude");
+        assert_eq!(
+            AgentKind::Claude.description(),
+            "Anthropic Claude Code agent."
+        );
+        assert_eq!(AgentKind::Codex.name(), "codex");
+        assert_eq!(AgentKind::Codex.description(), "OpenAI Codex CLI agent.");
+    }
+
+    #[test]
     fn test_agent_kind_from_str() {
         // Arrange & Act & Assert
         assert_eq!(
@@ -952,6 +1043,31 @@ mod tests {
         assert_eq!(
             AgentModel::Claude(ClaudeModel::ClaudeOpus46).as_str(),
             "claude-opus-4-6"
+        );
+    }
+
+    #[test]
+    fn test_agent_model_metadata() {
+        // Arrange
+        let gemini_model = AgentModel::Gemini(GeminiModel::Gemini3FlashPreview);
+        let claude_model = AgentModel::Claude(ClaudeModel::ClaudeSonnet4520250929);
+        let codex_model = AgentModel::Codex(CodexModel::Gpt53Codex);
+
+        // Act & Assert
+        assert_eq!(gemini_model.name(), "gemini-3-flash-preview");
+        assert_eq!(
+            gemini_model.description(),
+            "Fast Gemini model for quick iterations."
+        );
+        assert_eq!(claude_model.name(), "claude-sonnet-4-5-20250929");
+        assert_eq!(
+            claude_model.description(),
+            "Balanced Claude model for quality and latency."
+        );
+        assert_eq!(codex_model.name(), "gpt-5.3-codex");
+        assert_eq!(
+            codex_model.description(),
+            "Latest Codex model for coding quality."
         );
     }
 
