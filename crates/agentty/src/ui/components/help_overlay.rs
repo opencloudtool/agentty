@@ -11,7 +11,6 @@ const OVERLAY_WIDTH_PERCENT: u16 = 60;
 const OVERLAY_HEIGHT_PERCENT: u16 = 60;
 const MIN_OVERLAY_WIDTH: u16 = 30;
 const MIN_OVERLAY_HEIGHT: u16 = 10;
-const BORDER_SIZE: u16 = 2;
 const SCROLL_X_OFFSET: u16 = 0;
 
 /// Centered popup overlay showing keybindings for the current page.
@@ -41,12 +40,11 @@ impl Component for HelpOverlay<'_> {
 
         let key_width = bindings.iter().map(|(key, _)| key.len()).max().unwrap_or(0);
 
-        let mut lines: Vec<Line<'_>> = Vec::with_capacity(bindings.len() + BORDER_SIZE as usize);
-        lines.push(Line::from(""));
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(bindings.len());
 
         for (key, description) in bindings {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" "),
                 Span::styled(
                     format!("{key:>key_width$}"),
                     Style::default()
@@ -57,12 +55,6 @@ impl Component for HelpOverlay<'_> {
                 Span::styled(*description, Style::default().fg(Color::White)),
             ]));
         }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  Press ? / q / Esc to close",
-            Style::default().fg(Color::DarkGray),
-        )));
 
         let paragraph = Paragraph::new(lines)
             .block(

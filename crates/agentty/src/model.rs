@@ -305,8 +305,6 @@ impl HelpContext {
                 ("a", "Add session"),
                 ("d", "Delete session"),
                 ("Enter", "Open session"),
-                ("j / Down", "Next item"),
-                ("k / Up", "Previous item"),
                 ("Tab", "Switch tab"),
                 ("/", "Command palette"),
                 ("?", "Help"),
@@ -317,20 +315,13 @@ impl HelpContext {
                 ("d", "Show diff"),
                 ("p", "Create PR"),
                 ("m", "Merge"),
-                ("j / Down", "Scroll down"),
-                ("k / Up", "Scroll up"),
                 ("g", "Scroll to top"),
                 ("G", "Scroll to bottom"),
                 ("Ctrl+d", "Half page down"),
                 ("Ctrl+u", "Half page up"),
                 ("?", "Help"),
             ],
-            HelpContext::Diff { .. } => &[
-                ("q / Esc", "Back to session"),
-                ("j / Down", "Scroll down"),
-                ("k / Up", "Scroll up"),
-                ("?", "Help"),
-            ],
+            HelpContext::Diff { .. } => &[("q / Esc", "Back to session"), ("?", "Help")],
             HelpContext::Health => &[
                 ("q / Esc", "Back to list"),
                 ("Ctrl+c", "Back to list"),
@@ -1277,7 +1268,7 @@ mod tests {
         let bindings = context.keybindings();
 
         // Assert
-        assert!(bindings.iter().any(|(key, _)| *key == "j / Down"));
+        assert!(bindings.iter().any(|(key, _)| *key == "q / Esc"));
     }
 
     #[test]
