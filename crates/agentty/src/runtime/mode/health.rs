@@ -1,7 +1,7 @@
 use crossterm::event::{self, KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::AppMode;
+use crate::model::{AppMode, HelpContext};
 use crate::runtime::EventResult;
 
 pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {
@@ -14,6 +14,12 @@ pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {
         }
         KeyCode::Char('r') => {
             app.start_health_checks();
+        }
+        KeyCode::Char('?') => {
+            app.mode = AppMode::Help {
+                context: HelpContext::Health,
+                scroll_offset: 0,
+            };
         }
         _ => {}
     }
@@ -95,5 +101,28 @@ mod tests {
                 .expect("lock poisoned")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn test_handle_question_mark_opens_help_overlay() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::Health;
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::Help {
+                context: HelpContext::Health,
+                scroll_offset: 0,
+            }
+        ));
     }
 }

@@ -18,6 +18,7 @@ pub(crate) async fn handle_key_event(
         AppMode::Diff { .. } => Ok(mode::diff::handle(app, key)),
         AppMode::CommandPalette { .. } => Ok(mode::palette::handle_palette(app, key)),
         AppMode::CommandOption { .. } => mode::palette::handle_option(app, key).await,
+        AppMode::Help { .. } => Ok(mode::help::handle(app, key)),
         AppMode::Health => Ok(mode::health::handle(app, key)),
     }
 }

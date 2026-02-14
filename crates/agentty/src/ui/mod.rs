@@ -11,7 +11,7 @@ use ratatui::widgets::TableState;
 
 use crate::app::session::session_branch;
 use crate::health::HealthEntry;
-use crate::model::{AppMode, Project, Session, Tab};
+use crate::model::{AppMode, HelpContext, Project, Session, Tab};
 
 /// A trait for UI pages that enforces a standard rendering interface.
 pub trait Page {
@@ -162,7 +162,72 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
             )
             .render(f, area);
         }
+        AppMode::Help {
+            context,
+            scroll_offset,
+        } => {
+            render_help_background(
+                f,
+                area,
+                context,
+                sessions,
+                table_state,
+                current_tab,
+                health_checks,
+            );
+            components::help_overlay::HelpOverlay::new(context, *scroll_offset).render(f, area);
+        }
         AppMode::Health => {
+            pages::health::HealthPage::new(health_checks).render(f, area);
+        }
+    }
+}
+
+/// Renders the background page behind the help overlay based on `HelpContext`.
+fn render_help_background(
+    f: &mut Frame,
+    area: Rect,
+    context: &HelpContext,
+    sessions: &[Session],
+    table_state: &mut TableState,
+    current_tab: Tab,
+    health_checks: &Arc<Mutex<Vec<HealthEntry>>>,
+) {
+    match context {
+        HelpContext::List => {
+            render_list_background(f, area, sessions, table_state, current_tab);
+        }
+        HelpContext::View {
+            session_id,
+            scroll_offset: view_scroll,
+        } => {
+            if let Some(session_index) = sessions
+                .iter()
+                .position(|session| session.id == *session_id)
+            {
+                let bg_mode = AppMode::View {
+                    session_id: session_id.clone(),
+                    scroll_offset: *view_scroll,
+                };
+                pages::session_chat::SessionChatPage::new(
+                    sessions,
+                    session_index,
+                    *view_scroll,
+                    &bg_mode,
+                )
+                .render(f, area);
+            }
+        }
+        HelpContext::Diff {
+            session_id,
+            diff,
+            scroll_offset: diff_scroll,
+        } => {
+            if let Some(session) = sessions.iter().find(|session| session.id == *session_id) {
+                pages::diff::DiffPage::new(session, diff.clone(), *diff_scroll).render(f, area);
+            }
+        }
+        HelpContext::Health => {
             pages::health::HealthPage::new(health_checks).render(f, area);
         }
     }
@@ -187,6 +252,10 @@ fn render_footer_bar(
         AppMode::View { session_id, .. }
         | AppMode::Prompt { session_id, .. }
         | AppMode::Diff { session_id, .. } => Some(session_id.as_str()),
+        AppMode::Help {
+            context: HelpContext::View { session_id, .. } | HelpContext::Diff { session_id, .. },
+            ..
+        } => Some(session_id.as_str()),
         _ => None,
     };
     let session_for_footer =

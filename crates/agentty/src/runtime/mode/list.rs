@@ -3,7 +3,7 @@ use std::io;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::{AppMode, InputState, PaletteFocus, PromptSlashState, Status};
+use crate::model::{AppMode, HelpContext, InputState, PaletteFocus, PromptSlashState, Status};
 use crate::runtime::EventResult;
 
 /// Handles key input while the app is in list mode.
@@ -63,6 +63,12 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
         }
         KeyCode::Char('d') => {
             app.delete_selected_session().await;
+        }
+        KeyCode::Char('?') => {
+            app.mode = AppMode::Help {
+                context: HelpContext::List,
+                scroll_offset: 0,
+            };
         }
         _ => {}
     }
@@ -336,5 +342,29 @@ mod tests {
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
         assert!(app.session_state.sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_question_mark_opens_help_overlay() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::Help {
+                context: HelpContext::List,
+                scroll_offset: 0,
+            }
+        ));
     }
 }

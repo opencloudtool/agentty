@@ -55,7 +55,7 @@ impl Page for HealthPage<'_> {
         f.render_widget(paragraph, main_area);
 
         let help_message =
-            Paragraph::new("q: back | r: rerun").style(Style::default().fg(Color::Gray));
+            Paragraph::new("q: back | r: rerun | ?: help").style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, footer_area);
     }
 }

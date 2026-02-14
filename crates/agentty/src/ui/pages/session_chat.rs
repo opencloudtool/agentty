@@ -237,9 +237,10 @@ impl<'a> SessionChatPage<'a> {
             return;
         }
 
-        let help_message =
-            Paragraph::new("q: back | enter: reply | d: diff | p: pr | m: merge | j/k: scroll")
-                .style(Style::default().fg(Color::Gray));
+        let help_message = Paragraph::new(
+            "q: back | enter: reply | d: diff | p: pr | m: merge | j/k: scroll | ?: help",
+        )
+        .style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, bottom_area);
     }
 }

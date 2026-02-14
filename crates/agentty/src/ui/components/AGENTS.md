@@ -6,6 +6,7 @@ Reusable UI widgets implementing the `Component` trait.
 - [chat_input.rs](chat_input.rs) - Chat input component.
 - [command_palette.rs](command_palette.rs) - Command palette and option list components.
 - [footer_bar.rs](footer_bar.rs) - Footer bar component.
+- [help_overlay.rs](help_overlay.rs) - Help overlay popup component.
 - [mod.rs](mod.rs) - Component module exports.
 - [status_bar.rs](status_bar.rs) - Status bar component.
 - [tab.rs](tab.rs) - Tabs navigation component.

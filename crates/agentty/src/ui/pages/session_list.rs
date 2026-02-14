@@ -67,7 +67,7 @@ impl Page for SessionListPage<'_> {
         f.render_stateful_widget(table, main_area, self.table_state);
 
         let help_message = Paragraph::new(
-            "q: quit | /: command | a: add | d: delete | o: open | Enter: view | j/k: nav",
+            "q: quit | /: command | a: add | d: delete | Enter: view | j/k: nav | ?: help",
         )
         .style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, footer_area);

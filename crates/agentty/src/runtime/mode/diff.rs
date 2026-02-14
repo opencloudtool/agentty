@@ -1,10 +1,33 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::AppMode;
+use crate::model::{AppMode, HelpContext};
 use crate::runtime::EventResult;
 
 pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {
+    if key.code == KeyCode::Char('?') {
+        let mode = std::mem::replace(&mut app.mode, AppMode::List);
+        if let AppMode::Diff {
+            session_id,
+            diff,
+            scroll_offset,
+        } = mode
+        {
+            app.mode = AppMode::Help {
+                context: HelpContext::Diff {
+                    session_id,
+                    diff,
+                    scroll_offset,
+                },
+                scroll_offset: 0,
+            };
+        } else {
+            app.mode = mode;
+        }
+
+        return EventResult::Continue;
+    }
+
     if let AppMode::Diff {
         session_id,
         diff: _,
@@ -140,5 +163,36 @@ mod tests {
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_handle_question_mark_opens_help_overlay() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::Diff {
+            session_id: "session-id".to_string(),
+            diff: "diff output".to_string(),
+            scroll_offset: 5,
+        };
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::Help {
+                context: HelpContext::Diff {
+                    ref session_id,
+                    ref diff,
+                    scroll_offset: 5,
+                },
+                scroll_offset: 0,
+            } if session_id == "session-id" && diff == "diff output"
+        ));
     }
 }

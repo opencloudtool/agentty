@@ -273,7 +273,101 @@ pub enum AppMode {
         command: PaletteCommand,
         selected_index: usize,
     },
+    Help {
+        context: HelpContext,
+        scroll_offset: u16,
+    },
     Health,
+}
+
+/// Captures which page opened the help overlay so it can be restored on close.
+pub enum HelpContext {
+    List,
+    View {
+        session_id: String,
+        scroll_offset: Option<u16>,
+    },
+    Diff {
+        session_id: String,
+        diff: String,
+        scroll_offset: u16,
+    },
+    Health,
+}
+
+impl HelpContext {
+    /// Returns the keybinding pairs `(key, description)` for the originating
+    /// page.
+    pub fn keybindings(&self) -> &[(&str, &str)] {
+        match self {
+            HelpContext::List => &[
+                ("q", "Quit"),
+                ("a", "Add session"),
+                ("d", "Delete session"),
+                ("Enter", "Open session"),
+                ("j / Down", "Next item"),
+                ("k / Up", "Previous item"),
+                ("Tab", "Switch tab"),
+                ("/", "Command palette"),
+                ("?", "Help"),
+            ],
+            HelpContext::View { .. } => &[
+                ("q", "Back to list"),
+                ("Enter", "Reply"),
+                ("d", "Show diff"),
+                ("p", "Create PR"),
+                ("m", "Merge"),
+                ("j / Down", "Scroll down"),
+                ("k / Up", "Scroll up"),
+                ("g", "Scroll to top"),
+                ("G", "Scroll to bottom"),
+                ("Ctrl+d", "Half page down"),
+                ("Ctrl+u", "Half page up"),
+                ("?", "Help"),
+            ],
+            HelpContext::Diff { .. } => &[
+                ("q / Esc", "Back to session"),
+                ("j / Down", "Scroll down"),
+                ("k / Up", "Scroll up"),
+                ("?", "Help"),
+            ],
+            HelpContext::Health => &[
+                ("q / Esc", "Back to list"),
+                ("Ctrl+c", "Back to list"),
+                ("r", "Rerun checks"),
+                ("?", "Help"),
+            ],
+        }
+    }
+
+    /// Reconstructs the `AppMode` that was active before help was opened.
+    pub fn restore_mode(self) -> AppMode {
+        match self {
+            HelpContext::List => AppMode::List,
+            HelpContext::View {
+                session_id,
+                scroll_offset,
+            } => AppMode::View {
+                session_id,
+                scroll_offset,
+            },
+            HelpContext::Diff {
+                session_id,
+                diff,
+                scroll_offset,
+            } => AppMode::Diff {
+                session_id,
+                diff,
+                scroll_offset,
+            },
+            HelpContext::Health => AppMode::Health,
+        }
+    }
+
+    /// Display title for the help overlay header.
+    pub fn title(&self) -> &'static str {
+        "Keybindings"
+    }
 }
 
 /// Steps in prompt slash command selection.
@@ -1138,5 +1232,138 @@ mod tests {
 
         // Assert — column 0 on third line = 'e' (index 6)
         assert_eq!(state.cursor, 6);
+    }
+
+    #[test]
+    fn test_help_context_list_keybindings() {
+        // Arrange
+        let context = HelpContext::List;
+
+        // Act
+        let bindings = context.keybindings();
+
+        // Assert
+        assert!(!bindings.is_empty());
+        assert!(bindings.iter().any(|(key, _)| *key == "q"));
+        assert!(bindings.iter().any(|(key, _)| *key == "?"));
+    }
+
+    #[test]
+    fn test_help_context_view_keybindings() {
+        // Arrange
+        let context = HelpContext::View {
+            session_id: "s1".to_string(),
+            scroll_offset: None,
+        };
+
+        // Act
+        let bindings = context.keybindings();
+
+        // Assert
+        assert!(bindings.iter().any(|(key, _)| *key == "d"));
+        assert!(bindings.iter().any(|(key, _)| *key == "p"));
+    }
+
+    #[test]
+    fn test_help_context_diff_keybindings() {
+        // Arrange
+        let context = HelpContext::Diff {
+            session_id: "s1".to_string(),
+            diff: "diff".to_string(),
+            scroll_offset: 5,
+        };
+
+        // Act
+        let bindings = context.keybindings();
+
+        // Assert
+        assert!(bindings.iter().any(|(key, _)| *key == "j / Down"));
+    }
+
+    #[test]
+    fn test_help_context_health_keybindings() {
+        // Arrange
+        let context = HelpContext::Health;
+
+        // Act
+        let bindings = context.keybindings();
+
+        // Assert
+        assert!(bindings.iter().any(|(key, _)| *key == "r"));
+    }
+
+    #[test]
+    fn test_help_context_restore_mode_list() {
+        // Arrange
+        let context = HelpContext::List;
+
+        // Act
+        let mode = context.restore_mode();
+
+        // Assert
+        assert!(matches!(mode, AppMode::List));
+    }
+
+    #[test]
+    fn test_help_context_restore_mode_view() {
+        // Arrange
+        let context = HelpContext::View {
+            session_id: "s1".to_string(),
+            scroll_offset: Some(10),
+        };
+
+        // Act
+        let mode = context.restore_mode();
+
+        // Assert
+        assert!(matches!(
+            mode,
+            AppMode::View {
+                ref session_id,
+                scroll_offset: Some(10),
+            } if session_id == "s1"
+        ));
+    }
+
+    #[test]
+    fn test_help_context_restore_mode_diff() {
+        // Arrange
+        let context = HelpContext::Diff {
+            session_id: "s1".to_string(),
+            diff: "diff content".to_string(),
+            scroll_offset: 3,
+        };
+
+        // Act
+        let mode = context.restore_mode();
+
+        // Assert
+        assert!(matches!(
+            mode,
+            AppMode::Diff {
+                ref session_id,
+                ref diff,
+                scroll_offset: 3,
+            } if session_id == "s1" && diff == "diff content"
+        ));
+    }
+
+    #[test]
+    fn test_help_context_restore_mode_health() {
+        // Arrange
+        let context = HelpContext::Health;
+
+        // Act
+        let mode = context.restore_mode();
+
+        // Assert
+        assert!(matches!(mode, AppMode::Health));
+    }
+
+    #[test]
+    fn test_help_context_title_returns_keybindings() {
+        // Arrange & Act & Assert
+        assert_eq!(HelpContext::List.title(), "Keybindings");
+        assert_eq!(HelpContext::Health.title(), "Keybindings");
     }
 }

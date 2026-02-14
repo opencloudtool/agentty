@@ -135,8 +135,8 @@ impl Page for DiffPage<'_> {
 
         f.render_widget(paragraph, output_area);
 
-        let help_message =
-            Paragraph::new("q: back | j/k: scroll").style(Style::default().fg(Color::Gray));
+        let help_message = Paragraph::new("q: back | j/k: scroll | ?: help")
+            .style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, footer_area);
     }
 }

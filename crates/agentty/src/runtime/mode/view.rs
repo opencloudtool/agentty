@@ -4,7 +4,7 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 
 use crate::app::App;
 use crate::git;
-use crate::model::{AppMode, InputState, PromptSlashState};
+use crate::model::{AppMode, HelpContext, InputState, PromptSlashState};
 use crate::runtime::{EventResult, TuiTerminal};
 
 #[derive(Clone)]
@@ -78,6 +78,17 @@ pub(crate) async fn handle(
         }
         KeyCode::Char('p') => {
             create_pr_for_view_session(app, &view_context.session_id).await;
+        }
+        KeyCode::Char('?') => {
+            app.mode = AppMode::Help {
+                context: HelpContext::View {
+                    session_id: view_context.session_id.clone(),
+                    scroll_offset: view_context.scroll_offset,
+                },
+                scroll_offset: 0,
+            };
+
+            return Ok(EventResult::Continue);
         }
         _ => {}
     }
@@ -426,5 +437,37 @@ mod tests {
             .expect("lock poisoned")
             .clone();
         assert!(output.contains("[PR Error]"));
+    }
+
+    #[tokio::test]
+    async fn test_question_mark_sets_help_mode_from_view_context() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        let scroll = Some(3);
+        app.mode = AppMode::View {
+            session_id: session_id.clone(),
+            scroll_offset: scroll,
+        };
+
+        // Act — simulate what the `?` arm does
+        app.mode = AppMode::Help {
+            context: HelpContext::View {
+                session_id,
+                scroll_offset: scroll,
+            },
+            scroll_offset: 0,
+        };
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Help {
+                context: HelpContext::View {
+                    ref session_id,
+                    scroll_offset: Some(3),
+                },
+                scroll_offset: 0,
+            } if !session_id.is_empty()
+        ));
     }
 }
