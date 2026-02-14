@@ -477,6 +477,30 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Clears a session's chat history, resetting it to a fresh state.
+    ///
+    /// Resets output, prompt, title, status, and token statistics while
+    /// preserving the session identity, worktree, agent, and model.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be updated.
+    pub async fn clear_session_history(&self, id: &str) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET output = '', prompt = '', title = NULL, status = 'New',
+    input_tokens = NULL, output_tokens = NULL
+WHERE id = ?
+",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to clear session history: {err}"))?;
+
+        Ok(())
+    }
+
     /// Returns the persisted base branch for a session, when present.
     ///
     /// # Errors
@@ -1276,5 +1300,70 @@ WHERE id = 'beta'
         // Assert
         assert_eq!(sessions[0].input_tokens, None);
         assert_eq!(sessions[0].output_tokens, None);
+    }
+
+    #[tokio::test]
+    async fn test_clear_session_history() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session(
+            "sess1",
+            "claude",
+            "claude-opus-4-6",
+            "main",
+            "Review",
+            project_id,
+        )
+        .await
+        .expect("failed to insert");
+        db.update_session_prompt("sess1", "Fix the bug")
+            .await
+            .expect("failed to update prompt");
+        db.append_session_output("sess1", "Agent output here")
+            .await
+            .expect("failed to append output");
+        db.update_session_title("sess1", "Fix the bug")
+            .await
+            .expect("failed to update title");
+        let stats = SessionStats {
+            input_tokens: Some(1000),
+            output_tokens: Some(500),
+        };
+        db.update_session_stats("sess1", &stats)
+            .await
+            .expect("failed to update stats");
+
+        // Act
+        let result = db.clear_session_history("sess1").await;
+
+        // Assert
+        assert!(result.is_ok());
+        let sessions = db.load_sessions().await.expect("failed to load");
+        assert_eq!(sessions[0].output, "");
+        assert_eq!(sessions[0].prompt, "");
+        assert_eq!(sessions[0].title, None);
+        assert_eq!(sessions[0].status, "New");
+        assert_eq!(sessions[0].input_tokens, None);
+        assert_eq!(sessions[0].output_tokens, None);
+        // Preserved fields
+        assert_eq!(sessions[0].agent, "claude");
+        assert_eq!(sessions[0].model, "claude-opus-4-6");
+        assert_eq!(sessions[0].base_branch, "main");
+    }
+
+    #[tokio::test]
+    async fn test_clear_session_history_nonexistent_id() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+
+        // Act
+        let result = db.clear_session_history("nonexistent").await;
+
+        // Assert — no-op, no error
+        assert!(result.is_ok());
     }
 }

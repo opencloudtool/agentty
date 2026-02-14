@@ -315,6 +315,41 @@ impl App {
         Ok(())
     }
 
+    /// Clears a session's chat history and resets it to a fresh state.
+    ///
+    /// Preserves the session identity, worktree, commit count, agent, and
+    /// model. Resets output, prompt, title, status, and token statistics so
+    /// the next prompt starts the agent without `--resume`.
+    ///
+    /// # Errors
+    /// Returns an error if the session is not found or the database update
+    /// fails.
+    pub async fn clear_session_history(&mut self, session_id: &str) -> Result<(), String> {
+        let session_index = self
+            .session_index_for_id(session_id)
+            .ok_or_else(|| "Session not found".to_string())?;
+        let session = self
+            .session_state
+            .sessions
+            .get_mut(session_index)
+            .ok_or_else(|| "Session not found".to_string())?;
+
+        if let Ok(mut output_buffer) = session.output.lock() {
+            output_buffer.clear();
+        }
+        session.prompt = String::new();
+        session.title = None;
+        session.stats = SessionStats::default();
+        if let Ok(mut status_value) = session.status.lock() {
+            *status_value = Status::New;
+        }
+
+        self.db.clear_session_history(session_id).await?;
+        self.update_sessions_metadata_cache().await;
+
+        Ok(())
+    }
+
     pub fn selected_session(&self) -> Option<&Session> {
         self.session_state
             .table_state
@@ -2363,5 +2398,128 @@ WHERE id = 'beta0000'
 
         // Assert
         assert_eq!(branch, "agentty/a1b2c3d4");
+    }
+
+    // --- clear_session_history ---
+
+    #[tokio::test]
+    async fn test_clear_session_history() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        create_and_start_session(&mut app, "Fix the bug").await;
+        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+
+        // Act
+        let result = app.clear_session_history(&session_id).await;
+
+        // Assert
+        assert!(result.is_ok());
+        let session = &app.session_state.sessions[0];
+        let output = session
+            .output
+            .lock()
+            .expect("failed to lock output")
+            .clone();
+        assert!(output.is_empty());
+        assert!(session.prompt.is_empty());
+        assert_eq!(session.title, None);
+        assert_eq!(session.status(), Status::New);
+        assert_eq!(session.stats.input_tokens, None);
+        assert_eq!(session.stats.output_tokens, None);
+
+        // Verify DB was updated
+        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        assert_eq!(db_sessions[0].output, "");
+        assert_eq!(db_sessions[0].prompt, "");
+        assert_eq!(db_sessions[0].title, None);
+        assert_eq!(db_sessions[0].status, "New");
+    }
+
+    #[tokio::test]
+    async fn test_clear_session_history_preserves_agent_and_model() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        create_and_start_session(&mut app, "Hello").await;
+        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+        let _ = app.set_session_agent_and_model(
+            &session_id,
+            AgentKind::Claude,
+            AgentKind::Claude.default_model(),
+        );
+
+        // Act
+        app.clear_session_history(&session_id)
+            .await
+            .expect("failed to clear");
+
+        // Assert
+        let session = &app.session_state.sessions[0];
+        assert_eq!(session.agent, "claude");
+        assert_eq!(session.model, AgentKind::Claude.default_model().as_str());
+    }
+
+    #[tokio::test]
+    async fn test_clear_session_history_preserves_worktree() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        create_and_start_session(&mut app, "Build feature").await;
+        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+        let folder = app.session_state.sessions[0].folder.clone();
+        assert!(folder.exists());
+
+        // Act
+        app.clear_session_history(&session_id)
+            .await
+            .expect("failed to clear");
+
+        // Assert — worktree folder still exists
+        assert!(folder.exists());
+        assert_eq!(app.session_state.sessions[0].folder, folder);
+    }
+
+    #[tokio::test]
+    async fn test_clear_session_history_invalid_id() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+
+        // Act
+        let result = app.clear_session_history("nonexistent").await;
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("Session not found")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_session_history_resets_for_fresh_agent_context() {
+        // Arrange — a session with a non-empty prompt uses `build_resume_command`.
+        // After clearing, prompt is empty so the next reply uses `build_start_command`.
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        create_and_start_session(&mut app, "Initial prompt").await;
+        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+
+        // Act
+        app.clear_session_history(&session_id)
+            .await
+            .expect("failed to clear");
+
+        // Assert — prompt is empty, meaning reply_with_backend will treat the next
+        // message as is_first_message=true and use build_start_command (no --resume)
+        let session = &app.session_state.sessions[0];
+        assert!(session.prompt.is_empty());
+        assert_eq!(session.status(), Status::New);
     }
 }

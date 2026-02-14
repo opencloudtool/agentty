@@ -51,7 +51,7 @@ impl<'a> SessionChatPage<'a> {
         let (title, options): (&'static str, Vec<SlashMenuOption>) = match stage {
             PromptSlashStage::Command => {
                 let lowered = input.to_lowercase();
-                let commands = ["/model"]
+                let commands = ["/clear", "/model"]
                     .iter()
                     .copied()
                     .filter(|command| command.starts_with(&lowered))
@@ -105,6 +105,7 @@ impl<'a> SessionChatPage<'a> {
 
     fn command_description(command: &str) -> &'static str {
         match command {
+            "/clear" => "Clear chat history and start fresh.",
             "/model" => "Choose an agent and model for this session.",
             _ => "Prompt slash command.",
         }
@@ -518,5 +519,30 @@ mod tests {
         assert_eq!(menu.options[0].label, "file_10.rs");
         assert_eq!(menu.options[9].label, "file_19.rs");
         assert_eq!(menu.selected_index, 5); // 15 - 10 = 5
+    }
+
+    #[test]
+    fn test_build_slash_menu_for_command_stage_includes_clear() {
+        // Arrange
+        let session = session_fixture();
+
+        // Act
+        let menu =
+            SessionChatPage::build_slash_menu("/", PromptSlashStage::Command, None, &session)
+                .expect("expected slash menu");
+
+        // Assert
+        let labels: Vec<&str> = menu.options.iter().map(|opt| opt.label.as_str()).collect();
+        assert!(labels.contains(&"/clear"));
+        assert!(labels.contains(&"/model"));
+    }
+
+    #[test]
+    fn test_command_description_clear() {
+        // Arrange & Act
+        let description = SessionChatPage::command_description("/clear");
+
+        // Assert
+        assert_eq!(description, "Clear chat history and start fresh.");
     }
 }
