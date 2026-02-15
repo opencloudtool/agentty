@@ -3,6 +3,7 @@ use crate::app::App;
 use crate::model::Session;
 
 impl App {
+    /// Resolves the persisted agent/model strings into concrete runtime values.
     pub(super) fn resolve_session_agent_and_model(session: &Session) -> (AgentKind, AgentModel) {
         let session_agent = session
             .agent
@@ -15,6 +16,7 @@ impl App {
         (session_agent, session_model)
     }
 
+    /// Summarizes a prompt into a short single-line session title.
     pub(super) fn summarize_title(prompt: &str) -> String {
         let first_line = prompt.lines().next().unwrap_or(prompt).trim();
         if first_line.len() <= 30 {

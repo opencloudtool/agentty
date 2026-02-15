@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::agent::{AgentBackend, AgentKind, AgentModel};
@@ -18,6 +19,12 @@ use crate::model::{AppMode, Project, SESSION_DATA_DIR, Session, SessionStats, St
 pub(super) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
 type SessionHandles = (Arc<Mutex<String>>, Arc<Mutex<Status>>, Arc<Mutex<i64>>);
+
+#[derive(Deserialize)]
+struct ModelMergeCommitMessageResponse {
+    description: String,
+    title: String,
+}
 
 /// Returns the folder path for a session under the given base directory.
 fn session_folder(base: &Path, session_id: &str) -> PathBuf {
@@ -484,8 +491,21 @@ impl App {
         // Build source branch name
         let source_branch = session_branch(&session.id);
 
-        // Build commit message from session prompt
-        let commit_message = format!("Merge session: {}", session.prompt);
+        let squash_diff = {
+            let repo_root = repo_root.clone();
+            let source_branch = source_branch.clone();
+            let base_branch = base_branch.clone();
+
+            tokio::task::spawn_blocking(move || {
+                git::squash_merge_diff(&repo_root, &source_branch, &base_branch)
+            })
+            .await
+            .map_err(|error| format!("Join error: {error}"))?
+            .map_err(|error| format!("Failed to inspect merge diff: {error}"))?
+        };
+
+        let commit_message = Self::generate_merge_commit_message_from_diff(session, &squash_diff)
+            .unwrap_or_else(|| Self::fallback_merge_commit_message(&source_branch, &base_branch));
 
         // Perform squash merge
         {
@@ -518,6 +538,83 @@ impl App {
         Ok(format!(
             "Successfully merged {source_branch} into {base_branch}"
         ))
+    }
+
+    fn generate_merge_commit_message_from_diff(session: &Session, diff: &str) -> Option<String> {
+        let prompt = Self::merge_commit_message_prompt(diff);
+        let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
+        let model_response = Self::generate_merge_commit_message_with_model(
+            &session.folder,
+            session_agent,
+            session_model.as_str(),
+            &prompt,
+        )
+        .ok()?;
+        let parsed_response = Self::parse_merge_commit_message_response(&model_response)?;
+        if parsed_response.description.is_empty() {
+            return Some(parsed_response.title);
+        }
+
+        Some(format!(
+            "{}\n\n{}",
+            parsed_response.title, parsed_response.description
+        ))
+    }
+
+    fn generate_merge_commit_message_with_model(
+        folder: &Path,
+        agent: AgentKind,
+        model: &str,
+        prompt: &str,
+    ) -> Result<String, String> {
+        let backend = agent.create_backend();
+        let output = backend
+            .build_start_command(folder, prompt, model)
+            .output()
+            .map_err(|error| format!("Failed to run merge commit message model: {error}"))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let parsed = agent.parse_response(&stdout, &stderr);
+        let content = parsed.content.trim().to_string();
+
+        if content.is_empty() {
+            let stderr_text = stderr.trim();
+            if stderr_text.is_empty() {
+                return Err("Merge commit message model returned empty output".to_string());
+            }
+
+            return Err(format!(
+                "Merge commit message model returned empty output: {stderr_text}"
+            ));
+        }
+
+        Ok(content)
+    }
+
+    fn parse_merge_commit_message_response(
+        content: &str,
+    ) -> Option<ModelMergeCommitMessageResponse> {
+        serde_json::from_str(content.trim()).ok().or_else(|| {
+            let json_start = content.find('{')?;
+            let json_end = content.rfind('}')?;
+            let json = &content[json_start..=json_end];
+            serde_json::from_str(json).ok()
+        })
+    }
+
+    fn merge_commit_message_prompt(diff: &str) -> String {
+        format!(
+            "Generate a git squash commit message using only the diff below.\nReturn strict JSON \
+             with exactly two keys: `title` and `description`.\nRules:\n- `title` must be one \
+             line and concise.\n- `description` must be commit body text.\n- Use only the diff \
+             content.\n- Do not mention commit messages.\n- Do not wrap the JSON in markdown \
+             fences.\n\nDiff:\n{diff}"
+        )
+    }
+
+    fn fallback_merge_commit_message(source_branch: &str, target_branch: &str) -> String {
+        format!("Apply session updates\n\n- Squash merge `{source_branch}` into `{target_branch}`.")
     }
 
     /// Removes a merged session worktree and deletes its source branch.
@@ -2133,6 +2230,15 @@ WHERE id = 'beta0000'
             branches.trim().is_empty(),
             "branch should be removed after merge"
         );
+
+        let commit_output = Command::new("git")
+            .args(["log", "-1", "--pretty=%B"])
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to read latest commit message");
+        let commit_message = String::from_utf8_lossy(&commit_output.stdout);
+        assert!(!commit_message.trim().is_empty());
+        assert!(!commit_message.contains("Test merge commit"));
     }
 
     #[tokio::test]
@@ -2452,6 +2558,58 @@ WHERE id = 'beta0000'
     fn test_summarize_title_empty() {
         // Arrange & Act & Assert
         assert_eq!(App::summarize_title(""), "");
+    }
+
+    #[test]
+    fn test_parse_merge_commit_message_response_with_json() {
+        // Arrange
+        let content = r#"{"title":"Title","description":"- Detail"}"#;
+
+        // Act
+        let parsed = App::parse_merge_commit_message_response(content);
+
+        // Assert
+        assert!(parsed.is_some());
+        assert_eq!(
+            parsed.as_ref().map(|value| value.title.as_str()),
+            Some("Title")
+        );
+        assert_eq!(
+            parsed.as_ref().map(|value| value.description.as_str()),
+            Some("- Detail")
+        );
+    }
+
+    #[test]
+    fn test_parse_merge_commit_message_response_with_wrapped_json() {
+        // Arrange
+        let content = "response:\n{\"title\":\"Title\",\"description\":\"- Detail\"}\n";
+
+        // Act
+        let parsed = App::parse_merge_commit_message_response(content);
+
+        // Assert
+        assert!(parsed.is_some());
+        assert_eq!(
+            parsed.as_ref().map(|value| value.title.as_str()),
+            Some("Title")
+        );
+    }
+
+    #[test]
+    fn test_fallback_merge_commit_message() {
+        // Arrange
+        let source_branch = "agentty/12345678";
+        let target_branch = "main";
+
+        // Act
+        let message = App::fallback_merge_commit_message(source_branch, target_branch);
+
+        // Assert
+        assert_eq!(
+            message,
+            "Apply session updates\n\n- Squash merge `agentty/12345678` into `main`."
+        );
     }
 
     // --- session_folder / session_branch ---

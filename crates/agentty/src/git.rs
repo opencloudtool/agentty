@@ -162,6 +162,47 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Returns the full patch diff that will be squashed when merging a source
+/// branch into a target branch.
+///
+/// Uses `git diff <target>..<source>`.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository root
+/// * `source_branch` - Name of the branch being merged
+/// * `target_branch` - Name of the branch receiving the squash merge
+///
+/// # Returns
+/// The full patch diff for the squash merge range.
+///
+/// # Errors
+/// Returns an error if invoking `git` fails or `git diff` exits with a
+/// non-zero status.
+pub fn squash_merge_diff(
+    repo_path: &Path,
+    source_branch: &str,
+    target_branch: &str,
+) -> Result<String, String> {
+    let revision_range = format!("{target_branch}..{source_branch}");
+    let output = Command::new("git")
+        .arg("diff")
+        .arg(revision_range)
+        .current_dir(repo_path)
+        .output()
+        .map_err(|error| format!("Failed to execute git: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        return Err(format!(
+            "Failed to read squash merge diff: {}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Performs a squash merge from a source branch to a target branch.
 ///
 /// This function:
@@ -883,6 +924,69 @@ mod tests {
         // Assert
         // Should fail because worktree doesn't exist
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_squash_merge_diff_success() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        Command::new("git")
+            .args(["checkout", "-b", "feature-branch"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+
+        fs::write(dir.path().join("file-one.txt"), "one").expect("test setup failed");
+        Command::new("git")
+            .args(["add", "file-one.txt"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["commit", "-m", "feat: add file one"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+
+        fs::write(dir.path().join("file-two.txt"), "two").expect("test setup failed");
+        Command::new("git")
+            .args(["add", "file-two.txt"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["commit", "-m", "fix: add file two"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+
+        // Act
+        let result = squash_merge_diff(dir.path(), "feature-branch", "main");
+
+        // Assert
+        assert!(result.is_ok());
+        let diff = result.expect("should succeed");
+        assert!(diff.contains("diff --git a/file-one.txt b/file-one.txt"));
+        assert!(diff.contains("diff --git a/file-two.txt b/file-two.txt"));
+    }
+
+    #[test]
+    fn test_squash_merge_diff_invalid_branch() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+
+        // Act
+        let result = squash_merge_diff(dir.path(), "missing-branch", "main");
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("Failed to read squash merge diff")
+        );
     }
 
     #[test]
