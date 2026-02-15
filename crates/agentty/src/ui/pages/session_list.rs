@@ -121,10 +121,10 @@ fn size_column_width() -> Constraint {
 
 fn size_color(size: SessionSize) -> Color {
     match size {
-        SessionSize::Xs => Color::Gray,
-        SessionSize::S => Color::Cyan,
-        SessionSize::M => Color::LightBlue,
-        SessionSize::L => Color::Yellow,
+        SessionSize::Xs => Color::Green,
+        SessionSize::S => Color::LightGreen,
+        SessionSize::M => Color::Yellow,
+        SessionSize::L => Color::LightYellow,
         SessionSize::Xl => Color::LightRed,
         SessionSize::Xxl => Color::Red,
     }
@@ -203,10 +203,10 @@ mod tests {
     fn test_size_color_uses_expected_palette() {
         // Arrange
         let test_cases = [
-            (SessionSize::Xs, Color::Gray),
-            (SessionSize::S, Color::Cyan),
-            (SessionSize::M, Color::LightBlue),
-            (SessionSize::L, Color::Yellow),
+            (SessionSize::Xs, Color::Green),
+            (SessionSize::S, Color::LightGreen),
+            (SessionSize::M, Color::Yellow),
+            (SessionSize::L, Color::LightYellow),
             (SessionSize::Xl, Color::LightRed),
             (SessionSize::Xxl, Color::Red),
         ];
