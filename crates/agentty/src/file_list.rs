@@ -2,7 +2,7 @@ use std::path::Path;
 
 use ignore::WalkBuilder;
 
-const MAX_DEPTH: usize = 5;
+const MAX_DEPTH: usize = 10;
 const MAX_FILES: usize = 500;
 
 /// A single file entry for the `@` mention dropdown.
