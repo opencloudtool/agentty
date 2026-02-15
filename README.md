@@ -34,14 +34,19 @@ npx @opencloudtool/agentty
 - Git (required for session worktree integration)
 - One supported agent CLI installed: `gemini`, `claude`, or `codex`
 
-## Session Agent and Model
+## Session Agent, Model, and Permission Mode
 
-Agent/model configuration is session-scoped.
+Agent/model/permission-mode configuration is session-scoped.
 
 - New sessions start with `gemini` + `gemini-3-flash-preview`.
 - In prompt mode, type `/model` as the first input token to open the multistep picker:
   - choose agent (`gemini`, `codex`, `claude`)
   - choose model from that agent's curated model list
+- Press `Shift+Tab` in chat view or prompt mode to toggle permission mode for the current session.
+- Permission modes:
+  - `auto_edit` (default): runs with standard edit permissions.
+  - `autonomous`: runs with elevated autonomy (backend-specific flags such as `--yolo` or skipping permission prompts).
+- The active mode is shown in the session chat title.
 - Changes apply to that session only and are persisted.
 
 ## Features
