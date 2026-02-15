@@ -369,7 +369,6 @@ impl App {
         }
         session.prompt = String::new();
         session.title = None;
-        session.stats = SessionStats::default();
         if let Ok(mut status_value) = session.status.lock() {
             *status_value = Status::New;
         }
@@ -2492,6 +2491,15 @@ WHERE id = 'beta0000'
         create_and_start_session(&mut app, "Fix the bug").await;
         wait_for_status(&app.session_state.sessions[0], Status::Review).await;
         let session_id = app.session_state.sessions[0].id.clone();
+        let stats = SessionStats {
+            input_tokens: Some(100),
+            output_tokens: Some(50),
+        };
+        app.db
+            .update_session_stats(&session_id, &stats)
+            .await
+            .expect("failed to update stats");
+        app.session_state.sessions[0].stats = stats;
 
         // Act
         let result = app.clear_session_history(&session_id).await;
@@ -2508,8 +2516,8 @@ WHERE id = 'beta0000'
         assert!(session.prompt.is_empty());
         assert_eq!(session.title, None);
         assert_eq!(session.status(), Status::New);
-        assert_eq!(session.stats.input_tokens, None);
-        assert_eq!(session.stats.output_tokens, None);
+        assert_eq!(session.stats.input_tokens, Some(100));
+        assert_eq!(session.stats.output_tokens, Some(50));
 
         // Verify DB was updated
         let db_sessions = app.db.load_sessions().await.expect("failed to load");
@@ -2517,6 +2525,8 @@ WHERE id = 'beta0000'
         assert_eq!(db_sessions[0].prompt, "");
         assert_eq!(db_sessions[0].title, None);
         assert_eq!(db_sessions[0].status, "New");
+        assert_eq!(db_sessions[0].input_tokens, Some(100));
+        assert_eq!(db_sessions[0].output_tokens, Some(50));
     }
 
     #[tokio::test]

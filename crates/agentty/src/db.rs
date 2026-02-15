@@ -503,8 +503,7 @@ WHERE id = ?
         sqlx::query(
             r"
 UPDATE session
-SET output = '', prompt = '', title = NULL, status = 'New',
-    input_tokens = NULL, output_tokens = NULL
+SET output = '', prompt = '', title = NULL, status = 'New'
 WHERE id = ?
 ",
         )
@@ -1660,8 +1659,8 @@ WHERE id = 'beta'
         assert_eq!(sessions[0].prompt, "");
         assert_eq!(sessions[0].title, None);
         assert_eq!(sessions[0].status, "New");
-        assert_eq!(sessions[0].input_tokens, None);
-        assert_eq!(sessions[0].output_tokens, None);
+        assert_eq!(sessions[0].input_tokens, Some(1000));
+        assert_eq!(sessions[0].output_tokens, Some(500));
         // Preserved fields
         assert_eq!(sessions[0].agent, "claude");
         assert_eq!(sessions[0].model, "claude-opus-4-6");
