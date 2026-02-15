@@ -19,7 +19,7 @@ pub struct FileEntry {
 pub fn list_files(root: &Path) -> Vec<FileEntry> {
     let walker = WalkBuilder::new(root)
         .max_depth(Some(MAX_DEPTH))
-        .hidden(true)
+        .hidden(false)
         .build();
 
     let mut entries: Vec<FileEntry> = walker
@@ -192,6 +192,31 @@ mod tests {
         let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
         assert!(paths.contains(&"kept.txt"));
         assert!(!paths.contains(&"ignored.txt"));
+    }
+
+    #[test]
+    fn test_list_files_includes_non_ignored_dotfiles() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("test expectation should hold");
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("test expectation should hold");
+        fs::write(temp_dir.path().join(".gitignore"), ".ignored-dotfile\n")
+            .expect("test expectation should hold");
+        fs::write(temp_dir.path().join(".visible-dotfile"), "")
+            .expect("test expectation should hold");
+        fs::write(temp_dir.path().join(".ignored-dotfile"), "")
+            .expect("test expectation should hold");
+
+        // Act
+        let entries = list_files(temp_dir.path());
+
+        // Assert
+        let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+        assert!(paths.contains(&".visible-dotfile"));
+        assert!(!paths.contains(&".ignored-dotfile"));
     }
 
     #[test]
