@@ -1,5 +1,6 @@
 //! Per-session async worker orchestration for serialized command execution.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -60,6 +61,20 @@ struct SessionWorkerContext {
 impl App {
     /// Marks unfinished operations from previous process runs as failed.
     pub(super) async fn fail_unfinished_operations_from_previous_run(db: &Database) {
+        let interrupted_session_ids: HashSet<String> = db
+            .load_unfinished_session_operations()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|operation| operation.session_id)
+            .collect();
+
+        for session_id in interrupted_session_ids {
+            let _ = db
+                .update_session_status(&session_id, &Status::Review.to_string())
+                .await;
+        }
+
         let _ = db
             .fail_unfinished_session_operations(RESTART_FAILURE_REASON)
             .await;
@@ -262,6 +277,42 @@ mod tests {
         // Assert
         assert_eq!(reply_kind, "reply");
         assert_eq!(start_prompt_kind, "start_prompt");
+    }
+
+    #[tokio::test]
+    async fn test_fail_unfinished_operations_from_previous_run_restores_session_review_status() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "sess1",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        db.insert_session_operation("op-1", "sess1", "reply")
+            .await
+            .expect("failed to insert session operation");
+
+        // Act
+        App::fail_unfinished_operations_from_previous_run(&db).await;
+        let sessions = db.load_sessions().await.expect("failed to load sessions");
+        let operation_is_unfinished = db
+            .is_session_operation_unfinished("op-1")
+            .await
+            .expect("failed to check operation status");
+
+        // Assert
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].status, "Review");
+        assert!(!operation_is_unfinished);
     }
 
     #[tokio::test]
