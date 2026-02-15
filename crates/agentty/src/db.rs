@@ -1099,6 +1099,7 @@ mod tests {
         let sessions = db.load_sessions().await.expect("failed to load");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].model, "claude-opus-4-6");
+        assert_eq!(sessions[0].permission_mode, "auto_edit");
         assert!(sessions[0].created_at > 0);
         assert!(sessions[0].updated_at > 0);
     }

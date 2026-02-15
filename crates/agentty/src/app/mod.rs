@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
+use crate::agent::{AgentKind, AgentModel};
 use crate::db::Database;
 use crate::health::{self, HealthEntry};
-use crate::model::{AppMode, Project, Session, Tab};
+use crate::model::{AppMode, PermissionMode, Project, Session, Tab};
 
 mod pr;
 mod project;
@@ -64,6 +65,9 @@ pub struct App {
     active_project_id: i64,
     base_path: PathBuf,
     db: Database,
+    default_session_agent: AgentKind,
+    default_session_model: AgentModel,
+    default_session_permission_mode: PermissionMode,
     git_branch: Option<String>,
     git_status: Arc<Mutex<Option<(u32, u32)>>>,
     git_status_cancel: Arc<AtomicBool>,
@@ -97,6 +101,20 @@ impl App {
         let sessions = Self::load_sessions(&base_path, &db, &projects, &[]).await;
         let (sessions_row_count, sessions_updated_at_max) =
             db.load_sessions_metadata().await.unwrap_or((0, 0));
+        let (default_session_agent, default_session_model, default_session_permission_mode) =
+            sessions.first().map_or(
+                (
+                    AgentKind::Gemini,
+                    AgentKind::Gemini.default_model(),
+                    PermissionMode::default(),
+                ),
+                |session| {
+                    let (session_agent, session_model) =
+                        Self::resolve_session_agent_and_model(session);
+
+                    (session_agent, session_model, session.permission_mode)
+                },
+            );
         if sessions.is_empty() {
             table_state.select(None);
         } else {
@@ -128,6 +146,9 @@ impl App {
             active_project_id,
             base_path,
             db,
+            default_session_agent,
+            default_session_model,
+            default_session_permission_mode,
             git_branch,
             git_status,
             git_status_cancel,

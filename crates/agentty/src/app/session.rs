@@ -144,6 +144,9 @@ impl App {
             .git_branch
             .as_deref()
             .ok_or_else(|| "Git branch is required to create a session".to_string())?;
+        let session_agent = self.default_session_agent;
+        let session_model = self.default_session_model;
+        let session_permission_mode = self.default_session_permission_mode;
 
         let session_id = Uuid::new_v4().to_string();
         let folder = session_folder(&self.base_path, &session_id);
@@ -187,8 +190,8 @@ impl App {
             .db
             .insert_session(
                 &session_id,
-                &AgentKind::Gemini.to_string(),
-                AgentKind::Gemini.default_model().as_str(),
+                &session_agent.to_string(),
+                session_model.as_str(),
                 base_branch,
                 &Status::New.to_string(),
                 self.active_project_id,
@@ -207,7 +210,25 @@ impl App {
             return Err(format!("Failed to save session metadata: {err}"));
         }
 
-        AgentKind::Gemini.create_backend().setup(&folder);
+        if session_permission_mode != PermissionMode::AutoEdit
+            && let Err(err) = self
+                .db
+                .update_session_permission_mode(&session_id, session_permission_mode.label())
+                .await
+        {
+            self.rollback_failed_session_creation(
+                &folder,
+                &repo_root,
+                &session_id,
+                &worktree_branch,
+                false,
+            )
+            .await;
+
+            return Err(format!("Failed to save session permission mode: {err}"));
+        }
+
+        session_agent.create_backend().setup(&folder);
 
         let existing_sessions = std::mem::take(&mut self.session_state.sessions);
         self.session_state.sessions = Self::load_sessions(
@@ -355,6 +376,8 @@ impl App {
 
         session.agent.clone_from(&agent);
         session.model.clone_from(&model);
+        self.default_session_agent = session_agent;
+        self.default_session_model = session_model;
 
         let db = self.db.clone();
         let id = session_id.to_string();
@@ -379,6 +402,7 @@ impl App {
 
         session.permission_mode = session.permission_mode.toggle();
         let mode_label = session.permission_mode.label().to_string();
+        self.default_session_permission_mode = session.permission_mode;
 
         let db = self.db.clone();
         let id = session_id.to_string();
@@ -1389,6 +1413,14 @@ mod tests {
         assert_eq!(app.session_state.sessions[0].status(), Status::New);
         assert_eq!(app.session_state.table_state.selected(), Some(0));
         assert_eq!(app.session_state.sessions[0].agent, "gemini");
+        assert_eq!(
+            app.session_state.sessions[0].model,
+            AgentKind::Gemini.default_model().as_str()
+        );
+        assert_eq!(
+            app.session_state.sessions[0].permission_mode,
+            PermissionMode::AutoEdit
+        );
 
         // Check filesystem
         let session_dir = &app.session_state.sessions[0].folder;
@@ -1401,7 +1433,63 @@ mod tests {
         assert_eq!(db_sessions.len(), 1);
         assert_eq!(db_sessions[0].agent, "gemini");
         assert_eq!(db_sessions[0].base_branch, "main");
+        assert_eq!(
+            db_sessions[0].model,
+            AgentKind::Gemini.default_model().as_str()
+        );
+        assert_eq!(
+            db_sessions[0].permission_mode,
+            PermissionMode::AutoEdit.label()
+        );
         assert_eq!(db_sessions[0].status, "New");
+    }
+
+    #[tokio::test]
+    async fn test_create_session_uses_last_used_agent_model_and_permission_mode() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        let first_session_id = app
+            .create_session()
+            .await
+            .expect("failed to create first session");
+        app.set_session_agent_and_model(
+            &first_session_id,
+            AgentKind::Codex,
+            AgentModel::Codex(crate::agent::CodexModel::Gpt52Codex),
+        )
+        .expect("failed to set session agent/model");
+        app.toggle_session_permission_mode(&first_session_id)
+            .expect("failed to toggle permission mode");
+
+        // Act
+        let second_session_id = app
+            .create_session()
+            .await
+            .expect("failed to create second session");
+
+        // Assert
+        let second_session = app
+            .session_state
+            .sessions
+            .iter()
+            .find(|session| session.id == second_session_id)
+            .expect("missing second session");
+        assert_eq!(second_session.agent, "codex");
+        assert_eq!(second_session.model, "gpt-5.2-codex");
+        assert_eq!(second_session.permission_mode, PermissionMode::Autonomous);
+
+        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_second_session = db_sessions
+            .iter()
+            .find(|session| session.id == second_session_id)
+            .expect("missing second session in db");
+        assert_eq!(db_second_session.agent, "codex");
+        assert_eq!(db_second_session.model, "gpt-5.2-codex");
+        assert_eq!(
+            db_second_session.permission_mode,
+            PermissionMode::Autonomous.label()
+        );
     }
 
     #[tokio::test]
@@ -1604,6 +1692,99 @@ mod tests {
         assert_eq!(output, "Output");
         assert_eq!(app.session_state.sessions[0].agent, "claude");
         assert_eq!(app.session_state.table_state.selected(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_create_session_uses_most_recent_loaded_session_defaults() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project(&dir.path().to_string_lossy(), Some("main"))
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "alpha0001",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert alpha0001");
+        db.insert_session(
+            "beta00002",
+            "claude",
+            AgentModel::Claude(crate::agent::ClaudeModel::ClaudeHaiku4520251001).as_str(),
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert beta00002");
+        db.update_session_permission_mode("beta00002", PermissionMode::Autonomous.label())
+            .await
+            .expect("failed to update beta00002 permission mode");
+        sqlx::query(
+            r"
+UPDATE session
+SET updated_at = ?
+WHERE id = ?
+",
+        )
+        .bind(1_i64)
+        .bind("alpha0001")
+        .execute(db.pool())
+        .await
+        .expect("failed to update alpha0001 timestamp");
+        sqlx::query(
+            r"
+UPDATE session
+SET updated_at = ?
+WHERE id = ?
+",
+        )
+        .bind(2_i64)
+        .bind("beta00002")
+        .execute(db.pool())
+        .await
+        .expect("failed to update beta00002 timestamp");
+        for session_id in ["alpha0001", "beta00002"] {
+            let session_dir = session_folder(dir.path(), session_id);
+            let data_dir = session_dir.join(SESSION_DATA_DIR);
+            std::fs::create_dir_all(&data_dir).expect("failed to create session data dir");
+        }
+        let mut app = App::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            Some("main".to_string()),
+            db,
+        )
+        .await;
+
+        // Act
+        let created_session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+
+        // Assert
+        let created_session = app
+            .session_state
+            .sessions
+            .iter()
+            .find(|session| session.id == created_session_id)
+            .expect("missing created session");
+        assert_eq!(created_session.agent, "claude");
+        assert_eq!(
+            created_session.model,
+            AgentModel::Claude(crate::agent::ClaudeModel::ClaudeHaiku4520251001).as_str()
+        );
+        assert_eq!(created_session.permission_mode, PermissionMode::Autonomous);
     }
 
     #[tokio::test]

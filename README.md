@@ -36,9 +36,13 @@ npx @opencloudtool/agentty
 
 ## Session Agent, Model, and Permission Mode
 
-Agent/model/permission-mode configuration is session-scoped.
+Agent, model, and permission mode are configured per session, and the latest
+selection becomes the default for newly created sessions.
 
-- New sessions start with `gemini` + `gemini-3-flash-preview`.
+- New sessions start with the most recently used `agent` + `model` +
+  `permission_mode`.
+- On a fresh setup (no previous session changes), defaults are `gemini` +
+  `gemini-3-flash-preview` + `auto_edit`.
 - In prompt mode, type `/model` as the first input token to open the multistep picker:
   - choose agent (`gemini`, `codex`, `claude`)
   - choose model from that agent's curated model list
@@ -47,7 +51,7 @@ Agent/model/permission-mode configuration is session-scoped.
   - `auto_edit` (default): runs with standard edit permissions.
   - `autonomous`: runs with elevated autonomy (backend-specific flags such as `--yolo` or skipping permission prompts).
 - The active mode is shown in the session chat title.
-- Changes apply to that session only and are persisted.
+- Changes are persisted for that session and used as defaults for future sessions.
 
 ## Features
 
