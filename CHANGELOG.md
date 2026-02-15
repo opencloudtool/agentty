@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.10] - 2026-02-15
+
+### Added
+- **Review Workflow:** Added an explicit `Merging` session status and a review-session rebase action.
+- **Session UX:** Added read-only controls for done sessions and a `/clear` slash command.
+- **Help UI:** Added a `?` keybinding with an updated overlay and descriptive slash-command menu.
+
+### Changed
+- **Session List:** Split session metadata into `Project`, `Model`, and `Status` columns with dynamic width sizing.
+- **Runtime:** Run session commands through per-session workers and restore interrupted sessions into `Review`.
+- **Stats:** Accumulate token usage over time and preserve stats after `/clear`.
+- **Merge Flow:** Enforce merge commit message formatting and normalize co-author trailer handling.
+- **UI Cleanup:** Removed agent labels from session list rows and session chat titles.
+
+### Contributors
+- @andagaev
+- @dependabot[bot]
+- @minev-dev
+
 ## [v0.1.9] - 2026-02-13
 
 ### Added
