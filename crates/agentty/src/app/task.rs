@@ -1,3 +1,6 @@
+//! Session task execution helpers for process running, output capture, and
+//! status persistence.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +15,7 @@ use crate::git;
 use crate::model::{Session, Status};
 
 impl App {
+    /// Spawns a background loop that periodically refreshes ahead/behind info.
     pub(super) fn spawn_git_status_task(
         working_dir: &Path,
         git_status: Arc<Mutex<Option<(u32, u32)>>>,
@@ -48,7 +52,12 @@ impl App {
         });
     }
 
-    pub(super) fn spawn_session_task(
+    /// Executes one agent command, captures output, persists stats, and
+    /// commits.
+    ///
+    /// # Errors
+    /// Returns an error when process spawning fails.
+    pub(super) async fn run_session_task(
         folder: PathBuf,
         cmd: Command,
         output: Arc<Mutex<String>>,
@@ -57,70 +66,79 @@ impl App {
         id: String,
         agent: AgentKind,
         commit_count: Arc<Mutex<i64>>,
-    ) {
+    ) -> Result<(), String> {
         let mut tokio_cmd = tokio::process::Command::from(cmd);
         // Prevent the child process from inheriting the TUI's terminal on
-        // stdin.  On macOS the child can otherwise disturb crossterm's raw-mode
+        // stdin. On macOS the child can otherwise disturb crossterm's raw-mode
         // settings, causing the event reader to stall and the UI to freeze.
         tokio_cmd.stdin(std::process::Stdio::null());
-        tokio::spawn(async move {
-            match tokio_cmd.spawn() {
-                Ok(mut child) => {
-                    let stdout = child.stdout.take();
-                    let stderr = child.stderr.take();
 
-                    let raw_stdout = Arc::new(Mutex::new(String::new()));
-                    let raw_stderr = Arc::new(Mutex::new(String::new()));
-                    let mut handles = Vec::new();
+        let mut error: Option<String> = None;
 
-                    if let Some(stdout) = stdout {
-                        let buffer = Arc::clone(&raw_stdout);
-                        handles.push(tokio::spawn(async move {
-                            Self::capture_raw_output(stdout, &buffer).await;
-                        }));
-                    }
-                    if let Some(stderr) = stderr {
-                        let buffer = Arc::clone(&raw_stderr);
-                        handles.push(tokio::spawn(async move {
-                            Self::capture_raw_output(stderr, &buffer).await;
-                        }));
-                    }
+        match tokio_cmd.spawn() {
+            Ok(mut child) => {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
 
-                    for handle in handles {
-                        let _ = handle.await;
-                    }
-                    let _ = child.wait().await;
+                let raw_stdout = Arc::new(Mutex::new(String::new()));
+                let raw_stderr = Arc::new(Mutex::new(String::new()));
+                let mut handles = Vec::new();
 
-                    let stdout_text = raw_stdout.lock().map(|buf| buf.clone()).unwrap_or_default();
-                    let stderr_text = raw_stderr.lock().map(|buf| buf.clone()).unwrap_or_default();
-                    let parsed = agent.parse_response(&stdout_text, &stderr_text);
-                    Self::append_session_output(&output, &folder, &db, &id, &parsed.content).await;
-
-                    let _ = db.update_session_stats(&id, &parsed.stats).await;
-
-                    // Auto-commit all changes after agent finishes
-                    match Self::commit_changes(&folder, &db, &id, &commit_count).await {
-                        Ok(hash) => {
-                            let message = format!("\n[Commit] committed with hash `{hash}`\n");
-                            Self::append_session_output(&output, &folder, &db, &id, &message).await;
-                        }
-                        Err(error) if error.contains("Nothing to commit") => {}
-                        Err(error) => {
-                            let message = format!("\n[Commit Error] {error}\n");
-                            Self::append_session_output(&output, &folder, &db, &id, &message).await;
-                        }
-                    }
+                if let Some(stdout) = stdout {
+                    let buffer = Arc::clone(&raw_stdout);
+                    handles.push(tokio::spawn(async move {
+                        Self::capture_raw_output(stdout, &buffer).await;
+                    }));
                 }
-                Err(e) => {
-                    let message = format!("Failed to spawn process: {e}\n");
-                    Self::append_session_output(&output, &folder, &db, &id, &message).await;
+
+                if let Some(stderr) = stderr {
+                    let buffer = Arc::clone(&raw_stderr);
+                    handles.push(tokio::spawn(async move {
+                        Self::capture_raw_output(stderr, &buffer).await;
+                    }));
+                }
+
+                for handle in handles {
+                    let _ = handle.await;
+                }
+                let _ = child.wait().await;
+
+                let stdout_text = raw_stdout.lock().map(|buf| buf.clone()).unwrap_or_default();
+                let stderr_text = raw_stderr.lock().map(|buf| buf.clone()).unwrap_or_default();
+                let parsed = agent.parse_response(&stdout_text, &stderr_text);
+                Self::append_session_output(&output, &folder, &db, &id, &parsed.content).await;
+
+                let _ = db.update_session_stats(&id, &parsed.stats).await;
+
+                match Self::commit_changes(&folder, &db, &id, &commit_count).await {
+                    Ok(hash) => {
+                        let message = format!("\n[Commit] committed with hash `{hash}`\n");
+                        Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                    }
+                    Err(commit_error) if commit_error.contains("Nothing to commit") => {}
+                    Err(commit_error) => {
+                        let message = format!("\n[Commit Error] {commit_error}\n");
+                        Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                    }
                 }
             }
+            Err(spawn_error) => {
+                let message = format!("Failed to spawn process: {spawn_error}\n");
+                Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                error = Some(message.trim().to_string());
+            }
+        }
 
-            Self::update_status(&status, &db, &id, Status::Review).await;
-        });
+        let _ = Self::update_status(&status, &db, &id, Status::Review).await;
+
+        if let Some(error) = error {
+            return Err(error);
+        }
+
+        Ok(())
     }
 
+    /// Applies a status transition to memory and database when valid.
     pub(super) async fn update_status(
         status: &Mutex<Status>,
         db: &Database,
@@ -159,6 +177,7 @@ impl App {
         }
     }
 
+    /// Appends output to disk-backed session logs and database state.
     pub(super) async fn append_session_output(
         output: &Arc<Mutex<String>>,
         folder: &Path,

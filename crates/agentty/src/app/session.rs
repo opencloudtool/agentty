@@ -1,3 +1,6 @@
+//! Session lifecycle orchestration for creation, refresh, prompt handling,
+//! history management, merge, and cleanup.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -7,6 +10,7 @@ use uuid::Uuid;
 
 use crate::agent::{AgentBackend, AgentKind, AgentModel};
 use crate::app::App;
+use crate::app::worker::SessionCommand;
 use crate::db::Database;
 use crate::git;
 use crate::model::{AppMode, Project, SESSION_DATA_DIR, Session, SessionStats, Status};
@@ -28,6 +32,7 @@ pub(crate) fn session_branch(session_id: &str) -> String {
 }
 
 impl App {
+    /// Reloads session rows when the metadata cache indicates a change.
     pub async fn refresh_sessions_if_needed(&mut self) {
         if !self.is_session_refresh_due() {
             return;
@@ -62,15 +67,25 @@ impl App {
         self.start_pr_polling_for_pull_request_sessions();
         self.restore_table_selection(selected_session_id.as_deref(), selected_index);
         self.ensure_mode_session_exists();
+        let active_session_ids: std::collections::HashSet<String> = self
+            .session_state
+            .sessions
+            .iter()
+            .map(|session| session.id.clone())
+            .collect();
+        self.session_workers
+            .retain(|session_id, _| active_session_ids.contains(session_id));
 
         self.session_state.row_count = sessions_row_count;
         self.session_state.updated_at_max = sessions_updated_at_max;
     }
 
+    /// Selects the next top-level tab.
     pub fn next_tab(&mut self) {
         self.current_tab = self.current_tab.next();
     }
 
+    /// Moves selection to the next session in the list.
     pub fn next(&mut self) {
         if self.session_state.sessions.is_empty() {
             return;
@@ -88,6 +103,7 @@ impl App {
         self.session_state.table_state.select(Some(i));
     }
 
+    /// Moves selection to the previous session in the list.
     pub fn previous(&mut self) {
         if self.session_state.sessions.is_empty() {
             return;
@@ -213,60 +229,73 @@ impl App {
         let session_index = self
             .session_index_for_id(session_id)
             .ok_or_else(|| "Session not found".to_string())?;
-        let session = self
-            .session_state
-            .sessions
-            .get_mut(session_index)
-            .ok_or_else(|| "Session not found".to_string())?;
+        let (folder, output, persisted_session_id, session_agent, session_model, status, title) = {
+            let session = self
+                .session_state
+                .sessions
+                .get_mut(session_index)
+                .ok_or_else(|| "Session not found".to_string())?;
 
-        session.prompt.clone_from(&prompt);
+            session.prompt.clone_from(&prompt);
 
-        let title = Self::summarize_title(&prompt);
-        session.title = Some(title.clone());
-        let _ = self.db.update_session_title(&session.id, &title).await;
-        let _ = self.db.update_session_prompt(&session.id, &prompt).await;
+            let title = Self::summarize_title(&prompt);
+            session.title = Some(title.clone());
+            let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
+
+            (
+                session.folder.clone(),
+                Arc::clone(&session.output),
+                session.id.clone(),
+                session_agent,
+                session_model,
+                Arc::clone(&session.status),
+                title,
+            )
+        };
+
+        let _ = self
+            .db
+            .update_session_title(&persisted_session_id, &title)
+            .await;
+        let _ = self
+            .db
+            .update_session_prompt(&persisted_session_id, &prompt)
+            .await;
 
         let initial_output = format!(" › {prompt}\n\n");
         Self::append_session_output(
-            &session.output,
-            &session.folder,
+            &output,
+            &folder,
             &self.db,
-            &session.id,
+            &persisted_session_id,
             &initial_output,
         )
         .await;
 
-        let folder = session.folder.clone();
-        let output = Arc::clone(&session.output);
-        let status = Arc::clone(&session.status);
-        let commit_count = Arc::clone(&session.commit_count);
-        let id = session.id.clone();
-        let db = self.db.clone();
-        let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
-
-        let _ = Self::update_status(&status, &db, &id, Status::InProgress).await;
+        let _ =
+            Self::update_status(&status, &self.db, &persisted_session_id, Status::InProgress).await;
 
         let cmd = session_agent.create_backend().build_start_command(
             &folder,
             &prompt,
             session_model.as_str(),
         );
-        Self::spawn_session_task(
-            folder,
-            cmd,
-            output,
-            status,
-            db,
-            id,
-            session_agent,
-            commit_count,
-        );
+        let operation_id = Uuid::new_v4().to_string();
+        self.enqueue_session_command(
+            &persisted_session_id,
+            SessionCommand::StartPrompt {
+                agent: session_agent,
+                command: cmd,
+                operation_id,
+            },
+        )
+        .await?;
 
         Ok(())
     }
 
     /// Submits a follow-up prompt to an existing session.
-    pub fn reply(&mut self, session_id: &str, prompt: &str) {
+    pub async fn reply(&mut self, session_id: &str, prompt: &str) {
         let Some(session_index) = self.session_index_for_id(session_id) else {
             return;
         };
@@ -275,7 +304,8 @@ impl App {
         };
         let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
         let backend = session_agent.create_backend();
-        self.reply_with_backend(session_id, prompt, backend.as_ref(), session_model.as_str());
+        self.reply_with_backend(session_id, prompt, backend.as_ref(), session_model.as_str())
+            .await;
     }
 
     /// Updates and persists the agent/model pair for a single session.
@@ -350,6 +380,7 @@ impl App {
         Ok(())
     }
 
+    /// Returns the currently selected session, if any.
     pub fn selected_session(&self) -> Option<&Session> {
         self.session_state
             .table_state
@@ -373,6 +404,7 @@ impl App {
             .position(|session| session.id == session_id)
     }
 
+    /// Deletes the currently selected session and cleans related resources.
     pub async fn delete_selected_session(&mut self) {
         let Some(i) = self.session_state.table_state.selected() else {
             return;
@@ -382,6 +414,11 @@ impl App {
         }
         let session = self.session_state.sessions.remove(i);
 
+        let _ = self
+            .db
+            .request_cancel_for_session_operations(&session.id)
+            .await;
+        self.clear_session_worker(&session.id);
         let _ = self.db.delete_session(&session.id).await;
         self.cancel_pr_polling_for_session(&session.id);
         self.clear_pr_creation_in_flight(&session.id);
@@ -484,11 +521,10 @@ impl App {
         ))
     }
 
-    /// Creates a pull request for a reviewed session branch.
+    /// Removes a merged session worktree and deletes its source branch.
     ///
     /// # Errors
-    /// Returns an error if the session is not eligible for PR creation or git
-    /// metadata for the worktree is unavailable.
+    /// Returns an error if worktree or branch cleanup fails.
     pub(super) async fn cleanup_merged_session_worktree(
         folder: PathBuf,
         source_branch: String,
@@ -511,6 +547,7 @@ impl App {
         .map_err(|error| format!("Join error: {error}"))?
     }
 
+    /// Resolves a repository root path from a git worktree path.
     pub(super) fn resolve_repo_root_from_worktree(worktree_path: &Path) -> Option<PathBuf> {
         let git_path = worktree_path.join(".git");
         if git_path.is_dir() {
@@ -558,7 +595,8 @@ impl App {
         Ok(commit_hash)
     }
 
-    fn reply_with_backend(
+    /// Queues a prompt using the provided backend for a session.
+    async fn reply_with_backend(
         &mut self,
         session_id: &str,
         prompt: &str,
@@ -568,71 +606,76 @@ impl App {
         let Some(session_index) = self.session_index_for_id(session_id) else {
             return;
         };
-        let Some(session) = self.session_state.sessions.get_mut(session_index) else {
-            return;
+        let (agent, folder, is_first_message, output, persisted_session_id, status, title_to_save) = {
+            let Some(session) = self.session_state.sessions.get_mut(session_index) else {
+                return;
+            };
+
+            // If the session was persisted with a blank prompt (e.g. app closed
+            // before first message), treat the first reply as the initial start.
+            let is_first_message = session.prompt.is_empty();
+            let allowed = session.status() == Status::Review
+                || (is_first_message && session.status() == Status::New);
+            if !allowed {
+                let status_error = "\n[Reply Error] Session must be in review status\n".to_string();
+                session.append_output(&status_error);
+
+                let db = self.db.clone();
+                let id = session.id.clone();
+                tokio::spawn(async move {
+                    let _ = db.append_session_output(&id, &status_error).await;
+                });
+
+                return;
+            }
+
+            let mut title_to_save = None;
+            if is_first_message {
+                session.prompt = prompt.to_string();
+                let title = Self::summarize_title(prompt);
+                session.title = Some(title.clone());
+                title_to_save = Some(title);
+            }
+
+            (
+                session
+                    .agent
+                    .parse::<AgentKind>()
+                    .unwrap_or(AgentKind::Gemini),
+                session.folder.clone(),
+                is_first_message,
+                Arc::clone(&session.output),
+                session.id.clone(),
+                Arc::clone(&session.status),
+                title_to_save,
+            )
         };
 
-        // If the session was persisted with a blank prompt (e.g. app closed
-        // before first message), treat the first reply as the initial start.
-        let is_first_message = session.prompt.is_empty();
-        let allowed = session.status() == Status::Review
-            || (is_first_message && session.status() == Status::New);
-        if !allowed {
-            session.append_output("\n[Reply Error] Session must be in review status\n");
-            let db = self.db.clone();
-            let id = session.id.clone();
-            tokio::spawn(async move {
-                let _ = db
-                    .append_session_output(
-                        &id,
-                        "\n[Reply Error] Session must be in review status\n",
-                    )
-                    .await;
-            });
-
-            return;
-        }
-        if is_first_message {
-            session.prompt = prompt.to_string();
-            let title = Self::summarize_title(prompt);
-            session.title = Some(title.clone());
-            let db = self.db.clone();
-            let id = session.id.clone();
-            let prompt = prompt.to_string();
-            tokio::spawn(async move {
-                let _ = db.update_session_title(&id, &title).await;
-                let _ = db.update_session_prompt(&id, &prompt).await;
-            });
+        if let Some(title) = title_to_save {
+            let _ = self
+                .db
+                .update_session_title(&persisted_session_id, &title)
+                .await;
+            let _ = self
+                .db
+                .update_session_prompt(&persisted_session_id, prompt)
+                .await;
         }
 
         let reply_line = format!("\n › {prompt}\n\n");
-        session.append_output(&reply_line);
-        {
-            let db = self.db.clone();
-            let id = session.id.clone();
-            tokio::spawn(async move {
-                let _ = db.append_session_output(&id, &reply_line).await;
-            });
-        }
+        Self::append_session_output(
+            &output,
+            &folder,
+            &self.db,
+            &persisted_session_id,
+            &reply_line,
+        )
+        .await;
 
-        let folder = session.folder.clone();
-        let output = Arc::clone(&session.output);
-        let status = Arc::clone(&session.status);
-        let commit_count = Arc::clone(&session.commit_count);
-        let id = session.id.clone();
-        let db = self.db.clone();
-        let agent = session
-            .agent
-            .parse::<AgentKind>()
-            .unwrap_or(AgentKind::Gemini);
-
-        {
-            let status = Arc::clone(&status);
-            let db = db.clone();
-            let id = id.clone();
-            tokio::spawn(async move {
-                Self::update_status(&status, &db, &id, Status::InProgress).await;
-            });
+        if is_first_message {
+            let _ =
+                Self::update_status(&status, &self.db, &persisted_session_id, Status::InProgress)
+                    .await;
         }
 
         let cmd = if is_first_message {
@@ -640,9 +683,36 @@ impl App {
         } else {
             backend.build_resume_command(&folder, prompt, model)
         };
-        Self::spawn_session_task(folder, cmd, output, status, db, id, agent, commit_count);
+        let operation_id = Uuid::new_v4().to_string();
+        let command = if is_first_message {
+            SessionCommand::StartPrompt {
+                agent,
+                command: cmd,
+                operation_id,
+            }
+        } else {
+            SessionCommand::Reply {
+                agent,
+                command: cmd,
+                operation_id,
+            }
+        };
+        if let Err(error) = self
+            .enqueue_session_command(&persisted_session_id, command)
+            .await
+        {
+            Self::append_session_output(
+                &output,
+                &folder,
+                &self.db,
+                &persisted_session_id,
+                &format!("\n[Reply Error] {error}\n"),
+            )
+            .await;
+        }
     }
 
+    /// Reverts filesystem and database changes after session creation failure.
     async fn rollback_failed_session_creation(
         &self,
         folder: &Path,
@@ -669,10 +739,12 @@ impl App {
         let _ = std::fs::remove_dir_all(folder);
     }
 
+    /// Returns `true` when periodic session refresh should run.
     fn is_session_refresh_due(&self) -> bool {
         Instant::now() >= self.session_state.refresh_deadline
     }
 
+    /// Restores table selection after session list reload.
     fn restore_table_selection(
         &mut self,
         selected_session_id: Option<&str>,
@@ -701,6 +773,7 @@ impl App {
         self.session_state.table_state.select(restored_index);
     }
 
+    /// Switches back to list mode if the currently viewed session is missing.
     fn ensure_mode_session_exists(&mut self) {
         let mode_session_id = match &self.mode {
             AppMode::Prompt { session_id, .. }
@@ -716,6 +789,7 @@ impl App {
         }
     }
 
+    /// Refreshes cached session metadata used by incremental list reloads.
     pub(super) async fn update_sessions_metadata_cache(&mut self) {
         if let Ok((sessions_row_count, sessions_updated_at_max)) =
             self.db.load_sessions_metadata().await
@@ -725,6 +799,7 @@ impl App {
         }
     }
 
+    /// Appends text to a specific session output stream.
     pub(crate) async fn append_output_for_session(&self, session_id: &str, output: &str) {
         let Some(session_index) = self.session_index_for_id(session_id) else {
             return;
@@ -743,6 +818,8 @@ impl App {
         .await;
     }
 
+    /// Loads session models from the database and reuses live handles when
+    /// possible.
     pub(super) async fn load_sessions(
         base: &Path,
         db: &Database,
@@ -961,7 +1038,8 @@ mod tests {
             prompt,
             &start_backend,
             "gemini-3-flash-preview",
-        );
+        )
+        .await;
     }
 
     async fn wait_for_status(session: &Session, expected: Status) {
@@ -1193,7 +1271,7 @@ mod tests {
         let session_id = app.session_state.sessions[0].id.clone();
 
         // Act
-        app.reply(&session_id, "Reply");
+        app.reply(&session_id, "Reply").await;
 
         // Assert
         let session = &app.session_state.sessions[0];
@@ -1699,7 +1777,8 @@ WHERE id = 'beta0000'
             .create_session()
             .await
             .expect("failed to create session");
-        app.reply_with_backend(&session_id, "SpawnInit", &mock, "gemini-3-flash-preview");
+        app.reply_with_backend(&session_id, "SpawnInit", &mock, "gemini-3-flash-preview")
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Assert
@@ -1739,7 +1818,8 @@ WHERE id = 'beta0000'
             "SpawnReply",
             &resume_mock,
             "gemini-3-flash-preview",
-        );
+        )
+        .await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Assert
@@ -1789,7 +1869,8 @@ WHERE id = 'beta0000'
             .create_session()
             .await
             .expect("failed to create session");
-        app.reply_with_backend(&session_id, "AutoCommit", &mock, "gemini-3-flash-preview");
+        app.reply_with_backend(&session_id, "AutoCommit", &mock, "gemini-3-flash-preview")
+            .await;
 
         // Act — wait for agent to finish and auto-commit
         wait_for_status(&app.session_state.sessions[0], Status::Review).await;
@@ -1842,7 +1923,8 @@ WHERE id = 'beta0000'
             .create_session()
             .await
             .expect("failed to create session");
-        app.reply_with_backend(&session_id, "NoChanges", &mock, "gemini-3-flash-preview");
+        app.reply_with_backend(&session_id, "NoChanges", &mock, "gemini-3-flash-preview")
+            .await;
 
         // Act — wait for agent to finish
         wait_for_status(&app.session_state.sessions[0], Status::Review).await;

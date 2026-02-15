@@ -14,3 +14,4 @@ SQLite migrations for the `agentty` crate.
 - [009_add_prompt_output_to_session.sql](009_add_prompt_output_to_session.sql) - Adds prompt/output persistence columns to `session`.
 - [010_add_stats_to_session.sql](010_add_stats_to_session.sql) - Adds token statistics columns to `session`.
 - [011_add_commit_count_to_session.sql](011_add_commit_count_to_session.sql) - Adds `commit_count` to `session`.
+- [012_create_session_operation.sql](012_create_session_operation.sql) - Creates durable per-session operation lifecycle tracking.

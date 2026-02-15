@@ -254,7 +254,7 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
             .await;
         }
     } else {
-        app.reply(&prompt_context.session_id, &prompt);
+        app.reply(&prompt_context.session_id, &prompt).await;
     }
 
     app.mode = AppMode::View {
@@ -1001,5 +1001,21 @@ mod tests {
         {
             assert!(at_mention_state.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_cancel_key_deletes_blank_session() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("", None).await;
+        let prompt_context = prompt_context(&mut app).expect("expected prompt context");
+        assert!(prompt_context.is_new_session);
+        assert_eq!(app.session_state.sessions.len(), 1);
+
+        // Act
+        handle_prompt_cancel_key(&mut app, &prompt_context).await;
+
+        // Assert
+        assert!(matches!(app.mode, AppMode::List));
+        assert!(app.session_state.sessions.is_empty());
     }
 }

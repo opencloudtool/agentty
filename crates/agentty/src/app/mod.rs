@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use ratatui::widgets::TableState;
+use tokio::sync::mpsc;
 
 use crate::db::Database;
 use crate::health::{self, HealthEntry};
@@ -14,6 +15,7 @@ mod project;
 pub(crate) mod session;
 mod task;
 mod title;
+mod worker;
 
 pub const AGENTTY_WT_DIR: &str = "wt";
 
@@ -70,6 +72,7 @@ pub struct App {
     health_checks: Arc<Mutex<Vec<HealthEntry>>>,
     pr_creation_in_flight: Arc<Mutex<HashSet<String>>>,
     pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    session_workers: HashMap<String, mpsc::UnboundedSender<worker::SessionCommand>>,
     working_dir: PathBuf,
 }
 
@@ -88,6 +91,7 @@ impl App {
         let _ = db.backfill_sessions_project(active_project_id).await;
 
         Self::discover_sibling_projects(&working_dir, &db).await;
+        Self::fail_unfinished_operations_from_previous_run(&db).await;
 
         let projects = Self::load_projects_from_db(&db).await;
 
@@ -133,6 +137,7 @@ impl App {
             pr_creation_in_flight,
             pr_poll_cancel,
             projects,
+            session_workers: HashMap::new(),
             working_dir,
         };
 

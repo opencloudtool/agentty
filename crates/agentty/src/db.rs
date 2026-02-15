@@ -31,6 +31,7 @@
 //!   recreate it from scratch.
 
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
@@ -66,6 +67,20 @@ pub struct SessionRow {
     pub status: String,
     pub title: Option<String>,
     pub updated_at: i64,
+}
+
+/// Persisted operation lifecycle state for one session command.
+pub struct SessionOperationRow {
+    pub cancel_requested: bool,
+    pub finished_at: Option<i64>,
+    pub heartbeat_at: Option<i64>,
+    pub id: String,
+    pub kind: String,
+    pub last_error: Option<String>,
+    pub queued_at: i64,
+    pub session_id: String,
+    pub started_at: Option<i64>,
+    pub status: String,
 }
 
 impl Database {
@@ -501,6 +516,298 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Inserts a queued operation row for a session.
+    ///
+    /// # Errors
+    /// Returns an error if the operation row cannot be inserted.
+    pub async fn insert_session_operation(
+        &self,
+        operation_id: &str,
+        session_id: &str,
+        kind: &str,
+    ) -> Result<(), String> {
+        let queued_at = unix_timestamp_now();
+
+        sqlx::query(
+            r"
+INSERT INTO session_operation (id, session_id, kind, status, queued_at)
+VALUES (?, ?, ?, 'queued', ?)
+",
+        )
+        .bind(operation_id)
+        .bind(session_id)
+        .bind(kind)
+        .bind(queued_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to insert session operation: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Loads operations still waiting in queue or currently running.
+    ///
+    /// # Errors
+    /// Returns an error if operation rows cannot be read.
+    pub async fn load_unfinished_session_operations(
+        &self,
+    ) -> Result<Vec<SessionOperationRow>, String> {
+        let rows = sqlx::query(
+            r"
+SELECT id, session_id, kind, status, queued_at, started_at, finished_at,
+       heartbeat_at, last_error, cancel_requested
+FROM session_operation
+WHERE status IN ('queued', 'running')
+ORDER BY queued_at ASC, id ASC
+",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to load unfinished session operations: {err}"))?;
+
+        Ok(rows
+            .iter()
+            .map(|row| SessionOperationRow {
+                cancel_requested: row.get::<i64, _>("cancel_requested") != 0,
+                finished_at: row.get("finished_at"),
+                heartbeat_at: row.get("heartbeat_at"),
+                id: row.get("id"),
+                kind: row.get("kind"),
+                last_error: row.get("last_error"),
+                queued_at: row.get("queued_at"),
+                session_id: row.get("session_id"),
+                started_at: row.get("started_at"),
+                status: row.get("status"),
+            })
+            .collect())
+    }
+
+    /// Returns whether an operation is still unfinished.
+    ///
+    /// Unfinished means the operation is in `queued` or `running` status.
+    ///
+    /// # Errors
+    /// Returns an error if operation state cannot be read.
+    pub async fn is_session_operation_unfinished(
+        &self,
+        operation_id: &str,
+    ) -> Result<bool, String> {
+        let row = sqlx::query(
+            r"
+SELECT EXISTS(
+    SELECT 1
+    FROM session_operation
+    WHERE id = ?
+      AND status IN ('queued', 'running')
+) AS is_unfinished
+",
+        )
+        .bind(operation_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to check unfinished operation state: {err}"))?;
+
+        Ok(row.get::<i64, _>("is_unfinished") != 0)
+    }
+
+    /// Marks an operation as running and refreshes its heartbeat timestamp.
+    ///
+    /// # Errors
+    /// Returns an error if the operation row cannot be updated.
+    pub async fn mark_session_operation_running(&self, operation_id: &str) -> Result<(), String> {
+        let now = unix_timestamp_now();
+
+        sqlx::query(
+            r"
+UPDATE session_operation
+SET status = 'running',
+    started_at = COALESCE(started_at, ?),
+    heartbeat_at = ?,
+    last_error = NULL
+WHERE id = ?
+",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(operation_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to mark session operation as running: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Marks an operation as completed successfully.
+    ///
+    /// # Errors
+    /// Returns an error if the operation row cannot be updated.
+    pub async fn mark_session_operation_done(&self, operation_id: &str) -> Result<(), String> {
+        let now = unix_timestamp_now();
+
+        sqlx::query(
+            r"
+UPDATE session_operation
+SET status = 'done',
+    finished_at = ?,
+    heartbeat_at = ?,
+    last_error = NULL
+WHERE id = ?
+",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(operation_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to mark session operation as done: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Marks an operation as failed with an error message.
+    ///
+    /// # Errors
+    /// Returns an error if the operation row cannot be updated.
+    pub async fn mark_session_operation_failed(
+        &self,
+        operation_id: &str,
+        error: &str,
+    ) -> Result<(), String> {
+        let now = unix_timestamp_now();
+
+        sqlx::query(
+            r"
+UPDATE session_operation
+SET status = 'failed',
+    finished_at = ?,
+    heartbeat_at = ?,
+    last_error = ?
+WHERE id = ?
+",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(error)
+        .bind(operation_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to mark session operation as failed: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Marks an operation as canceled.
+    ///
+    /// # Errors
+    /// Returns an error if the operation row cannot be updated.
+    pub async fn mark_session_operation_canceled(
+        &self,
+        operation_id: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        let now = unix_timestamp_now();
+
+        sqlx::query(
+            r"
+UPDATE session_operation
+SET status = 'canceled',
+    finished_at = ?,
+    heartbeat_at = ?,
+    last_error = ?
+WHERE id = ?
+",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(reason)
+        .bind(operation_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to mark session operation as canceled: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Requests cancellation for unfinished operations of a session.
+    ///
+    /// # Errors
+    /// Returns an error if the operation rows cannot be updated.
+    pub async fn request_cancel_for_session_operations(
+        &self,
+        session_id: &str,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session_operation
+SET cancel_requested = 1
+WHERE session_id = ?
+  AND status IN ('queued', 'running')
+",
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to request cancel for session operations: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Returns whether cancellation is requested for unfinished session
+    /// operations.
+    ///
+    /// # Errors
+    /// Returns an error if cancellation state cannot be read.
+    pub async fn is_cancel_requested_for_session_operations(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, String> {
+        let row = sqlx::query(
+            r"
+SELECT EXISTS(
+    SELECT 1
+    FROM session_operation
+    WHERE session_id = ?
+      AND cancel_requested = 1
+      AND status IN ('queued', 'running')
+) AS is_requested
+",
+        )
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to check cancel request for session operations: {err}"))?;
+
+        Ok(row.get::<i64, _>("is_requested") != 0)
+    }
+
+    /// Marks unfinished operations as failed after process restart.
+    ///
+    /// # Errors
+    /// Returns an error if operation rows cannot be updated.
+    pub async fn fail_unfinished_session_operations(&self, reason: &str) -> Result<(), String> {
+        let now = unix_timestamp_now();
+
+        sqlx::query(
+            r"
+UPDATE session_operation
+SET status = 'failed',
+    finished_at = ?,
+    heartbeat_at = ?,
+    last_error = ?,
+    cancel_requested = 1
+WHERE status IN ('queued', 'running')
+",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to fail unfinished session operations: {err}"))?;
+
+        Ok(())
+    }
+
     /// Returns the persisted base branch for a session, when present.
     ///
     /// # Errors
@@ -520,6 +827,12 @@ WHERE id = ?
 
         Ok(row.map(|row| row.get("base_branch")))
     }
+}
+
+fn unix_timestamp_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -1365,5 +1678,169 @@ WHERE id = 'beta'
 
         // Assert — no-op, no error
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_insert_and_load_unfinished_session_operations() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session(
+            "sess1",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "New",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        db.insert_session_operation("op-1", "sess1", "start_prompt")
+            .await
+            .expect("failed to insert operation");
+
+        // Act
+        let operations = db
+            .load_unfinished_session_operations()
+            .await
+            .expect("failed to load operations");
+
+        // Assert
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].id, "op-1");
+        assert_eq!(operations[0].session_id, "sess1");
+        assert_eq!(operations[0].kind, "start_prompt");
+        assert_eq!(operations[0].status, "queued");
+        assert!(!operations[0].cancel_requested);
+    }
+
+    #[tokio::test]
+    async fn test_mark_session_operation_running_and_done() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session(
+            "sess1",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "New",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        db.insert_session_operation("op-2", "sess1", "reply")
+            .await
+            .expect("failed to insert operation");
+
+        // Act
+        db.mark_session_operation_running("op-2")
+            .await
+            .expect("failed to mark running");
+        let running_operations = db
+            .load_unfinished_session_operations()
+            .await
+            .expect("failed to load running operations");
+        db.mark_session_operation_done("op-2")
+            .await
+            .expect("failed to mark done");
+        let operations = db
+            .load_unfinished_session_operations()
+            .await
+            .expect("failed to load operations");
+
+        // Assert
+        assert_eq!(running_operations.len(), 1);
+        assert_eq!(running_operations[0].status, "running");
+        assert!(operations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_request_cancel_for_session_operations() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session(
+            "sess1",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        db.insert_session_operation("op-3", "sess1", "start_prompt")
+            .await
+            .expect("failed to insert operation");
+
+        // Act
+        db.request_cancel_for_session_operations("sess1")
+            .await
+            .expect("failed to request cancel");
+        let is_requested = db
+            .is_cancel_requested_for_session_operations("sess1")
+            .await
+            .expect("failed to check cancel request");
+        db.mark_session_operation_canceled("op-3", "user requested")
+            .await
+            .expect("failed to mark canceled");
+        let pending_after_cancel = db
+            .is_cancel_requested_for_session_operations("sess1")
+            .await
+            .expect("failed to check cancel request after cancel");
+
+        // Assert
+        assert!(is_requested);
+        assert!(!pending_after_cancel);
+    }
+
+    #[tokio::test]
+    async fn test_is_session_operation_unfinished() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session(
+            "sess1",
+            "gemini",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        db.insert_session_operation("op-4", "sess1", "reply")
+            .await
+            .expect("failed to insert operation");
+
+        // Act
+        let is_unfinished_before = db
+            .is_session_operation_unfinished("op-4")
+            .await
+            .expect("failed to read unfinished flag");
+        db.mark_session_operation_done("op-4")
+            .await
+            .expect("failed to mark operation done");
+        let is_unfinished_after = db
+            .is_session_operation_unfinished("op-4")
+            .await
+            .expect("failed to read unfinished flag after done");
+
+        // Assert
+        assert!(is_unfinished_before);
+        assert!(!is_unfinished_after);
     }
 }
