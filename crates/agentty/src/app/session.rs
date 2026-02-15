@@ -1,8 +1,10 @@
 //! Session lifecycle orchestration for creation, refresh, prompt handling,
 //! history management, merge, and cleanup.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,12 +22,28 @@ use crate::model::{
 
 pub(super) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
+const MERGE_COMMIT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(8);
 type SessionHandles = (Arc<Mutex<String>>, Arc<Mutex<Status>>, Arc<Mutex<i64>>);
 
 #[derive(Deserialize)]
 struct ModelMergeCommitMessageResponse {
     description: String,
     title: String,
+}
+
+struct MergeTaskInput {
+    base_branch: String,
+    db: Database,
+    folder: PathBuf,
+    id: String,
+    output: Arc<Mutex<String>>,
+    pr_creation_in_flight: Arc<Mutex<HashSet<String>>>,
+    pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    repo_root: PathBuf,
+    session_agent: AgentKind,
+    session_model: String,
+    source_branch: String,
+    status: Arc<Mutex<Status>>,
 }
 
 /// Returns the folder path for a session under the given base directory.
@@ -522,12 +540,12 @@ impl App {
         self.update_sessions_metadata_cache().await;
     }
 
-    /// Squash-merges a reviewed session branch into its base branch.
+    /// Starts a squash merge for a reviewed session branch in the background.
     ///
     /// # Errors
     /// Returns an error if the session is invalid for merge, required git
-    /// metadata is missing, or the merge/cleanup steps fail.
-    pub async fn merge_session(&self, session_id: &str) -> Result<String, String> {
+    /// metadata is missing, or the status transition to `Merging` fails.
+    pub async fn merge_session(&self, session_id: &str) -> Result<(), String> {
         let session = self
             .session_state
             .sessions
@@ -538,25 +556,75 @@ impl App {
             return Err("Session must be in review status".to_string());
         }
 
-        if !Self::update_status(&session.status, &self.db, &session.id, Status::Merging).await {
+        let db = self.db.clone();
+        let folder = session.folder.clone();
+        let id = session.id.clone();
+        let output = Arc::clone(&session.output);
+        let status = Arc::clone(&session.status);
+        let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
+
+        if !Self::update_status(&status, &db, &id, Status::Merging).await {
             return Err("Invalid status transition to Merging".to_string());
         }
 
+        let base_branch = match db.get_session_base_branch(&id).await {
+            Ok(Some(base_branch)) => base_branch,
+            Ok(None) => {
+                let _ = Self::update_status(&status, &db, &id, Status::Review).await;
+
+                return Err("No git worktree for this session".to_string());
+            }
+            Err(error) => {
+                let _ = Self::update_status(&status, &db, &id, Status::Review).await;
+
+                return Err(error);
+            }
+        };
+
+        let Some(repo_root) = git::find_git_repo_root(&self.working_dir) else {
+            let _ = Self::update_status(&status, &db, &id, Status::Review).await;
+
+            return Err("Failed to find git repository root".to_string());
+        };
+
+        let merge_task_input = MergeTaskInput {
+            base_branch,
+            db,
+            folder,
+            id: id.clone(),
+            output,
+            pr_creation_in_flight: Arc::clone(&self.pr_creation_in_flight),
+            pr_poll_cancel: Arc::clone(&self.pr_poll_cancel),
+            repo_root,
+            session_agent,
+            session_model: session_model.as_str().to_string(),
+            source_branch: session_branch(&id),
+            status,
+        };
+        tokio::spawn(async move {
+            Self::run_merge_task(merge_task_input).await;
+        });
+
+        Ok(())
+    }
+
+    async fn run_merge_task(input: MergeTaskInput) {
+        let MergeTaskInput {
+            base_branch,
+            db,
+            folder,
+            id,
+            output,
+            pr_creation_in_flight,
+            pr_poll_cancel,
+            repo_root,
+            session_agent,
+            session_model,
+            source_branch,
+            status,
+        } = input;
+
         let merge_result: Result<String, String> = async {
-            // Read base branch from DB
-            let base_branch = self
-                .db
-                .get_session_base_branch(&session.id)
-                .await?
-                .ok_or_else(|| "No git worktree for this session".to_string())?;
-
-            // Find repo root
-            let repo_root = git::find_git_repo_root(&self.working_dir)
-                .ok_or_else(|| "Failed to find git repository root".to_string())?;
-
-            // Build source branch name
-            let source_branch = session_branch(&session.id);
-
             let squash_diff = {
                 let repo_root = repo_root.clone();
                 let source_branch = source_branch.clone();
@@ -570,13 +638,29 @@ impl App {
                 .map_err(|error| format!("Failed to inspect merge diff: {error}"))?
             };
 
-            let commit_message =
-                Self::generate_merge_commit_message_from_diff(session, &squash_diff)
-                    .unwrap_or_else(|| {
-                        Self::fallback_merge_commit_message(&source_branch, &base_branch)
-                    });
+            let fallback_commit_message =
+                Self::fallback_merge_commit_message(&source_branch, &base_branch);
+            let commit_message = {
+                let folder = folder.clone();
+                let session_model = session_model.clone();
+                let squash_diff = squash_diff.clone();
+                let fallback_commit_message_for_task = fallback_commit_message.clone();
+                let generate_message = tokio::task::spawn_blocking(move || {
+                    Self::generate_merge_commit_message_from_diff(
+                        &folder,
+                        session_agent,
+                        &session_model,
+                        &squash_diff,
+                    )
+                    .unwrap_or(fallback_commit_message_for_task)
+                });
 
-            // Perform squash merge
+                match tokio::time::timeout(MERGE_COMMIT_MESSAGE_TIMEOUT, generate_message).await {
+                    Ok(Ok(message)) => message,
+                    Ok(Err(_)) | Err(_) => fallback_commit_message,
+                }
+            };
+
             {
                 let repo_root = repo_root.clone();
                 let source_branch = source_branch.clone();
@@ -590,14 +674,14 @@ impl App {
                 .map_err(|error| format!("Failed to merge: {error}"))?;
             }
 
-            if !Self::update_status(&session.status, &self.db, &session.id, Status::Done).await {
+            if !Self::update_status(&status, &db, &id, Status::Done).await {
                 return Err("Invalid status transition to Done".to_string());
             }
 
-            self.cancel_pr_polling_for_session(&session.id);
-            self.clear_pr_creation_in_flight(&session.id);
+            Self::cancel_pr_polling_state(&pr_poll_cancel, &id);
+            Self::clear_pr_creation_in_flight_state(&pr_creation_in_flight, &id);
             Self::cleanup_merged_session_worktree(
-                session.folder.clone(),
+                folder.clone(),
                 source_branch.clone(),
                 Some(repo_root),
             )
@@ -612,12 +696,17 @@ impl App {
         }
         .await;
 
-        if merge_result.is_err() {
-            let _ =
-                Self::update_status(&session.status, &self.db, &session.id, Status::Review).await;
+        match merge_result {
+            Ok(message) => {
+                let merge_message = format!("\n[Merge] {message}\n");
+                Self::append_session_output(&output, &folder, &db, &id, &merge_message).await;
+            }
+            Err(error) => {
+                let merge_error = format!("\n[Merge Error] {error}\n");
+                Self::append_session_output(&output, &folder, &db, &id, &merge_error).await;
+                let _ = Self::update_status(&status, &db, &id, Status::Review).await;
+            }
         }
-
-        merge_result
     }
 
     /// Rebases a reviewed session branch onto its base branch.
@@ -658,13 +747,37 @@ impl App {
         ))
     }
 
-    fn generate_merge_commit_message_from_diff(session: &Session, diff: &str) -> Option<String> {
+    fn cancel_pr_polling_state(
+        pr_poll_cancel: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+        id: &str,
+    ) {
+        if let Ok(mut polling) = pr_poll_cancel.lock()
+            && let Some(cancel) = polling.remove(id)
+        {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn clear_pr_creation_in_flight_state(
+        pr_creation_in_flight: &Arc<Mutex<HashSet<String>>>,
+        id: &str,
+    ) {
+        if let Ok(mut in_flight) = pr_creation_in_flight.lock() {
+            in_flight.remove(id);
+        }
+    }
+
+    fn generate_merge_commit_message_from_diff(
+        folder: &Path,
+        session_agent: AgentKind,
+        session_model: &str,
+        diff: &str,
+    ) -> Option<String> {
         let prompt = Self::merge_commit_message_prompt(diff);
-        let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
         let model_response = Self::generate_merge_commit_message_with_model(
-            &session.folder,
+            folder,
             session_agent,
-            session_model.as_str(),
+            session_model,
             &prompt,
         )
         .ok()?;
@@ -688,8 +801,10 @@ impl App {
         prompt: &str,
     ) -> Result<String, String> {
         let backend = agent.create_backend();
-        let output = backend
-            .build_start_command(folder, prompt, model, PermissionMode::AutoEdit)
+        let mut command =
+            backend.build_start_command(folder, prompt, model, PermissionMode::AutoEdit);
+        command.stdin(Stdio::null());
+        let output = command
             .output()
             .map_err(|error| format!("Failed to run merge commit message model: {error}"))?;
 
@@ -1283,7 +1398,11 @@ mod tests {
     }
 
     async fn wait_for_status(session: &Session, expected: Status) {
-        for _ in 0..40 {
+        wait_for_status_with_retries(session, expected, 40).await;
+    }
+
+    async fn wait_for_status_with_retries(session: &Session, expected: Status, retries: usize) {
+        for _ in 0..retries {
             if session.status() == expected {
                 return;
             }
@@ -2520,7 +2639,11 @@ WHERE id = 'beta0000'
 
         // Assert
         assert!(result.is_ok(), "merge should succeed: {:?}", result.err());
-        assert_eq!(app.session_state.sessions[0].status(), Status::Done);
+        assert!(matches!(
+            app.session_state.sessions[0].status(),
+            Status::Done | Status::Merging
+        ));
+        wait_for_status_with_retries(&app.session_state.sessions[0], Status::Done, 400).await;
         assert!(!session_folder.exists(), "worktree should be removed");
 
         let branch_output = Command::new("git")

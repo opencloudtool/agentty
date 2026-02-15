@@ -194,13 +194,10 @@ async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) {
 }
 
 async fn merge_view_session(app: &mut App, session_id: &str) {
-    let result_message = match app.merge_session(session_id).await {
-        Ok(message) => format!("\n[Merge] {message}\n"),
-        Err(error) => format!("\n[Merge Error] {error}\n"),
-    };
-
-    app.append_output_for_session(session_id, &result_message)
-        .await;
+    if let Err(error) = app.merge_session(session_id).await {
+        app.append_output_for_session(session_id, &format!("\n[Merge Error] {error}\n"))
+            .await;
+    }
 }
 
 async fn rebase_view_session(app: &mut App, session_id: &str) {
