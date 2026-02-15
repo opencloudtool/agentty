@@ -32,7 +32,9 @@ impl Page for SessionListPage<'_> {
 
         let selected_style = Style::default().bg(Color::DarkGray);
         let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
-        let header_cells = ["Session", "Status"].iter().map(|h| Cell::from(*h));
+        let header_cells = ["Session", "Project", "Model", "Status"]
+            .iter()
+            .map(|h| Cell::from(*h));
         let header = Row::new(header_cells)
             .style(normal_style)
             .height(1)
@@ -40,12 +42,9 @@ impl Page for SessionListPage<'_> {
         let rows = self.sessions.iter().map(|session| {
             let status = session.status();
             let cells = vec![
-                Cell::from(format!(
-                    "\"{}\" [{}][{}]",
-                    session.display_title(),
-                    session.project_name,
-                    session.model
-                )),
+                Cell::from(session.display_title().to_string()),
+                Cell::from(session.project_name.clone()),
+                Cell::from(session.model.clone()),
                 Cell::from(format!("{status}")).style(Style::default().fg(status.color())),
             ];
             Row::new(cells).height(1)
@@ -54,8 +53,9 @@ impl Page for SessionListPage<'_> {
             rows,
             [
                 Constraint::Min(0),
+                Constraint::Max(20),
+                Constraint::Max(30),
                 Constraint::Max(14),
-                Constraint::Length(1),
             ],
         )
         .header(header)
