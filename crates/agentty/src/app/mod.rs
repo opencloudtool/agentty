@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::agent::{AgentKind, AgentModel};
 use crate::db::Database;
 use crate::health::{self, HealthEntry};
-use crate::model::{AppMode, PermissionMode, Project, Session, Tab};
+use crate::model::{AppMode, PermissionMode, Project, Session, SessionHandles, Tab};
 
 mod pr;
 mod project;
@@ -31,6 +31,7 @@ pub fn agentty_home() -> PathBuf {
 
 /// Holds all in-memory state related to session listing and refresh tracking.
 pub struct SessionState {
+    pub handles: HashMap<String, SessionHandles>,
     pub sessions: Vec<Session>,
     pub table_state: TableState,
     refresh_deadline: std::time::Instant,
@@ -41,17 +42,39 @@ pub struct SessionState {
 impl SessionState {
     /// Creates a new [`SessionState`] with initial refresh metadata.
     pub fn new(
+        handles: HashMap<String, SessionHandles>,
         sessions: Vec<Session>,
         table_state: TableState,
         row_count: i64,
         updated_at_max: i64,
     ) -> Self {
         Self {
+            handles,
             sessions,
             table_state,
             refresh_deadline: std::time::Instant::now() + session::SESSION_REFRESH_INTERVAL,
             row_count,
             updated_at_max,
+        }
+    }
+
+    /// Copies current values from runtime handles into plain `Session` fields.
+    pub fn sync_from_handles(&mut self) {
+        for session in &mut self.sessions {
+            let Some(handles) = self.handles.get(&session.id) else {
+                continue;
+            };
+            if let Ok(output) = handles.output.lock()
+                && session.output.len() != output.len()
+            {
+                session.output.clone_from(&*output);
+            }
+            if let Ok(status) = handles.status.lock() {
+                session.status = *status;
+            }
+            if let Ok(count) = handles.commit_count.lock() {
+                session.commit_count = *count;
+            }
         }
     }
 }
@@ -98,7 +121,8 @@ impl App {
         let projects = Self::load_projects_from_db(&db).await;
 
         let mut table_state = TableState::default();
-        let sessions = Self::load_sessions(&base_path, &db, &projects, &[]).await;
+        let mut handles = HashMap::new();
+        let sessions = Self::load_sessions(&base_path, &db, &projects, &mut handles).await;
         let (sessions_row_count, sessions_updated_at_max) =
             db.load_sessions_metadata().await.unwrap_or((0, 0));
         let (default_session_agent, default_session_model, default_session_permission_mode) =
@@ -138,6 +162,7 @@ impl App {
             current_tab: Tab::Sessions,
             mode: AppMode::List,
             session_state: SessionState::new(
+                handles,
                 sessions,
                 table_state,
                 sessions_row_count,

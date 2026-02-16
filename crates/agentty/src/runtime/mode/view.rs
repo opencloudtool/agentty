@@ -35,7 +35,7 @@ pub(crate) async fn handle(
     let Some(session) = app.session_state.sessions.get(view_context.session_index) else {
         return Ok(EventResult::Continue);
     };
-    let is_done = session.status() == Status::Done;
+    let is_done = session.status == Status::Done;
 
     match key.code {
         KeyCode::Char('q') => {
@@ -146,8 +146,7 @@ fn view_metrics(
         app.session_state
             .sessions
             .get(session_index)
-            .and_then(|session| session.output.lock().ok())
-            .map_or(0, |output| output.lines().count()),
+            .map_or(0, |session| session.output.lines().count()),
     )
     .unwrap_or(0);
 
@@ -409,17 +408,14 @@ mod tests {
     async fn test_append_output_for_session_appends_text() {
         // Arrange
         let (app, _base_dir, session_id) = new_test_app_with_session().await;
-        let app = app;
+        let mut app = app;
 
         // Act
         app.append_output_for_session(&session_id, "line one").await;
 
         // Assert
-        let output = app.session_state.sessions[0]
-            .output
-            .lock()
-            .expect("lock poisoned")
-            .clone();
+        app.session_state.sync_from_handles();
+        let output = app.session_state.sessions[0].output.clone();
         assert_eq!(output, "line one");
     }
 
@@ -433,11 +429,8 @@ mod tests {
         merge_view_session(&mut app, &session_id).await;
 
         // Assert
-        let output = app.session_state.sessions[0]
-            .output
-            .lock()
-            .expect("lock poisoned")
-            .clone();
+        app.session_state.sync_from_handles();
+        let output = app.session_state.sessions[0].output.clone();
         assert!(output.contains("[Merge Error]"));
     }
 
@@ -451,11 +444,8 @@ mod tests {
         rebase_view_session(&mut app, &session_id).await;
 
         // Assert
-        let output = app.session_state.sessions[0]
-            .output
-            .lock()
-            .expect("lock poisoned")
-            .clone();
+        app.session_state.sync_from_handles();
+        let output = app.session_state.sessions[0].output.clone();
         assert!(output.contains("[Rebase Error]"));
     }
 
@@ -469,11 +459,8 @@ mod tests {
         create_pr_for_view_session(&mut app, &session_id).await;
 
         // Assert
-        let output = app.session_state.sessions[0]
-            .output
-            .lock()
-            .expect("lock poisoned")
-            .clone();
+        app.session_state.sync_from_handles();
+        let output = app.session_state.sessions[0].output.clone();
         assert!(output.contains("[PR Error]"));
     }
 

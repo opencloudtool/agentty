@@ -37,7 +37,7 @@ impl App {
             .find(|session| session.id == session_id)
             .ok_or_else(|| "Session not found".to_string())?;
 
-        if session.status() != Status::Review {
+        if session.status != Status::Review {
             return Err("Session must be in review to create a pull request".to_string());
         }
 
@@ -67,10 +67,16 @@ impl App {
             .unwrap_or("New Session")
             .to_string();
 
+        let handles = self
+            .session_state
+            .handles
+            .get(&session.id)
+            .ok_or_else(|| "Session handles not found".to_string())?;
+
         self.mark_pr_creation_in_flight(&session.id)?;
 
-        let status = Arc::clone(&session.status);
-        let output = Arc::clone(&session.output);
+        let status = Arc::clone(&handles.status);
+        let output = Arc::clone(&handles.output);
         let folder = session.folder.clone();
         let db = self.db.clone();
         let id = session.id.clone();
@@ -97,7 +103,7 @@ impl App {
             match result {
                 Ok(Ok(message)) => {
                     let message = format!("\n[PR] {message}\n");
-                    Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                    Self::append_session_output(&output, &db, &id, &message).await;
                     if Self::update_status(&status, &db, &id, Status::PullRequest).await {
                         let repo_root = Self::resolve_repo_root_from_worktree(&folder);
                         Self::spawn_pr_poll_task(PrPollTaskInput {
@@ -113,7 +119,6 @@ impl App {
                     } else {
                         Self::append_session_output(
                             &output,
-                            &folder,
                             &db,
                             &id,
                             "\n[PR Error] Invalid status transition to PullRequest\n",
@@ -124,12 +129,12 @@ impl App {
                 }
                 Ok(Err(error)) => {
                     let message = format!("\n[PR Error] {error}\n");
-                    Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                    Self::append_session_output(&output, &db, &id, &message).await;
                     let _ = Self::update_status(&status, &db, &id, Status::Review).await;
                 }
                 Err(error) => {
                     let message = format!("\n[PR Error] Join error: {error}\n");
-                    Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                    Self::append_session_output(&output, &db, &id, &message).await;
                     let _ = Self::update_status(&status, &db, &id, Status::Review).await;
                 }
             }
@@ -144,17 +149,21 @@ impl App {
 
     pub(super) fn start_pr_polling_for_pull_request_sessions(&self) {
         for session in &self.session_state.sessions {
-            if session.status() != Status::PullRequest {
+            if session.status != Status::PullRequest {
                 continue;
             }
+
+            let Some(handles) = self.session_state.handles.get(&session.id) else {
+                continue;
+            };
 
             let source_branch = session_branch(&session.id);
             Self::spawn_pr_poll_task(PrPollTaskInput {
                 db: self.db.clone(),
                 folder: session.folder.clone(),
                 id: session.id.clone(),
-                output: Arc::clone(&session.output),
-                status: Arc::clone(&session.status),
+                output: Arc::clone(&handles.output),
+                status: Arc::clone(&handles.status),
                 source_branch,
                 repo_root: Self::resolve_repo_root_from_worktree(&session.folder),
                 pr_poll_cancel: Arc::clone(&self.pr_poll_cancel),
@@ -243,11 +252,10 @@ impl App {
                 if merged == Some(true) {
                     let merged_message =
                         format!("\n[PR] Pull request from `{source_branch}` was merged\n");
-                    Self::append_session_output(&output, &folder, &db, &id, &merged_message).await;
+                    Self::append_session_output(&output, &db, &id, &merged_message).await;
                     if !Self::update_status(&status, &db, &id, Status::Done).await {
                         Self::append_session_output(
                             &output,
-                            &folder,
                             &db,
                             &id,
                             "\n[PR Error] Invalid status transition to Done\n",
@@ -263,7 +271,7 @@ impl App {
                     {
                         let message =
                             format!("\n[PR Error] Failed to remove merged worktree: {error}\n");
-                        Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                        Self::append_session_output(&output, &db, &id, &message).await;
                     }
 
                     break;
@@ -281,11 +289,10 @@ impl App {
                 if closed == Some(true) {
                     let closed_message =
                         format!("\n[PR] Pull request from `{source_branch}` was closed\n");
-                    Self::append_session_output(&output, &folder, &db, &id, &closed_message).await;
+                    Self::append_session_output(&output, &db, &id, &closed_message).await;
                     if !Self::update_status(&status, &db, &id, Status::Canceled).await {
                         Self::append_session_output(
                             &output,
-                            &folder,
                             &db,
                             &id,
                             "\n[PR Error] Invalid status transition to Canceled\n",

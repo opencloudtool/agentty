@@ -29,6 +29,13 @@ Application-layer workflows and orchestration.
   - Worker-side validity checks prevent canceled or invalid operations from continuing execution.
 - Startup recovery:
   - On app startup, unfinished operations from a previous run are marked failed with a restart reason to avoid stuck `running` states.
+- Session data/runtime-handle split:
+  - `Session` is a pure data snapshot (`output: String`, `status: Status`, `commit_count: i64`) with no `Arc`/`Mutex`.
+  - `SessionHandles` owns runtime channels (`Arc<Mutex<...>>`) for output/status/commit-count updates shared with background tasks.
+  - `SessionState` stores both `sessions: Vec<Session>` (render data) and `handles: HashMap<String, SessionHandles>` (live runtime state).
+  - `SessionState::sync_from_handles()` copies handle values into `Session` snapshots once per tick before rendering.
+  - Background tasks must clone arcs from `SessionState.handles`, not from `Session`.
+  - Handle identity is preserved across session reloads so existing workers keep valid references.
 
 ## Directory Index
 - [mod.rs](mod.rs) - Shared app state and module wiring.

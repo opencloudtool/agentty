@@ -46,12 +46,11 @@ impl App {
 
         // Refresh project list and reload all sessions
         self.projects = Self::load_projects_from_db(&self.db).await;
-        let existing_sessions = std::mem::take(&mut self.session_state.sessions);
         self.session_state.sessions = Self::load_sessions(
             &self.base_path,
             &self.db,
             &self.projects,
-            &existing_sessions,
+            &mut self.session_state.handles,
         )
         .await;
         self.start_pr_polling_for_pull_request_sessions();

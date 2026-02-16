@@ -54,7 +54,7 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
 
             if let Some(session_index) = app.session_state.table_state.selected()
                 && let Some(session) = app.session_state.sessions.get(session_index)
-                && !matches!(session.status(), Status::Canceled)
+                && !matches!(session.status, Status::Canceled)
                 && let Some(session_id) = app.session_id_for_index(session_index)
             {
                 app.mode = AppMode::View {
@@ -255,10 +255,8 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        if let Some(session) = app.session_state.sessions.first()
-            && let Ok(mut status) = session.status.lock()
-        {
-            *status = Status::Done;
+        if let Some(session) = app.session_state.sessions.first_mut() {
+            session.status = Status::Done;
         }
         app.session_state.table_state.select(Some(0));
         app.mode = AppMode::List;
@@ -287,10 +285,8 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        if let Some(session) = app.session_state.sessions.first()
-            && let Ok(mut status) = session.status.lock()
-        {
-            *status = Status::Canceled;
+        if let Some(session) = app.session_state.sessions.first_mut() {
+            session.status = Status::Canceled;
         }
         app.session_state.table_state.select(Some(0));
         app.mode = AppMode::List;

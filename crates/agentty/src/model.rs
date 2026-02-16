@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ratatui::style::Color;
@@ -648,21 +648,24 @@ pub struct SessionStats {
     pub output_tokens: Option<i64>,
 }
 
-/// In-memory session model used across UI and runtime orchestration.
+/// Pure data model for a session, used across UI rendering and persistence.
+///
+/// Live runtime state (output streaming, status transitions, commit counting)
+/// is managed separately via [`SessionHandles`] in `SessionState`.
 pub struct Session {
     pub agent: String,
     pub base_branch: String,
-    pub commit_count: Arc<Mutex<i64>>,
+    pub commit_count: i64,
     pub folder: PathBuf,
     pub id: String,
     pub model: String,
-    pub output: Arc<Mutex<String>>,
+    pub output: String,
     pub permission_mode: PermissionMode,
     pub project_name: String,
     pub prompt: String,
     pub size: SessionSize,
     pub stats: SessionStats,
-    pub status: Arc<Mutex<Status>>,
+    pub status: Status,
     pub title: Option<String>,
 }
 
@@ -671,28 +674,31 @@ impl Session {
     pub fn display_title(&self) -> &str {
         self.title.as_deref().unwrap_or("No title")
     }
+}
 
-    /// Returns the current commit count for this session.
-    pub fn commit_count(&self) -> i64 {
-        *self
-            .commit_count
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// Runtime communication handles shared between the UI and background tasks.
+///
+/// These `Arc<Mutex<...>>` wrappers allow concurrent writes from workers
+/// while the UI reads snapshots via `SessionState::sync_from_handles()`.
+pub struct SessionHandles {
+    pub commit_count: Arc<Mutex<i64>>,
+    pub output: Arc<Mutex<String>>,
+    pub status: Arc<Mutex<Status>>,
+}
+
+impl SessionHandles {
+    /// Creates handles initialized with the given values.
+    pub fn new(output: String, status: Status, commit_count: i64) -> Self {
+        Self {
+            commit_count: Arc::new(Mutex::new(commit_count)),
+            output: Arc::new(Mutex::new(output)),
+            status: Arc::new(Mutex::new(status)),
+        }
     }
 
-    pub fn status(&self) -> Status {
-        *self
-            .status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
+    /// Appends text to the output buffer.
     pub fn append_output(&self, message: &str) {
-        Self::write_output(&self.output, &self.folder, message);
-    }
-
-    pub(crate) fn write_output(output: &Mutex<String>, _folder: &Path, message: &str) {
-        if let Ok(mut buf) = output.lock() {
+        if let Ok(mut buf) = self.output.lock() {
             buf.push_str(message);
         }
     }
@@ -768,8 +774,6 @@ impl Status {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
 
     #[test]
@@ -778,17 +782,17 @@ mod tests {
         let session = Session {
             agent: "gemini".to_string(),
             base_branch: String::new(),
-            commit_count: Arc::new(Mutex::new(0)),
+            commit_count: 0,
             folder: PathBuf::new(),
             id: "abc123".to_string(),
             model: "gemini-3-flash-preview".to_string(),
-            output: Arc::new(Mutex::new(String::new())),
+            output: String::new(),
             permission_mode: PermissionMode::default(),
             project_name: String::new(),
             prompt: String::new(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),
-            status: Arc::new(Mutex::new(Status::New)),
+            status: Status::New,
             title: Some("Fix the login bug".to_string()),
         };
 
@@ -802,17 +806,17 @@ mod tests {
         let session = Session {
             agent: "gemini".to_string(),
             base_branch: String::new(),
-            commit_count: Arc::new(Mutex::new(0)),
+            commit_count: 0,
             folder: PathBuf::new(),
             id: "abc123".to_string(),
             model: "gemini-3-flash-preview".to_string(),
-            output: Arc::new(Mutex::new(String::new())),
+            output: String::new(),
             permission_mode: PermissionMode::default(),
             project_name: String::new(),
             prompt: String::new(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),
-            status: Arc::new(Mutex::new(Status::New)),
+            status: Status::New,
             title: None,
         };
 
@@ -821,71 +825,15 @@ mod tests {
     }
 
     #[test]
-    fn test_session_status() {
+    fn test_session_handles_append_output() {
         // Arrange
-        let session = Session {
-            agent: "gemini".to_string(),
-            base_branch: String::new(),
-            commit_count: Arc::new(Mutex::new(0)),
-            folder: PathBuf::new(),
-            id: "test".to_string(),
-            model: "gemini-3-flash-preview".to_string(),
-            output: Arc::new(Mutex::new(String::new())),
-            permission_mode: PermissionMode::default(),
-            project_name: String::new(),
-            prompt: "prompt".to_string(),
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Arc::new(Mutex::new(Status::Review)),
-            title: None,
-        };
-
-        // Act & Assert (Review)
-        assert_eq!(session.status(), Status::Review);
+        let handles = SessionHandles::new(String::new(), Status::Done, 0);
 
         // Act
-        if let Ok(mut status) = session.status.lock() {
-            *status = Status::InProgress;
-        }
+        handles.append_output("[Test] Hello\n");
 
-        // Assert (InProgress)
-        assert_eq!(session.status(), Status::InProgress);
-
-        // Act
-        if let Ok(mut status) = session.status.lock() {
-            *status = Status::Review;
-        }
-
-        // Assert (Review)
-        assert_eq!(session.status(), Status::Review);
-    }
-
-    #[test]
-    fn test_append_output() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let session = Session {
-            agent: "gemini".to_string(),
-            base_branch: String::new(),
-            commit_count: Arc::new(Mutex::new(0)),
-            folder: dir.path().to_path_buf(),
-            id: "test".to_string(),
-            model: "gemini-3-flash-preview".to_string(),
-            output: Arc::new(Mutex::new(String::new())),
-            permission_mode: PermissionMode::default(),
-            project_name: String::new(),
-            prompt: "prompt".to_string(),
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Arc::new(Mutex::new(Status::Done)),
-            title: None,
-        };
-
-        // Act
-        session.append_output("[Test] Hello\n");
-
-        // Assert — in-memory buffer
-        let buf = session.output.lock().expect("lock failed");
+        // Assert
+        let buf = handles.output.lock().expect("lock failed");
         assert_eq!(*buf, "[Test] Hello\n");
     }
 

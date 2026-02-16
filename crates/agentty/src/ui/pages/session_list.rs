@@ -42,7 +42,7 @@ impl Page for SessionListPage<'_> {
             .height(1)
             .bottom_margin(1);
         let rows = self.sessions.iter().map(|session| {
-            let status = session.status();
+            let status = session.status;
             let cells = vec![
                 Cell::from(session.display_title().to_string()),
                 Cell::from(session.project_name.clone()),

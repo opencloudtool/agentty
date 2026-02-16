@@ -17,13 +17,13 @@ use crate::app::worker::SessionCommand;
 use crate::db::Database;
 use crate::git;
 use crate::model::{
-    AppMode, PermissionMode, Project, SESSION_DATA_DIR, Session, SessionSize, SessionStats, Status,
+    AppMode, PermissionMode, Project, SESSION_DATA_DIR, Session, SessionHandles, SessionSize,
+    SessionStats, Status,
 };
 
 pub(super) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
 const MERGE_COMMIT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(8);
-type SessionHandles = (Arc<Mutex<String>>, Arc<Mutex<Status>>, Arc<Mutex<i64>>);
 
 #[derive(Deserialize)]
 struct ModelMergeCommitMessageResponse {
@@ -83,12 +83,11 @@ impl App {
             .and_then(|index| self.session_state.sessions.get(index))
             .map(|session| session.id.clone());
 
-        let existing_sessions = std::mem::take(&mut self.session_state.sessions);
         self.session_state.sessions = Self::load_sessions(
             &self.base_path,
             &self.db,
             &self.projects,
-            &existing_sessions,
+            &mut self.session_state.handles,
         )
         .await;
         self.start_pr_polling_for_pull_request_sessions();
@@ -248,12 +247,11 @@ impl App {
 
         session_agent.create_backend().setup(&folder);
 
-        let existing_sessions = std::mem::take(&mut self.session_state.sessions);
         self.session_state.sessions = Self::load_sessions(
             &self.base_path,
             &self.db,
             &self.projects,
-            &existing_sessions,
+            &mut self.session_state.handles,
         )
         .await;
         self.update_sessions_metadata_cache().await;
@@ -277,16 +275,7 @@ impl App {
         let session_index = self
             .session_index_for_id(session_id)
             .ok_or_else(|| "Session not found".to_string())?;
-        let (
-            folder,
-            output,
-            permission_mode,
-            persisted_session_id,
-            session_agent,
-            session_model,
-            status,
-            title,
-        ) = {
+        let (folder, permission_mode, persisted_session_id, session_agent, session_model, title) = {
             let session = self
                 .session_state
                 .sessions
@@ -301,15 +290,21 @@ impl App {
 
             (
                 session.folder.clone(),
-                Arc::clone(&session.output),
                 session.permission_mode,
                 session.id.clone(),
                 session_agent,
                 session_model,
-                Arc::clone(&session.status),
                 title,
             )
         };
+
+        let handles = self
+            .session_state
+            .handles
+            .get(&persisted_session_id)
+            .ok_or_else(|| "Session handles not found".to_string())?;
+        let output = Arc::clone(&handles.output);
+        let status = Arc::clone(&handles.status);
 
         let _ = self
             .db
@@ -321,14 +316,8 @@ impl App {
             .await;
 
         let initial_output = format!(" › {prompt}\n\n");
-        Self::append_session_output(
-            &output,
-            &folder,
-            &self.db,
-            &persisted_session_id,
-            &initial_output,
-        )
-        .await;
+        Self::append_session_output(&output, &self.db, &persisted_session_id, &initial_output)
+            .await;
 
         let _ =
             Self::update_status(&status, &self.db, &persisted_session_id, Status::InProgress).await;
@@ -450,14 +439,18 @@ impl App {
             .get_mut(session_index)
             .ok_or_else(|| "Session not found".to_string())?;
 
-        if let Ok(mut output_buffer) = session.output.lock() {
-            output_buffer.clear();
+        if let Some(handles) = self.session_state.handles.get(&session.id) {
+            if let Ok(mut output_buffer) = handles.output.lock() {
+                output_buffer.clear();
+            }
+            if let Ok(mut status_value) = handles.status.lock() {
+                *status_value = Status::New;
+            }
         }
+        session.output.clear();
         session.prompt = String::new();
         session.title = None;
-        if let Ok(mut status_value) = session.status.lock() {
-            *status_value = Status::New;
-        }
+        session.status = Status::New;
 
         self.db.clear_session_history(session_id).await?;
         self.update_sessions_metadata_cache().await;
@@ -498,6 +491,7 @@ impl App {
             return;
         }
         let session = self.session_state.sessions.remove(i);
+        self.session_state.handles.remove(&session.id);
 
         let _ = self
             .db
@@ -552,16 +546,22 @@ impl App {
             .iter()
             .find(|session| session.id == session_id)
             .ok_or_else(|| "Session not found".to_string())?;
-        if session.status() != Status::Review {
+        if session.status != Status::Review {
             return Err("Session must be in review status".to_string());
         }
 
         let db = self.db.clone();
         let folder = session.folder.clone();
         let id = session.id.clone();
-        let output = Arc::clone(&session.output);
-        let status = Arc::clone(&session.status);
         let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
+
+        let handles = self
+            .session_state
+            .handles
+            .get(session_id)
+            .ok_or_else(|| "Session handles not found".to_string())?;
+        let output = Arc::clone(&handles.output);
+        let status = Arc::clone(&handles.status);
 
         if !Self::update_status(&status, &db, &id, Status::Merging).await {
             return Err("Invalid status transition to Merging".to_string());
@@ -699,11 +699,11 @@ impl App {
         match merge_result {
             Ok(message) => {
                 let merge_message = format!("\n[Merge] {message}\n");
-                Self::append_session_output(&output, &folder, &db, &id, &merge_message).await;
+                Self::append_session_output(&output, &db, &id, &merge_message).await;
             }
             Err(error) => {
                 let merge_error = format!("\n[Merge Error] {error}\n");
-                Self::append_session_output(&output, &folder, &db, &id, &merge_error).await;
+                Self::append_session_output(&output, &db, &id, &merge_error).await;
                 let _ = Self::update_status(&status, &db, &id, Status::Review).await;
             }
         }
@@ -721,7 +721,7 @@ impl App {
             .iter()
             .find(|session| session.id == session_id)
             .ok_or_else(|| "Session not found".to_string())?;
-        if session.status() != Status::Review {
+        if session.status != Status::Review {
             return Err("Session must be in review status".to_string());
         }
 
@@ -948,7 +948,8 @@ impl App {
             .sessions
             .get(session_index)
             .map_or(PermissionMode::default(), |session| session.permission_mode);
-        let (agent, folder, is_first_message, output, persisted_session_id, status, title_to_save) = {
+        let mut blocked_session_id = None;
+        let reply_context = {
             let Some(session) = self.session_state.sessions.get_mut(session_index) else {
                 return;
             };
@@ -956,42 +957,49 @@ impl App {
             // If the session was persisted with a blank prompt (e.g. app closed
             // before first message), treat the first reply as the initial start.
             let is_first_message = session.prompt.is_empty();
-            let allowed = session.status() == Status::Review
-                || (is_first_message && session.status() == Status::New);
-            if !allowed {
-                let status_error = "\n[Reply Error] Session must be in review status\n".to_string();
-                session.append_output(&status_error);
+            let allowed = session.status == Status::Review
+                || (is_first_message && session.status == Status::New);
+            if allowed {
+                let mut title_to_save = None;
+                if is_first_message {
+                    session.prompt = prompt.to_string();
+                    let title = Self::summarize_title(prompt);
+                    session.title = Some(title.clone());
+                    title_to_save = Some(title);
+                }
 
-                let db = self.db.clone();
-                let id = session.id.clone();
-                tokio::spawn(async move {
-                    let _ = db.append_session_output(&id, &status_error).await;
-                });
+                Some((
+                    session
+                        .agent
+                        .parse::<AgentKind>()
+                        .unwrap_or(AgentKind::Gemini),
+                    session.folder.clone(),
+                    is_first_message,
+                    session.id.clone(),
+                    title_to_save,
+                ))
+            } else {
+                blocked_session_id = Some(session.id.clone());
 
-                return;
+                None
             }
-
-            let mut title_to_save = None;
-            if is_first_message {
-                session.prompt = prompt.to_string();
-                let title = Self::summarize_title(prompt);
-                session.title = Some(title.clone());
-                title_to_save = Some(title);
-            }
-
-            (
-                session
-                    .agent
-                    .parse::<AgentKind>()
-                    .unwrap_or(AgentKind::Gemini),
-                session.folder.clone(),
-                is_first_message,
-                Arc::clone(&session.output),
-                session.id.clone(),
-                Arc::clone(&session.status),
-                title_to_save,
-            )
         };
+        if let Some(session_id) = blocked_session_id {
+            self.append_reply_status_error(&session_id);
+
+            return;
+        }
+        let Some((agent, folder, is_first_message, persisted_session_id, title_to_save)) =
+            reply_context
+        else {
+            return;
+        };
+
+        let Some(handles) = self.session_state.handles.get(&persisted_session_id) else {
+            return;
+        };
+        let output = Arc::clone(&handles.output);
+        let status = Arc::clone(&handles.status);
 
         if let Some(title) = title_to_save {
             let _ = self
@@ -1008,14 +1016,7 @@ impl App {
         }
 
         let reply_line = format!("\n › {prompt}\n\n");
-        Self::append_session_output(
-            &output,
-            &folder,
-            &self.db,
-            &persisted_session_id,
-            &reply_line,
-        )
-        .await;
+        Self::append_session_output(&output, &self.db, &persisted_session_id, &reply_line).await;
 
         let operation_id = Uuid::new_v4().to_string();
         let command = if is_first_message {
@@ -1031,19 +1032,35 @@ impl App {
                 operation_id,
             }
         };
+        self.enqueue_reply_command(&output, &persisted_session_id, command)
+            .await;
+    }
+
+    fn append_reply_status_error(&self, session_id: &str) {
+        let status_error = "\n[Reply Error] Session must be in review status\n".to_string();
+        if let Some(handles) = self.session_state.handles.get(session_id) {
+            handles.append_output(&status_error);
+        }
+
+        let db = self.db.clone();
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            let _ = db.append_session_output(&session_id, &status_error).await;
+        });
+    }
+
+    async fn enqueue_reply_command(
+        &mut self,
+        output: &Arc<Mutex<String>>,
+        persisted_session_id: &str,
+        command: SessionCommand,
+    ) {
         if let Err(error) = self
-            .enqueue_session_command(&persisted_session_id, command)
+            .enqueue_session_command(persisted_session_id, command)
             .await
         {
             let error_line = format!("\n[Reply Error] {error}\n");
-            Self::append_session_output(
-                &output,
-                &folder,
-                &self.db,
-                &persisted_session_id,
-                &error_line,
-            )
-            .await;
+            Self::append_session_output(output, &self.db, persisted_session_id, &error_line).await;
         }
     }
 
@@ -1142,43 +1159,30 @@ impl App {
         let Some(session) = self.session_state.sessions.get(session_index) else {
             return;
         };
+        let Some(handles) = self.session_state.handles.get(session_id) else {
+            return;
+        };
 
-        Self::append_session_output(
-            &session.output,
-            &session.folder,
-            &self.db,
-            &session.id,
-            output,
-        )
-        .await;
+        Self::append_session_output(&handles.output, &self.db, &session.id, output).await;
     }
 
     /// Loads session models from the database and reuses live handles when
     /// possible.
+    ///
+    /// Existing handles are updated in place to preserve `Arc` identity so
+    /// that background workers holding cloned references continue to work.
+    /// New handles are inserted for sessions that don't have entries yet.
     pub(super) async fn load_sessions(
         base: &Path,
         db: &Database,
         projects: &[Project],
-        existing_sessions: &[Session],
+        handles: &mut HashMap<String, SessionHandles>,
     ) -> Vec<Session> {
         let project_names: HashMap<i64, String> = projects
             .iter()
             .filter_map(|project| {
                 let name = project.path.file_name()?.to_string_lossy().to_string();
                 Some((project.id, name))
-            })
-            .collect();
-        let existing_sessions_by_name: HashMap<String, SessionHandles> = existing_sessions
-            .iter()
-            .map(|session| {
-                (
-                    session.id.clone(),
-                    (
-                        Arc::clone(&session.output),
-                        Arc::clone(&session.status),
-                        Arc::clone(&session.commit_count),
-                    ),
-                )
             })
             .collect();
 
@@ -1204,32 +1208,24 @@ impl App {
                 .and_then(|id| project_names.get(&id))
                 .cloned()
                 .unwrap_or_default();
-            let (output, status, commit_count) =
-                if let Some((existing_output, existing_status, existing_commit_count)) =
-                    existing_sessions_by_name.get(&row.id)
-                {
-                    if let Ok(mut output_buffer) = existing_output.lock() {
-                        output_buffer.clone_from(&row.output);
-                    }
-                    if let Ok(mut status_value) = existing_status.lock() {
-                        *status_value = status;
-                    }
-                    if let Ok(mut count) = existing_commit_count.lock() {
-                        *count = row.commit_count;
-                    }
 
-                    (
-                        Arc::clone(existing_output),
-                        Arc::clone(existing_status),
-                        Arc::clone(existing_commit_count),
-                    )
-                } else {
-                    (
-                        Arc::new(Mutex::new(row.output.clone())),
-                        Arc::new(Mutex::new(status)),
-                        Arc::new(Mutex::new(row.commit_count)),
-                    )
-                };
+            if let Some(existing) = handles.get(&row.id) {
+                if let Ok(mut output_buffer) = existing.output.lock() {
+                    output_buffer.clone_from(&row.output);
+                }
+                if let Ok(mut status_value) = existing.status.lock() {
+                    *status_value = status;
+                }
+                if let Ok(mut count) = existing.commit_count.lock() {
+                    *count = row.commit_count;
+                }
+            } else {
+                handles.insert(
+                    row.id.clone(),
+                    SessionHandles::new(row.output.clone(), status, row.commit_count),
+                );
+            }
+
             let size = if is_terminal_status {
                 persisted_size
             } else {
@@ -1244,11 +1240,11 @@ impl App {
             sessions.push(Session {
                 agent: row.agent,
                 base_branch: row.base_branch,
-                commit_count,
+                commit_count: row.commit_count,
                 folder,
                 id: row.id,
                 model: session_model,
-                output,
+                output: row.output,
                 permission_mode: row.permission_mode.parse().unwrap_or_default(),
                 project_name,
                 prompt: row.prompt,
@@ -1369,20 +1365,24 @@ mod tests {
         let folder = session_folder(base_path, id);
         let data_dir = folder.join(SESSION_DATA_DIR);
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
+        app.session_state.handles.insert(
+            id.to_string(),
+            SessionHandles::new(String::new(), Status::Review, 0),
+        );
         app.session_state.sessions.push(Session {
             agent: "gemini".to_string(),
             base_branch: "main".to_string(),
-            commit_count: Arc::new(Mutex::new(0)),
+            commit_count: 0,
             folder,
             id: id.to_string(),
             model: "gemini-3-flash-preview".to_string(),
-            output: Arc::new(Mutex::new(String::new())),
+            output: String::new(),
             permission_mode: PermissionMode::default(),
             project_name: String::new(),
             prompt: prompt.to_string(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),
-            status: Arc::new(Mutex::new(Status::Review)),
+            status: Status::Review,
             title: Some(App::summarize_title(prompt)),
         });
         if app.session_state.table_state.selected().is_none() {
@@ -1407,19 +1407,40 @@ mod tests {
         .await;
     }
 
-    async fn wait_for_status(session: &Session, expected: Status) {
-        wait_for_status_with_retries(session, expected, 40).await;
+    async fn wait_for_status(app: &mut App, session_id: &str, expected: Status) {
+        wait_for_status_with_retries(app, session_id, expected, 40).await;
     }
 
-    async fn wait_for_status_with_retries(session: &Session, expected: Status, retries: usize) {
+    async fn wait_for_status_with_retries(
+        app: &mut App,
+        session_id: &str,
+        expected: Status,
+        retries: usize,
+    ) {
         for _ in 0..retries {
-            if session.status() == expected {
+            app.session_state.sync_from_handles();
+            let Some(session) = app
+                .session_state
+                .sessions
+                .iter()
+                .find(|session| session.id == session_id)
+            else {
+                break;
+            };
+            if session.status == expected {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
-        assert_eq!(session.status(), expected);
+        app.session_state.sync_from_handles();
+        let session = app
+            .session_state
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing session while waiting for status");
+        assert_eq!(session.status, expected);
     }
 
     #[tokio::test]
@@ -1556,7 +1577,7 @@ mod tests {
         assert!(app.session_state.sessions[0].prompt.is_empty());
         assert_eq!(app.session_state.sessions[0].title, None);
         assert_eq!(app.session_state.sessions[0].display_title(), "No title");
-        assert_eq!(app.session_state.sessions[0].status(), Status::New);
+        assert_eq!(app.session_state.sessions[0].status, Status::New);
         assert_eq!(app.session_state.table_state.selected(), Some(0));
         assert_eq!(app.session_state.sessions[0].agent, "gemini");
         assert_eq!(
@@ -1659,11 +1680,8 @@ mod tests {
             app.session_state.sessions[0].title,
             Some("Hello".to_string())
         );
-        let output = app.session_state.sessions[0]
-            .output
-            .lock()
-            .expect("failed to lock output")
-            .clone();
+        app.session_state.sync_from_handles();
+        let output = app.session_state.sessions[0].output.clone();
         assert!(output.contains("Hello"));
         let db_sessions = app.db.load_sessions().await.expect("failed to load");
         assert_eq!(db_sessions[0].prompt, "Hello");
@@ -1707,8 +1725,9 @@ mod tests {
         app.reply(&session_id, "Reply").await;
 
         // Assert
+        app.session_state.sync_from_handles();
         let session = &app.session_state.sessions[0];
-        let output = session.output.lock().expect("failed to lock output");
+        let output = &session.output;
         assert!(output.contains("Reply"));
     }
 
@@ -1830,11 +1849,7 @@ mod tests {
         assert_eq!(app.session_state.sessions.len(), 1);
         assert_eq!(app.session_state.sessions[0].id, "12345678");
         assert_eq!(app.session_state.sessions[0].prompt, "Existing");
-        let output = app.session_state.sessions[0]
-            .output
-            .lock()
-            .expect("failed to lock output")
-            .clone();
+        let output = app.session_state.sessions[0].output.clone();
         assert_eq!(output, "Output");
         assert_eq!(app.session_state.sessions[0].agent, "claude");
         assert_eq!(app.session_state.table_state.selected(), Some(0));
@@ -2231,7 +2246,7 @@ WHERE id = 'beta0000'
         // Assert — terminal session is kept even after folder cleanup
         assert_eq!(app.session_state.sessions.len(), 1);
         assert_eq!(app.session_state.sessions[0].id, "missing01");
-        assert_eq!(app.session_state.sessions[0].status(), Status::Done);
+        assert_eq!(app.session_state.sessions[0].status, Status::Done);
     }
 
     #[tokio::test]
@@ -2291,7 +2306,7 @@ WHERE id = 'beta0000'
             &app.base_path,
             &app.db,
             &app.projects,
-            &app.session_state.sessions,
+            &mut app.session_state.handles,
         )
         .await;
         let db_sessions = app.db.load_sessions().await.expect("failed to load");
@@ -2339,7 +2354,7 @@ WHERE id = 'beta0000'
             &app.base_path,
             &app.db,
             &app.projects,
-            &app.session_state.sessions,
+            &mut app.session_state.handles,
         )
         .await;
         let db_sessions = app.db.load_sessions().await.expect("failed to load");
@@ -2353,7 +2368,7 @@ WHERE id = 'beta0000'
             .iter()
             .find(|session| session.id == session_id)
             .expect("missing persisted session");
-        assert_eq!(reloaded_session.status(), Status::Done);
+        assert_eq!(reloaded_session.status, Status::Done);
         assert_eq!(reloaded_session.size, SessionSize::L);
         assert_eq!(db_session.size, "L");
     }
@@ -2398,16 +2413,13 @@ WHERE id = 'beta0000'
 
         // Assert
         {
+            app.session_state.sync_from_handles();
             let session = &app.session_state.sessions[0];
-            let output = session
-                .output
-                .lock()
-                .expect("failed to lock output")
-                .clone();
+            let output = session.output.clone();
             assert!(output.contains("--prompt"));
             assert!(output.contains("SpawnInit"));
             assert!(!output.contains("--resume"));
-            assert_eq!(session.status(), Status::Review);
+            assert_eq!(session.status, Status::Review);
         }
 
         // Act — reply (resume command)
@@ -2439,16 +2451,13 @@ WHERE id = 'beta0000'
 
         // Assert
         {
+            app.session_state.sync_from_handles();
             let session = &app.session_state.sessions[0];
-            let output = session
-                .output
-                .lock()
-                .expect("failed to lock output")
-                .clone();
+            let output = session.output.clone();
             assert!(output.contains("SpawnReply"));
             assert!(output.contains("--resume"));
             assert!(output.contains("latest"));
-            assert_eq!(session.status(), Status::Review);
+            assert_eq!(session.status, Status::Review);
         }
     }
 
@@ -2489,24 +2498,16 @@ WHERE id = 'beta0000'
             .await;
 
         // Act — wait for agent to finish and auto-commit
-        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Assert — output should contain commit confirmation
         let session = &app.session_state.sessions[0];
-        let output = session
-            .output
-            .lock()
-            .expect("failed to lock output")
-            .clone();
+        let output = session.output.clone();
         assert!(
             output.contains("[Commit] committed with hash"),
             "expected auto-commit output, got: {output}"
         );
-        let commit_count = session
-            .commit_count
-            .lock()
-            .expect("failed to lock commit count");
-        assert_eq!(*commit_count, 1);
+        assert_eq!(session.commit_count, 1);
     }
 
     #[tokio::test]
@@ -2544,15 +2545,11 @@ WHERE id = 'beta0000'
             .await;
 
         // Act — wait for agent to finish
-        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Assert — no commit output (nothing to commit is silently ignored)
         let session = &app.session_state.sessions[0];
-        let output = session
-            .output
-            .lock()
-            .expect("failed to lock output")
-            .clone();
+        let output = session.output.clone();
         assert!(
             !output.contains("[Commit]"),
             "should not contain commit output when nothing to commit"
@@ -2724,7 +2721,8 @@ WHERE id = 'beta0000'
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Local merge cleanup").await;
-        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+        wait_for_status(&mut app, &session_id, Status::Review).await;
         let session_id = app.session_state.sessions[0].id.clone();
         let session_folder = app.session_state.sessions[0].folder.clone();
         std::fs::write(session_folder.join("session-change.txt"), "change")
@@ -2737,12 +2735,13 @@ WHERE id = 'beta0000'
         let result = app.merge_session(&session_id).await;
 
         // Assert
+        app.session_state.sync_from_handles();
         assert!(result.is_ok(), "merge should succeed: {:?}", result.err());
         assert!(matches!(
-            app.session_state.sessions[0].status(),
+            app.session_state.sessions[0].status,
             Status::Done | Status::Merging
         ));
-        wait_for_status_with_retries(&app.session_state.sessions[0], Status::Done, 400).await;
+        wait_for_status_with_retries(&mut app, &session_id, Status::Done, 400).await;
         assert!(!session_folder.exists(), "worktree should be removed");
 
         let branch_output = Command::new("git")
@@ -2835,9 +2834,7 @@ WHERE id = 'beta0000'
             .await
             .expect("failed to create session");
         let session_folder = app.session_state.sessions[0].folder.clone();
-        if let Ok(mut status) = app.session_state.sessions[0].status.lock() {
-            *status = Status::Review;
-        }
+        app.session_state.sessions[0].status = Status::Review;
         std::fs::write(dir.path().join("main-only.txt"), "main change")
             .expect("failed to write main change");
         Command::new("git")
@@ -2908,9 +2905,7 @@ WHERE id = 'beta0000'
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf()).await;
         add_manual_session(&mut app, dir.path(), "manual01", "Test");
-        if let Ok(mut status) = app.session_state.sessions[0].status.lock() {
-            *status = Status::Done;
-        }
+        app.session_state.sessions[0].status = Status::Done;
 
         // Act
         let result = app.create_pr_session("manual01").await;
@@ -3311,7 +3306,8 @@ WHERE id = 'beta0000'
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Fix the bug").await;
-        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+        wait_for_status(&mut app, &session_id, Status::Review).await;
         let session_id = app.session_state.sessions[0].id.clone();
         let stats = SessionStats {
             input_tokens: Some(100),
@@ -3329,15 +3325,11 @@ WHERE id = 'beta0000'
         // Assert
         assert!(result.is_ok());
         let session = &app.session_state.sessions[0];
-        let output = session
-            .output
-            .lock()
-            .expect("failed to lock output")
-            .clone();
+        let output = session.output.clone();
         assert!(output.is_empty());
         assert!(session.prompt.is_empty());
         assert_eq!(session.title, None);
-        assert_eq!(session.status(), Status::New);
+        assert_eq!(session.status, Status::New);
         assert_eq!(session.stats.input_tokens, Some(100));
         assert_eq!(session.stats.output_tokens, Some(50));
 
@@ -3357,7 +3349,8 @@ WHERE id = 'beta0000'
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Hello").await;
-        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+        wait_for_status(&mut app, &session_id, Status::Review).await;
         let session_id = app.session_state.sessions[0].id.clone();
         let _ = app.set_session_agent_and_model(
             &session_id,
@@ -3382,7 +3375,8 @@ WHERE id = 'beta0000'
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Build feature").await;
-        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+        wait_for_status(&mut app, &session_id, Status::Review).await;
         let session_id = app.session_state.sessions[0].id.clone();
         let folder = app.session_state.sessions[0].folder.clone();
         assert!(folder.exists());
@@ -3422,7 +3416,8 @@ WHERE id = 'beta0000'
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Initial prompt").await;
-        wait_for_status(&app.session_state.sessions[0], Status::Review).await;
+        let session_id = app.session_state.sessions[0].id.clone();
+        wait_for_status(&mut app, &session_id, Status::Review).await;
         let session_id = app.session_state.sessions[0].id.clone();
 
         // Act
@@ -3434,6 +3429,6 @@ WHERE id = 'beta0000'
         // message as is_first_message=true and use build_start_command (no --resume)
         let session = &app.session_state.sessions[0];
         assert!(session.prompt.is_empty());
-        assert_eq!(session.status(), Status::New);
+        assert_eq!(session.status, Status::New);
     }
 }

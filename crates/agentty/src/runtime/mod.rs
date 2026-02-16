@@ -50,6 +50,7 @@ async fn run_main_loop(
     tick: &mut tokio::time::Interval,
 ) -> io::Result<()> {
     loop {
+        app.session_state.sync_from_handles();
         render_frame(app, terminal)?;
 
         if matches!(

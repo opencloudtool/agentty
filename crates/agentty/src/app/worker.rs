@@ -131,13 +131,18 @@ impl App {
             .iter()
             .find(|session| session.id == session_id)
             .ok_or_else(|| "Session not found".to_string())?;
+        let handles = self
+            .session_state
+            .handles
+            .get(session_id)
+            .ok_or_else(|| "Session handles not found".to_string())?;
         let context = SessionWorkerContext {
-            commit_count: Arc::clone(&session.commit_count),
+            commit_count: Arc::clone(&handles.commit_count),
             db: self.db.clone(),
             folder: session.folder.clone(),
-            output: Arc::clone(&session.output),
+            output: Arc::clone(&handles.output),
             session_id: session.id.clone(),
-            status: Arc::clone(&session.status),
+            status: Arc::clone(&handles.status),
         };
         let (sender, receiver) = mpsc::unbounded_channel();
         self.session_workers

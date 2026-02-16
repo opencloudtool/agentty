@@ -204,8 +204,8 @@ impl<'a> SessionChatPage<'a> {
     }
 
     fn render_output_panel(&self, f: &mut Frame, output_area: Rect, session: &Session) {
-        let status = session.status();
-        let commit_count = session.commit_count();
+        let status = session.status;
+        let commit_count = session.commit_count;
         let commits_label = if commit_count == 1 {
             "commit"
         } else {
@@ -233,11 +233,7 @@ impl<'a> SessionChatPage<'a> {
     }
 
     fn output_lines(session: &Session, output_area: Rect, status: Status) -> Vec<Line<'static>> {
-        let output_text = session
-            .output
-            .lock()
-            .map(|buffer| buffer.clone())
-            .unwrap_or_default();
+        let output_text = session.output.clone();
         let inner_width = output_area.width.saturating_sub(2) as usize;
         let mut lines = wrap_lines(&output_text, inner_width)
             .into_iter()
@@ -326,7 +322,7 @@ impl<'a> SessionChatPage<'a> {
             return;
         }
 
-        let help_text = if session.status() == Status::Done {
+        let help_text = if session.status == Status::Done {
             "q: back | j/k: scroll | ?: help"
         } else {
             "q: back | enter: reply | d: diff | p: pr | m: merge | r: rebase | S-Tab: mode | j/k: \
@@ -348,7 +344,6 @@ impl Page for SessionChatPage<'_> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::file_list::FileEntry;
@@ -358,17 +353,17 @@ mod tests {
         Session {
             agent: "gemini".to_string(),
             base_branch: "main".to_string(),
-            commit_count: Arc::new(Mutex::new(0)),
+            commit_count: 0,
             folder: PathBuf::new(),
             id: "session-id".to_string(),
             model: "gemini-3-flash-preview".to_string(),
-            output: Arc::new(Mutex::new(String::new())),
+            output: String::new(),
             permission_mode: PermissionMode::default(),
             project_name: "project".to_string(),
             prompt: String::new(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),
-            status: Arc::new(Mutex::new(Status::New)),
+            status: Status::New,
             title: None,
         }
     }

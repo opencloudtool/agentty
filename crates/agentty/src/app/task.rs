@@ -12,7 +12,7 @@ use crate::agent::AgentKind;
 use crate::app::App;
 use crate::db::Database;
 use crate::git;
-use crate::model::{Session, Status};
+use crate::model::Status;
 
 /// Inputs needed to execute one session command.
 pub(super) struct RunSessionTaskInput {
@@ -120,25 +120,25 @@ impl App {
                 let stdout_text = raw_stdout.lock().map(|buf| buf.clone()).unwrap_or_default();
                 let stderr_text = raw_stderr.lock().map(|buf| buf.clone()).unwrap_or_default();
                 let parsed = agent.parse_response(&stdout_text, &stderr_text);
-                Self::append_session_output(&output, &folder, &db, &id, &parsed.content).await;
+                Self::append_session_output(&output, &db, &id, &parsed.content).await;
 
                 let _ = db.update_session_stats(&id, &parsed.stats).await;
 
                 match Self::commit_changes(&folder, &db, &id, &commit_count).await {
                     Ok(hash) => {
                         let message = format!("\n[Commit] committed with hash `{hash}`\n");
-                        Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                        Self::append_session_output(&output, &db, &id, &message).await;
                     }
                     Err(commit_error) if commit_error.contains("Nothing to commit") => {}
                     Err(commit_error) => {
                         let message = format!("\n[Commit Error] {commit_error}\n");
-                        Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                        Self::append_session_output(&output, &db, &id, &message).await;
                     }
                 }
             }
             Err(spawn_error) => {
                 let message = format!("Failed to spawn process: {spawn_error}\n");
-                Self::append_session_output(&output, &folder, &db, &id, &message).await;
+                Self::append_session_output(&output, &db, &id, &message).await;
                 error = Some(message.trim().to_string());
             }
         }
@@ -191,15 +191,16 @@ impl App {
         }
     }
 
-    /// Appends output to disk-backed session logs and database state.
+    /// Appends output to the in-memory handle buffer and database.
     pub(super) async fn append_session_output(
         output: &Arc<Mutex<String>>,
-        folder: &Path,
         db: &Database,
         id: &str,
         message: &str,
     ) {
-        Session::write_output(output, folder, message);
+        if let Ok(mut buf) = output.lock() {
+            buf.push_str(message);
+        }
         let _ = db.append_session_output(id, message).await;
     }
 }
