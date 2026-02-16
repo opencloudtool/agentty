@@ -42,7 +42,7 @@ impl App {
         // reducer path.
         self.projects = Self::load_projects_from_db(&self.db).await;
         self.session_state.table_state.select(Some(0));
-        self.apply_app_events(AppEvent::RefreshSessions).await;
+        self.dispatch_app_event(AppEvent::RefreshSessions).await;
 
         Ok(())
     }

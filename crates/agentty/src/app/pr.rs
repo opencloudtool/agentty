@@ -33,7 +33,6 @@ struct CreatePrTaskInput {
     folder: PathBuf,
     id: String,
     output: Arc<Mutex<String>>,
-    pr_creation_in_flight: Arc<Mutex<std::collections::HashSet<String>>>,
     pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     source_branch: String,
     status: Arc<Mutex<Status>>,
@@ -112,7 +111,6 @@ impl App {
             return Err("Invalid status transition to CreatingPullRequest".to_string());
         }
 
-        let pr_creation_in_flight = Arc::clone(&self.pr_creation_in_flight);
         let pr_poll_cancel = Arc::clone(&self.pr_poll_cancel);
 
         Self::spawn_create_pr_task(CreatePrTaskInput {
@@ -122,7 +120,6 @@ impl App {
             folder,
             id,
             output,
-            pr_creation_in_flight,
             pr_poll_cancel,
             source_branch,
             status,
@@ -140,7 +137,6 @@ impl App {
             folder,
             id,
             output,
-            pr_creation_in_flight,
             pr_poll_cancel,
             source_branch,
             status,
@@ -166,7 +162,7 @@ impl App {
                     {
                         let repo_root = Self::resolve_repo_root_from_worktree(&folder);
                         Self::spawn_pr_poll_task(PrPollTaskInput {
-                            app_event_tx,
+                            app_event_tx: app_event_tx.clone(),
                             db,
                             folder,
                             id: id.clone(),
@@ -204,9 +200,7 @@ impl App {
                 }
             }
 
-            if let Ok(mut in_flight) = pr_creation_in_flight.lock() {
-                in_flight.remove(&id);
-            }
+            let _ = app_event_tx.send(AppEvent::PrCreationCleared { session_id: id });
         });
     }
 
@@ -383,9 +377,7 @@ impl App {
                 }
             }
 
-            if let Ok(mut polling) = pr_poll_cancel.lock() {
-                polling.remove(&id);
-            }
+            let _ = app_event_tx.send(AppEvent::PrPollingStopped { session_id: id });
         });
     }
 }

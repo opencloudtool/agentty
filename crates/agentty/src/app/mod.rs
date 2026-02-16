@@ -36,6 +36,10 @@ pub fn agentty_home() -> PathBuf {
 pub(crate) enum AppEvent {
     /// Indicates latest ahead/behind information from the git status worker.
     GitStatusUpdated { status: Option<(u32, u32)> },
+    /// Indicates a PR creation task has finished for a session.
+    PrCreationCleared { session_id: String },
+    /// Indicates a PR polling task has stopped for a session.
+    PrPollingStopped { session_id: String },
     /// Requests a full session list refresh.
     RefreshSessions,
     /// Indicates that a session handle snapshot changed in-memory.
@@ -253,12 +257,16 @@ impl App {
     /// git-status updates, then applies session-handle sync for touched
     /// sessions.
     pub(crate) async fn apply_app_events(&mut self, first_event: AppEvent) {
+        let mut cleared_pr_creation_ids: HashSet<String> = HashSet::new();
         let mut has_git_status_update = false;
+        let mut stopped_pr_poll_ids: HashSet<String> = HashSet::new();
         let mut should_force_reload = false;
         let mut git_status_update = None;
         let mut session_ids: HashSet<String> = HashSet::new();
         Self::collect_app_event(
+            &mut cleared_pr_creation_ids,
             &mut has_git_status_update,
+            &mut stopped_pr_poll_ids,
             &mut should_force_reload,
             &mut git_status_update,
             &mut session_ids,
@@ -267,7 +275,9 @@ impl App {
 
         while let Ok(event) = self.event_rx.try_recv() {
             Self::collect_app_event(
+                &mut cleared_pr_creation_ids,
                 &mut has_git_status_update,
+                &mut stopped_pr_poll_ids,
                 &mut should_force_reload,
                 &mut git_status_update,
                 &mut session_ids,
@@ -283,9 +293,41 @@ impl App {
             self.git_status = git_status_update;
         }
 
+        if let Ok(mut in_flight) = self.pr_creation_in_flight.lock() {
+            for session_id in &cleared_pr_creation_ids {
+                in_flight.remove(session_id);
+            }
+        }
+
+        if let Ok(mut polling) = self.pr_poll_cancel.lock() {
+            for session_id in &stopped_pr_poll_ids {
+                polling.remove(session_id);
+            }
+        }
+
         for session_id in &session_ids {
             self.session_state.sync_session_from_handle(session_id);
         }
+    }
+
+    /// Enqueues an app event onto the internal app event bus.
+    pub(crate) fn emit_app_event(&self, event: AppEvent) {
+        let _ = self.event_tx.send(event);
+    }
+
+    /// Processes currently queued app events without waiting.
+    pub(crate) async fn process_pending_app_events(&mut self) {
+        let Ok(first_event) = self.event_rx.try_recv() else {
+            return;
+        };
+
+        self.apply_app_events(first_event).await;
+    }
+
+    /// Emits one app event and immediately processes the pending app queue.
+    pub(crate) async fn dispatch_app_event(&mut self, event: AppEvent) {
+        self.emit_app_event(event);
+        self.process_pending_app_events().await;
     }
 
     /// Returns a clone of the internal app event sender.
@@ -300,7 +342,9 @@ impl App {
 
     /// Collects one event into aggregate reducer state for this loop pass.
     fn collect_app_event(
+        cleared_pr_creation_ids: &mut HashSet<String>,
         has_git_status_update: &mut bool,
+        stopped_pr_poll_ids: &mut HashSet<String>,
         should_force_reload: &mut bool,
         git_status_update: &mut Option<(u32, u32)>,
         session_ids: &mut HashSet<String>,
@@ -310,6 +354,12 @@ impl App {
             AppEvent::GitStatusUpdated { status } => {
                 *has_git_status_update = true;
                 *git_status_update = status;
+            }
+            AppEvent::PrCreationCleared { session_id } => {
+                cleared_pr_creation_ids.insert(session_id);
+            }
+            AppEvent::PrPollingStopped { session_id } => {
+                stopped_pr_poll_ids.insert(session_id);
             }
             AppEvent::RefreshSessions => {
                 *should_force_reload = true;
@@ -381,14 +431,18 @@ mod tests {
     #[test]
     fn test_collect_app_event_tracks_git_status_and_refresh() {
         // Arrange
+        let mut cleared_pr_creation_ids = HashSet::new();
         let mut has_git_status_update = false;
+        let mut stopped_pr_poll_ids = HashSet::new();
         let mut should_force_reload = false;
         let mut git_status_update = None;
         let mut session_ids = HashSet::new();
 
         // Act
         App::collect_app_event(
+            &mut cleared_pr_creation_ids,
             &mut has_git_status_update,
+            &mut stopped_pr_poll_ids,
             &mut should_force_reload,
             &mut git_status_update,
             &mut session_ids,
@@ -397,7 +451,9 @@ mod tests {
             },
         );
         App::collect_app_event(
+            &mut cleared_pr_creation_ids,
             &mut has_git_status_update,
+            &mut stopped_pr_poll_ids,
             &mut should_force_reload,
             &mut git_status_update,
             &mut session_ids,
@@ -406,15 +462,43 @@ mod tests {
             },
         );
         App::collect_app_event(
+            &mut cleared_pr_creation_ids,
             &mut has_git_status_update,
+            &mut stopped_pr_poll_ids,
             &mut should_force_reload,
             &mut git_status_update,
             &mut session_ids,
             AppEvent::RefreshSessions,
         );
+        App::collect_app_event(
+            &mut cleared_pr_creation_ids,
+            &mut has_git_status_update,
+            &mut stopped_pr_poll_ids,
+            &mut should_force_reload,
+            &mut git_status_update,
+            &mut session_ids,
+            AppEvent::PrCreationCleared {
+                session_id: "session-2".to_string(),
+            },
+        );
+        App::collect_app_event(
+            &mut cleared_pr_creation_ids,
+            &mut has_git_status_update,
+            &mut stopped_pr_poll_ids,
+            &mut should_force_reload,
+            &mut git_status_update,
+            &mut session_ids,
+            AppEvent::PrPollingStopped {
+                session_id: "session-3".to_string(),
+            },
+        );
 
         // Assert
+        assert_eq!(cleared_pr_creation_ids.len(), 1);
+        assert!(cleared_pr_creation_ids.contains("session-2"));
         assert!(has_git_status_update);
+        assert_eq!(stopped_pr_poll_ids.len(), 1);
+        assert!(stopped_pr_poll_ids.contains("session-3"));
         assert!(should_force_reload);
         assert_eq!(git_status_update, Some((2, 1)));
         assert_eq!(session_ids.len(), 1);

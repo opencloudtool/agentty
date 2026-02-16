@@ -33,10 +33,11 @@ Application-layer workflows and orchestration.
   - `Session` is a pure data snapshot (`output: String`, `status: Status`, `commit_count: i64`) with no `Arc`/`Mutex`.
   - `SessionHandles` owns runtime channels (`Arc<Mutex<...>>`) for output/status/commit-count updates shared with background tasks.
   - `SessionState` stores both `sessions: Vec<Session>` (render data) and `handles: HashMap<String, SessionHandles>` (live runtime state).
-  - `AppEvent` (`SessionUpdated`, `RefreshSessions`, `GitStatusUpdated`) forms an internal event bus from background tasks to the runtime loop.
+  - `AppEvent` (`SessionUpdated`, `RefreshSessions`, `GitStatusUpdated`, `PrCreationCleared`, `PrPollingStopped`) forms an internal event bus from background tasks to the runtime loop.
   - Event handling applies targeted sync (`SessionState::sync_session_from_handle`), coalesces git-status updates, and triggers forced list reload on explicit refresh events.
   - Session lifecycle boundaries (create/delete/switch-project and status milestones) trigger explicit `RefreshSessions` events to reduce reliance on metadata polling.
   - Git status snapshots are emitted by the background git task and reduced in `apply_app_events()`; producers do not mutate app state directly.
+  - Foreground workflows should enqueue events via `dispatch_app_event()` instead of invoking `apply_app_events()` directly.
   - A low-frequency fallback metadata poll (5s) remains for safety/external changes.
   - Background tasks must clone arcs from `SessionState.handles`, not from `Session`.
   - Handle identity is preserved across session reloads so existing workers keep valid references.

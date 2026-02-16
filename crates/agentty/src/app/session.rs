@@ -266,7 +266,7 @@ impl App {
 
         session_agent.create_backend().setup(&folder);
 
-        self.apply_app_events(AppEvent::RefreshSessions).await;
+        self.dispatch_app_event(AppEvent::RefreshSessions).await;
 
         let index = self
             .session_state
@@ -552,7 +552,7 @@ impl App {
         }
 
         let _ = std::fs::remove_dir_all(&session.folder);
-        self.apply_app_events(AppEvent::RefreshSessions).await;
+        self.dispatch_app_event(AppEvent::RefreshSessions).await;
     }
 
     /// Starts a squash merge for a reviewed session branch in the background.
