@@ -62,6 +62,9 @@ pub(crate) fn session_branch(session_id: &str) -> String {
 
 impl App {
     /// Reloads session rows when the metadata cache indicates a change.
+    ///
+    /// This is a low-frequency fallback safety poll; primary refreshes should
+    /// come from explicit [`AppEvent::RefreshSessions`] events.
     pub async fn refresh_sessions_if_needed(&mut self) {
         if !self.is_session_refresh_due() {
             return;
@@ -263,14 +266,7 @@ impl App {
 
         session_agent.create_backend().setup(&folder);
 
-        self.session_state.sessions = Self::load_sessions(
-            &self.base_path,
-            &self.db,
-            &self.projects,
-            &mut self.session_state.handles,
-        )
-        .await;
-        self.update_sessions_metadata_cache().await;
+        self.apply_app_events(AppEvent::RefreshSessions).await;
 
         let index = self
             .session_state
@@ -512,6 +508,9 @@ impl App {
     }
 
     /// Deletes the currently selected session and cleans related resources.
+    ///
+    /// After persistence and filesystem cleanup, this triggers a full list
+    /// reload through [`AppEvent::RefreshSessions`].
     pub async fn delete_selected_session(&mut self) {
         let Some(i) = self.session_state.table_state.selected() else {
             return;
@@ -553,14 +552,7 @@ impl App {
         }
 
         let _ = std::fs::remove_dir_all(&session.folder);
-        if self.session_state.sessions.is_empty() {
-            self.session_state.table_state.select(None);
-        } else if i >= self.session_state.sessions.len() {
-            self.session_state
-                .table_state
-                .select(Some(self.session_state.sessions.len() - 1));
-        }
-        self.update_sessions_metadata_cache().await;
+        self.apply_app_events(AppEvent::RefreshSessions).await;
     }
 
     /// Starts a squash merge for a reviewed session branch in the background.

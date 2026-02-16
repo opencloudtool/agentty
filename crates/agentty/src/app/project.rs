@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::app::App;
+use crate::app::{App, AppEvent};
 use crate::db::Database;
 use crate::git;
 use crate::model::Project;
@@ -38,22 +38,11 @@ impl App {
             Self::spawn_git_status_task(&self.working_dir, new_cancel, self.app_event_sender());
         }
 
-        // Refresh project list and reload all sessions
+        // Refresh project list and reload all sessions via the app event
+        // reducer path.
         self.projects = Self::load_projects_from_db(&self.db).await;
-        self.session_state.sessions = Self::load_sessions(
-            &self.base_path,
-            &self.db,
-            &self.projects,
-            &mut self.session_state.handles,
-        )
-        .await;
-        self.start_pr_polling_for_pull_request_sessions();
-        if self.session_state.sessions.is_empty() {
-            self.session_state.table_state.select(None);
-        } else {
-            self.session_state.table_state.select(Some(0));
-        }
-        self.update_sessions_metadata_cache().await;
+        self.session_state.table_state.select(Some(0));
+        self.apply_app_events(AppEvent::RefreshSessions).await;
 
         Ok(())
     }
