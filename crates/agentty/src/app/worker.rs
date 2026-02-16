@@ -11,7 +11,7 @@ use crate::agent::AgentKind;
 use crate::app::task::RunSessionTaskInput;
 use crate::app::{App, AppEvent};
 use crate::db::Database;
-use crate::model::Status;
+use crate::model::{PermissionMode, Status};
 
 const RESTART_FAILURE_REASON: &str = "Interrupted by app restart";
 const CANCEL_BEFORE_EXECUTION_REASON: &str = "Session canceled before execution";
@@ -22,11 +22,13 @@ pub(super) enum SessionCommand {
         agent: AgentKind,
         command: Command,
         operation_id: String,
+        permission_mode: PermissionMode,
     },
     StartPrompt {
         agent: AgentKind,
         command: Command,
         operation_id: String,
+        permission_mode: PermissionMode,
     },
 }
 
@@ -174,7 +176,12 @@ impl App {
                 }
 
                 let result = match command {
-                    SessionCommand::StartPrompt { agent, command, .. } => {
+                    SessionCommand::StartPrompt {
+                        agent,
+                        command,
+                        permission_mode,
+                        ..
+                    } => {
                         App::run_session_task(RunSessionTaskInput {
                             agent,
                             app_event_tx: context.app_event_tx.clone(),
@@ -184,11 +191,17 @@ impl App {
                             folder: context.folder.clone(),
                             id: context.session_id.clone(),
                             output: Arc::clone(&context.output),
+                            permission_mode,
                             status: Arc::clone(&context.status),
                         })
                         .await
                     }
-                    SessionCommand::Reply { agent, command, .. } => {
+                    SessionCommand::Reply {
+                        agent,
+                        command,
+                        permission_mode,
+                        ..
+                    } => {
                         let _ = App::update_status(
                             &context.status,
                             &context.db,
@@ -207,6 +220,7 @@ impl App {
                             folder: context.folder.clone(),
                             id: context.session_id.clone(),
                             output: Arc::clone(&context.output),
+                            permission_mode,
                             status: Arc::clone(&context.status),
                         })
                         .await
@@ -273,11 +287,13 @@ mod tests {
             agent: AgentKind::Gemini,
             command: Command::new("echo"),
             operation_id: "a".to_string(),
+            permission_mode: PermissionMode::AutoEdit,
         };
         let start_prompt_command = SessionCommand::StartPrompt {
             agent: AgentKind::Gemini,
             command: Command::new("echo"),
             operation_id: "b".to_string(),
+            permission_mode: PermissionMode::AutoEdit,
         };
 
         // Act

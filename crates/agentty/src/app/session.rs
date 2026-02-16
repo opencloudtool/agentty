@@ -360,6 +360,7 @@ impl App {
                 agent: session_agent,
                 command: cmd,
                 operation_id,
+                permission_mode,
             },
         )
         .await?;
@@ -816,7 +817,7 @@ impl App {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let parsed = agent.parse_response(&stdout, &stderr);
+        let parsed = agent.parse_response(&stdout, &stderr, PermissionMode::AutoEdit);
         let content = parsed.content.trim().to_string();
 
         if content.is_empty() {
@@ -1037,22 +1038,45 @@ impl App {
         )
         .await;
 
+        let command = Self::build_session_command(
+            agent,
+            backend,
+            &folder,
+            prompt,
+            model,
+            permission_mode,
+            is_first_message,
+        );
+        self.enqueue_reply_command(&output, &app_event_tx, &persisted_session_id, command)
+            .await;
+    }
+
+    fn build_session_command(
+        agent: AgentKind,
+        backend: &dyn AgentBackend,
+        folder: &Path,
+        prompt: &str,
+        model: &str,
+        permission_mode: PermissionMode,
+        is_first_message: bool,
+    ) -> SessionCommand {
         let operation_id = Uuid::new_v4().to_string();
-        let command = if is_first_message {
+
+        if is_first_message {
             SessionCommand::StartPrompt {
                 agent,
-                command: backend.build_start_command(&folder, prompt, model, permission_mode),
+                command: backend.build_start_command(folder, prompt, model, permission_mode),
                 operation_id,
+                permission_mode,
             }
         } else {
             SessionCommand::Reply {
                 agent,
-                command: backend.build_resume_command(&folder, prompt, model, permission_mode),
+                command: backend.build_resume_command(folder, prompt, model, permission_mode),
                 operation_id,
+                permission_mode,
             }
-        };
-        self.enqueue_reply_command(&output, &app_event_tx, &persisted_session_id, command)
-            .await;
+        }
     }
 
     async fn append_reply_status_error(&self, session_id: &str) {

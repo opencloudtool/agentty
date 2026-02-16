@@ -13,7 +13,7 @@ use crate::agent::AgentKind;
 use crate::app::{App, AppEvent};
 use crate::db::Database;
 use crate::git;
-use crate::model::Status;
+use crate::model::{PermissionMode, Status};
 
 /// Inputs needed to execute one session command.
 pub(super) struct RunSessionTaskInput {
@@ -25,6 +25,7 @@ pub(super) struct RunSessionTaskInput {
     pub(super) folder: PathBuf,
     pub(super) id: String,
     pub(super) output: Arc<Mutex<String>>,
+    pub(super) permission_mode: PermissionMode,
     pub(super) status: Arc<Mutex<Status>>,
 }
 
@@ -85,6 +86,7 @@ impl App {
             folder,
             id,
             output,
+            permission_mode,
             status,
         } = input;
 
@@ -126,7 +128,7 @@ impl App {
 
                 let stdout_text = raw_stdout.lock().map(|buf| buf.clone()).unwrap_or_default();
                 let stderr_text = raw_stderr.lock().map(|buf| buf.clone()).unwrap_or_default();
-                let parsed = agent.parse_response(&stdout_text, &stderr_text);
+                let parsed = agent.parse_response(&stdout_text, &stderr_text, permission_mode);
                 Self::append_session_output(&output, &db, &app_event_tx, &id, &parsed.content)
                     .await;
 

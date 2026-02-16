@@ -64,13 +64,14 @@ impl AgentBackend for GeminiBackend {
         model: &str,
         permission_mode: PermissionMode,
     ) -> Command {
+        let prompt = permission_mode.apply_to_prompt(prompt);
         let approval_mode = match permission_mode {
-            PermissionMode::AutoEdit => "auto_edit",
+            PermissionMode::AutoEdit | PermissionMode::Plan => "auto_edit",
             PermissionMode::Autonomous => "yolo",
         };
         let mut cmd = Command::new("gemini");
         cmd.arg("--prompt")
-            .arg(prompt)
+            .arg(prompt.as_ref())
             .arg("--model")
             .arg(model)
             .arg("--approval-mode")
@@ -99,8 +100,9 @@ impl AgentBackend for ClaudeBackend {
         model: &str,
         permission_mode: PermissionMode,
     ) -> Command {
+        let prompt = permission_mode.apply_to_prompt(prompt);
         let mut cmd = Command::new("claude");
-        cmd.arg("-p").arg(prompt);
+        cmd.arg("-p").arg(prompt.as_ref());
         Self::apply_permission_args(&mut cmd, permission_mode);
         cmd.arg("--output-format")
             .arg("json")
@@ -119,8 +121,9 @@ impl AgentBackend for ClaudeBackend {
         model: &str,
         permission_mode: PermissionMode,
     ) -> Command {
+        let prompt = permission_mode.apply_to_prompt(prompt);
         let mut cmd = Command::new("claude");
-        cmd.arg("-c").arg("-p").arg(prompt);
+        cmd.arg("-c").arg("-p").arg(prompt.as_ref());
         Self::apply_permission_args(&mut cmd, permission_mode);
         cmd.arg("--output-format")
             .arg("json")
@@ -141,6 +144,9 @@ impl ClaudeBackend {
             }
             PermissionMode::Autonomous => {
                 cmd.arg("--dangerously-skip-permissions");
+            }
+            PermissionMode::Plan => {
+                cmd.arg("--permission-mode").arg("plan");
             }
         }
     }
@@ -165,6 +171,7 @@ impl AgentBackend for CodexBackend {
         model: &str,
         permission_mode: PermissionMode,
     ) -> Command {
+        let prompt = permission_mode.apply_to_prompt(prompt);
         let approval_flag = Self::approval_flag(permission_mode);
         let mut cmd = Command::new("codex");
         cmd.arg("exec")
@@ -172,7 +179,7 @@ impl AgentBackend for CodexBackend {
             .arg(model)
             .arg(approval_flag)
             .arg("--json")
-            .arg(prompt)
+            .arg(prompt.as_ref())
             .current_dir(folder)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -187,6 +194,7 @@ impl AgentBackend for CodexBackend {
         model: &str,
         permission_mode: PermissionMode,
     ) -> Command {
+        let prompt = permission_mode.apply_to_prompt(prompt);
         let approval_flag = Self::approval_flag(permission_mode);
         let mut cmd = Command::new("codex");
         cmd.arg("exec")
@@ -196,7 +204,7 @@ impl AgentBackend for CodexBackend {
             .arg(model)
             .arg(approval_flag)
             .arg("--json")
-            .arg(prompt)
+            .arg(prompt.as_ref())
             .current_dir(folder)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -208,7 +216,7 @@ impl AgentBackend for CodexBackend {
 impl CodexBackend {
     fn approval_flag(permission_mode: PermissionMode) -> &'static str {
         match permission_mode {
-            PermissionMode::AutoEdit => "--full-auto",
+            PermissionMode::AutoEdit | PermissionMode::Plan => "--full-auto",
             PermissionMode::Autonomous => "--yolo",
         }
     }
@@ -413,8 +421,22 @@ impl AgentSelectionMetadata for AgentModel {
 /// Claude CLI JSON response shape (`--output-format json`).
 #[derive(Deserialize)]
 struct ClaudeResponse {
+    permission_denials: Option<Vec<ClaudePermissionDenial>>,
     result: Option<String>,
     usage: Option<ClaudeUsage>,
+}
+
+/// A single permission denial from the Claude CLI JSON output.
+#[derive(Deserialize)]
+struct ClaudePermissionDenial {
+    tool_input: Option<ClaudeToolInput>,
+    tool_name: Option<String>,
+}
+
+/// Tool input payload from a denied `ExitPlanMode` call.
+#[derive(Deserialize)]
+struct ClaudeToolInput {
+    plan: Option<String>,
 }
 
 /// Token usage from a Claude CLI response.
@@ -544,9 +566,14 @@ impl AgentKind {
     /// Each agent CLI produces a different JSON schema. This method
     /// dispatches to the appropriate parser and falls back to raw text
     /// when JSON parsing fails.
-    pub fn parse_response(self, stdout: &str, stderr: &str) -> ParsedResponse {
+    pub fn parse_response(
+        self,
+        stdout: &str,
+        stderr: &str,
+        permission_mode: PermissionMode,
+    ) -> ParsedResponse {
         match self {
-            Self::Claude => Self::parse_claude_response(stdout),
+            Self::Claude => Self::parse_claude_response(stdout, permission_mode),
             Self::Gemini => Self::parse_gemini_response(stdout),
             Self::Codex => Self::parse_codex_response(stdout),
         }
@@ -556,9 +583,17 @@ impl AgentKind {
         })
     }
 
-    fn parse_claude_response(stdout: &str) -> Option<ParsedResponse> {
+    fn parse_claude_response(
+        stdout: &str,
+        permission_mode: PermissionMode,
+    ) -> Option<ParsedResponse> {
         let response = serde_json::from_str::<ClaudeResponse>(stdout.trim()).ok()?;
-        let content = response.result?;
+        let content = if permission_mode == PermissionMode::Plan {
+            Self::extract_plan_from_denials(response.permission_denials.as_deref())
+                .or(response.result)?
+        } else {
+            response.result?
+        };
         let stats = SessionStats {
             input_tokens: response.usage.as_ref().and_then(|usage| usage.input_tokens),
             output_tokens: response
@@ -568,6 +603,17 @@ impl AgentKind {
         };
 
         Some(ParsedResponse { content, stats })
+    }
+
+    /// Extracts the plan content from a denied `ExitPlanMode` tool call.
+    fn extract_plan_from_denials(denials: Option<&[ClaudePermissionDenial]>) -> Option<String> {
+        denials?.iter().find_map(|denial| {
+            if denial.tool_name.as_deref() != Some("ExitPlanMode") {
+                return None;
+            }
+
+            denial.tool_input.as_ref()?.plan.clone()
+        })
     }
 
     fn parse_gemini_response(stdout: &str) -> Option<ParsedResponse> {
@@ -1187,7 +1233,7 @@ mod tests {
         let stdout = r#"{"type":"result","subtype":"success","result":"Hello world","total_cost_usd":0.05,"usage":{"input_tokens":100,"output_tokens":25},"is_error":false}"#;
 
         // Act
-        let result = AgentKind::Claude.parse_response(stdout, "");
+        let result = AgentKind::Claude.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert
         assert_eq!(result.content, "Hello world");
@@ -1196,12 +1242,87 @@ mod tests {
     }
 
     #[test]
+    fn test_claude_parse_response_extracts_plan_from_permission_denials() {
+        // Arrange — Claude tried ExitPlanMode which was denied; result is terse
+        let stdout = r##"{
+            "type": "result",
+            "result": "The plan is straightforward: create hello.txt",
+            "permission_denials": [
+                {
+                    "tool_name": "ExitPlanMode",
+                    "tool_input": {
+                        "plan": "# Plan: Create hello.txt\n\n## Context\nDetailed plan content here."
+                    }
+                }
+            ],
+            "usage": {"input_tokens": 200, "output_tokens": 50}
+        }"##;
+
+        // Act
+        let result = AgentKind::Claude.parse_response(stdout, "", PermissionMode::Plan);
+
+        // Assert — plan from denial is preferred over terse result
+        assert!(result.content.starts_with("# Plan: Create hello.txt"));
+        assert!(result.content.contains("Detailed plan content here."));
+        assert_eq!(result.stats.input_tokens, Some(200));
+        assert_eq!(result.stats.output_tokens, Some(50));
+    }
+
+    #[test]
+    fn test_claude_parse_response_ignores_plan_denials_outside_plan_mode() {
+        // Arrange — ExitPlanMode denial exists but mode is AutoEdit
+        let stdout = r##"{
+            "type": "result",
+            "result": "The plan is straightforward: create hello.txt",
+            "permission_denials": [
+                {
+                    "tool_name": "ExitPlanMode",
+                    "tool_input": {
+                        "plan": "# Plan: Create hello.txt\n\n## Context\nDetailed plan content here."
+                    }
+                }
+            ],
+            "usage": {"input_tokens": 200, "output_tokens": 50}
+        }"##;
+
+        // Act
+        let result = AgentKind::Claude.parse_response(stdout, "", PermissionMode::AutoEdit);
+
+        // Assert — denial extraction skipped; uses result instead
+        assert_eq!(
+            result.content,
+            "The plan is straightforward: create hello.txt"
+        );
+    }
+
+    #[test]
+    fn test_claude_parse_response_ignores_non_plan_denials() {
+        // Arrange — denial for a different tool, should use result
+        let stdout = r#"{
+            "result": "Hello world",
+            "permission_denials": [
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "ls"}
+                }
+            ],
+            "usage": {"input_tokens": 100, "output_tokens": 25}
+        }"#;
+
+        // Act
+        let result = AgentKind::Claude.parse_response(stdout, "", PermissionMode::Plan);
+
+        // Assert — falls back to result since no ExitPlanMode denial
+        assert_eq!(result.content, "Hello world");
+    }
+
+    #[test]
     fn test_gemini_parse_response_valid_json() {
         // Arrange
         let stdout = r#"{"response":"Hello from Gemini","stats":{},"error":null}"#;
 
         // Act
-        let result = AgentKind::Gemini.parse_response(stdout, "");
+        let result = AgentKind::Gemini.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert
         assert_eq!(result.content, "Hello from Gemini");
@@ -1218,7 +1339,7 @@ mod tests {
 {"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
 
         // Act
-        let result = AgentKind::Codex.parse_response(stdout, "");
+        let result = AgentKind::Codex.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert
         assert_eq!(result.content, "Final answer");
@@ -1233,7 +1354,7 @@ mod tests {
 {"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
 
         // Act
-        let result = AgentKind::Codex.parse_response(stdout, "");
+        let result = AgentKind::Codex.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert — falls back to raw stdout
         assert!(result.content.contains("thread.started"));
@@ -1245,7 +1366,7 @@ mod tests {
         let stdout = "This is not JSON output\nJust plain text";
 
         // Act
-        let result = AgentKind::Claude.parse_response(stdout, "");
+        let result = AgentKind::Claude.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert
         assert_eq!(result.content, "This is not JSON output\nJust plain text");
@@ -1257,7 +1378,7 @@ mod tests {
         let stderr = "Error: agent binary not found";
 
         // Act
-        let result = AgentKind::Claude.parse_response("", stderr);
+        let result = AgentKind::Claude.parse_response("", stderr, PermissionMode::AutoEdit);
 
         // Assert
         assert_eq!(result.content, "Error: agent binary not found");
@@ -1269,7 +1390,7 @@ mod tests {
         let stderr = "Connection failed";
 
         // Act
-        let result = AgentKind::Gemini.parse_response("  \n  ", stderr);
+        let result = AgentKind::Gemini.parse_response("  \n  ", stderr, PermissionMode::AutoEdit);
 
         // Assert
         assert_eq!(result.content, "Connection failed");
@@ -1281,7 +1402,7 @@ mod tests {
         let stdout = r#"{"type":"error","message":"Something went wrong"}"#;
 
         // Act
-        let result = AgentKind::Claude.parse_response(stdout, "");
+        let result = AgentKind::Claude.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert — falls back to raw stdout
         assert!(result.content.contains("Something went wrong"));
@@ -1293,7 +1414,7 @@ mod tests {
         let stdout = r#"{"response":null,"error":{"type":"ApiError","message":"Rate limited"}}"#;
 
         // Act
-        let result = AgentKind::Gemini.parse_response(stdout, "");
+        let result = AgentKind::Gemini.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert — falls back to raw stdout since response is null
         assert!(result.content.contains("Rate limited"));
@@ -1322,7 +1443,7 @@ mod tests {
         }"#;
 
         // Act
-        let result = AgentKind::Gemini.parse_response(stdout, "");
+        let result = AgentKind::Gemini.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert
         assert_eq!(result.content, "Done!");
@@ -1417,6 +1538,146 @@ mod tests {
     }
 
     #[test]
+    fn test_gemini_start_command_plan_uses_auto_edit() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = GeminiBackend;
+
+        // Act
+        let cmd = AgentBackend::build_start_command(
+            &backend,
+            dir.path(),
+            "hello",
+            "gemini-3-flash-preview",
+            PermissionMode::Plan,
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("--approval-mode"));
+        assert!(debug.contains("auto_edit"));
+        assert!(!debug.contains("yolo"));
+        assert!(debug.contains("[PLAN MODE]"));
+        assert!(debug.contains("Agent System Prompt: Plan Mode"));
+        assert!(debug.contains("Prompt: hello"));
+    }
+
+    #[test]
+    fn test_gemini_resume_command_plan_prefixes_prompt() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = GeminiBackend;
+
+        // Act
+        let cmd = AgentBackend::build_resume_command(
+            &backend,
+            dir.path(),
+            "follow-up",
+            "gemini-3-flash-preview",
+            PermissionMode::Plan,
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("[PLAN MODE]"));
+        assert!(debug.contains("Prompt: follow-up"));
+        assert!(debug.contains("--resume"));
+    }
+
+    #[test]
+    fn test_claude_start_command_plan_uses_plan_permission_mode() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = ClaudeBackend;
+
+        // Act
+        let cmd = AgentBackend::build_start_command(
+            &backend,
+            dir.path(),
+            "hello",
+            "claude-opus-4-6",
+            PermissionMode::Plan,
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("--permission-mode"));
+        assert!(debug.contains("plan"));
+        assert!(!debug.contains("--dangerously-skip-permissions"));
+        assert!(debug.contains("[PLAN MODE]"));
+        assert!(debug.contains("Agent System Prompt: Plan Mode"));
+        assert!(debug.contains("Prompt: hello"));
+    }
+
+    #[test]
+    fn test_claude_resume_command_plan_prefixes_prompt() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = ClaudeBackend;
+
+        // Act
+        let cmd = AgentBackend::build_resume_command(
+            &backend,
+            dir.path(),
+            "follow-up",
+            "claude-opus-4-6",
+            PermissionMode::Plan,
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("[PLAN MODE]"));
+        assert!(debug.contains("Prompt: follow-up"));
+        assert!(debug.contains("-c"));
+    }
+
+    #[test]
+    fn test_codex_start_command_plan_uses_full_auto() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = CodexBackend;
+
+        // Act
+        let cmd = AgentBackend::build_start_command(
+            &backend,
+            dir.path(),
+            "hello",
+            "gpt-5.3-codex",
+            PermissionMode::Plan,
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("--full-auto"));
+        assert!(!debug.contains("--yolo"));
+        assert!(debug.contains("[PLAN MODE]"));
+        assert!(debug.contains("Agent System Prompt: Plan Mode"));
+        assert!(debug.contains("Prompt: hello"));
+    }
+
+    #[test]
+    fn test_codex_resume_command_plan_prefixes_prompt() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = CodexBackend;
+
+        // Act
+        let cmd = AgentBackend::build_resume_command(
+            &backend,
+            dir.path(),
+            "follow-up",
+            "gpt-5.3-codex",
+            PermissionMode::Plan,
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("[PLAN MODE]"));
+        assert!(debug.contains("Prompt: follow-up"));
+        assert!(debug.contains("resume"));
+    }
+
+    #[test]
     fn test_gemini_parse_response_with_multiple_models() {
         // Arrange
         let stdout = r#"{
@@ -1434,7 +1695,7 @@ mod tests {
         }"#;
 
         // Act
-        let result = AgentKind::Gemini.parse_response(stdout, "");
+        let result = AgentKind::Gemini.parse_response(stdout, "", PermissionMode::AutoEdit);
 
         // Assert — tokens are summed across models
         assert_eq!(result.stats.input_tokens, Some(1500));

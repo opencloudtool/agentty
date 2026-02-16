@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -6,6 +7,8 @@ use ratatui::style::Color;
 use crate::agent::AgentKind;
 use crate::file_list::FileEntry;
 use crate::icon::Icon;
+
+pub const PLAN_MODE_INSTRUCTIONS: &str = include_str!("../resources/plan_mode.md");
 
 pub const SESSION_DATA_DIR: &str = ".agentty";
 
@@ -26,6 +29,7 @@ pub enum PermissionMode {
     #[default]
     AutoEdit,
     Autonomous,
+    Plan,
 }
 
 impl PermissionMode {
@@ -34,15 +38,32 @@ impl PermissionMode {
         match self {
             PermissionMode::AutoEdit => "auto_edit",
             PermissionMode::Autonomous => "autonomous",
+            PermissionMode::Plan => "plan",
         }
     }
 
-    /// Toggles to the opposite permission mode.
+    /// Cycles to the next permission mode.
     #[must_use]
     pub fn toggle(self) -> Self {
         match self {
             PermissionMode::AutoEdit => PermissionMode::Autonomous,
-            PermissionMode::Autonomous => PermissionMode::AutoEdit,
+            PermissionMode::Autonomous => PermissionMode::Plan,
+            PermissionMode::Plan => PermissionMode::AutoEdit,
+        }
+    }
+
+    /// Transforms a prompt for the active permission mode.
+    ///
+    /// In `Plan` mode a concise instruction prefix and a labeled prompt
+    /// delimiter are added so the agent can clearly distinguish instructions
+    /// from the user task.
+    /// Other modes return the prompt unchanged.
+    pub fn apply_to_prompt(self, prompt: &str) -> Cow<'_, str> {
+        match self {
+            PermissionMode::Plan => Cow::Owned(format!(
+                "[PLAN MODE] {PLAN_MODE_INSTRUCTIONS} Prompt: {prompt}"
+            )),
+            _ => Cow::Borrowed(prompt),
         }
     }
 }
@@ -60,6 +81,7 @@ impl std::str::FromStr for PermissionMode {
         match s {
             "auto_edit" => Ok(PermissionMode::AutoEdit),
             "autonomous" => Ok(PermissionMode::Autonomous),
+            "plan" => Ok(PermissionMode::Plan),
             _ => Err(format!("Unknown permission mode: {s}")),
         }
     }
@@ -1708,6 +1730,7 @@ mod tests {
         // Arrange & Act & Assert
         assert_eq!(PermissionMode::AutoEdit.label(), "auto_edit");
         assert_eq!(PermissionMode::Autonomous.label(), "autonomous");
+        assert_eq!(PermissionMode::Plan.label(), "plan");
     }
 
     #[test]
@@ -1717,10 +1740,8 @@ mod tests {
             PermissionMode::AutoEdit.toggle(),
             PermissionMode::Autonomous
         );
-        assert_eq!(
-            PermissionMode::Autonomous.toggle(),
-            PermissionMode::AutoEdit
-        );
+        assert_eq!(PermissionMode::Autonomous.toggle(), PermissionMode::Plan);
+        assert_eq!(PermissionMode::Plan.toggle(), PermissionMode::AutoEdit);
     }
 
     #[test]
@@ -1728,6 +1749,7 @@ mod tests {
         // Arrange & Act & Assert
         assert_eq!(PermissionMode::AutoEdit.to_string(), "auto_edit");
         assert_eq!(PermissionMode::Autonomous.to_string(), "autonomous");
+        assert_eq!(PermissionMode::Plan.to_string(), "plan");
     }
 
     #[test]
@@ -1741,17 +1763,65 @@ mod tests {
             "autonomous".parse::<PermissionMode>().expect("parse"),
             PermissionMode::Autonomous
         );
+        assert_eq!(
+            "plan".parse::<PermissionMode>().expect("parse"),
+            PermissionMode::Plan
+        );
         assert!("unknown".parse::<PermissionMode>().is_err());
     }
 
     #[test]
     fn test_permission_mode_roundtrip() {
         // Arrange & Act & Assert
-        for mode in [PermissionMode::AutoEdit, PermissionMode::Autonomous] {
+        for mode in [
+            PermissionMode::AutoEdit,
+            PermissionMode::Autonomous,
+            PermissionMode::Plan,
+        ] {
             let label = mode.to_string();
             let parsed: PermissionMode = label.parse().expect("roundtrip parse");
             assert_eq!(parsed, mode);
         }
+    }
+
+    #[test]
+    fn test_permission_mode_apply_to_prompt_auto_edit() {
+        // Arrange
+        let prompt = "Fix the bug";
+
+        // Act
+        let result = PermissionMode::AutoEdit.apply_to_prompt(prompt);
+
+        // Assert
+        assert_eq!(result.as_ref(), "Fix the bug");
+        assert!(matches!(result, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_permission_mode_apply_to_prompt_autonomous() {
+        // Arrange
+        let prompt = "Fix the bug";
+
+        // Act
+        let result = PermissionMode::Autonomous.apply_to_prompt(prompt);
+
+        // Assert
+        assert_eq!(result.as_ref(), "Fix the bug");
+        assert!(matches!(result, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_permission_mode_apply_to_prompt_plan() {
+        // Arrange
+        let prompt = "Fix the bug";
+
+        // Act
+        let result = PermissionMode::Plan.apply_to_prompt(prompt);
+
+        // Assert
+        assert!(result.starts_with("[PLAN MODE]"));
+        assert!(result.ends_with("Prompt: Fix the bug"));
+        assert!(matches!(result, Cow::Owned(_)));
     }
 
     #[test]
