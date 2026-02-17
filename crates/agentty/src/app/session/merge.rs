@@ -309,17 +309,28 @@ impl SessionManager {
         let output = Arc::clone(&handles.output);
         let commit_count = Arc::clone(&handles.commit_count);
 
+        let status = Arc::clone(&handles.status);
+        let db = services.db();
+        let app_event_tx = services.event_sender();
+
+        if !TaskService::update_status(&status, db, &app_event_tx, &session.id, Status::Rebasing)
+            .await
+        {
+            return Err("Invalid status transition to Rebasing".to_string());
+        }
+
         // Auto-commit any pending changes before rebasing to avoid "cannot rebase: You
         // have unstaged changes"
-        match Self::commit_changes(&session.folder, services.db(), &session.id, &commit_count).await
+        if let Err(e) =
+            Self::commit_changes(&session.folder, services.db(), &session.id, &commit_count).await
+            && !e.contains("Nothing to commit")
         {
-            Ok(_) => {}
-            Err(e) if e.contains("Nothing to commit") => {}
-            Err(e) => {
-                return Err(format!(
-                    "Failed to commit pending changes before rebase: {e}"
-                ));
-            }
+            let _ =
+                TaskService::update_status(&status, db, &app_event_tx, &session.id, Status::Review)
+                    .await;
+            return Err(format!(
+                "Failed to commit pending changes before rebase: {e}"
+            ));
         }
 
         let session_folder = session.folder.clone();
@@ -340,10 +351,16 @@ impl SessionManager {
         };
         let rebase_result = Self::run_rebase_assist_loop(rebase_input).await;
         if let Err(error) = rebase_result {
+            let _ =
+                TaskService::update_status(&status, db, &app_event_tx, &session.id, Status::Review)
+                    .await;
             return Err(format!("Failed to rebase: {error}"));
         }
 
         let source_branch = session_branch(&session.id);
+
+        let _ = TaskService::update_status(&status, db, &app_event_tx, &session.id, Status::Review)
+            .await;
 
         Ok(format!(
             "Successfully rebased {source_branch} onto {base_branch}"

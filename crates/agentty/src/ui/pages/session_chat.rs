@@ -243,6 +243,7 @@ impl<'a> SessionChatPage<'a> {
         if matches!(
             status,
             Status::InProgress
+                | Status::Rebasing
                 | Status::Merging
                 | Status::PullRequest
                 | Status::CreatingPullRequest
@@ -280,6 +281,7 @@ impl<'a> SessionChatPage<'a> {
     fn status_message(status: Status) -> &'static str {
         match status {
             Status::InProgress => "Thinking...",
+            Status::Rebasing => "Rebasing...",
             Status::Merging => "Merging...",
             Status::CreatingPullRequest => "Creating PR...",
             Status::PullRequest => "Waiting for PR merge...",

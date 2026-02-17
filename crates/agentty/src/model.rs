@@ -92,6 +92,7 @@ pub enum Status {
     New,
     InProgress,
     Review,
+    Rebasing,
     Merging,
     CreatingPullRequest,
     PullRequest,
@@ -117,6 +118,7 @@ impl std::fmt::Display for Status {
             Status::New => write!(f, "New"),
             Status::InProgress => write!(f, "InProgress"),
             Status::Review => write!(f, "Review"),
+            Status::Rebasing => write!(f, "Rebasing"),
             Status::Merging => write!(f, "Merging"),
             Status::CreatingPullRequest => write!(f, "CreatingPullRequest"),
             Status::PullRequest => write!(f, "PullRequest"),
@@ -134,6 +136,7 @@ impl std::str::FromStr for Status {
             "New" => Ok(Status::New),
             "InProgress" | "Committing" => Ok(Status::InProgress),
             "Review" => Ok(Status::Review),
+            "Rebasing" => Ok(Status::Rebasing),
             "Merging" => Ok(Status::Merging),
             "CreatingPullRequest" => Ok(Status::CreatingPullRequest),
             "PullRequest" | "Processing" => Ok(Status::PullRequest),
@@ -779,11 +782,12 @@ impl Status {
                     Status::Review,
                     Status::InProgress
                         | Status::PullRequest
+                        | Status::Rebasing
                         | Status::Merging
                         | Status::Canceled
                         | Status::CreatingPullRequest
                 )
-                | (Status::InProgress, Status::Review)
+                | (Status::InProgress | Status::Rebasing, Status::Review)
                 | (
                     Status::CreatingPullRequest,
                     Status::PullRequest | Status::Review
@@ -797,6 +801,7 @@ impl Status {
         match self {
             Status::New | Status::Review => Icon::Pending,
             Status::InProgress
+            | Status::Rebasing
             | Status::Merging
             | Status::PullRequest
             | Status::CreatingPullRequest => Icon::current_spinner(),
@@ -810,7 +815,10 @@ impl Status {
             Status::New => Color::DarkGray,
             Status::InProgress => Color::Yellow,
             Status::Review => Color::LightBlue,
-            Status::Merging | Status::PullRequest | Status::CreatingPullRequest => Color::Cyan,
+            Status::Rebasing
+            | Status::Merging
+            | Status::PullRequest
+            | Status::CreatingPullRequest => Color::Cyan,
             Status::Done => Color::Green,
             Status::Canceled => Color::Red,
         }
