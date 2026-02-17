@@ -217,7 +217,8 @@ impl SessionManager {
                 .map_err(|error| format!("Failed to merge: {error}"))?;
             }
 
-            let summary_diff = Self::session_diff_for_summary(&folder, &base_branch).await;
+            // Reuse the pre-merge diff since the worktree is now merged and clean.
+            let summary_diff = squash_diff;
 
             if !TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Done).await {
                 return Err("Invalid status transition to Done".to_string());
