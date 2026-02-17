@@ -18,3 +18,4 @@ SQLite migrations for the `agentty` crate.
 - [013_add_permission_mode_to_session.sql](013_add_permission_mode_to_session.sql) - Adds `permission_mode` to `session`.
 - [014_add_size_to_session.sql](014_add_size_to_session.sql) - Adds persisted `size` bucket to `session`.
 - [015_add_summary_to_session.sql](015_add_summary_to_session.sql) - Adds persisted terminal `summary` text to `session`.
+- [016_backfill_summary_with_output.sql](016_backfill_summary_with_output.sql) - Backfills missing terminal `summary` values from persisted `output`.

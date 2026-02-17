@@ -233,9 +233,9 @@ impl<'a> SessionChatPage<'a> {
     }
 
     fn output_lines(session: &Session, output_area: Rect, status: Status) -> Vec<Line<'static>> {
-        let output_text = session.output.clone();
+        let output_text = Self::output_text(session, status);
         let inner_width = output_area.width.saturating_sub(2) as usize;
-        let mut lines = wrap_lines(&output_text, inner_width)
+        let mut lines = wrap_lines(output_text, inner_width)
             .into_iter()
             .map(|line| Line::from(line.to_string()))
             .collect::<Vec<_>>();
@@ -262,6 +262,19 @@ impl<'a> SessionChatPage<'a> {
         }
 
         lines
+    }
+
+    fn output_text(session: &Session, status: Status) -> &str {
+        if matches!(status, Status::Done | Status::Canceled)
+            && let Some(summary) = session
+                .summary
+                .as_deref()
+                .filter(|summary| !summary.is_empty())
+        {
+            return summary;
+        }
+
+        &session.output
     }
 
     fn status_message(status: Status) -> &'static str {
@@ -620,6 +633,48 @@ mod tests {
 
         // Assert
         assert_eq!(description, "Clear chat history and start fresh.");
+    }
+
+    #[test]
+    fn test_output_lines_uses_summary_for_done_session() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = "streamed output".to_string();
+        session.summary = Some("terminal summary".to_string());
+        session.status = Status::Done;
+
+        // Act
+        let lines = SessionChatPage::output_lines(&session, Rect::new(0, 0, 80, 5), session.status);
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("terminal summary"));
+        assert!(!text.contains("streamed output"));
+    }
+
+    #[test]
+    fn test_output_lines_uses_summary_for_canceled_session() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = "streamed output".to_string();
+        session.summary = Some("canceled summary".to_string());
+        session.status = Status::Canceled;
+
+        // Act
+        let lines = SessionChatPage::output_lines(&session, Rect::new(0, 0, 80, 5), session.status);
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("canceled summary"));
+        assert!(!text.contains("streamed output"));
     }
 
     #[test]

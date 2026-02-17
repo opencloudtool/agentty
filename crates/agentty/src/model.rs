@@ -138,7 +138,7 @@ impl std::str::FromStr for Status {
             "CreatingPullRequest" => Ok(Status::CreatingPullRequest),
             "PullRequest" | "Processing" => Ok(Status::PullRequest),
             "Done" => Ok(Status::Done),
-            "Canceled" | "Cancelled" => Ok(Status::Canceled),
+            "Canceled" => Ok(Status::Canceled),
             _ => Err(format!("Unknown status: {s}")),
         }
     }
@@ -980,6 +980,15 @@ mod tests {
 
         // Assert
         assert_eq!(status, Status::Canceled);
+    }
+
+    #[test]
+    fn test_status_from_str_cancelled_is_unknown() {
+        // Arrange & Act
+        let result = "Cancelled".parse::<Status>();
+
+        // Assert
+        assert!(result.is_err());
     }
 
     #[test]
