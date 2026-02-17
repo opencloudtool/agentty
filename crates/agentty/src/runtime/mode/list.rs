@@ -52,8 +52,8 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
                 return Ok(EventResult::Continue);
             }
 
-            if let Some(session_index) = app.session_state.table_state.selected()
-                && let Some(session) = app.session_state.sessions.get(session_index)
+            if let Some(session_index) = app.sessions.table_state.selected()
+                && let Some(session) = app.sessions.sessions.get(session_index)
                 && !matches!(session.status, Status::Canceled)
                 && let Some(session_id) = app.session_id_for_index(session_index)
             {
@@ -209,7 +209,7 @@ mod tests {
 
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
-        assert_eq!(app.session_state.sessions.len(), 1);
+        assert_eq!(app.sessions.sessions.len(), 1);
         assert!(matches!(
             app.mode,
             AppMode::Prompt {
@@ -228,7 +228,7 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        app.session_state.table_state.select(Some(0));
+        app.sessions.table_state.select(Some(0));
         app.mode = AppMode::List;
 
         // Act
@@ -255,10 +255,10 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        if let Some(session) = app.session_state.sessions.first_mut() {
+        if let Some(session) = app.sessions.sessions.first_mut() {
             session.status = Status::Done;
         }
-        app.session_state.table_state.select(Some(0));
+        app.sessions.table_state.select(Some(0));
         app.mode = AppMode::List;
 
         // Act
@@ -285,10 +285,10 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        if let Some(session) = app.session_state.sessions.first_mut() {
+        if let Some(session) = app.sessions.sessions.first_mut() {
             session.status = Status::Canceled;
         }
-        app.session_state.table_state.select(Some(0));
+        app.sessions.table_state.select(Some(0));
         app.mode = AppMode::List;
 
         // Act
@@ -314,7 +314,7 @@ mod tests {
 
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
-        assert_eq!(app.session_state.sessions.len(), 1);
+        assert_eq!(app.sessions.sessions.len(), 1);
         assert!(matches!(
             app.mode,
             AppMode::Prompt {
@@ -333,7 +333,7 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        app.session_state.table_state.select(Some(0));
+        app.sessions.table_state.select(Some(0));
 
         // Act
         let event_result = handle(
@@ -345,7 +345,7 @@ mod tests {
 
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
-        assert!(app.session_state.sessions.is_empty());
+        assert!(app.sessions.sessions.is_empty());
     }
 
     #[tokio::test]

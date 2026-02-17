@@ -1,7 +1,7 @@
 //! Pull-request lifecycle orchestration for session branches.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,12 +9,45 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::app::session::session_branch;
-use crate::app::{App, AppEvent};
+use crate::app::task::TaskService;
+use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::db::Database;
 use crate::git;
 use crate::model::Status;
 
 const PR_MERGE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Pull request runtime state shared by PR creation and polling tasks.
+pub struct PrManager {
+    pr_creation_in_flight: Arc<Mutex<HashSet<String>>>,
+    pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
+
+impl PrManager {
+    /// Creates an empty PR runtime state container.
+    pub fn new() -> Self {
+        Self {
+            pr_creation_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            pr_poll_cancel: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Returns the shared set of session ids currently creating PRs.
+    pub(crate) fn pr_creation_in_flight(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.pr_creation_in_flight)
+    }
+
+    /// Returns the shared PR polling cancel-token map.
+    pub(crate) fn pr_poll_cancel(&self) -> Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> {
+        Arc::clone(&self.pr_poll_cancel)
+    }
+}
+
+impl Default for PrManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 struct PrPollTaskInput {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -41,14 +74,27 @@ struct CreatePrTaskInput {
     title: String,
 }
 
-impl App {
+struct PrPollShared<'a> {
+    app_event_tx: &'a mpsc::UnboundedSender<AppEvent>,
+    db: &'a Database,
+    id: &'a str,
+    output: &'a Arc<Mutex<String>>,
+    status: &'a Arc<Mutex<Status>>,
+}
+
+impl PrManager {
     /// Creates a pull request for a reviewed session branch.
     ///
     /// # Errors
     /// Returns an error if the session is not eligible for PR creation or git
     /// metadata for the worktree is unavailable.
-    pub async fn create_pr_session(&self, session_id: &str) -> Result<(), String> {
-        let (session, handles) = self.session_and_handles_or_err(session_id)?;
+    pub(super) async fn create_pr_session(
+        &self,
+        services: &AppServices,
+        sessions: &SessionManager,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let (session, handles) = sessions.session_and_handles_or_err(session_id)?;
 
         if session.status != Status::Review {
             return Err("Session must be in review to create a pull request".to_string());
@@ -63,8 +109,8 @@ impl App {
         }
 
         // Read base branch from DB
-        let base_branch = self
-            .db
+        let base_branch = services
+            .db()
             .get_session_base_branch(&session.id)
             .await?
             .ok_or_else(|| "No git worktree for this session".to_string())?;
@@ -85,10 +131,10 @@ impl App {
         let status = Arc::clone(&handles.status);
         let output = Arc::clone(&handles.output);
         let folder = session.folder.clone();
-        let db = self.db.clone();
+        let db = services.db().clone();
         let id = session.id.clone();
-        let app_event_tx = self.app_event_sender();
-        if !Self::update_status(
+        let app_event_tx = services.event_sender();
+        if !TaskService::update_status(
             &status,
             &db,
             &app_event_tx,
@@ -102,7 +148,7 @@ impl App {
             return Err("Invalid status transition to CreatingPullRequest".to_string());
         }
 
-        let pr_poll_cancel = Arc::clone(&self.pr_poll_cancel);
+        let pr_poll_cancel = self.pr_poll_cancel();
 
         Self::spawn_create_pr_task(CreatePrTaskInput {
             app_event_tx,
@@ -147,11 +193,18 @@ impl App {
             match result {
                 Ok(Ok(message)) => {
                     let message = format!("\n[PR] {message}\n");
-                    Self::append_session_output(&output, &db, &app_event_tx, &id, &message).await;
-                    if Self::update_status(&status, &db, &app_event_tx, &id, Status::PullRequest)
-                        .await
+                    TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
+                        .await;
+                    if TaskService::update_status(
+                        &status,
+                        &db,
+                        &app_event_tx,
+                        &id,
+                        Status::PullRequest,
+                    )
+                    .await
                     {
-                        let repo_root = Self::resolve_repo_root_from_worktree(&folder);
+                        let repo_root = SessionManager::resolve_repo_root_from_worktree(&folder);
                         Self::spawn_pr_poll_task(PrPollTaskInput {
                             app_event_tx: app_event_tx.clone(),
                             db,
@@ -164,7 +217,7 @@ impl App {
                             pr_poll_cancel,
                         });
                     } else {
-                        Self::append_session_output(
+                        TaskService::append_session_output(
                             &output,
                             &db,
                             &app_event_tx,
@@ -172,22 +225,41 @@ impl App {
                             "\n[PR Error] Invalid status transition to PullRequest\n",
                         )
                         .await;
-                        let _ =
-                            Self::update_status(&status, &db, &app_event_tx, &id, Status::Review)
-                                .await;
+                        let _ = TaskService::update_status(
+                            &status,
+                            &db,
+                            &app_event_tx,
+                            &id,
+                            Status::Review,
+                        )
+                        .await;
                     }
                 }
                 Ok(Err(error)) => {
                     let message = format!("\n[PR Error] {error}\n");
-                    Self::append_session_output(&output, &db, &app_event_tx, &id, &message).await;
-                    let _ =
-                        Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
+                    TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
+                        .await;
+                    let _ = TaskService::update_status(
+                        &status,
+                        &db,
+                        &app_event_tx,
+                        &id,
+                        Status::Review,
+                    )
+                    .await;
                 }
                 Err(error) => {
                     let message = format!("\n[PR Error] Join error: {error}\n");
-                    Self::append_session_output(&output, &db, &app_event_tx, &id, &message).await;
-                    let _ =
-                        Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
+                    TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
+                        .await;
+                    let _ = TaskService::update_status(
+                        &status,
+                        &db,
+                        &app_event_tx,
+                        &id,
+                        Status::Review,
+                    )
+                    .await;
                 }
             }
 
@@ -197,27 +269,31 @@ impl App {
 
     /// Ensures merge polling tasks are running for sessions in
     /// `PullRequest` status.
-    pub(super) fn start_pr_polling_for_pull_request_sessions(&self) {
-        for session in &self.session_state.sessions {
+    pub(super) fn start_pr_polling_for_pull_request_sessions(
+        &self,
+        services: &AppServices,
+        sessions: &SessionManager,
+    ) {
+        for session in &sessions.sessions {
             if session.status != Status::PullRequest {
                 continue;
             }
 
-            let Some(handles) = self.session_state.handles.get(&session.id) else {
+            let Some(handles) = sessions.handles.get(&session.id) else {
                 continue;
             };
 
             let source_branch = session_branch(&session.id);
             Self::spawn_pr_poll_task(PrPollTaskInput {
-                app_event_tx: self.app_event_sender(),
-                db: self.db.clone(),
+                app_event_tx: services.event_sender(),
+                db: services.db().clone(),
                 folder: session.folder.clone(),
                 id: session.id.clone(),
                 output: Arc::clone(&handles.output),
                 status: Arc::clone(&handles.status),
                 source_branch,
-                repo_root: Self::resolve_repo_root_from_worktree(&session.folder),
-                pr_poll_cancel: Arc::clone(&self.pr_poll_cancel),
+                repo_root: SessionManager::resolve_repo_root_from_worktree(&session.folder),
+                pr_poll_cancel: self.pr_poll_cancel(),
             });
         }
     }
@@ -294,85 +370,138 @@ impl App {
                     break;
                 }
 
-                let merged = {
-                    let folder = folder.clone();
-                    let source_branch = source_branch.clone();
-                    tokio::task::spawn_blocking(move || git::is_pr_merged(&folder, &source_branch))
-                        .await
-                        .ok()
-                        .and_then(std::result::Result::ok)
+                let shared = PrPollShared {
+                    app_event_tx: &app_event_tx,
+                    db: &db,
+                    id: &id,
+                    output: &output,
+                    status: &status,
                 };
 
-                if merged == Some(true) {
-                    let merged_message =
-                        format!("\n[PR] Pull request from `{source_branch}` was merged\n");
-                    Self::append_session_output(&output, &db, &app_event_tx, &id, &merged_message)
+                if Self::poll_is_merged(&folder, &source_branch).await == Some(true) {
+                    Self::handle_merged_pr(&shared, &folder, &source_branch, repo_root.as_deref())
                         .await;
-                    if !Self::update_status(&status, &db, &app_event_tx, &id, Status::Done).await {
-                        Self::append_session_output(
-                            &output,
-                            &db,
-                            &app_event_tx,
-                            &id,
-                            "\n[PR Error] Invalid status transition to Done\n",
-                        )
-                        .await;
-                    }
-                    if let Err(error) = Self::cleanup_merged_session_worktree(
-                        folder.clone(),
-                        source_branch.clone(),
-                        repo_root.clone(),
-                    )
-                    .await
-                    {
-                        let message =
-                            format!("\n[PR Error] Failed to remove merged worktree: {error}\n");
-                        Self::append_session_output(&output, &db, &app_event_tx, &id, &message)
-                            .await;
-                    }
-
                     break;
                 }
 
-                let closed = {
-                    let folder = folder.clone();
-                    let source_branch = source_branch.clone();
-                    tokio::task::spawn_blocking(move || git::is_pr_closed(&folder, &source_branch))
-                        .await
-                        .ok()
-                        .and_then(std::result::Result::ok)
-                };
-
-                if closed == Some(true) {
-                    let closed_message =
-                        format!("\n[PR] Pull request from `{source_branch}` was closed\n");
-                    Self::append_session_output(&output, &db, &app_event_tx, &id, &closed_message)
-                        .await;
-                    if !Self::update_status(&status, &db, &app_event_tx, &id, Status::Canceled)
-                        .await
-                    {
-                        Self::append_session_output(
-                            &output,
-                            &db,
-                            &app_event_tx,
-                            &id,
-                            "\n[PR Error] Invalid status transition to Canceled\n",
-                        )
-                        .await;
-                    }
-
+                if Self::poll_is_closed(&folder, &source_branch).await == Some(true) {
+                    Self::handle_closed_pr(&shared, &source_branch).await;
                     break;
                 }
 
-                for _ in 0..PR_MERGE_POLL_INTERVAL.as_secs() {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
+                Self::wait_for_next_poll(&cancel).await;
             }
 
             let _ = app_event_tx.send(AppEvent::PrPollingStopped { session_id: id });
         });
+    }
+
+    async fn poll_is_merged(folder: &Path, source_branch: &str) -> Option<bool> {
+        let folder = folder.to_path_buf();
+        let source_branch = source_branch.to_string();
+        tokio::task::spawn_blocking(move || git::is_pr_merged(&folder, &source_branch))
+            .await
+            .ok()
+            .and_then(std::result::Result::ok)
+    }
+
+    async fn poll_is_closed(folder: &Path, source_branch: &str) -> Option<bool> {
+        let folder = folder.to_path_buf();
+        let source_branch = source_branch.to_string();
+        tokio::task::spawn_blocking(move || git::is_pr_closed(&folder, &source_branch))
+            .await
+            .ok()
+            .and_then(std::result::Result::ok)
+    }
+
+    async fn handle_merged_pr(
+        shared: &PrPollShared<'_>,
+        folder: &Path,
+        source_branch: &str,
+        repo_root: Option<&Path>,
+    ) {
+        let merged_message = format!("\n[PR] Pull request from `{source_branch}` was merged\n");
+        TaskService::append_session_output(
+            shared.output,
+            shared.db,
+            shared.app_event_tx,
+            shared.id,
+            &merged_message,
+        )
+        .await;
+        if !TaskService::update_status(
+            shared.status,
+            shared.db,
+            shared.app_event_tx,
+            shared.id,
+            Status::Done,
+        )
+        .await
+        {
+            TaskService::append_session_output(
+                shared.output,
+                shared.db,
+                shared.app_event_tx,
+                shared.id,
+                "\n[PR Error] Invalid status transition to Done\n",
+            )
+            .await;
+        }
+        if let Err(error) = SessionManager::cleanup_merged_session_worktree(
+            folder.to_path_buf(),
+            source_branch.to_string(),
+            repo_root.map(Path::to_path_buf),
+        )
+        .await
+        {
+            let message = format!("\n[PR Error] Failed to remove merged worktree: {error}\n");
+            TaskService::append_session_output(
+                shared.output,
+                shared.db,
+                shared.app_event_tx,
+                shared.id,
+                &message,
+            )
+            .await;
+        }
+    }
+
+    async fn handle_closed_pr(shared: &PrPollShared<'_>, source_branch: &str) {
+        let closed_message = format!("\n[PR] Pull request from `{source_branch}` was closed\n");
+        TaskService::append_session_output(
+            shared.output,
+            shared.db,
+            shared.app_event_tx,
+            shared.id,
+            &closed_message,
+        )
+        .await;
+        if !TaskService::update_status(
+            shared.status,
+            shared.db,
+            shared.app_event_tx,
+            shared.id,
+            Status::Canceled,
+        )
+        .await
+        {
+            TaskService::append_session_output(
+                shared.output,
+                shared.db,
+                shared.app_event_tx,
+                shared.id,
+                "\n[PR Error] Invalid status transition to Canceled\n",
+            )
+            .await;
+        }
+    }
+
+    async fn wait_for_next_poll(cancel: &AtomicBool) {
+        for _ in 0..PR_MERGE_POLL_INTERVAL.as_secs() {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 }

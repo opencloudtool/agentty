@@ -5,12 +5,12 @@ use std::path::Path;
 
 use super::session_folder;
 use crate::agent::AgentKind;
-use crate::app::App;
+use crate::app::SessionManager;
 use crate::db::Database;
 use crate::git;
 use crate::model::{Project, Session, SessionHandles, SessionSize, SessionStats, Status};
 
-impl App {
+impl SessionManager {
     /// Loads session models from the database and reuses live handles when
     /// possible.
     ///

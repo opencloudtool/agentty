@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::agent::AgentKind;
-use crate::app::task::RunSessionTaskInput;
-use crate::app::{App, AppEvent};
+use crate::app::task::{RunSessionTaskInput, TaskService};
+use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::db::Database;
 use crate::model::{PermissionMode, Status};
 
@@ -62,9 +62,9 @@ struct SessionWorkerContext {
     status: Arc<Mutex<Status>>,
 }
 
-impl App {
+impl SessionManager {
     /// Marks unfinished operations from previous process runs as failed.
-    pub(super) async fn fail_unfinished_operations_from_previous_run(db: &Database) {
+    pub(crate) async fn fail_unfinished_operations_from_previous_run(db: &Database) {
         let interrupted_session_ids: HashSet<String> = db
             .load_unfinished_session_operations()
             .await
@@ -91,18 +91,20 @@ impl App {
     /// available.
     pub(super) async fn enqueue_session_command(
         &mut self,
+        services: &AppServices,
         session_id: &str,
         command: SessionCommand,
     ) -> Result<(), String> {
         let operation_id = command.operation_id().to_string();
-        self.db
+        services
+            .db()
             .insert_session_operation(&operation_id, session_id, command.kind())
             .await?;
 
-        let sender = self.ensure_session_worker(session_id)?;
+        let sender = self.ensure_session_worker(services, session_id)?;
         if sender.send(command).is_err() {
-            let _ = self
-                .db
+            let _ = services
+                .db()
                 .mark_session_operation_failed(&operation_id, "Session worker is not available")
                 .await;
 
@@ -114,7 +116,7 @@ impl App {
 
     /// Drops the in-memory worker sender for a session.
     pub(super) fn clear_session_worker(&mut self, session_id: &str) {
-        self.session_workers.remove(session_id);
+        self.workers.remove(session_id);
     }
 
     /// Returns an existing session worker sender or creates one lazily.
@@ -123,26 +125,26 @@ impl App {
     /// Returns an error when the session cannot be found.
     fn ensure_session_worker(
         &mut self,
+        services: &AppServices,
         session_id: &str,
     ) -> Result<mpsc::UnboundedSender<SessionCommand>, String> {
-        if let Some(sender) = self.session_workers.get(session_id) {
+        if let Some(sender) = self.workers.get(session_id) {
             return Ok(sender.clone());
         }
 
         let (session, handles) = self.session_and_handles_or_err(session_id)?;
         let context = SessionWorkerContext {
-            app_event_tx: self.app_event_sender(),
+            app_event_tx: services.event_sender(),
             child_pid: Arc::clone(&handles.child_pid),
             commit_count: Arc::clone(&handles.commit_count),
-            db: self.db.clone(),
+            db: services.db().clone(),
             folder: session.folder.clone(),
             output: Arc::clone(&handles.output),
             session_id: session.id.clone(),
             status: Arc::clone(&handles.status),
         };
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.session_workers
-            .insert(session_id.to_string(), sender.clone());
+        self.workers.insert(session_id.to_string(), sender.clone());
         Self::spawn_session_worker(context, receiver);
 
         Ok(sender)
@@ -174,7 +176,7 @@ impl App {
                         permission_mode,
                         ..
                     } => {
-                        App::run_session_task(RunSessionTaskInput {
+                        TaskService::run_session_task(RunSessionTaskInput {
                             agent,
                             app_event_tx: context.app_event_tx.clone(),
                             child_pid: Arc::clone(&context.child_pid),
@@ -195,7 +197,7 @@ impl App {
                         permission_mode,
                         ..
                     } => {
-                        let _ = App::update_status(
+                        let _ = TaskService::update_status(
                             &context.status,
                             &context.db,
                             &context.app_event_tx,
@@ -204,7 +206,7 @@ impl App {
                         )
                         .await;
 
-                        App::run_session_task(RunSessionTaskInput {
+                        TaskService::run_session_task(RunSessionTaskInput {
                             agent,
                             app_event_tx: context.app_event_tx.clone(),
                             child_pid: Arc::clone(&context.child_pid),
@@ -322,7 +324,7 @@ mod tests {
             .expect("failed to insert session operation");
 
         // Act
-        App::fail_unfinished_operations_from_previous_run(&db).await;
+        SessionManager::fail_unfinished_operations_from_previous_run(&db).await;
         let sessions = db.load_sessions().await.expect("failed to load sessions");
         let operation_is_unfinished = db
             .is_session_operation_unfinished("op-1")
@@ -372,7 +374,7 @@ mod tests {
         };
 
         // Act
-        let should_skip = App::should_skip_worker_command(&context, "op-1").await;
+        let should_skip = SessionManager::should_skip_worker_command(&context, "op-1").await;
         let is_unfinished = db
             .is_session_operation_unfinished("op-1")
             .await

@@ -26,6 +26,7 @@ TUI tool to manage agents.
 - **File Naming:** Use **singular** names for Rust source files (e.g., `model.rs`, `icon.rs`, `agent.rs`). Do not use plural forms.
 - **Imports:** Always place imports at the top of the file. Do not use local `use` statements within functions or other blocks.
   - In test modules, prefer `use super::*;` where practical.
+- **Test-only code placement:** Do not add `#[cfg(test)]` to top-level imports/functions in production modules. Keep test-only helpers inside `#[cfg(test)] mod tests` (duplicate code there if needed). Exception: `#[cfg_attr(test, mockall::automock)]` on traits used for mocking.
 - **Struct Fields:** Order fields in structs as follows:
     - Public fields first.
     - Private fields second.

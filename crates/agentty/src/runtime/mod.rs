@@ -50,6 +50,7 @@ async fn run_main_loop(
     tick: &mut tokio::time::Interval,
 ) -> io::Result<()> {
     loop {
+        app.sessions.sync_from_handles();
         render_frame(app, terminal)?;
 
         if matches!(
@@ -69,6 +70,10 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
     let current_git_branch = app.git_branch().map(std::string::ToString::to_string);
     let current_git_status = app.git_status_info();
     let current_active_project_id = app.active_project_id();
+    let show_onboarding = app.should_show_onboarding();
+    let mode = &app.mode;
+    let projects = &app.projects;
+    let (sessions, table_state) = app.sessions.render_parts();
 
     terminal.draw(|frame| {
         ui::render(
@@ -78,11 +83,11 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
                 current_tab,
                 git_branch: current_git_branch.as_deref(),
                 git_status: current_git_status,
-                mode: &app.mode,
-                projects: &app.projects,
-                show_onboarding: app.should_show_onboarding(),
-                sessions: &app.session_state.sessions,
-                table_state: &mut app.session_state.table_state,
+                mode,
+                projects,
+                show_onboarding,
+                sessions,
+                table_state,
                 working_dir: &current_working_dir,
             },
         );

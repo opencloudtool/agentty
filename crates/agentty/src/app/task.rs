@@ -11,10 +11,13 @@ use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use tokio::sync::mpsc;
 
 use crate::agent::AgentKind;
-use crate::app::{App, AppEvent};
+use crate::app::{AppEvent, SessionManager};
 use crate::db::Database;
 use crate::git;
 use crate::model::{PermissionMode, Status};
+
+/// Stateless helpers for background tasks and session process output handling.
+pub(super) struct TaskService;
 
 /// Inputs needed to execute one session command.
 pub(super) struct RunSessionTaskInput {
@@ -31,7 +34,7 @@ pub(super) struct RunSessionTaskInput {
     pub(super) status: Arc<Mutex<Status>>,
 }
 
-impl App {
+impl TaskService {
     /// Spawns a background loop that periodically refreshes ahead/behind info.
     ///
     /// The task emits [`AppEvent::GitStatusUpdated`] snapshots instead of
@@ -155,7 +158,7 @@ impl App {
 
                     let _ = db.update_session_stats(&id, &parsed.stats).await;
 
-                    match Self::commit_changes(&folder, &db, &id, &commit_count).await {
+                    match SessionManager::commit_changes(&folder, &db, &id, &commit_count).await {
                         Ok(hash) => {
                             let message = format!("\n[Commit] committed with hash `{hash}`\n");
                             Self::append_session_output(&output, &db, &app_event_tx, &id, &message)
@@ -285,8 +288,8 @@ mod tests {
 
         // Act & Assert
         for status in refresh_statuses {
-            assert!(App::status_requires_full_refresh(status));
+            assert!(TaskService::status_requires_full_refresh(status));
         }
-        assert!(!App::status_requires_full_refresh(Status::New));
+        assert!(!TaskService::status_requires_full_refresh(Status::New));
     }
 }

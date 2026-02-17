@@ -134,7 +134,7 @@ fn prompt_context(app: &mut App) -> Option<PromptContext> {
     };
 
     let is_new_session = app
-        .session_state
+        .sessions
         .sessions
         .get(session_index)
         .is_some_and(|session| session.prompt.is_empty());
@@ -324,7 +324,7 @@ async fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContex
         }
         PromptSlashStage::Model => {
             let fallback_agent = app
-                .session_state
+                .sessions
                 .sessions
                 .get(prompt_context.session_index)
                 .and_then(|session| session.agent.parse::<AgentKind>().ok())
@@ -479,7 +479,7 @@ async fn handle_prompt_char(app: &mut App, character: char, prompt_context: &Pro
 /// Populates the at-mention file list from the session's worktree folder.
 async fn activate_at_mention(app: &mut App, prompt_context: &PromptContext) {
     let session_folder = app
-        .session_state
+        .sessions
         .sessions
         .get(prompt_context.session_index)
         .map_or_else(
@@ -1042,13 +1042,13 @@ mod tests {
         let (mut app, _base_dir) = new_test_prompt_app("", None).await;
         let prompt_context = prompt_context(&mut app).expect("expected prompt context");
         assert!(prompt_context.is_new_session);
-        assert_eq!(app.session_state.sessions.len(), 1);
+        assert_eq!(app.sessions.sessions.len(), 1);
 
         // Act
         handle_prompt_cancel_key(&mut app, &prompt_context).await;
 
         // Assert
         assert!(matches!(app.mode, AppMode::List));
-        assert!(app.session_state.sessions.is_empty());
+        assert!(app.sessions.sessions.is_empty());
     }
 }

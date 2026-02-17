@@ -1,10 +1,12 @@
 //! Session title and agent/model normalization helpers.
 
 use crate::agent::{AgentKind, AgentModel};
-use crate::app::App;
 use crate::model::Session;
 
-impl App {
+/// Stateless helpers for session title and agent/model normalization.
+pub(super) struct TitleService;
+
+impl TitleService {
     /// Resolves the persisted agent/model strings into concrete runtime values.
     pub(super) fn resolve_session_agent_and_model(session: &Session) -> (AgentKind, AgentModel) {
         let session_agent = session

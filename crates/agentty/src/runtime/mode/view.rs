@@ -32,7 +32,7 @@ pub(crate) async fn handle(
     let view_metrics = view_metrics(app, terminal, view_context.session_index)?;
     let mut next_scroll_offset = view_context.scroll_offset;
 
-    let Some(session) = app.session_state.sessions.get(view_context.session_index) else {
+    let Some(session) = app.sessions.sessions.get(view_context.session_index) else {
         return Ok(EventResult::Continue);
     };
     let is_done = session.status == Status::Done;
@@ -150,7 +150,7 @@ fn view_metrics(
     let terminal_height = terminal.size()?.height;
     let view_height = terminal_height.saturating_sub(5);
     let total_lines = u16::try_from(
-        app.session_state
+        app.sessions
             .sessions
             .get(session_index)
             .map_or(0, |session| session.output.lines().count()),
@@ -182,7 +182,7 @@ fn scroll_offset_up(scroll_offset: Option<u16>, metrics: ViewMetrics, step: u16)
 }
 
 async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) {
-    let Some(session) = app.session_state.sessions.get(view_context.session_index) else {
+    let Some(session) = app.sessions.sessions.get(view_context.session_index) else {
         return;
     };
 
@@ -428,8 +428,8 @@ mod tests {
         app.append_output_for_session(&session_id, "line one").await;
 
         // Assert
-        app.session_state.sync_from_handles();
-        let output = app.session_state.sessions[0].output.clone();
+        app.sessions.sync_from_handles();
+        let output = app.sessions.sessions[0].output.clone();
         assert_eq!(output, "line one");
     }
 
@@ -443,8 +443,8 @@ mod tests {
         merge_view_session(&mut app, &session_id).await;
 
         // Assert
-        app.session_state.sync_from_handles();
-        let output = app.session_state.sessions[0].output.clone();
+        app.sessions.sync_from_handles();
+        let output = app.sessions.sessions[0].output.clone();
         assert!(output.contains("[Merge Error]"));
     }
 
@@ -458,8 +458,8 @@ mod tests {
         rebase_view_session(&mut app, &session_id).await;
 
         // Assert
-        app.session_state.sync_from_handles();
-        let output = app.session_state.sessions[0].output.clone();
+        app.sessions.sync_from_handles();
+        let output = app.sessions.sessions[0].output.clone();
         assert!(output.contains("[Rebase Error]"));
     }
 
@@ -473,8 +473,8 @@ mod tests {
         create_pr_for_view_session(&mut app, &session_id).await;
 
         // Assert
-        app.session_state.sync_from_handles();
-        let output = app.session_state.sessions[0].output.clone();
+        app.sessions.sync_from_handles();
+        let output = app.sessions.sessions[0].output.clone();
         assert!(output.contains("[PR Error]"));
     }
 
@@ -487,8 +487,8 @@ mod tests {
         stop_view_session(&mut app, &session_id).await;
 
         // Assert
-        app.session_state.sync_from_handles();
-        let output = app.session_state.sessions[0].output.clone();
+        app.sessions.sync_from_handles();
+        let output = app.sessions.sessions[0].output.clone();
         assert!(output.contains("[Stop Error]"));
     }
 

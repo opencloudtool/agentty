@@ -1,6 +1,6 @@
 //! Shared session lookup helpers and canonical lookup error strings.
 
-use crate::app::App;
+use crate::app::SessionManager;
 use crate::model::{Session, SessionHandles};
 
 /// Canonical session-handle-not-found error string used by app workflows.
@@ -8,7 +8,7 @@ pub(crate) const SESSION_HANDLES_NOT_FOUND_ERROR: &str = "Session handles not fo
 /// Canonical session-not-found error string used by app workflows.
 pub(crate) const SESSION_NOT_FOUND_ERROR: &str = "Session not found";
 
-impl App {
+impl SessionManager {
     /// Resolves a session identifier into its current list index.
     pub(crate) fn session_index_or_err(&self, session_id: &str) -> Result<usize, String> {
         self.session_index_for_id(session_id)
@@ -19,8 +19,7 @@ impl App {
     pub(crate) fn session_or_err(&self, session_id: &str) -> Result<&Session, String> {
         let session_index = self.session_index_or_err(session_id)?;
 
-        self.session_state
-            .sessions
+        self.sessions
             .get(session_index)
             .ok_or_else(|| SESSION_NOT_FOUND_ERROR.to_string())
     }
@@ -30,8 +29,7 @@ impl App {
         &self,
         session_id: &str,
     ) -> Result<&SessionHandles, String> {
-        self.session_state
-            .handles
+        self.handles
             .get(session_id)
             .ok_or_else(|| SESSION_HANDLES_NOT_FOUND_ERROR.to_string())
     }

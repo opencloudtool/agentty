@@ -13,7 +13,9 @@ use tokio::sync::mpsc;
 use super::access::{SESSION_HANDLES_NOT_FOUND_ERROR, SESSION_NOT_FOUND_ERROR};
 use super::{COMMIT_MESSAGE, session_branch};
 use crate::agent::AgentKind;
-use crate::app::{App, AppEvent};
+use crate::app::task::TaskService;
+use crate::app::title::TitleService;
+use crate::app::{AppEvent, AppServices, PrManager, ProjectManager, SessionManager};
 use crate::db::Database;
 use crate::git;
 use crate::model::{PermissionMode, Status};
@@ -45,13 +47,19 @@ struct MergeTaskInput {
     status: Arc<Mutex<Status>>,
 }
 
-impl App {
+impl SessionManager {
     /// Starts a squash merge for a reviewed session branch in the background.
     ///
     /// # Errors
     /// Returns an error if the session is invalid for merge, required git
     /// metadata is missing, or the status transition to `Merging` fails.
-    pub async fn merge_session(&self, session_id: &str) -> Result<(), String> {
+    pub async fn merge_session(
+        &self,
+        session_id: &str,
+        projects: &ProjectManager,
+        prs: &PrManager,
+        services: &AppServices,
+    ) -> Result<(), String> {
         let session = self
             .session_or_err(session_id)
             .map_err(|_| SESSION_NOT_FOUND_ERROR.to_string())?;
@@ -59,11 +67,11 @@ impl App {
             return Err("Session must be in review status".to_string());
         }
 
-        let db = self.db.clone();
+        let db = services.db().clone();
         let folder = session.folder.clone();
         let id = session.id.clone();
-        let (session_agent, session_model) = Self::resolve_session_agent_and_model(session);
-        let app_event_tx = self.app_event_sender();
+        let (session_agent, session_model) = TitleService::resolve_session_agent_and_model(session);
+        let app_event_tx = services.event_sender();
 
         let handles = self
             .session_handles_or_err(session_id)
@@ -71,26 +79,31 @@ impl App {
         let output = Arc::clone(&handles.output);
         let status = Arc::clone(&handles.status);
 
-        if !Self::update_status(&status, &db, &app_event_tx, &id, Status::Merging).await {
+        if !TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Merging).await {
             return Err("Invalid status transition to Merging".to_string());
         }
 
         let base_branch = match db.get_session_base_branch(&id).await {
             Ok(Some(base_branch)) => base_branch,
             Ok(None) => {
-                let _ = Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
+                let _ =
+                    TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Review)
+                        .await;
 
                 return Err("No git worktree for this session".to_string());
             }
             Err(error) => {
-                let _ = Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
+                let _ =
+                    TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Review)
+                        .await;
 
                 return Err(error);
             }
         };
 
-        let Some(repo_root) = git::find_git_repo_root(&self.working_dir) else {
-            let _ = Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
+        let Some(repo_root) = git::find_git_repo_root(projects.working_dir()) else {
+            let _ =
+                TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
 
             return Err("Failed to find git repository root".to_string());
         };
@@ -102,8 +115,8 @@ impl App {
             folder,
             id: id.clone(),
             output,
-            pr_creation_in_flight: Arc::clone(&self.pr_creation_in_flight),
-            pr_poll_cancel: Arc::clone(&self.pr_poll_cancel),
+            pr_creation_in_flight: prs.pr_creation_in_flight(),
+            pr_poll_cancel: prs.pr_poll_cancel(),
             repo_root,
             session_agent,
             session_model: session_model.as_str().to_string(),
@@ -184,7 +197,7 @@ impl App {
                 .map_err(|error| format!("Failed to merge: {error}"))?;
             }
 
-            if !Self::update_status(&status, &db, &app_event_tx, &id, Status::Done).await {
+            if !TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Done).await {
                 return Err("Invalid status transition to Done".to_string());
             }
 
@@ -206,15 +219,29 @@ impl App {
         }
         .await;
 
+        Self::finalize_merge_task(merge_result, &output, &db, &app_event_tx, &id, &status).await;
+    }
+
+    async fn finalize_merge_task(
+        merge_result: Result<String, String>,
+        output: &Arc<Mutex<String>>,
+        db: &Database,
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
+        id: &str,
+        status: &Arc<Mutex<Status>>,
+    ) {
         match merge_result {
             Ok(message) => {
                 let merge_message = format!("\n[Merge] {message}\n");
-                Self::append_session_output(&output, &db, &app_event_tx, &id, &merge_message).await;
+                TaskService::append_session_output(output, db, app_event_tx, id, &merge_message)
+                    .await;
             }
             Err(error) => {
                 let merge_error = format!("\n[Merge Error] {error}\n");
-                Self::append_session_output(&output, &db, &app_event_tx, &id, &merge_error).await;
-                let _ = Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
+                TaskService::append_session_output(output, db, app_event_tx, id, &merge_error)
+                    .await;
+                let _ =
+                    TaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
             }
         }
     }
@@ -224,7 +251,11 @@ impl App {
     /// # Errors
     /// Returns an error if the session is invalid for rebase, required git
     /// metadata is missing, or the rebase command fails.
-    pub async fn rebase_session(&self, session_id: &str) -> Result<String, String> {
+    pub async fn rebase_session(
+        &self,
+        services: &AppServices,
+        session_id: &str,
+    ) -> Result<String, String> {
         let session = self
             .session_or_err(session_id)
             .map_err(|_| SESSION_NOT_FOUND_ERROR.to_string())?;
@@ -232,8 +263,8 @@ impl App {
             return Err("Session must be in review status".to_string());
         }
 
-        let base_branch = self
-            .db
+        let base_branch = services
+            .db()
             .get_session_base_branch(&session.id)
             .await?
             .ok_or_else(|| "No git worktree for this session".to_string())?;

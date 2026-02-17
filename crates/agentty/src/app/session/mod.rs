@@ -1,19 +1,141 @@
 //! Session lifecycle orchestration for creation, refresh, prompt handling,
 //! history management, merge, and cleanup.
 
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use ratatui::widgets::TableState;
+use tokio::sync::mpsc;
+
+use crate::agent::{AgentKind, AgentModel};
+use crate::app::SessionState;
+use crate::model::{PermissionMode, Session, Status};
 
 mod access;
 mod lifecycle;
 mod load;
 mod merge;
 mod refresh;
+mod worker;
 
 /// Low-frequency fallback interval for metadata-based session refresh.
 pub(super) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Default commit message used for automatic worktree commits.
 pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
+
+/// Session domain state and worker orchestration state.
+pub struct SessionManager {
+    default_session_agent: AgentKind,
+    default_session_model: AgentModel,
+    default_session_permission_mode: PermissionMode,
+    state: SessionState,
+    workers: HashMap<String, mpsc::UnboundedSender<crate::app::session::worker::SessionCommand>>,
+}
+
+impl SessionManager {
+    /// Creates a session manager from persisted snapshot state and defaults.
+    pub fn new(
+        default_session_agent: AgentKind,
+        default_session_model: AgentModel,
+        default_session_permission_mode: PermissionMode,
+        state: SessionState,
+    ) -> Self {
+        Self {
+            default_session_agent,
+            default_session_model,
+            default_session_permission_mode,
+            state,
+            workers: HashMap::new(),
+        }
+    }
+
+    /// Returns split immutable/mutable references needed by render.
+    pub(crate) fn render_parts(&mut self) -> (&[Session], &mut TableState) {
+        (&self.state.sessions, &mut self.state.table_state)
+    }
+
+    /// Applies reducer updates after session history was cleared.
+    pub(crate) fn apply_session_history_cleared(&mut self, session_id: &str) {
+        if let Some(handles) = self.state.handles.get(session_id) {
+            if let Ok(mut output_buffer) = handles.output.lock() {
+                output_buffer.clear();
+            }
+
+            if let Ok(mut status_value) = handles.status.lock() {
+                *status_value = Status::New;
+            }
+        }
+
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.output.clear();
+            session.prompt = String::new();
+            session.title = None;
+            session.status = Status::New;
+        }
+    }
+
+    /// Applies reducer updates after session agent/model changes are
+    /// persisted.
+    pub(crate) fn apply_session_agent_model_updated(
+        &mut self,
+        session_id: &str,
+        session_agent: AgentKind,
+        session_model: AgentModel,
+    ) {
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.agent = session_agent.to_string();
+            session.model = session_model.as_str().to_string();
+        }
+
+        self.default_session_agent = session_agent;
+        self.default_session_model = session_model;
+    }
+
+    /// Applies reducer updates after session permission mode changes are
+    /// persisted.
+    pub(crate) fn apply_session_permission_mode_updated(
+        &mut self,
+        session_id: &str,
+        permission_mode: PermissionMode,
+    ) {
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.permission_mode = permission_mode;
+        }
+
+        self.default_session_permission_mode = permission_mode;
+    }
+}
+
+impl Deref for SessionManager {
+    type Target = SessionState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for SessionManager {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
 
 /// Returns the folder path for a session under the given base directory.
 fn session_folder(base: &Path, session_id: &str) -> PathBuf {
@@ -122,11 +244,11 @@ mod tests {
         let folder = session_folder(base_path, id);
         let data_dir = folder.join(SESSION_DATA_DIR);
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-        app.session_state.handles.insert(
+        app.sessions.handles.insert(
             id.to_string(),
             SessionHandles::new(String::new(), Status::Review, 0),
         );
-        app.session_state.sessions.push(Session {
+        app.sessions.sessions.push(Session {
             agent: "gemini".to_string(),
             base_branch: "main".to_string(),
             commit_count: 0,
@@ -140,10 +262,10 @@ mod tests {
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::Review,
-            title: Some(App::summarize_title(prompt)),
+            title: Some(crate::app::title::TitleService::summarize_title(prompt)),
         });
-        if app.session_state.table_state.selected().is_none() {
-            app.session_state.table_state.select(Some(0));
+        if app.sessions.table_state.selected().is_none() {
+            app.sessions.table_state.select(Some(0));
         }
     }
 
@@ -155,13 +277,15 @@ mod tests {
             .await
             .expect("failed to create session");
         let start_backend = create_mock_backend();
-        app.reply_with_backend(
-            &session_id,
-            prompt,
-            &start_backend,
-            "gemini-3-flash-preview",
-        )
-        .await;
+        app.sessions
+            .reply_with_backend(
+                &app.services,
+                &session_id,
+                prompt,
+                &start_backend,
+                "gemini-3-flash-preview",
+            )
+            .await;
     }
 
     async fn wait_for_status(app: &mut App, session_id: &str, expected: Status) {
@@ -175,9 +299,9 @@ mod tests {
         retries: usize,
     ) {
         for _ in 0..retries {
-            app.session_state.sync_from_handles();
+            app.sessions.sync_from_handles();
             let Some(session) = app
-                .session_state
+                .sessions
                 .sessions
                 .iter()
                 .find(|session| session.id == session_id)
@@ -190,9 +314,9 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
-        app.session_state.sync_from_handles();
+        app.sessions.sync_from_handles();
         let session = app
-            .session_state
+            .sessions
             .sessions
             .iter()
             .find(|session| session.id == session_id)
@@ -209,8 +333,8 @@ mod tests {
         let app = new_test_app(dir.path().to_path_buf()).await;
 
         // Assert
-        assert!(app.session_state.sessions.is_empty());
-        assert_eq!(app.session_state.table_state.selected(), None);
+        assert!(app.sessions.sessions.is_empty());
+        assert_eq!(app.sessions.table_state.selected(), None);
     }
 
     #[tokio::test]
@@ -271,17 +395,17 @@ mod tests {
         create_and_start_session(&mut app, "B").await;
 
         // Act & Assert (Next)
-        app.session_state.table_state.select(Some(0));
+        app.sessions.table_state.select(Some(0));
         app.next();
-        assert_eq!(app.session_state.table_state.selected(), Some(1));
+        assert_eq!(app.sessions.table_state.selected(), Some(1));
         app.next();
-        assert_eq!(app.session_state.table_state.selected(), Some(0)); // Loop back
+        assert_eq!(app.sessions.table_state.selected(), Some(0)); // Loop back
 
         // Act & Assert (Previous)
         app.previous();
-        assert_eq!(app.session_state.table_state.selected(), Some(1)); // Loop back
+        assert_eq!(app.sessions.table_state.selected(), Some(1)); // Loop back
         app.previous();
-        assert_eq!(app.session_state.table_state.selected(), Some(0));
+        assert_eq!(app.sessions.table_state.selected(), Some(0));
     }
 
     #[tokio::test]
@@ -292,10 +416,10 @@ mod tests {
 
         // Act & Assert
         app.next();
-        assert_eq!(app.session_state.table_state.selected(), None);
+        assert_eq!(app.sessions.table_state.selected(), None);
 
         app.previous();
-        assert_eq!(app.session_state.table_state.selected(), None);
+        assert_eq!(app.sessions.table_state.selected(), None);
     }
 
     #[tokio::test]
@@ -306,14 +430,14 @@ mod tests {
         create_and_start_session(&mut app, "A").await;
 
         // Act & Assert — next recovers from None
-        app.session_state.table_state.select(None);
+        app.sessions.table_state.select(None);
         app.next();
-        assert_eq!(app.session_state.table_state.selected(), Some(0));
+        assert_eq!(app.sessions.table_state.selected(), Some(0));
 
         // Act & Assert — previous recovers from None
-        app.session_state.table_state.select(None);
+        app.sessions.table_state.select(None);
         app.previous();
-        assert_eq!(app.session_state.table_state.selected(), Some(0));
+        assert_eq!(app.sessions.table_state.selected(), Some(0));
     }
 
     #[tokio::test]
@@ -329,31 +453,36 @@ mod tests {
             .expect("failed to create session");
 
         // Assert — blank session
-        assert_eq!(app.session_state.sessions.len(), 1);
-        assert_eq!(session_id, app.session_state.sessions[0].id);
-        assert!(app.session_state.sessions[0].prompt.is_empty());
-        assert_eq!(app.session_state.sessions[0].title, None);
-        assert_eq!(app.session_state.sessions[0].display_title(), "No title");
-        assert_eq!(app.session_state.sessions[0].status, Status::New);
-        assert_eq!(app.session_state.table_state.selected(), Some(0));
-        assert_eq!(app.session_state.sessions[0].agent, "gemini");
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert_eq!(session_id, app.sessions.sessions[0].id);
+        assert!(app.sessions.sessions[0].prompt.is_empty());
+        assert_eq!(app.sessions.sessions[0].title, None);
+        assert_eq!(app.sessions.sessions[0].display_title(), "No title");
+        assert_eq!(app.sessions.sessions[0].status, Status::New);
+        assert_eq!(app.sessions.table_state.selected(), Some(0));
+        assert_eq!(app.sessions.sessions[0].agent, "gemini");
         assert_eq!(
-            app.session_state.sessions[0].model,
+            app.sessions.sessions[0].model,
             AgentKind::Gemini.default_model().as_str()
         );
         assert_eq!(
-            app.session_state.sessions[0].permission_mode,
+            app.sessions.sessions[0].permission_mode,
             PermissionMode::AutoEdit
         );
 
         // Check filesystem
-        let session_dir = &app.session_state.sessions[0].folder;
+        let session_dir = &app.sessions.sessions[0].folder;
         let data_dir = session_dir.join(SESSION_DATA_DIR);
         assert!(session_dir.exists());
         assert!(data_dir.is_dir());
 
         // Check DB
-        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
         assert_eq!(db_sessions.len(), 1);
         assert_eq!(db_sessions[0].agent, "gemini");
         assert_eq!(db_sessions[0].base_branch, "main");
@@ -396,7 +525,7 @@ mod tests {
 
         // Assert
         let second_session = app
-            .session_state
+            .sessions
             .sessions
             .iter()
             .find(|session| session.id == second_session_id)
@@ -405,7 +534,12 @@ mod tests {
         assert_eq!(second_session.model, "gpt-5.2-codex");
         assert_eq!(second_session.permission_mode, PermissionMode::Autonomous);
 
-        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
         let db_second_session = db_sessions
             .iter()
             .find(|session| session.id == second_session_id)
@@ -434,15 +568,17 @@ mod tests {
             .expect("failed to start session");
 
         // Assert
-        assert_eq!(app.session_state.sessions[0].prompt, "Hello");
-        assert_eq!(
-            app.session_state.sessions[0].title,
-            Some("Hello".to_string())
-        );
-        app.session_state.sync_from_handles();
-        let output = app.session_state.sessions[0].output.clone();
+        assert_eq!(app.sessions.sessions[0].prompt, "Hello");
+        assert_eq!(app.sessions.sessions[0].title, Some("Hello".to_string()));
+        app.sessions.sync_from_handles();
+        let output = app.sessions.sessions[0].output.clone();
         assert!(output.contains("Hello"));
-        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
         assert_eq!(db_sessions[0].prompt, "Hello");
         assert_eq!(db_sessions[0].output, " › Hello\n\n");
     }
@@ -459,16 +595,21 @@ mod tests {
         let session_index = app
             .session_index_for_id(&session_id)
             .expect("missing session index");
-        let session_folder = app.session_state.sessions[session_index].folder.clone();
+        let session_folder = app.sessions.sessions[session_index].folder.clone();
         assert!(session_folder.exists());
 
         // Act — simulate Esc: delete the blank session
         app.delete_selected_session().await;
 
         // Assert
-        assert!(app.session_state.sessions.is_empty());
+        assert!(app.sessions.sessions.is_empty());
         assert!(!session_folder.exists());
-        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
         assert!(db_sessions.is_empty());
     }
 
@@ -478,14 +619,14 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Initial").await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
 
         // Act
         app.reply(&session_id, "Reply").await;
 
         // Assert
-        app.session_state.sync_from_handles();
-        let session = &app.session_state.sessions[0];
+        app.sessions.sync_from_handles();
+        let session = &app.sessions.sessions[0];
         let output = &session.output;
         assert!(output.contains("Reply"));
     }
@@ -500,7 +641,7 @@ mod tests {
         // Act & Assert
         assert!(app.selected_session().is_some());
 
-        app.session_state.table_state.select(None);
+        app.sessions.table_state.select(None);
         assert!(app.selected_session().is_none());
     }
 
@@ -510,16 +651,21 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "A").await;
-        let session_folder = app.session_state.sessions[0].folder.clone();
+        let session_folder = app.sessions.sessions[0].folder.clone();
 
         // Act
         app.delete_selected_session().await;
 
         // Assert
-        assert!(app.session_state.sessions.is_empty());
-        assert_eq!(app.session_state.table_state.selected(), None);
+        assert!(app.sessions.sessions.is_empty());
+        assert_eq!(app.sessions.table_state.selected(), None);
         assert!(!session_folder.exists());
-        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
         assert!(db_sessions.is_empty());
     }
 
@@ -532,14 +678,14 @@ mod tests {
         create_and_start_session(&mut app, "2").await;
 
         // Act & Assert — index out of bounds
-        app.session_state.table_state.select(Some(99));
+        app.sessions.table_state.select(Some(99));
         app.delete_selected_session().await;
-        assert_eq!(app.session_state.sessions.len(), 2);
+        assert_eq!(app.sessions.sessions.len(), 2);
 
         // Act & Assert — None selected
-        app.session_state.table_state.select(None);
+        app.sessions.table_state.select(None);
         app.delete_selected_session().await;
-        assert_eq!(app.session_state.sessions.len(), 2);
+        assert_eq!(app.sessions.sessions.len(), 2);
     }
 
     #[tokio::test]
@@ -551,15 +697,15 @@ mod tests {
         create_and_start_session(&mut app, "2").await;
 
         // Act & Assert — delete last item
-        app.session_state.table_state.select(Some(1));
+        app.sessions.table_state.select(Some(1));
         app.delete_selected_session().await;
-        assert_eq!(app.session_state.sessions.len(), 1);
-        assert_eq!(app.session_state.table_state.selected(), Some(0));
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert_eq!(app.sessions.table_state.selected(), Some(0));
 
         // Act & Assert — delete remaining item
         app.delete_selected_session().await;
-        assert!(app.session_state.sessions.is_empty());
-        assert_eq!(app.session_state.table_state.selected(), None);
+        assert!(app.sessions.sessions.is_empty());
+        assert_eq!(app.sessions.table_state.selected(), None);
     }
 
     #[tokio::test]
@@ -605,13 +751,13 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(app.session_state.sessions.len(), 1);
-        assert_eq!(app.session_state.sessions[0].id, "12345678");
-        assert_eq!(app.session_state.sessions[0].prompt, "Existing");
-        let output = app.session_state.sessions[0].output.clone();
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert_eq!(app.sessions.sessions[0].id, "12345678");
+        assert_eq!(app.sessions.sessions[0].prompt, "Existing");
+        let output = app.sessions.sessions[0].output.clone();
         assert_eq!(output, "Output");
-        assert_eq!(app.session_state.sessions[0].agent, "claude");
-        assert_eq!(app.session_state.table_state.selected(), Some(0));
+        assert_eq!(app.sessions.sessions[0].agent, "claude");
+        assert_eq!(app.sessions.table_state.selected(), Some(0));
     }
 
     #[tokio::test]
@@ -694,7 +840,7 @@ mod tests {
 
         // Assert
         let created_session = app
-            .session_state
+            .sessions
             .sessions
             .iter()
             .find(|session| session.id == created_session_id)
@@ -781,7 +927,7 @@ mod tests {
 
         // Assert
         let session_names: Vec<&str> = app
-            .session_state
+            .sessions
             .sessions
             .iter()
             .map(|session| session.id.as_str())
@@ -852,23 +998,24 @@ mod tests {
             db,
         )
         .await;
-        app.session_state.table_state.select(Some(1));
+        app.sessions.table_state.select(Some(1));
 
         // Act
-        app.db
+        app.services
+            .db()
             .update_session_status("alpha000", "Done")
             .await
             .expect("failed to update session status");
         app.refresh_sessions_now().await;
 
         // Assert
-        assert_eq!(app.session_state.sessions[0].id, "alpha000");
+        assert_eq!(app.sessions.sessions[0].id, "alpha000");
         let selected_index = app
-            .session_state
+            .sessions
             .table_state
             .selected()
             .expect("missing selection");
-        assert_eq!(app.session_state.sessions[selected_index].id, "alpha000");
+        assert_eq!(app.sessions.sessions[selected_index].id, "alpha000");
     }
 
     #[tokio::test]
@@ -934,21 +1081,22 @@ mod tests {
             db,
         )
         .await;
-        let selected_session_id = app.session_state.sessions[1].id.clone();
+        let selected_session_id = app.sessions.sessions[1].id.clone();
         app.mode = AppMode::View {
             session_id: selected_session_id.clone(),
             scroll_offset: None,
         };
 
         // Act
-        app.db
+        app.services
+            .db()
             .update_session_status("alpha000", "Done")
             .await
             .expect("failed to update session status");
         app.refresh_sessions_now().await;
 
         // Assert
-        assert_eq!(app.session_state.sessions[0].id, "alpha000");
+        assert_eq!(app.sessions.sessions[0].id, "alpha000");
         assert!(matches!(app.mode, AppMode::View { .. }));
         if let AppMode::View { session_id, .. } = app.mode {
             assert_eq!(session_id, selected_session_id);
@@ -964,7 +1112,7 @@ mod tests {
         let app = new_test_app(path).await;
 
         // Assert
-        assert!(app.session_state.sessions.is_empty());
+        assert!(app.sessions.sessions.is_empty());
     }
 
     #[tokio::test]
@@ -999,9 +1147,9 @@ mod tests {
         .await;
 
         // Assert — terminal session is kept even after folder cleanup
-        assert_eq!(app.session_state.sessions.len(), 1);
-        assert_eq!(app.session_state.sessions[0].id, "missing01");
-        assert_eq!(app.session_state.sessions[0].status, Status::Done);
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert_eq!(app.sessions.sessions[0].id, "missing01");
+        assert_eq!(app.sessions.sessions[0].status, Status::Done);
     }
 
     #[tokio::test]
@@ -1036,7 +1184,7 @@ mod tests {
         .await;
 
         // Assert — non-terminal session is skipped because folder doesn't exist
-        assert!(app.session_state.sessions.is_empty());
+        assert!(app.sessions.sessions.is_empty());
     }
 
     #[tokio::test]
@@ -1051,20 +1199,25 @@ mod tests {
         let session_index = app
             .session_index_for_id(&session_id)
             .expect("missing created session");
-        let session_folder = app.session_state.sessions[session_index].folder.clone();
+        let session_folder = app.sessions.sessions[session_index].folder.clone();
         let changed_lines = "line\n".repeat(20);
         std::fs::write(session_folder.join("size-test.txt"), changed_lines)
             .expect("failed to write test file");
 
         // Act
-        let reloaded_sessions = App::load_sessions(
-            &app.base_path,
-            &app.db,
+        let reloaded_sessions = SessionManager::load_sessions(
+            app.services.base_path(),
+            app.services.db(),
             &app.projects,
-            &mut app.session_state.handles,
+            &mut app.sessions.handles,
         )
         .await;
-        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
 
         // Assert
         let reloaded_session = reloaded_sessions
@@ -1088,31 +1241,38 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        app.db
+        app.services
+            .db()
             .update_session_size(&session_id, "L")
             .await
             .expect("failed to update size");
-        app.db
+        app.services
+            .db()
             .update_session_status(&session_id, "Done")
             .await
             .expect("failed to update status");
         let session_index = app
             .session_index_for_id(&session_id)
             .expect("missing created session");
-        let session_folder = app.session_state.sessions[session_index].folder.clone();
+        let session_folder = app.sessions.sessions[session_index].folder.clone();
         let changed_lines = "line\n".repeat(700);
         std::fs::write(session_folder.join("done-size-test.txt"), changed_lines)
             .expect("failed to write test file");
 
         // Act
-        let reloaded_sessions = App::load_sessions(
-            &app.base_path,
-            &app.db,
+        let reloaded_sessions = SessionManager::load_sessions(
+            app.services.base_path(),
+            app.services.db(),
             &app.projects,
-            &mut app.session_state.handles,
+            &mut app.sessions.handles,
         )
         .await;
-        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
 
         // Assert
         let reloaded_session = reloaded_sessions
@@ -1162,14 +1322,21 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        app.reply_with_backend(&session_id, "SpawnInit", &mock, "gemini-3-flash-preview")
+        app.sessions
+            .reply_with_backend(
+                &app.services,
+                &session_id,
+                "SpawnInit",
+                &mock,
+                "gemini-3-flash-preview",
+            )
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Assert
         {
-            app.session_state.sync_from_handles();
-            let session = &app.session_state.sessions[0];
+            app.sessions.sync_from_handles();
+            let session = &app.sessions.sessions[0];
             let output = session.output.clone();
             assert!(output.contains("--prompt"));
             assert!(output.contains("SpawnInit"));
@@ -1194,20 +1361,22 @@ mod tests {
                     .stderr(Stdio::null());
                 cmd
             });
-        let session_id = app.session_state.sessions[0].id.clone();
-        app.reply_with_backend(
-            &session_id,
-            "SpawnReply",
-            &resume_mock,
-            "gemini-3-flash-preview",
-        )
-        .await;
+        let session_id = app.sessions.sessions[0].id.clone();
+        app.sessions
+            .reply_with_backend(
+                &app.services,
+                &session_id,
+                "SpawnReply",
+                &resume_mock,
+                "gemini-3-flash-preview",
+            )
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Assert
         {
-            app.session_state.sync_from_handles();
-            let session = &app.session_state.sessions[0];
+            app.sessions.sync_from_handles();
+            let session = &app.sessions.sessions[0];
             let output = session.output.clone();
             assert!(output.contains("SpawnReply"));
             assert!(output.contains("--resume"));
@@ -1249,14 +1418,21 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        app.reply_with_backend(&session_id, "AutoCommit", &mock, "gemini-3-flash-preview")
+        app.sessions
+            .reply_with_backend(
+                &app.services,
+                &session_id,
+                "AutoCommit",
+                &mock,
+                "gemini-3-flash-preview",
+            )
             .await;
 
         // Act — wait for agent to finish and auto-commit
         wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Assert — output should contain commit confirmation
-        let session = &app.session_state.sessions[0];
+        let session = &app.sessions.sessions[0];
         let output = session.output.clone();
         assert!(
             output.contains("[Commit] committed with hash"),
@@ -1296,14 +1472,21 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        app.reply_with_backend(&session_id, "NoChanges", &mock, "gemini-3-flash-preview")
+        app.sessions
+            .reply_with_backend(
+                &app.services,
+                &session_id,
+                "NoChanges",
+                &mock,
+                "gemini-3-flash-preview",
+            )
             .await;
 
         // Act — wait for agent to finish
         wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Assert — no commit output (nothing to commit is silently ignored)
-        let session = &app.session_state.sessions[0];
+        let session = &app.sessions.sessions[0];
         let output = session.output.clone();
         assert!(
             !output.contains("[Commit]"),
@@ -1322,7 +1505,7 @@ mod tests {
         let source = "Line 1\nLine 2".as_bytes();
 
         // Act
-        App::capture_raw_output(source, &buffer).await;
+        crate::app::task::TaskService::capture_raw_output(source, &buffer).await;
 
         // Assert
         let out = buffer.lock().expect("failed to lock buffer").clone();
@@ -1360,7 +1543,7 @@ mod tests {
                 .expect_err("should be error")
                 .contains("Git branch is required")
         );
-        assert!(app.session_state.sessions.is_empty());
+        assert!(app.sessions.sessions.is_empty());
     }
 
     #[tokio::test]
@@ -1410,7 +1593,7 @@ mod tests {
 
         // Assert - session should not be created
         assert!(result.is_err());
-        assert_eq!(app.session_state.sessions.len(), 0);
+        assert_eq!(app.sessions.sessions.len(), 0);
 
         // Verify no session folder was left behind
         let entries = std::fs::read_dir(dir.path())
@@ -1430,7 +1613,7 @@ mod tests {
         app.delete_selected_session().await;
 
         // Assert
-        assert_eq!(app.session_state.sessions.len(), 0);
+        assert_eq!(app.sessions.sessions.len(), 0);
     }
 
     #[tokio::test]
@@ -1476,10 +1659,10 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Local merge cleanup").await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
         wait_for_status(&mut app, &session_id, Status::Review).await;
-        let session_id = app.session_state.sessions[0].id.clone();
-        let session_folder = app.session_state.sessions[0].folder.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
+        let session_folder = app.sessions.sessions[0].folder.clone();
         std::fs::write(session_folder.join("session-change.txt"), "change")
             .expect("failed to write worktree change");
         git::commit_all(&session_folder, "Test merge commit")
@@ -1490,10 +1673,10 @@ mod tests {
         let result = app.merge_session(&session_id).await;
 
         // Assert
-        app.session_state.sync_from_handles();
+        app.sessions.sync_from_handles();
         assert!(result.is_ok(), "merge should succeed: {:?}", result.err());
         assert!(matches!(
-            app.session_state.sessions[0].status,
+            app.sessions.sessions[0].status,
             Status::Done | Status::Merging
         ));
         wait_for_status_with_retries(&mut app, &session_id, Status::Done, 400).await;
@@ -1588,8 +1771,8 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        let session_folder = app.session_state.sessions[0].folder.clone();
-        app.session_state.sessions[0].status = Status::Review;
+        let session_folder = app.sessions.sessions[0].folder.clone();
+        app.sessions.sessions[0].status = Status::Review;
         std::fs::write(dir.path().join("main-only.txt"), "main change")
             .expect("failed to write main change");
         Command::new("git")
@@ -1660,7 +1843,7 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf()).await;
         add_manual_session(&mut app, dir.path(), "manual01", "Test");
-        app.session_state.sessions[0].status = Status::Done;
+        app.sessions.sessions[0].status = Status::Done;
 
         // Act
         let result = app.create_pr_session("manual01").await;
@@ -1707,7 +1890,7 @@ mod tests {
         );
 
         // Act
-        let result = App::cleanup_merged_session_worktree(
+        let result = SessionManager::cleanup_merged_session_worktree(
             worktree_folder.clone(),
             branch_name.to_string(),
             None,
@@ -1763,7 +1946,8 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf()).await;
         let other_id = app
-            .db
+            .services
+            .db()
             .upsert_project("/tmp/other", Some("develop"))
             .await
             .expect("failed to upsert");
@@ -1777,7 +1961,7 @@ mod tests {
         assert_eq!(app.active_project_id(), other_id);
         assert_eq!(app.working_dir(), Path::new("/tmp/other"));
         assert_eq!(app.git_branch(), Some("develop"));
-        assert!(app.session_state.sessions.is_empty());
+        assert!(app.sessions.sessions.is_empty());
     }
 
     #[tokio::test]
@@ -1786,11 +1970,12 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app(dir.path().to_path_buf()).await;
         let other_id = app
-            .db
+            .services
+            .db()
             .upsert_project("/tmp/other", None)
             .await
             .expect("failed to upsert");
-        if let Ok(mut polling) = app.pr_poll_cancel.lock() {
+        if let Ok(mut polling) = app.prs.pr_poll_cancel().lock() {
             polling.insert("manual01".to_string(), Arc::new(AtomicBool::new(false)));
         }
 
@@ -1800,7 +1985,8 @@ mod tests {
             .expect("failed to switch");
 
         // Assert
-        let polling = app.pr_poll_cancel.lock().expect("failed to lock polling");
+        let polling_state = app.prs.pr_poll_cancel();
+        let polling = polling_state.lock().expect("failed to lock polling");
         assert!(polling.contains_key("manual01"));
     }
 
@@ -1825,10 +2011,11 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Session A").await;
-        assert_eq!(app.session_state.sessions.len(), 1);
+        assert_eq!(app.sessions.sessions.len(), 1);
 
         let other_id = app
-            .db
+            .services
+            .db()
             .upsert_project("/tmp/other", None)
             .await
             .expect("failed to upsert");
@@ -1839,7 +2026,7 @@ mod tests {
             .expect("failed to switch");
 
         // Assert — all sessions still visible after switching projects
-        assert_eq!(app.session_state.sessions.len(), 1);
+        assert_eq!(app.sessions.sessions.len(), 1);
         assert_eq!(app.active_project_id(), other_id);
     }
 
@@ -1856,7 +2043,12 @@ mod tests {
             .expect("failed to create session");
 
         // Assert — session belongs to the active project
-        let sessions = app.db.load_sessions().await.expect("failed to load");
+        let sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].project_id, Some(project_id));
     }
@@ -1896,7 +2088,10 @@ mod tests {
     #[test]
     fn test_summarize_title_short() {
         // Arrange & Act & Assert
-        assert_eq!(App::summarize_title("Fix bug"), "Fix bug");
+        assert_eq!(
+            crate::app::title::TitleService::summarize_title("Fix bug"),
+            "Fix bug"
+        );
     }
 
     #[test]
@@ -1906,7 +2101,10 @@ mod tests {
 
         // Act & Assert
         assert_eq!(prompt.len(), 30);
-        assert_eq!(App::summarize_title(prompt), prompt);
+        assert_eq!(
+            crate::app::title::TitleService::summarize_title(prompt),
+            prompt
+        );
     }
 
     #[test]
@@ -1915,7 +2113,7 @@ mod tests {
         let prompt = "Fix the authentication bug in the login flow";
 
         // Act
-        let title = App::summarize_title(prompt);
+        let title = crate::app::title::TitleService::summarize_title(prompt);
 
         // Assert
         assert_eq!(title, "Fix the authentication bug in…");
@@ -1928,7 +2126,7 @@ mod tests {
         let prompt = "abcdefghijklmnopqrstuvwxyz1234567890";
 
         // Act
-        let title = App::summarize_title(prompt);
+        let title = crate::app::title::TitleService::summarize_title(prompt);
 
         // Assert
         assert_eq!(title, "abcdefghijklmnopqrstuvwxyz1234…");
@@ -1940,7 +2138,7 @@ mod tests {
         let prompt = "First line\nSecond line\nThird line";
 
         // Act
-        let title = App::summarize_title(prompt);
+        let title = crate::app::title::TitleService::summarize_title(prompt);
 
         // Assert
         assert_eq!(title, "First line");
@@ -1949,7 +2147,7 @@ mod tests {
     #[test]
     fn test_summarize_title_empty() {
         // Arrange & Act & Assert
-        assert_eq!(App::summarize_title(""), "");
+        assert_eq!(crate::app::title::TitleService::summarize_title(""), "");
     }
 
     #[test]
@@ -1958,7 +2156,7 @@ mod tests {
         let content = r#"{"title":"Title","description":"- Detail"}"#;
 
         // Act
-        let parsed = App::parse_merge_commit_message_response(content);
+        let parsed = SessionManager::parse_merge_commit_message_response(content);
 
         // Assert
         assert!(parsed.is_some());
@@ -1978,7 +2176,7 @@ mod tests {
         let content = "response:\n{\"title\":\"Title\",\"description\":\"- Detail\"}\n";
 
         // Act
-        let parsed = App::parse_merge_commit_message_response(content);
+        let parsed = SessionManager::parse_merge_commit_message_response(content);
 
         // Assert
         assert!(parsed.is_some());
@@ -1994,7 +2192,7 @@ mod tests {
         let diff = "diff --git a/file.txt b/file.txt\n+change";
 
         // Act
-        let prompt = App::merge_commit_message_prompt(diff);
+        let prompt = SessionManager::merge_commit_message_prompt(diff);
 
         // Assert
         assert!(prompt.contains("`title` must be one line, concise, and in present simple tense."));
@@ -2017,7 +2215,7 @@ mod tests {
         let target_branch = "main";
 
         // Act
-        let message = App::fallback_merge_commit_message(source_branch, target_branch);
+        let message = SessionManager::fallback_merge_commit_message(source_branch, target_branch);
 
         // Assert
         assert_eq!(
@@ -2061,25 +2259,26 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Fix the bug").await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
         wait_for_status(&mut app, &session_id, Status::Review).await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
         let stats = SessionStats {
             input_tokens: Some(100),
             output_tokens: Some(50),
         };
-        app.db
+        app.services
+            .db()
             .update_session_stats(&session_id, &stats)
             .await
             .expect("failed to update stats");
-        app.session_state.sessions[0].stats = stats;
+        app.sessions.sessions[0].stats = stats;
 
         // Act
         let result = app.clear_session_history(&session_id).await;
 
         // Assert
         assert!(result.is_ok());
-        let session = &app.session_state.sessions[0];
+        let session = &app.sessions.sessions[0];
         let output = session.output.clone();
         assert!(output.is_empty());
         assert!(session.prompt.is_empty());
@@ -2089,7 +2288,12 @@ mod tests {
         assert_eq!(session.stats.output_tokens, Some(50));
 
         // Verify DB was updated
-        let db_sessions = app.db.load_sessions().await.expect("failed to load");
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
         assert_eq!(db_sessions[0].output, "");
         assert_eq!(db_sessions[0].prompt, "");
         assert_eq!(db_sessions[0].title, None);
@@ -2104,9 +2308,9 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Hello").await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
         wait_for_status(&mut app, &session_id, Status::Review).await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
         let _ = app
             .set_session_agent_and_model(
                 &session_id,
@@ -2121,7 +2325,7 @@ mod tests {
             .expect("failed to clear");
 
         // Assert
-        let session = &app.session_state.sessions[0];
+        let session = &app.sessions.sessions[0];
         assert_eq!(session.agent, "claude");
         assert_eq!(session.model, AgentKind::Claude.default_model().as_str());
     }
@@ -2132,10 +2336,10 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Build feature").await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
         wait_for_status(&mut app, &session_id, Status::Review).await;
-        let session_id = app.session_state.sessions[0].id.clone();
-        let folder = app.session_state.sessions[0].folder.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
+        let folder = app.sessions.sessions[0].folder.clone();
         assert!(folder.exists());
 
         // Act
@@ -2145,7 +2349,7 @@ mod tests {
 
         // Assert — worktree folder still exists
         assert!(folder.exists());
-        assert_eq!(app.session_state.sessions[0].folder, folder);
+        assert_eq!(app.sessions.sessions[0].folder, folder);
     }
 
     #[tokio::test]
@@ -2173,9 +2377,9 @@ mod tests {
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Initial prompt").await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
         wait_for_status(&mut app, &session_id, Status::Review).await;
-        let session_id = app.session_state.sessions[0].id.clone();
+        let session_id = app.sessions.sessions[0].id.clone();
 
         // Act
         app.clear_session_history(&session_id)
@@ -2184,7 +2388,7 @@ mod tests {
 
         // Assert — prompt is empty, meaning reply_with_backend will treat the next
         // message as is_first_message=true and use build_start_command (no --resume)
-        let session = &app.session_state.sessions[0];
+        let session = &app.sessions.sessions[0];
         assert!(session.prompt.is_empty());
         assert_eq!(session.status, Status::New);
     }
@@ -2198,7 +2402,7 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        assert_eq!(app.session_state.sessions[0].status, Status::New);
+        assert_eq!(app.sessions.sessions[0].status, Status::New);
 
         // Act
         let result = app.stop_session(&session_id).await;
@@ -2220,10 +2424,10 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        if let Ok(mut status) = app.session_state.handles[&session_id].status.lock() {
+        if let Ok(mut status) = app.sessions.handles[&session_id].status.lock() {
             *status = Status::InProgress;
         }
-        app.session_state.sessions[0].status = Status::InProgress;
+        app.sessions.sessions[0].status = Status::InProgress;
 
         // Act
         let result = app.stop_session(&session_id).await;
