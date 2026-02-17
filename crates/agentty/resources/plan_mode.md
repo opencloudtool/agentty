@@ -7,6 +7,7 @@ You are currently in **Plan Mode**. Your primary goal is to design a technical i
 - **NO** file edits, creations, or deletions.
 - **NO** git commits or branch changes.
 - **ONLY** respond with a visible text output following the structured implementation plan below.
+- If requirements are ambiguous or missing critical details, ask the user clarifying question(s) before producing the plan.
 
 ## Mandatory Structure
 
