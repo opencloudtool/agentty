@@ -323,19 +323,34 @@ impl SessionManager {
     /// Returns an error when conflict resolution fails after all attempts or
     /// when git/agent operations fail.
     async fn run_rebase_assist_loop(input: RebaseAssistInput) -> Result<(), String> {
-        let initial_step = Self::run_rebase_start(&input).await?;
-        if initial_step == git::RebaseStepResult::Completed {
-            return Ok(());
+        let rebase_in_progress = Self::is_rebase_in_progress(&input).await?;
+        if !rebase_in_progress {
+            let initial_step = Self::run_rebase_start(&input).await?;
+            if initial_step == git::RebaseStepResult::Completed {
+                return Ok(());
+            }
         }
 
         for assist_attempt in 1..=REBASE_ASSIST_MAX_ATTEMPTS {
             let conflicted_files = Self::load_conflicted_files(&input).await?;
             if conflicted_files.is_empty() {
-                Self::abort_rebase_after_assist_failure(&input.folder).await;
+                let continue_step = Self::run_rebase_continue(&input).await?;
+                match continue_step {
+                    git::RebaseStepResult::Completed => {
+                        return Ok(());
+                    }
+                    git::RebaseStepResult::Conflict { detail } => {
+                        if assist_attempt == REBASE_ASSIST_MAX_ATTEMPTS {
+                            Self::abort_rebase_after_assist_failure(&input.folder).await;
 
-                return Err(
-                    "Rebase reported conflicts but no conflicted files were detected".to_string(),
-                );
+                            return Err(format!(
+                                "Rebase still has conflicts after assistance: {detail}"
+                            ));
+                        }
+                    }
+                }
+
+                continue;
             }
 
             Self::append_rebase_assist_header(&input, assist_attempt, &conflicted_files).await;
@@ -374,6 +389,20 @@ impl SessionManager {
         Self::abort_rebase_after_assist_failure(&input.folder).await;
 
         Err("Failed to complete assisted rebase".to_string())
+    }
+
+    /// Returns whether the session worktree has an in-progress rebase.
+    ///
+    /// # Errors
+    /// Returns an error if git state cannot be queried.
+    async fn is_rebase_in_progress(input: &RebaseAssistInput) -> Result<bool, String> {
+        let folder = input.folder.clone();
+        let is_rebase_in_progress =
+            tokio::task::spawn_blocking(move || git::is_rebase_in_progress(&folder))
+                .await
+                .map_err(|error| format!("Join error: {error}"))??;
+
+        Ok(is_rebase_in_progress)
     }
 
     /// Starts the rebase step for an assisted rebase flow.

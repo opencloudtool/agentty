@@ -334,6 +334,8 @@ pub fn rebase_start(repo_path: &Path, target_branch: &str) -> Result<RebaseStepR
 pub fn rebase_continue(repo_path: &Path) -> Result<RebaseStepResult, String> {
     let output = Command::new("git")
         .args(["rebase", "--continue"])
+        .env("GIT_EDITOR", ":")
+        .env("GIT_SEQUENCE_EDITOR", ":")
         .current_dir(repo_path)
         .output()
         .map_err(|error| format!("Failed to execute git: {error}"))?;
@@ -348,6 +350,27 @@ pub fn rebase_continue(repo_path: &Path) -> Result<RebaseStepResult, String> {
     }
 
     Err(format!("Failed to continue rebase: {detail}."))
+}
+
+/// Returns whether a rebase is currently in progress in the repository or
+/// worktree.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository or worktree
+///
+/// # Returns
+/// `true` when `.git/rebase-merge` or `.git/rebase-apply` exists, `false`
+/// otherwise.
+///
+/// # Errors
+/// Returns an error when the git directory cannot be resolved.
+pub fn is_rebase_in_progress(repo_path: &Path) -> Result<bool, String> {
+    let git_dir =
+        resolve_git_dir(repo_path).ok_or_else(|| "Failed to resolve git directory".to_string())?;
+    let rebase_merge = git_dir.join("rebase-merge");
+    let rebase_apply = git_dir.join("rebase-apply");
+
+    Ok(rebase_merge.exists() || rebase_apply.exists())
 }
 
 /// Aborts an in-progress rebase.
@@ -1628,6 +1651,146 @@ mod tests {
             Ok(RebaseStepResult::Conflict { .. })
         ));
 
+        let abort_result = abort_rebase(dir.path());
+        assert!(abort_result.is_ok(), "failed to abort test rebase");
+    }
+
+    #[test]
+    fn test_rebase_continue_succeeds_with_non_interactive_editor() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        Command::new("git")
+            .args(["checkout", "-b", "feature-branch"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        fs::write(dir.path().join("README.md"), "feature branch update")
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["commit", "-m", "feat: feature branch readme"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        fs::write(dir.path().join("README.md"), "main branch update").expect("test setup failed");
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["commit", "-m", "feat: main branch readme"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["checkout", "feature-branch"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        let rebase_result = rebase_start(dir.path(), "main");
+        assert!(matches!(
+            rebase_result,
+            Ok(RebaseStepResult::Conflict { .. })
+        ));
+        fs::write(dir.path().join("README.md"), "resolved readme").expect("test setup failed");
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["config", "core.editor", "editor"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+
+        // Act
+        let continue_result = rebase_continue(dir.path());
+
+        // Assert
+        assert!(matches!(continue_result, Ok(RebaseStepResult::Completed)));
+        let in_progress = is_rebase_in_progress(dir.path()).expect("should query rebase state");
+        assert!(!in_progress, "rebase should be completed");
+    }
+
+    #[test]
+    fn test_is_rebase_in_progress_false_when_no_rebase_exists() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+
+        // Act
+        let is_rebase_in_progress_result = is_rebase_in_progress(dir.path());
+
+        // Assert
+        assert_eq!(is_rebase_in_progress_result, Ok(false));
+    }
+
+    #[test]
+    fn test_is_rebase_in_progress_true_during_conflict() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        Command::new("git")
+            .args(["checkout", "-b", "feature-branch"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        fs::write(dir.path().join("README.md"), "feature branch update")
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["commit", "-m", "feat: feature branch readme"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        fs::write(dir.path().join("README.md"), "main branch update").expect("test setup failed");
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["commit", "-m", "feat: main branch readme"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        Command::new("git")
+            .args(["checkout", "feature-branch"])
+            .current_dir(dir.path())
+            .output()
+            .expect("test setup failed");
+        let rebase_result = rebase_start(dir.path(), "main");
+        assert!(matches!(
+            rebase_result,
+            Ok(RebaseStepResult::Conflict { .. })
+        ));
+
+        // Act
+        let is_rebase_in_progress_result = is_rebase_in_progress(dir.path());
+
+        // Assert
+        assert_eq!(is_rebase_in_progress_result, Ok(true));
         let abort_result = abort_rebase(dir.path());
         assert!(abort_result.is_ok(), "failed to abort test rebase");
     }
