@@ -48,6 +48,8 @@ pub(crate) async fn handle(
             handle_at_mention_down(app);
         }
         KeyCode::Enter if should_insert_newline(key) => {
+            reset_prompt_history_navigation(app);
+
             if let AppMode::Prompt { input, .. } = &mut app.mode {
                 input.insert_newline();
             }
@@ -162,6 +164,12 @@ fn reset_prompt_slash_state(app: &mut App) {
     }
 }
 
+fn reset_prompt_history_navigation(app: &mut App) {
+    if let AppMode::Prompt { history_state, .. } = &mut app.mode {
+        history_state.reset_navigation();
+    }
+}
+
 fn is_prompt_cancel_key(key: KeyEvent) -> bool {
     key.code == KeyCode::Esc || key.modifiers.contains(event::KeyModifiers::CONTROL)
 }
@@ -185,8 +193,15 @@ fn handle_prompt_up_key(
 
     let input_width = prompt_input_width(terminal)?;
     if let AppMode::Prompt { input, .. } = &mut app.mode {
-        input.cursor = move_input_cursor_up(input.text(), input_width, input.cursor);
+        let next_cursor = move_input_cursor_up(input.text(), input_width, input.cursor);
+        if next_cursor != input.cursor {
+            input.cursor = next_cursor;
+
+            return Ok(());
+        }
     }
+
+    navigate_prompt_history_up(app);
 
     Ok(())
 }
@@ -204,10 +219,66 @@ fn handle_prompt_down_key(
 
     let input_width = prompt_input_width(terminal)?;
     if let AppMode::Prompt { input, .. } = &mut app.mode {
-        input.cursor = move_input_cursor_down(input.text(), input_width, input.cursor);
+        let next_cursor = move_input_cursor_down(input.text(), input_width, input.cursor);
+        if next_cursor != input.cursor {
+            input.cursor = next_cursor;
+
+            return Ok(());
+        }
     }
 
+    navigate_prompt_history_down(app);
+
     Ok(())
+}
+
+fn navigate_prompt_history_up(app: &mut App) {
+    if let AppMode::Prompt {
+        history_state,
+        input,
+        ..
+    } = &mut app.mode
+    {
+        if history_state.entries.is_empty() {
+            return;
+        }
+
+        let next_index = if let Some(selected_index) = history_state.selected_index {
+            selected_index.saturating_sub(1)
+        } else {
+            history_state.draft_text = Some(input.text().to_string());
+
+            history_state.entries.len().saturating_sub(1)
+        };
+
+        history_state.selected_index = Some(next_index);
+        *input = InputState::with_text(history_state.entries[next_index].clone());
+    }
+}
+
+fn navigate_prompt_history_down(app: &mut App) {
+    if let AppMode::Prompt {
+        history_state,
+        input,
+        ..
+    } = &mut app.mode
+    {
+        let Some(selected_index) = history_state.selected_index else {
+            return;
+        };
+
+        if selected_index + 1 < history_state.entries.len() {
+            let next_index = selected_index + 1;
+
+            history_state.selected_index = Some(next_index);
+            *input = InputState::with_text(history_state.entries[next_index].clone());
+
+            return;
+        }
+
+        history_state.selected_index = None;
+        *input = InputState::with_text(history_state.draft_text.take().unwrap_or_default());
+    }
 }
 
 fn advance_prompt_slash_selection(app: &mut App) {
@@ -420,12 +491,14 @@ fn prompt_input_width(terminal: &TuiTerminal) -> io::Result<u16> {
 fn handle_prompt_backspace(app: &mut App) {
     if let AppMode::Prompt {
         input,
+        history_state,
         slash_state,
         at_mention_state,
         ..
     } = &mut app.mode
     {
         input.delete_backward();
+        history_state.reset_navigation();
         slash_state.reset();
         if at_mention_state.is_some() && input.at_mention_query().is_none() {
             *at_mention_state = None;
@@ -436,12 +509,14 @@ fn handle_prompt_backspace(app: &mut App) {
 fn handle_prompt_delete(app: &mut App) {
     if let AppMode::Prompt {
         input,
+        history_state,
         slash_state,
         at_mention_state,
         ..
     } = &mut app.mode
     {
         input.delete_forward();
+        history_state.reset_navigation();
         slash_state.reset();
         if at_mention_state.is_some() && input.at_mention_query().is_none() {
             *at_mention_state = None;
@@ -454,12 +529,14 @@ async fn handle_prompt_char(app: &mut App, character: char, prompt_context: &Pro
 
     if let AppMode::Prompt {
         input,
+        history_state,
         slash_state,
         at_mention_state,
         ..
     } = &mut app.mode
     {
         input.insert_char(character);
+        history_state.reset_navigation();
         slash_state.reset();
 
         if character == ' ' || input.at_mention_query().is_none() {
@@ -602,7 +679,7 @@ mod tests {
 
     use super::*;
     use crate::db::Database;
-    use crate::model::PromptAtMentionState;
+    use crate::model::{PromptAtMentionState, PromptHistoryState};
 
     fn setup_test_git_repo(path: &Path) {
         Command::new("git")
@@ -662,6 +739,7 @@ mod tests {
             .expect("failed to create session");
         app.mode = AppMode::Prompt {
             at_mention_state,
+            history_state: PromptHistoryState::new(Vec::new()),
             slash_state: crate::model::PromptSlashState::new(),
             session_id,
             input: InputState::with_text(input_text.to_string()),
@@ -918,6 +996,81 @@ mod tests {
 
         // Assert
         assert_eq!(count, AgentKind::Claude.models().len());
+    }
+
+    #[tokio::test]
+    async fn test_navigate_prompt_history_up_selects_latest_entry_and_saves_draft() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("draft", None).await;
+        if let AppMode::Prompt { history_state, .. } = &mut app.mode {
+            history_state.entries = vec!["first".to_string(), "second".to_string()];
+        }
+
+        // Act
+        navigate_prompt_history_up(&mut app);
+
+        // Assert
+        if let AppMode::Prompt {
+            history_state,
+            input,
+            ..
+        } = &app.mode
+        {
+            assert_eq!(input.text(), "second");
+            assert_eq!(history_state.selected_index, Some(1));
+            assert_eq!(history_state.draft_text.as_deref(), Some("draft"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_navigate_prompt_history_down_restores_draft_after_latest_entry() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("draft", None).await;
+        if let AppMode::Prompt { history_state, .. } = &mut app.mode {
+            history_state.entries = vec!["first".to_string(), "second".to_string()];
+        }
+        navigate_prompt_history_up(&mut app);
+
+        // Act
+        navigate_prompt_history_down(&mut app);
+
+        // Assert
+        if let AppMode::Prompt {
+            history_state,
+            input,
+            ..
+        } = &app.mode
+        {
+            assert_eq!(input.text(), "draft");
+            assert_eq!(history_state.selected_index, None);
+            assert_eq!(history_state.draft_text, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_backspace_resets_history_navigation() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("second", None).await;
+        if let AppMode::Prompt { history_state, .. } = &mut app.mode {
+            history_state.draft_text = Some("draft".to_string());
+            history_state.entries = vec!["first".to_string(), "second".to_string()];
+            history_state.selected_index = Some(1);
+        }
+
+        // Act
+        handle_prompt_backspace(&mut app);
+
+        // Assert
+        if let AppMode::Prompt {
+            history_state,
+            input,
+            ..
+        } = &app.mode
+        {
+            assert_eq!(input.text(), "secon");
+            assert_eq!(history_state.selected_index, None);
+            assert_eq!(history_state.draft_text, None);
+        }
     }
 
     #[test]

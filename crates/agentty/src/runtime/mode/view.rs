@@ -4,7 +4,9 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 
 use crate::app::App;
 use crate::git;
-use crate::model::{AppMode, HelpContext, InputState, PromptSlashState, Status};
+use crate::model::{
+    AppMode, HelpContext, InputState, PromptHistoryState, PromptSlashState, Status,
+};
 use crate::runtime::{EventResult, TuiTerminal};
 
 #[derive(Clone)]
@@ -44,6 +46,7 @@ pub(crate) async fn handle(
         KeyCode::Enter if !is_done => {
             app.mode = AppMode::Prompt {
                 at_mention_state: None,
+                history_state: PromptHistoryState::new(prompt_history_entries(&session.output)),
                 slash_state: PromptSlashState::new(),
                 session_id: view_context.session_id.clone(),
                 input: InputState::new(),
@@ -161,6 +164,33 @@ fn view_metrics(
         total_lines,
         view_height,
     })
+}
+
+fn prompt_history_entries(output: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut output_lines = output.lines().peekable();
+
+    while let Some(line) = output_lines.next() {
+        let Some(first_prompt_line) = line.strip_prefix(" › ") else {
+            continue;
+        };
+
+        let mut prompt = first_prompt_line.to_string();
+
+        while let Some(next_line) = output_lines.peek().copied() {
+            if next_line.is_empty() {
+                break;
+            }
+
+            prompt.push('\n');
+            prompt.push_str(next_line);
+            let _ = output_lines.next();
+        }
+
+        entries.push(prompt);
+    }
+
+    entries
 }
 
 fn scroll_offset_down(scroll_offset: Option<u16>, metrics: ViewMetrics, step: u16) -> Option<u16> {
@@ -362,6 +392,42 @@ mod tests {
         assert_eq!(context.session_id, session_id);
         assert_eq!(context.scroll_offset, Some(4));
         assert_eq!(context.session_index, 0);
+    }
+
+    #[test]
+    fn test_prompt_history_entries_extracts_user_prompts() {
+        // Arrange
+        let output = " › first\n\nassistant\n\n › second\n\n";
+
+        // Act
+        let entries = prompt_history_entries(output);
+
+        // Assert
+        assert_eq!(entries, vec!["first".to_string(), "second".to_string()]);
+    }
+
+    #[test]
+    fn test_prompt_history_entries_keeps_multiline_prompts() {
+        // Arrange
+        let output = " › first line\nsecond line\n\nassistant\n\n";
+
+        // Act
+        let entries = prompt_history_entries(output);
+
+        // Assert
+        assert_eq!(entries, vec!["first line\nsecond line".to_string()]);
+    }
+
+    #[test]
+    fn test_prompt_history_entries_ignores_non_prompt_lines() {
+        // Arrange
+        let output = "assistant line\n\n";
+
+        // Act
+        let entries = prompt_history_entries(output);
+
+        // Assert
+        assert!(entries.is_empty());
     }
 
     #[test]

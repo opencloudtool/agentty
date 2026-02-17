@@ -3,7 +3,9 @@ use std::io;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::{AppMode, HelpContext, InputState, PaletteFocus, PromptSlashState, Status};
+use crate::model::{
+    AppMode, HelpContext, InputState, PaletteFocus, PromptHistoryState, PromptSlashState, Status,
+};
 use crate::runtime::EventResult;
 
 /// Handles key input while the app is in list mode.
@@ -25,6 +27,7 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
 
             app.mode = AppMode::Prompt {
                 at_mention_state: None,
+                history_state: PromptHistoryState::new(Vec::new()),
                 slash_state: PromptSlashState::new(),
                 session_id,
                 input: InputState::new(),
@@ -43,6 +46,7 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
 
                 app.mode = AppMode::Prompt {
                     at_mention_state: None,
+                    history_state: PromptHistoryState::new(Vec::new()),
                     slash_state: PromptSlashState::new(),
                     session_id,
                     input: InputState::new(),

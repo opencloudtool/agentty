@@ -46,6 +46,7 @@ selection becomes the default for newly created sessions.
 - In prompt mode, type `/model` as the first input token to open the multistep picker:
   - choose agent (`gemini`, `codex`, `claude`)
   - choose model from that agent's curated model list
+- In prompt mode, press `Up` / `Down` to iterate previously sent messages for the active session and quickly resend/edit them.
 - Press `Shift+Tab` in chat view or prompt mode to toggle permission mode for the current session.
 - Permission modes:
   - `auto_edit` (default): runs with standard edit permissions.

@@ -467,10 +467,39 @@ impl PromptAtMentionState {
     }
 }
 
+/// UI state for navigating previously sent prompts with `Up` and `Down`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PromptHistoryState {
+    /// Draft input captured before entering history navigation.
+    pub draft_text: Option<String>,
+    /// Previously sent user prompts in chronological order.
+    pub entries: Vec<String>,
+    /// Currently selected history entry index, if any.
+    pub selected_index: Option<usize>,
+}
+
+impl PromptHistoryState {
+    /// Creates history state from prior prompt entries.
+    pub fn new(entries: Vec<String>) -> Self {
+        Self {
+            draft_text: None,
+            entries,
+            selected_index: None,
+        }
+    }
+
+    /// Clears active history navigation and stored draft text.
+    pub fn reset_navigation(&mut self) {
+        self.draft_text = None;
+        self.selected_index = None;
+    }
+}
+
 pub enum AppMode {
     List,
     Prompt {
         at_mention_state: Option<PromptAtMentionState>,
+        history_state: PromptHistoryState,
         slash_state: PromptSlashState,
         session_id: String,
         input: InputState,
@@ -1059,6 +1088,38 @@ mod tests {
         assert_eq!(state.stage, PromptSlashStage::Command);
         assert_eq!(state.selected_index, 0);
         assert_eq!(state.selected_agent, None);
+    }
+
+    #[test]
+    fn test_prompt_history_state_new() {
+        // Arrange
+        let entries = vec!["one".to_string(), "two".to_string()];
+
+        // Act
+        let state = PromptHistoryState::new(entries.clone());
+
+        // Assert
+        assert_eq!(state.entries, entries);
+        assert_eq!(state.selected_index, None);
+        assert_eq!(state.draft_text, None);
+    }
+
+    #[test]
+    fn test_prompt_history_state_reset_navigation() {
+        // Arrange
+        let mut state = PromptHistoryState {
+            draft_text: Some("draft".to_string()),
+            entries: vec!["one".to_string()],
+            selected_index: Some(0),
+        };
+
+        // Act
+        state.reset_navigation();
+
+        // Assert
+        assert_eq!(state.entries, vec!["one".to_string()]);
+        assert_eq!(state.selected_index, None);
+        assert_eq!(state.draft_text, None);
     }
 
     #[test]
