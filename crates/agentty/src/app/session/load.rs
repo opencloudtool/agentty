@@ -99,6 +99,7 @@ impl SessionManager {
                     output_tokens: row.output_tokens,
                 },
                 status,
+                summary: row.summary,
                 title: row.title,
             });
         }

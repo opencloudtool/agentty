@@ -102,6 +102,7 @@ pub struct SessionRow {
     pub prompt: String,
     pub size: String,
     pub status: String,
+    pub summary: Option<String>,
     pub title: Option<String>,
     pub updated_at: i64,
 }
@@ -287,7 +288,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         let rows = sqlx::query(
             r"
 SELECT id, agent, model, base_branch, status, title, project_id, prompt, output,
-       commit_count, created_at, updated_at, input_tokens, output_tokens, permission_mode, size
+       commit_count, created_at, updated_at, input_tokens, output_tokens, permission_mode, size,
+       summary
 FROM session
 ORDER BY updated_at DESC, id
 ",
@@ -313,6 +315,7 @@ ORDER BY updated_at DESC, id
                 prompt: row.get("prompt"),
                 size: row.get("size"),
                 status: row.get("status"),
+                summary: row.get("summary"),
                 title: row.get("title"),
                 updated_at: row.get("updated_at"),
             })
@@ -444,6 +447,27 @@ WHERE id = ?
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to update session title: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Updates the terminal summary for a session row.
+    ///
+    /// # Errors
+    /// Returns an error if the summary update fails.
+    pub async fn update_session_summary(&self, id: &str, summary: &str) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET summary = ?
+WHERE id = ?
+",
+        )
+        .bind(summary)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to update session summary: {err}"))?;
 
         Ok(())
     }
@@ -583,7 +607,7 @@ WHERE id = ?
         sqlx::query(
             r"
 UPDATE session
-SET output = '', prompt = '', title = NULL, status = 'New'
+SET output = '', prompt = '', title = NULL, summary = NULL, status = 'New'
 WHERE id = ?
 ",
         )
@@ -1191,6 +1215,7 @@ mod tests {
 
         // Assert
         assert_eq!(sessions[0].title, None);
+        assert_eq!(sessions[0].summary, None);
     }
 
     #[tokio::test]
@@ -1545,6 +1570,35 @@ WHERE id = 'beta'
     }
 
     #[tokio::test]
+    async fn test_update_session_summary() {
+        // Arrange
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert");
+        db.insert_session(
+            "sess1",
+            "claude",
+            "claude-opus-4-6",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert");
+        let summary = "Session completed with database and UI updates.";
+
+        // Act
+        let result = db.update_session_summary("sess1", summary).await;
+
+        // Assert
+        assert!(result.is_ok());
+        let sessions = db.load_sessions().await.expect("failed to load");
+        assert_eq!(sessions[0].summary, Some(summary.to_string()));
+    }
+
+    #[tokio::test]
     async fn test_update_session_stats() {
         // Arrange
         let db = Database::open_in_memory().await.expect("failed to open db");
@@ -1777,6 +1831,9 @@ WHERE id = 'beta'
         db.update_session_title("sess1", "Fix the bug")
             .await
             .expect("failed to update title");
+        db.update_session_summary("sess1", "Summary to reset")
+            .await
+            .expect("failed to update summary");
         let stats = SessionStats {
             input_tokens: Some(1000),
             output_tokens: Some(500),
@@ -1793,6 +1850,7 @@ WHERE id = 'beta'
         let sessions = db.load_sessions().await.expect("failed to load");
         assert_eq!(sessions[0].output, "");
         assert_eq!(sessions[0].prompt, "");
+        assert_eq!(sessions[0].summary, None);
         assert_eq!(sessions[0].title, None);
         assert_eq!(sessions[0].status, "New");
         assert_eq!(sessions[0].input_tokens, Some(1000));

@@ -364,6 +364,7 @@ mod tests {
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::New,
+            summary: None,
             title: None,
         }
     }

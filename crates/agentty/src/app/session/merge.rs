@@ -24,6 +24,11 @@ const MERGE_COMMIT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(8);
 const REBASE_ASSIST_MAX_ATTEMPTS: usize = 3;
 const REBASE_ASSIST_PROMPT_TEMPLATE: &str =
     include_str!("../../../resources/rebase_assist_prompt.md");
+const SESSION_SUMMARY_TIMEOUT: Duration = Duration::from_secs(8);
+const MERGE_COMMIT_MESSAGE_PROMPT_TEMPLATE: &str =
+    include_str!("../../../resources/merge_commit_message_prompt.md");
+const SESSION_TERMINAL_SUMMARY_PROMPT_TEMPLATE: &str =
+    include_str!("../../../resources/session_terminal_summary_prompt.md");
 
 #[derive(Deserialize)]
 /// Parsed response schema used when generating merge commit messages via model.
@@ -212,12 +217,15 @@ impl SessionManager {
                 .map_err(|error| format!("Failed to merge: {error}"))?;
             }
 
+            let summary_diff = Self::session_diff_for_summary(&folder, &base_branch).await;
+
             if !TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Done).await {
                 return Err("Invalid status transition to Done".to_string());
             }
 
             Self::cancel_pr_polling_state(&pr_poll_cancel, &id);
             Self::clear_pr_creation_in_flight_state(&pr_creation_in_flight, &id);
+            let summary_folder = repo_root.clone();
             Self::cleanup_merged_session_worktree(
                 folder.clone(),
                 source_branch.clone(),
@@ -227,6 +235,17 @@ impl SessionManager {
             .map_err(|error| {
                 format!("Merged successfully but failed to remove worktree: {error}")
             })?;
+
+            Self::update_terminal_session_summary_from_diff(
+                &db,
+                &id,
+                &summary_folder,
+                &summary_diff,
+                session_agent,
+                &session_model,
+                Status::Done,
+            )
+            .await;
 
             Ok(format!(
                 "Successfully merged {source_branch} into {base_branch}"
@@ -315,6 +334,52 @@ impl SessionManager {
         Ok(format!(
             "Successfully rebased {source_branch} onto {base_branch}"
         ))
+    }
+
+    /// Updates the persisted terminal summary for a session.
+    pub(crate) async fn update_terminal_session_summary(
+        db: &Database,
+        session_id: &str,
+        folder: &Path,
+        base_branch: &str,
+        session_agent: AgentKind,
+        session_model: &str,
+        terminal_status: Status,
+    ) {
+        let diff = Self::session_diff_for_summary(folder, base_branch).await;
+        Self::update_terminal_session_summary_from_diff(
+            db,
+            session_id,
+            folder,
+            &diff,
+            session_agent,
+            session_model,
+            terminal_status,
+        )
+        .await;
+    }
+
+    /// Updates the persisted terminal summary using a precomputed diff.
+    pub(crate) async fn update_terminal_session_summary_from_diff(
+        db: &Database,
+        session_id: &str,
+        summary_folder: &Path,
+        diff: &str,
+        session_agent: AgentKind,
+        session_model: &str,
+        terminal_status: Status,
+    ) {
+        let summary = Self::build_terminal_session_summary_from_diff(
+            summary_folder,
+            diff,
+            session_agent,
+            session_model,
+            terminal_status,
+        )
+        .await
+        .unwrap_or_else(|_| Self::fallback_terminal_summary(terminal_status));
+
+        let _ = db.update_session_summary(session_id, &summary).await;
     }
 
     /// Runs a bounded rebase-assistance loop until conflicts are resolved.
@@ -643,19 +708,7 @@ impl SessionManager {
     }
 
     pub(crate) fn merge_commit_message_prompt(diff: &str) -> String {
-        format!(
-            "Generate a git squash commit message using only the diff below.\nReturn strict JSON \
-             with exactly two keys: `title` and `description`.\nUse repository default commit \
-             format unless explicit user instructions in the diff request a different \
-             format.\nRules:\n- `title` must be one line, concise, and in present simple \
-             tense.\n- Do not use Conventional Commit prefixes like `feat:` or `fix:`.\n- \
-             `description` is commit body text and may be an empty string when no body is \
-             needed.\n- If `description` is not empty, write in present simple tense and use `-` \
-             bullets when listing multiple points.\n- Include `Co-Authored-By: \
-             [Agentty](https://github.com/opencloudtool/agentty)` at the end of the final \
-             message.\n- Use only the diff content.\n- Do not wrap the JSON in markdown \
-             fences.\n\nDiff:\n{diff}"
-        )
+        MERGE_COMMIT_MESSAGE_PROMPT_TEMPLATE.replace("{{diff}}", diff)
     }
 
     pub(crate) fn fallback_merge_commit_message(
@@ -737,6 +790,113 @@ impl SessionManager {
         let _ = db.increment_session_commit_count(session_id).await;
 
         Ok(commit_hash)
+    }
+
+    async fn build_terminal_session_summary_from_diff(
+        summary_folder: &Path,
+        diff: &str,
+        session_agent: AgentKind,
+        session_model: &str,
+        terminal_status: Status,
+    ) -> Result<String, String> {
+        if !summary_folder.is_dir() {
+            return Ok(Self::fallback_terminal_summary_without_worktree(
+                terminal_status,
+            ));
+        }
+
+        if diff.trim().is_empty() {
+            return Ok(Self::fallback_terminal_summary_without_changes(
+                terminal_status,
+            ));
+        }
+
+        let prompt = Self::terminal_summary_prompt(terminal_status, diff);
+        let model_task = {
+            let summary_folder = summary_folder.to_path_buf();
+            let session_model = session_model.to_string();
+
+            tokio::task::spawn_blocking(move || {
+                Self::generate_terminal_summary_with_model(
+                    &summary_folder,
+                    session_agent,
+                    &session_model,
+                    &prompt,
+                )
+            })
+        };
+
+        match tokio::time::timeout(SESSION_SUMMARY_TIMEOUT, model_task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(format!("Join error: {error}")),
+            Err(_) => Err("Session summary model timed out".to_string()),
+        }
+    }
+
+    pub(crate) async fn session_diff_for_summary(folder: &Path, base_branch: &str) -> String {
+        if !folder.is_dir() {
+            return String::new();
+        }
+
+        let folder = folder.to_path_buf();
+        let base_branch = base_branch.to_string();
+
+        tokio::task::spawn_blocking(move || git::diff(&folder, &base_branch))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    }
+
+    fn generate_terminal_summary_with_model(
+        folder: &Path,
+        agent: AgentKind,
+        model: &str,
+        prompt: &str,
+    ) -> Result<String, String> {
+        let backend = agent.create_backend();
+        let mut command =
+            backend.build_start_command(folder, prompt, model, PermissionMode::AutoEdit);
+        command.stdin(Stdio::null());
+        let output = command
+            .output()
+            .map_err(|error| format!("Failed to run session summary model: {error}"))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let parsed = agent.parse_response(&stdout, &stderr, PermissionMode::AutoEdit);
+        let content = parsed.content.trim().to_string();
+
+        if content.is_empty() {
+            let stderr_text = stderr.trim();
+            if stderr_text.is_empty() {
+                return Err("Session summary model returned empty output".to_string());
+            }
+
+            return Err(format!(
+                "Session summary model returned empty output: {stderr_text}"
+            ));
+        }
+
+        Ok(content)
+    }
+
+    fn terminal_summary_prompt(terminal_status: Status, diff: &str) -> String {
+        SESSION_TERMINAL_SUMMARY_PROMPT_TEMPLATE
+            .replace("{{status}}", &terminal_status.to_string())
+            .replace("{{diff}}", diff)
+    }
+
+    fn fallback_terminal_summary(terminal_status: Status) -> String {
+        format!("Session finished with status `{terminal_status}`.")
+    }
+
+    fn fallback_terminal_summary_without_worktree(terminal_status: Status) -> String {
+        format!("Session finished with status `{terminal_status}`. Worktree was not available.")
+    }
+
+    fn fallback_terminal_summary_without_changes(terminal_status: Status) -> String {
+        format!("Session finished with status `{terminal_status}`. No code changes were detected.")
     }
 }
 

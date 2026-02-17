@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
+use crate::agent::AgentKind;
 use crate::app::session::session_branch;
 use crate::app::task::TaskService;
 use crate::app::{AppEvent, AppServices, SessionManager};
@@ -51,14 +52,17 @@ impl Default for PrManager {
 
 struct PrPollTaskInput {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    base_branch: String,
     db: Database,
     folder: PathBuf,
     id: String,
     output: Arc<Mutex<String>>,
-    status: Arc<Mutex<Status>>,
-    source_branch: String,
-    repo_root: Option<PathBuf>,
     pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    repo_root: Option<PathBuf>,
+    session_agent: AgentKind,
+    session_model: String,
+    source_branch: String,
+    status: Arc<Mutex<Status>>,
 }
 
 struct CreatePrTaskInput {
@@ -69,6 +73,8 @@ struct CreatePrTaskInput {
     id: String,
     output: Arc<Mutex<String>>,
     pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    session_agent: AgentKind,
+    session_model: String,
     source_branch: String,
     status: Arc<Mutex<Status>>,
     title: String,
@@ -125,6 +131,15 @@ impl PrManager {
             .next()
             .unwrap_or("New Session")
             .to_string();
+        let session_agent = session
+            .agent
+            .parse::<AgentKind>()
+            .unwrap_or(AgentKind::Gemini);
+        let session_model = session_agent
+            .parse_model(&session.model)
+            .unwrap_or_else(|| session_agent.default_model())
+            .as_str()
+            .to_string();
 
         self.mark_pr_creation_in_flight(&session.id)?;
 
@@ -158,6 +173,8 @@ impl PrManager {
             id,
             output,
             pr_poll_cancel,
+            session_agent,
+            session_model,
             source_branch,
             status,
             title,
@@ -167,6 +184,30 @@ impl PrManager {
     }
 
     fn spawn_create_pr_task(input: CreatePrTaskInput) {
+        tokio::spawn(async move {
+            let result = Self::run_create_pr_command(&input).await;
+            Self::finalize_create_pr_task(input, result).await;
+        });
+    }
+
+    async fn run_create_pr_command(
+        input: &CreatePrTaskInput,
+    ) -> Result<Result<String, String>, tokio::task::JoinError> {
+        let folder = input.folder.clone();
+        let source_branch = input.source_branch.clone();
+        let base_branch = input.base_branch.clone();
+        let title = input.title.clone();
+
+        tokio::task::spawn_blocking(move || {
+            git::create_pr(&folder, &source_branch, &base_branch, &title)
+        })
+        .await
+    }
+
+    async fn finalize_create_pr_task(
+        input: CreatePrTaskInput,
+        result: Result<Result<String, String>, tokio::task::JoinError>,
+    ) {
         let CreatePrTaskInput {
             app_event_tx,
             base_branch,
@@ -175,96 +216,73 @@ impl PrManager {
             id,
             output,
             pr_poll_cancel,
+            session_agent,
+            session_model,
             source_branch,
             status,
-            title,
+            title: _,
         } = input;
 
-        tokio::spawn(async move {
-            let result = {
-                let folder = folder.clone();
-                let source_branch = source_branch.clone();
-                tokio::task::spawn_blocking(move || {
-                    git::create_pr(&folder, &source_branch, &base_branch, &title)
-                })
-                .await
-            };
+        match result {
+            Ok(Ok(message)) => {
+                let message = format!("\n[PR] {message}\n");
+                TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
+                    .await;
 
-            match result {
-                Ok(Ok(message)) => {
-                    let message = format!("\n[PR] {message}\n");
-                    TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
-                        .await;
-                    if TaskService::update_status(
-                        &status,
-                        &db,
-                        &app_event_tx,
-                        &id,
-                        Status::PullRequest,
-                    )
+                if TaskService::update_status(&status, &db, &app_event_tx, &id, Status::PullRequest)
                     .await
-                    {
-                        let repo_root = SessionManager::resolve_repo_root_from_worktree(&folder);
-                        Self::spawn_pr_poll_task(PrPollTaskInput {
-                            app_event_tx: app_event_tx.clone(),
-                            db,
-                            folder,
-                            id: id.clone(),
-                            output,
-                            status,
-                            source_branch,
-                            repo_root,
-                            pr_poll_cancel,
-                        });
-                    } else {
-                        TaskService::append_session_output(
-                            &output,
-                            &db,
-                            &app_event_tx,
-                            &id,
-                            "\n[PR Error] Invalid status transition to PullRequest\n",
-                        )
-                        .await;
-                        let _ = TaskService::update_status(
-                            &status,
-                            &db,
-                            &app_event_tx,
-                            &id,
-                            Status::Review,
-                        )
-                        .await;
-                    }
-                }
-                Ok(Err(error)) => {
-                    let message = format!("\n[PR Error] {error}\n");
-                    TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
-                        .await;
-                    let _ = TaskService::update_status(
-                        &status,
+                {
+                    let repo_root = SessionManager::resolve_repo_root_from_worktree(&folder);
+                    Self::spawn_pr_poll_task(PrPollTaskInput {
+                        app_event_tx: app_event_tx.clone(),
+                        base_branch,
+                        db,
+                        folder,
+                        id: id.clone(),
+                        output,
+                        pr_poll_cancel,
+                        repo_root,
+                        session_agent,
+                        session_model,
+                        source_branch,
+                        status,
+                    });
+                } else {
+                    TaskService::append_session_output(
+                        &output,
                         &db,
                         &app_event_tx,
                         &id,
-                        Status::Review,
+                        "\n[PR Error] Invalid status transition to PullRequest\n",
                     )
                     .await;
-                }
-                Err(error) => {
-                    let message = format!("\n[PR Error] Join error: {error}\n");
-                    TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
-                        .await;
-                    let _ = TaskService::update_status(
-                        &status,
-                        &db,
-                        &app_event_tx,
-                        &id,
-                        Status::Review,
-                    )
-                    .await;
+                    Self::set_review_status(&status, &db, &app_event_tx, &id).await;
                 }
             }
+            Ok(Err(error)) => {
+                let message = format!("\n[PR Error] {error}\n");
+                TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
+                    .await;
+                Self::set_review_status(&status, &db, &app_event_tx, &id).await;
+            }
+            Err(error) => {
+                let message = format!("\n[PR Error] Join error: {error}\n");
+                TaskService::append_session_output(&output, &db, &app_event_tx, &id, &message)
+                    .await;
+                Self::set_review_status(&status, &db, &app_event_tx, &id).await;
+            }
+        }
 
-            let _ = app_event_tx.send(AppEvent::PrCreationCleared { session_id: id });
-        });
+        let _ = app_event_tx.send(AppEvent::PrCreationCleared { session_id: id });
+    }
+
+    async fn set_review_status(
+        status: &Arc<Mutex<Status>>,
+        db: &Database,
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
+        id: &str,
+    ) {
+        let _ = TaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
     }
 
     /// Ensures merge polling tasks are running for sessions in
@@ -284,16 +302,28 @@ impl PrManager {
             };
 
             let source_branch = session_branch(&session.id);
+            let session_agent = session
+                .agent
+                .parse::<AgentKind>()
+                .unwrap_or(AgentKind::Gemini);
+            let session_model = session_agent
+                .parse_model(&session.model)
+                .unwrap_or_else(|| session_agent.default_model())
+                .as_str()
+                .to_string();
             Self::spawn_pr_poll_task(PrPollTaskInput {
                 app_event_tx: services.event_sender(),
+                base_branch: session.base_branch.clone(),
                 db: services.db().clone(),
                 folder: session.folder.clone(),
                 id: session.id.clone(),
                 output: Arc::clone(&handles.output),
-                status: Arc::clone(&handles.status),
-                source_branch,
-                repo_root: SessionManager::resolve_repo_root_from_worktree(&session.folder),
                 pr_poll_cancel: self.pr_poll_cancel(),
+                repo_root: SessionManager::resolve_repo_root_from_worktree(&session.folder),
+                session_agent,
+                session_model,
+                source_branch,
+                status: Arc::clone(&handles.status),
             });
         }
     }
@@ -344,14 +374,17 @@ impl PrManager {
     fn spawn_pr_poll_task(input: PrPollTaskInput) {
         let PrPollTaskInput {
             app_event_tx,
+            base_branch,
             db,
             folder,
             id,
             output,
-            status,
-            source_branch,
-            repo_root,
             pr_poll_cancel,
+            repo_root,
+            session_agent,
+            session_model,
+            source_branch,
+            status,
         } = input;
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -379,13 +412,29 @@ impl PrManager {
                 };
 
                 if Self::poll_is_merged(&folder, &source_branch).await == Some(true) {
-                    Self::handle_merged_pr(&shared, &folder, &source_branch, repo_root.as_deref())
-                        .await;
+                    Self::handle_merged_pr(
+                        &shared,
+                        &folder,
+                        &source_branch,
+                        repo_root.as_deref(),
+                        &base_branch,
+                        session_agent,
+                        &session_model,
+                    )
+                    .await;
                     break;
                 }
 
                 if Self::poll_is_closed(&folder, &source_branch).await == Some(true) {
-                    Self::handle_closed_pr(&shared, &source_branch).await;
+                    Self::handle_closed_pr(
+                        &shared,
+                        &folder,
+                        &source_branch,
+                        &base_branch,
+                        session_agent,
+                        &session_model,
+                    )
+                    .await;
                     break;
                 }
 
@@ -419,6 +468,9 @@ impl PrManager {
         folder: &Path,
         source_branch: &str,
         repo_root: Option<&Path>,
+        base_branch: &str,
+        session_agent: AgentKind,
+        session_model: &str,
     ) {
         let merged_message = format!("\n[PR] Pull request from `{source_branch}` was merged\n");
         TaskService::append_session_output(
@@ -429,15 +481,17 @@ impl PrManager {
             &merged_message,
         )
         .await;
-        if !TaskService::update_status(
+        let summary_diff = SessionManager::session_diff_for_summary(folder, base_branch).await;
+        let moved_to_done = TaskService::update_status(
             shared.status,
             shared.db,
             shared.app_event_tx,
             shared.id,
             Status::Done,
         )
-        .await
-        {
+        .await;
+
+        if !moved_to_done {
             TaskService::append_session_output(
                 shared.output,
                 shared.db,
@@ -447,6 +501,8 @@ impl PrManager {
             )
             .await;
         }
+
+        let summary_folder = repo_root.map_or_else(|| folder.to_path_buf(), Path::to_path_buf);
         if let Err(error) = SessionManager::cleanup_merged_session_worktree(
             folder.to_path_buf(),
             source_branch.to_string(),
@@ -464,9 +520,29 @@ impl PrManager {
             )
             .await;
         }
+
+        if moved_to_done {
+            SessionManager::update_terminal_session_summary_from_diff(
+                shared.db,
+                shared.id,
+                &summary_folder,
+                &summary_diff,
+                session_agent,
+                session_model,
+                Status::Done,
+            )
+            .await;
+        }
     }
 
-    async fn handle_closed_pr(shared: &PrPollShared<'_>, source_branch: &str) {
+    async fn handle_closed_pr(
+        shared: &PrPollShared<'_>,
+        folder: &Path,
+        source_branch: &str,
+        base_branch: &str,
+        session_agent: AgentKind,
+        session_model: &str,
+    ) {
         let closed_message = format!("\n[PR] Pull request from `{source_branch}` was closed\n");
         TaskService::append_session_output(
             shared.output,
@@ -476,15 +552,27 @@ impl PrManager {
             &closed_message,
         )
         .await;
-        if !TaskService::update_status(
+        let moved_to_canceled = TaskService::update_status(
             shared.status,
             shared.db,
             shared.app_event_tx,
             shared.id,
             Status::Canceled,
         )
-        .await
-        {
+        .await;
+
+        if moved_to_canceled {
+            SessionManager::update_terminal_session_summary(
+                shared.db,
+                shared.id,
+                folder,
+                base_branch,
+                session_agent,
+                session_model,
+                Status::Canceled,
+            )
+            .await;
+        } else {
             TaskService::append_session_output(
                 shared.output,
                 shared.db,

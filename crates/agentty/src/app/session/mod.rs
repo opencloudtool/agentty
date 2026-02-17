@@ -76,6 +76,7 @@ impl SessionManager {
         {
             session.output.clear();
             session.prompt = String::new();
+            session.summary = None;
             session.title = None;
             session.status = Status::New;
         }
@@ -262,6 +263,7 @@ mod tests {
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::Review,
+            summary: None,
             title: Some(crate::app::title::TitleService::summarize_title(prompt)),
         });
         if app.sessions.table_state.selected().is_none() {
@@ -2271,7 +2273,13 @@ mod tests {
             .update_session_stats(&session_id, &stats)
             .await
             .expect("failed to update stats");
+        app.services
+            .db()
+            .update_session_summary(&session_id, "Summary to reset")
+            .await
+            .expect("failed to update summary");
         app.sessions.sessions[0].stats = stats;
+        app.sessions.sessions[0].summary = Some("Summary to reset".to_string());
 
         // Act
         let result = app.clear_session_history(&session_id).await;
@@ -2282,6 +2290,7 @@ mod tests {
         let output = session.output.clone();
         assert!(output.is_empty());
         assert!(session.prompt.is_empty());
+        assert_eq!(session.summary, None);
         assert_eq!(session.title, None);
         assert_eq!(session.status, Status::New);
         assert_eq!(session.stats.input_tokens, Some(100));
@@ -2296,6 +2305,7 @@ mod tests {
             .expect("failed to load");
         assert_eq!(db_sessions[0].output, "");
         assert_eq!(db_sessions[0].prompt, "");
+        assert_eq!(db_sessions[0].summary, None);
         assert_eq!(db_sessions[0].title, None);
         assert_eq!(db_sessions[0].status, "New");
         assert_eq!(db_sessions[0].input_tokens, Some(100));

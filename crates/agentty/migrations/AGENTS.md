@@ -17,3 +17,4 @@ SQLite migrations for the `agentty` crate.
 - [012_create_session_operation.sql](012_create_session_operation.sql) - Creates durable per-session operation lifecycle tracking.
 - [013_add_permission_mode_to_session.sql](013_add_permission_mode_to_session.sql) - Adds `permission_mode` to `session`.
 - [014_add_size_to_session.sql](014_add_size_to_session.sql) - Adds persisted `size` bucket to `session`.
+- [015_add_summary_to_session.sql](015_add_summary_to_session.sql) - Adds persisted terminal `summary` text to `session`.

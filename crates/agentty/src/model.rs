@@ -679,6 +679,7 @@ pub struct Session {
     pub size: SessionSize,
     pub stats: SessionStats,
     pub status: Status,
+    pub summary: Option<String>,
     pub title: Option<String>,
 }
 
@@ -808,6 +809,7 @@ mod tests {
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::New,
+            summary: None,
             title: Some("Fix the login bug".to_string()),
         };
 
@@ -832,6 +834,7 @@ mod tests {
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::New,
+            summary: None,
             title: None,
         };
 
