@@ -7,6 +7,7 @@ version = "0.1.11"
 authors = ["Vladimir Minev"]
 edition = "2024"
 license = "Apache-2.0"
+readme = "README.md"
 description = "A terminal UI tool for managing agents"
 repository = "https://github.com/opencloudtool/agentty"
 homepage = "https://github.com/opencloudtool/agentty"
