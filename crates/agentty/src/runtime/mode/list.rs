@@ -79,6 +79,11 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
                 };
             }
         }
+        KeyCode::Char('c') => {
+            if let Some(session_id) = app.selected_session().map(|s| s.id.clone()) {
+                let _ = app.cancel_session(&session_id).await;
+            }
+        }
         KeyCode::Char('?') => {
             app.mode = AppMode::Help {
                 context: HelpContext::List,

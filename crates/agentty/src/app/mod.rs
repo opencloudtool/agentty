@@ -470,6 +470,16 @@ impl App {
         self.process_pending_app_events().await;
     }
 
+    /// Cancels a session in review status.
+    ///
+    /// # Errors
+    /// Returns an error if the session is not found or not in review status.
+    pub async fn cancel_session(&self, session_id: &str) -> Result<(), String> {
+        self.sessions
+            .cancel_session(&self.services, session_id)
+            .await
+    }
+
     /// Opens the selected session's worktree in a new tmux window.
     pub async fn open_session_worktree_in_tmux(&self) {
         if let Some(session) = self.selected_session() {

@@ -1969,6 +1969,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cancel_session() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        create_and_start_session(&mut app, "Test cancel").await;
+        let session_id = app.sessions.sessions[0].id.clone();
+        wait_for_status(&mut app, &session_id, Status::Review).await;
+
+        // Act
+        app.sessions
+            .cancel_session(&app.services, &session_id)
+            .await
+            .expect("failed to cancel session");
+
+        // Assert
+        app.sessions.sync_from_handles();
+        let session = app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing session");
+        assert_eq!(session.status, Status::Canceled);
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
+        let db_session = db_sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing persisted session");
+        assert_eq!(db_session.status, "Canceled");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_session_requires_review_status() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        // Status is New
+
+        // Act
+        let result = app
+            .sessions
+            .cancel_session(&app.services, &session_id)
+            .await;
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("must be in review")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cancel_session_invalid_id() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let app = new_test_app(dir.path().to_path_buf()).await;
+
+        // Act
+        let result = app.sessions.cancel_session(&app.services, "missing").await;
+
+        // Assert
+        assert!(result.is_err());
+        assert!(
+            result
+                .expect_err("should be error")
+                .contains("Session not found")
+        );
+    }
+
+    #[tokio::test]
     async fn test_cleanup_merged_session_worktree_without_repo_hint() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");

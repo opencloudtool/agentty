@@ -92,7 +92,7 @@ impl Page for SessionListPage<'_> {
 
         let mut help_text = "q: quit | /: command | a: add".to_string();
         if !self.sessions.is_empty() {
-            help_text.push_str(" | d: delete");
+            help_text.push_str(" | d: delete | c: cancel");
         }
         help_text.push_str(" | Enter: view | j/k: nav | ?: help");
 

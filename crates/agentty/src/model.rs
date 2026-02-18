@@ -606,6 +606,7 @@ impl HelpContext {
                 ("q", "Quit"),
                 ("a", "Add session"),
                 ("d", "Delete session"),
+                ("c", "Cancel session"),
                 ("o", "Open"),
                 ("Enter", "Open session"),
                 ("Tab", "Switch tab"),

@@ -731,4 +731,34 @@ impl SessionManager {
         )
         .await;
     }
+
+    /// Cancels a session that is currently in review.
+    ///
+    /// # Errors
+    /// Returns an error if the session is not found or not in review status.
+    pub async fn cancel_session(
+        &self,
+        services: &AppServices,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let session = self.session_or_err(session_id)?;
+        if session.status != Status::Review {
+            return Err("Session must be in review to be canceled".to_string());
+        }
+
+        let handles = self.session_handles_or_err(session_id)?;
+        let status = Arc::clone(&handles.status);
+        let app_event_tx = services.event_sender();
+
+        let _ = TaskService::update_status(
+            &status,
+            services.db(),
+            &app_event_tx,
+            session_id,
+            Status::Canceled,
+        )
+        .await;
+
+        Ok(())
+    }
 }
