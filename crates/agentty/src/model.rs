@@ -546,6 +546,7 @@ impl PromptHistoryState {
 pub enum AppMode {
     List,
     ConfirmDeleteSession {
+        selected_confirmation_index: usize,
         session_id: String,
         session_title: String,
     },

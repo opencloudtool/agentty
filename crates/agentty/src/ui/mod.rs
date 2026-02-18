@@ -100,47 +100,36 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
 
     match mode {
         AppMode::List => render_list_background(f, area, sessions, table_state, current_tab),
-        AppMode::ConfirmDeleteSession { session_title, .. } => {
-            render_delete_confirmation(f, area, current_tab, sessions, table_state, session_title);
-        }
+        AppMode::ConfirmDeleteSession {
+            selected_confirmation_index,
+            session_title,
+            ..
+        } => render_delete_confirmation(
+            f,
+            area,
+            current_tab,
+            sessions,
+            table_state,
+            *selected_confirmation_index,
+            session_title,
+        ),
         AppMode::View {
             session_id,
             scroll_offset,
-        } => {
-            if let Some(session_index) = sessions
-                .iter()
-                .position(|session| session.id == *session_id)
-            {
-                let plan_followup_action = plan_followup_actions.get(session_id).copied();
-                pages::session_chat::SessionChatPage::new(
-                    sessions,
-                    session_index,
-                    *scroll_offset,
-                    mode,
-                    plan_followup_action,
-                )
-                .render(f, area);
-            }
-        }
+        } => render_session_chat_mode(
+            f,
+            area,
+            sessions,
+            mode,
+            Some(plan_followup_actions),
+            session_id,
+            *scroll_offset,
+        ),
         AppMode::Prompt {
             session_id,
             scroll_offset,
             ..
-        } => {
-            if let Some(session_index) = sessions
-                .iter()
-                .position(|session| session.id == *session_id)
-            {
-                pages::session_chat::SessionChatPage::new(
-                    sessions,
-                    session_index,
-                    *scroll_offset,
-                    mode,
-                    None,
-                )
-                .render(f, area);
-            }
-        }
+        } => render_session_chat_mode(f, area, sessions, mode, None, session_id, *scroll_offset),
         AppMode::Diff {
             session_id,
             diff,
@@ -192,19 +181,47 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
     }
 }
 
+fn render_session_chat_mode(
+    f: &mut Frame,
+    area: Rect,
+    sessions: &[Session],
+    mode: &AppMode,
+    plan_followup_actions: Option<&HashMap<String, PlanFollowupAction>>,
+    session_id: &str,
+    scroll_offset: Option<u16>,
+) {
+    if let Some(session_index) = sessions.iter().position(|session| session.id == session_id) {
+        let plan_followup_action =
+            plan_followup_actions.and_then(|actions| actions.get(session_id).copied());
+        pages::session_chat::SessionChatPage::new(
+            sessions,
+            session_index,
+            scroll_offset,
+            mode,
+            plan_followup_action,
+        )
+        .render(f, area);
+    }
+}
+
 fn render_delete_confirmation(
     f: &mut Frame,
     area: Rect,
     current_tab: Tab,
     sessions: &[Session],
     table_state: &mut TableState,
+    selected_confirmation_index: usize,
     session_title: &str,
 ) {
     render_list_background(f, area, sessions, table_state, current_tab);
 
     let message = format!("Delete session \"{session_title}\"?");
-    components::confirmation_overlay::ConfirmationOverlay::new("Confirm Delete", &message)
-        .render(f, area);
+    components::confirmation_overlay::ConfirmationOverlay::new(
+        "Confirm Delete",
+        &message,
+        selected_confirmation_index == 0,
+    )
+    .render(f, area);
 }
 
 /// Renders the background page behind the help overlay based on `HelpContext`.

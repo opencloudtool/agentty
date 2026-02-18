@@ -14,13 +14,18 @@ const OVERLAY_WIDTH_PERCENT: u16 = 55;
 /// Centered confirmation popup used for destructive actions.
 pub struct ConfirmationOverlay<'a> {
     message: &'a str,
+    selected_yes: bool,
     title: &'a str,
 }
 
 impl<'a> ConfirmationOverlay<'a> {
     /// Creates a confirmation popup with title and body message.
-    pub fn new(title: &'a str, message: &'a str) -> Self {
-        Self { message, title }
+    pub fn new(title: &'a str, message: &'a str, selected_yes: bool) -> Self {
+        Self {
+            message,
+            selected_yes,
+            title,
+        }
     }
 }
 
@@ -40,6 +45,21 @@ impl Component for ConfirmationOverlay<'_> {
         );
 
         let title = format!(" {} ", self.title);
+        let selected_option_style = Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let unselected_option_style = Style::default().fg(Color::White);
+        let yes_option_style = if self.selected_yes {
+            selected_option_style
+        } else {
+            unselected_option_style
+        };
+        let no_option_style = if self.selected_yes {
+            unselected_option_style
+        } else {
+            selected_option_style
+        };
 
         let paragraph = Paragraph::new(vec![
             Line::from(Span::styled(
@@ -48,20 +68,40 @@ impl Component for ConfirmationOverlay<'_> {
             )),
             Line::from(""),
             Line::from(vec![
+                Span::styled(" Yes ", yes_option_style),
+                Span::styled("   ", Style::default()),
+                Span::styled(" No ", no_option_style),
+            ]),
+            Line::from(""),
+            Line::from(vec![
                 Span::styled(
-                    "Enter / y",
+                    "y",
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(": confirm  ", Style::default().fg(Color::White)),
+                Span::styled(": yes  ", Style::default().fg(Color::White)),
                 Span::styled(
-                    "n / Esc",
+                    "n",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(": cancel", Style::default().fg(Color::White)),
+                Span::styled(": no  ", Style::default().fg(Color::White)),
+                Span::styled(
+                    "Left/Right",
+                    Style::default()
+                        .fg(Color::LightMagenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(": choose  ", Style::default().fg(Color::White)),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(Color::LightGreen)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(": select", Style::default().fg(Color::White)),
             ]),
         ])
         .alignment(Alignment::Center)
@@ -86,13 +126,15 @@ mod tests {
     fn test_confirmation_overlay_new_stores_fields() {
         // Arrange
         let message = "Delete session?";
+        let selected_yes = true;
         let title = "Confirm";
 
         // Act
-        let overlay = ConfirmationOverlay::new(title, message);
+        let overlay = ConfirmationOverlay::new(title, message, selected_yes);
 
         // Assert
         assert_eq!(overlay.message, message);
+        assert_eq!(overlay.selected_yes, selected_yes);
         assert_eq!(overlay.title, title);
     }
 }

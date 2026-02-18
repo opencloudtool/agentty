@@ -6,6 +6,9 @@ use crate::app::App;
 use crate::model::AppMode;
 use crate::runtime::EventResult;
 
+const YES_OPTION_INDEX: usize = 0;
+const NO_OPTION_INDEX: usize = 1;
+
 /// Handles key input while delete confirmation is visible.
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
     let session_id = match &app.mode {
@@ -14,22 +17,80 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
     };
 
     match key.code {
-        KeyCode::Enter | KeyCode::Char('y') => {
-            if let Some(session_index) = app.session_index_for_id(&session_id) {
-                app.sessions.table_state.select(Some(session_index));
-                app.mode = AppMode::List;
-                app.delete_selected_session().await;
+        KeyCode::Char(character) if is_yes_shortcut(character) => {
+            delete_confirmed_session(app, &session_id).await;
+        }
+        KeyCode::Char(character) if is_no_shortcut(character) => {
+            app.mode = AppMode::List;
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::List;
+        }
+        KeyCode::Left => {
+            select_previous_option(app);
+        }
+        KeyCode::Right => {
+            select_next_option(app);
+        }
+        KeyCode::Enter => {
+            if is_yes_option_selected(app) {
+                delete_confirmed_session(app, &session_id).await;
             } else {
                 app.mode = AppMode::List;
             }
-        }
-        KeyCode::Esc | KeyCode::Char('n' | 'q') => {
-            app.mode = AppMode::List;
         }
         _ => {}
     }
 
     Ok(EventResult::Continue)
+}
+
+fn is_yes_shortcut(character: char) -> bool {
+    character.eq_ignore_ascii_case(&'y')
+}
+
+fn is_no_shortcut(character: char) -> bool {
+    character.eq_ignore_ascii_case(&'n') || character.eq_ignore_ascii_case(&'q')
+}
+
+async fn delete_confirmed_session(app: &mut App, session_id: &str) {
+    if let Some(session_index) = app.session_index_for_id(session_id) {
+        app.sessions.table_state.select(Some(session_index));
+        app.mode = AppMode::List;
+        app.delete_selected_session().await;
+    } else {
+        app.mode = AppMode::List;
+    }
+}
+
+fn select_previous_option(app: &mut App) {
+    if let AppMode::ConfirmDeleteSession {
+        selected_confirmation_index,
+        ..
+    } = &mut app.mode
+    {
+        *selected_confirmation_index = selected_confirmation_index.saturating_sub(1);
+    }
+}
+
+fn select_next_option(app: &mut App) {
+    if let AppMode::ConfirmDeleteSession {
+        selected_confirmation_index,
+        ..
+    } = &mut app.mode
+    {
+        *selected_confirmation_index = (*selected_confirmation_index + 1).min(NO_OPTION_INDEX);
+    }
+}
+
+fn is_yes_option_selected(app: &App) -> bool {
+    matches!(
+        app.mode,
+        AppMode::ConfirmDeleteSession {
+            selected_confirmation_index: YES_OPTION_INDEX,
+            ..
+        }
+    )
 }
 
 #[cfg(test)]
@@ -105,6 +166,7 @@ mod tests {
             .expect("failed to create session");
         let session_title = app.sessions.sessions[0].display_title().to_string();
         app.mode = AppMode::ConfirmDeleteSession {
+            selected_confirmation_index: YES_OPTION_INDEX,
             session_id: session_id.clone(),
             session_title,
         };
@@ -130,6 +192,7 @@ mod tests {
             .expect("failed to create session");
         let session_title = app.sessions.sessions[0].display_title().to_string();
         app.mode = AppMode::ConfirmDeleteSession {
+            selected_confirmation_index: YES_OPTION_INDEX,
             session_id,
             session_title,
         };
@@ -158,6 +221,7 @@ mod tests {
             .expect("failed to create session");
         let session_title = app.sessions.sessions[0].display_title().to_string();
         app.mode = AppMode::ConfirmDeleteSession {
+            selected_confirmation_index: YES_OPTION_INDEX,
             session_id,
             session_title,
         };
@@ -171,5 +235,63 @@ mod tests {
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(app.mode, AppMode::List));
         assert_eq!(app.sessions.sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_right_and_enter_cancels_delete_confirmation() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        let session_title = app.sessions.sessions[0].display_title().to_string();
+        app.mode = AppMode::ConfirmDeleteSession {
+            selected_confirmation_index: YES_OPTION_INDEX,
+            session_id,
+            session_title,
+        };
+        handle(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Act
+        let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(app.mode, AppMode::List));
+        assert_eq!(app.sessions.sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_y_deletes_even_when_no_is_selected() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        let session_title = app.sessions.sessions[0].display_title().to_string();
+        app.mode = AppMode::ConfirmDeleteSession {
+            selected_confirmation_index: NO_OPTION_INDEX,
+            session_id,
+            session_title,
+        };
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(app.mode, AppMode::List));
+        assert!(app.sessions.sessions.is_empty());
     }
 }

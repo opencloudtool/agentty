@@ -73,6 +73,7 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
                 .map(|session| (session.id.clone(), session.display_title().to_string()));
             if let Some((session_id, session_title)) = selected_session {
                 app.mode = AppMode::ConfirmDeleteSession {
+                    selected_confirmation_index: 0,
                     session_id,
                     session_title,
                 };
@@ -362,6 +363,7 @@ mod tests {
         assert!(matches!(
             app.mode,
             AppMode::ConfirmDeleteSession {
+                selected_confirmation_index: 0,
                 ref session_id,
                 ref session_title,
             } if session_id == &expected_session_id && session_title == &expected_session_title
