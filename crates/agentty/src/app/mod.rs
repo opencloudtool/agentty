@@ -837,7 +837,7 @@ mod tests {
         event_batch.collect_event(AppEvent::SessionAgentModelUpdated {
             session_agent: AgentKind::Claude,
             session_id: "session-3".to_string(),
-            session_model: AgentModel::Claude(crate::agent::ClaudeModel::ClaudeOpus46),
+            session_model: AgentModel::ClaudeOpus46,
         });
         event_batch.collect_event(AppEvent::SessionPermissionModeUpdated {
             permission_mode: PermissionMode::Autonomous,
@@ -853,10 +853,7 @@ mod tests {
         );
         assert_eq!(
             event_batch.session_agent_model_updates.get("session-3"),
-            Some(&(
-                AgentKind::Claude,
-                AgentModel::Claude(crate::agent::ClaudeModel::ClaudeOpus46)
-            ))
+            Some(&(AgentKind::Claude, AgentModel::ClaudeOpus46))
         );
         assert_eq!(
             event_batch.session_permission_mode_updates.get("session-4"),

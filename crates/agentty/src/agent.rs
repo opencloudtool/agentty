@@ -238,168 +238,55 @@ pub enum AgentKind {
     Codex,
 }
 
-/// Supported Gemini model names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GeminiModel {
-    #[default]
+/// Supported agent model names across all providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentModel {
     Gemini3FlashPreview,
     Gemini3ProPreview,
+    Gpt53Codex,
+    Gpt52Codex,
+    ClaudeOpus46,
+    ClaudeSonnet4520250929,
+    ClaudeHaiku4520251001,
 }
 
-impl GeminiModel {
-    pub const ALL: &[Self] = &[Self::Gemini3FlashPreview, Self::Gemini3ProPreview];
-
+impl AgentModel {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Gemini3FlashPreview => "gemini-3-flash-preview",
             Self::Gemini3ProPreview => "gemini-3-pro-preview",
+            Self::Gpt53Codex => "gpt-5.3-codex",
+            Self::Gpt52Codex => "gpt-5.2-codex",
+            Self::ClaudeOpus46 => "claude-opus-4-6",
+            Self::ClaudeSonnet4520250929 => "claude-sonnet-4-5-20250929",
+            Self::ClaudeHaiku4520251001 => "claude-haiku-4-5-20251001",
+        }
+    }
+
+    pub fn kind(self) -> AgentKind {
+        match self {
+            Self::Gemini3FlashPreview | Self::Gemini3ProPreview => AgentKind::Gemini,
+            Self::Gpt53Codex | Self::Gpt52Codex => AgentKind::Codex,
+            Self::ClaudeOpus46 | Self::ClaudeSonnet4520250929 | Self::ClaudeHaiku4520251001 => {
+                AgentKind::Claude
+            }
         }
     }
 }
 
-impl FromStr for GeminiModel {
+impl FromStr for AgentModel {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "gemini-3-flash-preview" => Ok(Self::Gemini3FlashPreview),
             "gemini-3-pro-preview" => Ok(Self::Gemini3ProPreview),
-            other => Err(format!("unknown Gemini model: {other}")),
-        }
-    }
-}
-
-impl AgentSelectionMetadata for GeminiModel {
-    fn name(&self) -> &'static str {
-        (*self).as_str()
-    }
-
-    fn description(&self) -> &'static str {
-        match self {
-            Self::Gemini3FlashPreview => "Fast Gemini model for quick iterations.",
-            Self::Gemini3ProPreview => "Higher-quality Gemini model for deeper reasoning.",
-        }
-    }
-}
-
-/// Supported Codex model names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CodexModel {
-    #[default]
-    Gpt53Codex,
-    Gpt52Codex,
-}
-
-impl CodexModel {
-    pub const ALL: &[Self] = &[Self::Gpt53Codex, Self::Gpt52Codex];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Gpt53Codex => "gpt-5.3-codex",
-            Self::Gpt52Codex => "gpt-5.2-codex",
-        }
-    }
-}
-
-impl FromStr for CodexModel {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
             "gpt-5.3-codex" => Ok(Self::Gpt53Codex),
             "gpt-5.2-codex" => Ok(Self::Gpt52Codex),
-            other => Err(format!("unknown Codex model: {other}")),
-        }
-    }
-}
-
-impl AgentSelectionMetadata for CodexModel {
-    fn name(&self) -> &'static str {
-        (*self).as_str()
-    }
-
-    fn description(&self) -> &'static str {
-        match self {
-            Self::Gpt53Codex => "Latest Codex model for coding quality.",
-            Self::Gpt52Codex => "Faster Codex model with lower cost.",
-        }
-    }
-}
-
-/// Supported Claude model names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ClaudeModel {
-    #[default]
-    ClaudeOpus46,
-    ClaudeSonnet4520250929,
-    ClaudeHaiku4520251001,
-}
-
-impl ClaudeModel {
-    pub const ALL: &[Self] = &[
-        Self::ClaudeOpus46,
-        Self::ClaudeSonnet4520250929,
-        Self::ClaudeHaiku4520251001,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ClaudeOpus46 => "claude-opus-4-6",
-            Self::ClaudeSonnet4520250929 => "claude-sonnet-4-5-20250929",
-            Self::ClaudeHaiku4520251001 => "claude-haiku-4-5-20251001",
-        }
-    }
-}
-
-impl FromStr for ClaudeModel {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
             "claude-opus-4-6" => Ok(Self::ClaudeOpus46),
             "claude-sonnet-4-5-20250929" => Ok(Self::ClaudeSonnet4520250929),
             "claude-haiku-4-5-20251001" => Ok(Self::ClaudeHaiku4520251001),
-            other => Err(format!("unknown Claude model: {other}")),
-        }
-    }
-}
-
-impl AgentSelectionMetadata for ClaudeModel {
-    fn name(&self) -> &'static str {
-        (*self).as_str()
-    }
-
-    fn description(&self) -> &'static str {
-        match self {
-            Self::ClaudeOpus46 => "Top-tier Claude model for complex tasks.",
-            Self::ClaudeSonnet4520250929 => "Balanced Claude model for quality and latency.",
-            Self::ClaudeHaiku4520251001 => "Fast Claude model for lighter tasks.",
-        }
-    }
-}
-
-/// Model value typed by provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentModel {
-    Claude(ClaudeModel),
-    Codex(CodexModel),
-    Gemini(GeminiModel),
-}
-
-impl AgentModel {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Claude(model) => model.as_str(),
-            Self::Codex(model) => model.as_str(),
-            Self::Gemini(model) => model.as_str(),
-        }
-    }
-
-    pub fn kind(self) -> AgentKind {
-        match self {
-            Self::Claude(_) => AgentKind::Claude,
-            Self::Codex(_) => AgentKind::Codex,
-            Self::Gemini(_) => AgentKind::Gemini,
+            other => Err(format!("unknown model: {other}")),
         }
     }
 }
@@ -411,9 +298,13 @@ impl AgentSelectionMetadata for AgentModel {
 
     fn description(&self) -> &'static str {
         match self {
-            Self::Claude(model) => model.description(),
-            Self::Codex(model) => model.description(),
-            Self::Gemini(model) => model.description(),
+            Self::Gemini3FlashPreview => "Fast Gemini model for quick iterations.",
+            Self::Gemini3ProPreview => "Higher-quality Gemini model for deeper reasoning.",
+            Self::Gpt53Codex => "Latest Codex model for coding quality.",
+            Self::Gpt52Codex => "Faster Codex model with lower cost.",
+            Self::ClaudeOpus46 => "Top-tier Claude model for complex tasks.",
+            Self::ClaudeSonnet4520250929 => "Balanced Claude model for quality and latency.",
+            Self::ClaudeHaiku4520251001 => "Fast Claude model for lighter tasks.",
         }
     }
 }
@@ -522,9 +413,9 @@ impl AgentKind {
     /// Returns the default model for this agent kind.
     pub fn default_model(self) -> AgentModel {
         match self {
-            Self::Gemini => AgentModel::Gemini(GeminiModel::default()),
-            Self::Claude => AgentModel::Claude(ClaudeModel::default()),
-            Self::Codex => AgentModel::Codex(CodexModel::default()),
+            Self::Gemini => AgentModel::Gemini3FlashPreview,
+            Self::Claude => AgentModel::ClaudeOpus46,
+            Self::Codex => AgentModel::Gpt53Codex,
         }
     }
 
@@ -540,18 +431,15 @@ impl AgentKind {
     /// Returns the curated model list for this agent kind.
     pub fn models(self) -> &'static [AgentModel] {
         const GEMINI_MODELS: &[AgentModel] = &[
-            AgentModel::Gemini(GeminiModel::Gemini3FlashPreview),
-            AgentModel::Gemini(GeminiModel::Gemini3ProPreview),
+            AgentModel::Gemini3FlashPreview,
+            AgentModel::Gemini3ProPreview,
         ];
         const CLAUDE_MODELS: &[AgentModel] = &[
-            AgentModel::Claude(ClaudeModel::ClaudeOpus46),
-            AgentModel::Claude(ClaudeModel::ClaudeSonnet4520250929),
-            AgentModel::Claude(ClaudeModel::ClaudeHaiku4520251001),
+            AgentModel::ClaudeOpus46,
+            AgentModel::ClaudeSonnet4520250929,
+            AgentModel::ClaudeHaiku4520251001,
         ];
-        const CODEX_MODELS: &[AgentModel] = &[
-            AgentModel::Codex(CodexModel::Gpt53Codex),
-            AgentModel::Codex(CodexModel::Gpt52Codex),
-        ];
+        const CODEX_MODELS: &[AgentModel] = &[AgentModel::Gpt53Codex, AgentModel::Gpt52Codex];
 
         match self {
             Self::Gemini => GEMINI_MODELS,
@@ -709,11 +597,12 @@ impl AgentKind {
 
     /// Parses a provider-specific model string for this agent kind.
     pub fn parse_model(self, value: &str) -> Option<AgentModel> {
-        match self {
-            Self::Gemini => value.parse::<GeminiModel>().ok().map(AgentModel::Gemini),
-            Self::Claude => value.parse::<ClaudeModel>().ok().map(AgentModel::Claude),
-            Self::Codex => value.parse::<CodexModel>().ok().map(AgentModel::Codex),
+        let model = value.parse::<AgentModel>().ok()?;
+        if model.kind() != self {
+            return None;
         }
+
+        Some(model)
     }
 }
 
@@ -1109,16 +998,10 @@ mod tests {
         // Arrange & Act & Assert
         assert_eq!(
             AgentKind::Gemini.default_model(),
-            AgentModel::Gemini(GeminiModel::Gemini3FlashPreview)
+            AgentModel::Gemini3FlashPreview
         );
-        assert_eq!(
-            AgentKind::Claude.default_model(),
-            AgentModel::Claude(ClaudeModel::ClaudeOpus46)
-        );
-        assert_eq!(
-            AgentKind::Codex.default_model(),
-            AgentModel::Codex(CodexModel::Gpt53Codex)
-        );
+        assert_eq!(AgentKind::Claude.default_model(), AgentModel::ClaudeOpus46);
+        assert_eq!(AgentKind::Codex.default_model(), AgentModel::Gpt53Codex);
     }
 
     #[test]
@@ -1132,24 +1015,21 @@ mod tests {
         assert_eq!(
             gemini_models,
             &[
-                AgentModel::Gemini(GeminiModel::Gemini3FlashPreview),
-                AgentModel::Gemini(GeminiModel::Gemini3ProPreview),
+                AgentModel::Gemini3FlashPreview,
+                AgentModel::Gemini3ProPreview,
             ]
         );
         assert_eq!(
             claude_models,
             &[
-                AgentModel::Claude(ClaudeModel::ClaudeOpus46),
-                AgentModel::Claude(ClaudeModel::ClaudeSonnet4520250929),
-                AgentModel::Claude(ClaudeModel::ClaudeHaiku4520251001),
+                AgentModel::ClaudeOpus46,
+                AgentModel::ClaudeSonnet4520250929,
+                AgentModel::ClaudeHaiku4520251001,
             ]
         );
         assert_eq!(
             codex_models,
-            &[
-                AgentModel::Codex(CodexModel::Gpt53Codex),
-                AgentModel::Codex(CodexModel::Gpt52Codex),
-            ]
+            &[AgentModel::Gpt53Codex, AgentModel::Gpt52Codex,]
         );
     }
 
@@ -1158,15 +1038,15 @@ mod tests {
         // Arrange & Act & Assert
         assert_eq!(
             AgentKind::Gemini.parse_model("gemini-3-pro-preview"),
-            Some(AgentModel::Gemini(GeminiModel::Gemini3ProPreview))
+            Some(AgentModel::Gemini3ProPreview)
         );
         assert_eq!(
             AgentKind::Codex.parse_model("gpt-5.2-codex"),
-            Some(AgentModel::Codex(CodexModel::Gpt52Codex))
+            Some(AgentModel::Gpt52Codex)
         );
         assert_eq!(
             AgentKind::Claude.parse_model("claude-haiku-4-5-20251001"),
-            Some(AgentModel::Claude(ClaudeModel::ClaudeHaiku4520251001))
+            Some(AgentModel::ClaudeHaiku4520251001)
         );
         assert_eq!(AgentKind::Gemini.parse_model("claude-opus-4-6"), None);
     }
@@ -1175,25 +1055,19 @@ mod tests {
     fn test_agent_model_as_str() {
         // Arrange & Act & Assert
         assert_eq!(
-            AgentModel::Gemini(GeminiModel::Gemini3FlashPreview).as_str(),
+            AgentModel::Gemini3FlashPreview.as_str(),
             "gemini-3-flash-preview"
         );
-        assert_eq!(
-            AgentModel::Codex(CodexModel::Gpt53Codex).as_str(),
-            "gpt-5.3-codex"
-        );
-        assert_eq!(
-            AgentModel::Claude(ClaudeModel::ClaudeOpus46).as_str(),
-            "claude-opus-4-6"
-        );
+        assert_eq!(AgentModel::Gpt53Codex.as_str(), "gpt-5.3-codex");
+        assert_eq!(AgentModel::ClaudeOpus46.as_str(), "claude-opus-4-6");
     }
 
     #[test]
     fn test_agent_model_metadata() {
         // Arrange
-        let gemini_model = AgentModel::Gemini(GeminiModel::Gemini3FlashPreview);
-        let claude_model = AgentModel::Claude(ClaudeModel::ClaudeSonnet4520250929);
-        let codex_model = AgentModel::Codex(CodexModel::Gpt53Codex);
+        let gemini_model = AgentModel::Gemini3FlashPreview;
+        let claude_model = AgentModel::ClaudeSonnet4520250929;
+        let codex_model = AgentModel::Gpt53Codex;
 
         // Act & Assert
         assert_eq!(gemini_model.name(), "gemini-3-flash-preview");
@@ -1216,7 +1090,7 @@ mod tests {
     #[test]
     fn test_agent_kind_model_str_validates_kind() {
         // Arrange
-        let model = AgentModel::Gemini(GeminiModel::Gemini3FlashPreview);
+        let model = AgentModel::Gemini3FlashPreview;
 
         // Act
         let valid = AgentKind::Gemini.model_str(model);

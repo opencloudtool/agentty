@@ -547,7 +547,7 @@ mod tests {
         app.set_session_agent_and_model(
             &first_session_id,
             AgentKind::Codex,
-            AgentModel::Codex(crate::agent::CodexModel::Gpt52Codex),
+            AgentModel::Gpt52Codex,
         )
         .await
         .expect("failed to set session agent/model");
@@ -823,7 +823,7 @@ mod tests {
         db.insert_session(
             "beta00002",
             "claude",
-            AgentModel::Claude(crate::agent::ClaudeModel::ClaudeHaiku4520251001).as_str(),
+            AgentModel::ClaudeHaiku4520251001.as_str(),
             "main",
             "Done",
             project_id,
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(created_session.agent, "claude");
         assert_eq!(
             created_session.model,
-            AgentModel::Claude(crate::agent::ClaudeModel::ClaudeHaiku4520251001).as_str()
+            AgentModel::ClaudeHaiku4520251001.as_str()
         );
         assert_eq!(created_session.permission_mode, PermissionMode::Autonomous);
     }
