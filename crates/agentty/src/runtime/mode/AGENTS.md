@@ -3,6 +3,7 @@
 Key handling logic split by `AppMode`.
 
 ## Directory Index
+- [delete_confirmation.rs](delete_confirmation.rs) - Delete confirmation mode key handling.
 - [diff.rs](diff.rs) - Diff mode key handling.
 - [help.rs](help.rs) - Help overlay mode key handling.
 - [list.rs](list.rs) - Session list mode key handling.

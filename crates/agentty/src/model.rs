@@ -545,6 +545,10 @@ impl PromptHistoryState {
 
 pub enum AppMode {
     List,
+    ConfirmDeleteSession {
+        session_id: String,
+        session_title: String,
+    },
     Prompt {
         at_mention_state: Option<PromptAtMentionState>,
         history_state: PromptHistoryState,

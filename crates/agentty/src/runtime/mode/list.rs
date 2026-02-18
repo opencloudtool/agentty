@@ -68,7 +68,15 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
             }
         }
         KeyCode::Char('d') => {
-            app.delete_selected_session().await;
+            let selected_session = app
+                .selected_session()
+                .map(|session| (session.id.clone(), session.display_title().to_string()));
+            if let Some((session_id, session_title)) = selected_session {
+                app.mode = AppMode::ConfirmDeleteSession {
+                    session_id,
+                    session_title,
+                };
+            }
         }
         KeyCode::Char('?') => {
             app.mode = AppMode::Help {
@@ -330,13 +338,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_delete_key_removes_selected_session() {
+    async fn test_handle_delete_key_opens_delete_confirmation() {
         // Arrange
         let (mut app, _base_dir) = new_test_app_with_git().await;
-        let _session_id = app
+        let expected_session_id = app
             .create_session()
             .await
             .expect("failed to create session");
+        let expected_session_title = app.sessions.sessions[0].display_title().to_string();
         app.sessions.table_state.select(Some(0));
 
         // Act
@@ -349,7 +358,38 @@ mod tests {
 
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
-        assert!(app.sessions.sessions.is_empty());
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert!(matches!(
+            app.mode,
+            AppMode::ConfirmDeleteSession {
+                ref session_id,
+                ref session_title,
+            } if session_id == &expected_session_id && session_title == &expected_session_title
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_delete_key_without_selection_does_nothing() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let _session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        app.sessions.table_state.select(None);
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert!(matches!(app.mode, AppMode::List));
     }
 
     #[tokio::test]

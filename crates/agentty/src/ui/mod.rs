@@ -99,8 +99,9 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
     } = context;
 
     match mode {
-        AppMode::List => {
-            render_list_background(f, area, sessions, table_state, current_tab);
+        AppMode::List => render_list_background(f, area, sessions, table_state, current_tab),
+        AppMode::ConfirmDeleteSession { session_title, .. } => {
+            render_delete_confirmation(f, area, current_tab, sessions, table_state, session_title);
         }
         AppMode::View {
             session_id,
@@ -154,10 +155,8 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
             selected_index,
             focus,
         } => {
-            // Render List page as background
             render_list_background(f, area, sessions, table_state, current_tab);
 
-            // Overlay command palette at the bottom
             components::command_palette::CommandPaletteInput::new(input, *selected_index, *focus)
                 .render(f, area);
         }
@@ -165,10 +164,8 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
             command,
             selected_index,
         } => {
-            // Render List page as background
             render_list_background(f, area, sessions, table_state, current_tab);
 
-            // Overlay option list at the bottom
             components::command_palette::CommandOptionList::new(
                 *command,
                 *selected_index,
@@ -193,6 +190,21 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
             components::help_overlay::HelpOverlay::new(context, *scroll_offset).render(f, area);
         }
     }
+}
+
+fn render_delete_confirmation(
+    f: &mut Frame,
+    area: Rect,
+    current_tab: Tab,
+    sessions: &[Session],
+    table_state: &mut TableState,
+    session_title: &str,
+) {
+    render_list_background(f, area, sessions, table_state, current_tab);
+
+    let message = format!("Delete session \"{session_title}\"?");
+    components::confirmation_overlay::ConfirmationOverlay::new("Confirm Delete", &message)
+        .render(f, area);
 }
 
 /// Renders the background page behind the help overlay based on `HelpContext`.
@@ -261,7 +273,8 @@ fn render_footer_bar(
     git_status: Option<(u32, u32)>,
 ) {
     let session_id = match mode {
-        AppMode::View { session_id, .. }
+        AppMode::ConfirmDeleteSession { session_id, .. }
+        | AppMode::View { session_id, .. }
         | AppMode::Prompt { session_id, .. }
         | AppMode::Diff { session_id, .. }
         | AppMode::Help {
