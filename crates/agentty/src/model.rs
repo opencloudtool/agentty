@@ -42,6 +42,15 @@ impl PermissionMode {
         }
     }
 
+    /// Returns the user-facing label shown in the UI.
+    pub fn display_label(self) -> &'static str {
+        match self {
+            PermissionMode::AutoEdit => "Auto Edit",
+            PermissionMode::Autonomous => "Autonomous",
+            PermissionMode::Plan => "Plan",
+        }
+    }
+
     /// Cycles to the next permission mode.
     #[must_use]
     pub fn toggle(self) -> Self {
@@ -1855,6 +1864,14 @@ mod tests {
         assert_eq!(PermissionMode::AutoEdit.label(), "auto_edit");
         assert_eq!(PermissionMode::Autonomous.label(), "autonomous");
         assert_eq!(PermissionMode::Plan.label(), "plan");
+    }
+
+    #[test]
+    fn test_permission_mode_display_label() {
+        // Arrange & Act & Assert
+        assert_eq!(PermissionMode::AutoEdit.display_label(), "Auto Edit");
+        assert_eq!(PermissionMode::Autonomous.display_label(), "Autonomous");
+        assert_eq!(PermissionMode::Plan.display_label(), "Plan");
     }
 
     #[test]

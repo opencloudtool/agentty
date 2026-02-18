@@ -3,7 +3,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
-use crate::model::{Session, SessionSize, Status};
+use crate::model::{PermissionMode, Session, SessionSize, Status};
 use crate::ui::Page;
 
 /// Session list page renderer.
@@ -34,7 +34,7 @@ impl Page for SessionListPage<'_> {
 
         let selected_style = Style::default().bg(Color::DarkGray);
         let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
-        let header_cells = ["Session", "Project", "Model", "Size", "Status"]
+        let header_cells = ["Session", "Project", "Model", "Mode", "Size", "Status"]
             .iter()
             .map(|h| Cell::from(*h));
         let header = Row::new(header_cells)
@@ -47,6 +47,7 @@ impl Page for SessionListPage<'_> {
                 Cell::from(session.display_title().to_string()),
                 Cell::from(session.project_name.clone()),
                 Cell::from(session.model.clone()),
+                Cell::from(session.permission_mode.display_label()),
                 Cell::from(session.size.to_string())
                     .style(Style::default().fg(size_color(session.size))),
                 Cell::from(format!("{status}")).style(Style::default().fg(status.color())),
@@ -59,6 +60,7 @@ impl Page for SessionListPage<'_> {
                 Constraint::Min(0),
                 project_column_width(self.sessions),
                 model_column_width(self.sessions),
+                mode_column_width(),
                 size_column_width(),
                 status_column_width(),
             ],
@@ -95,6 +97,28 @@ pub(crate) fn model_column_width(sessions: &[Session]) -> Constraint {
     )
 }
 
+fn mode_column_width() -> Constraint {
+    text_column_width(
+        "Mode",
+        [
+            PermissionMode::AutoEdit,
+            PermissionMode::Autonomous,
+            PermissionMode::Plan,
+        ]
+        .iter()
+        .map(|mode| mode.display_label()),
+    )
+}
+
+fn size_column_width() -> Constraint {
+    text_column_width(
+        "Size",
+        SessionSize::ALL
+            .iter()
+            .map(std::string::ToString::to_string),
+    )
+}
+
 fn status_column_width() -> Constraint {
     text_column_width(
         "Status",
@@ -110,15 +134,6 @@ fn status_column_width() -> Constraint {
         ]
         .iter()
         .map(std::string::ToString::to_string),
-    )
-}
-
-fn size_column_width() -> Constraint {
-    text_column_width(
-        "Size",
-        SessionSize::ALL
-            .iter()
-            .map(std::string::ToString::to_string),
     )
 }
 
@@ -150,19 +165,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_status_column_width_uses_longest_possible_status_label() {
-        // Arrange
-        let expected_width =
-            u16::try_from("CreatingPullRequest".chars().count()).unwrap_or(u16::MAX);
-
-        // Act
-        let width = status_column_width();
-
-        // Assert
-        assert_eq!(width, Constraint::Length(expected_width));
-    }
-
-    #[test]
     fn test_project_column_width_uses_longest_project_value() {
         // Arrange
         let expected_width =
@@ -191,12 +193,37 @@ mod tests {
     }
 
     #[test]
+    fn test_mode_column_width_uses_longest_mode_label() {
+        // Arrange
+        let expected_width = u16::try_from("Autonomous".chars().count()).unwrap_or(u16::MAX);
+
+        // Act
+        let width = mode_column_width();
+
+        // Assert
+        assert_eq!(width, Constraint::Length(expected_width));
+    }
+
+    #[test]
     fn test_size_column_width_uses_header_width() {
         // Arrange
         let expected_width = u16::try_from("Size".chars().count()).unwrap_or(u16::MAX);
 
         // Act
         let width = size_column_width();
+
+        // Assert
+        assert_eq!(width, Constraint::Length(expected_width));
+    }
+
+    #[test]
+    fn test_status_column_width_uses_longest_possible_status_label() {
+        // Arrange
+        let expected_width =
+            u16::try_from("CreatingPullRequest".chars().count()).unwrap_or(u16::MAX);
+
+        // Act
+        let width = status_column_width();
 
         // Assert
         assert_eq!(width, Constraint::Length(expected_width));
