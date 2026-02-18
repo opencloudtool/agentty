@@ -7,9 +7,9 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::ui::Component;
 
 const MIN_OVERLAY_HEIGHT: u16 = 7;
-const MIN_OVERLAY_WIDTH: u16 = 44;
-const OVERLAY_HEIGHT_PERCENT: u16 = 30;
-const OVERLAY_WIDTH_PERCENT: u16 = 55;
+const MIN_OVERLAY_WIDTH: u16 = 30;
+const OVERLAY_HEIGHT_PERCENT: u16 = 20;
+const OVERLAY_WIDTH_PERCENT: u16 = 40;
 
 /// Centered confirmation popup used for destructive actions.
 pub struct ConfirmationOverlay<'a> {
@@ -72,37 +72,6 @@ impl Component for ConfirmationOverlay<'_> {
                 Span::styled("   ", Style::default()),
                 Span::styled(" No ", no_option_style),
             ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "y",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(": yes  ", Style::default().fg(Color::White)),
-                Span::styled(
-                    "n",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(": no  ", Style::default().fg(Color::White)),
-                Span::styled(
-                    "Left/Right",
-                    Style::default()
-                        .fg(Color::LightMagenta)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(": choose  ", Style::default().fg(Color::White)),
-                Span::styled(
-                    "Enter",
-                    Style::default()
-                        .fg(Color::LightGreen)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(": select", Style::default().fg(Color::White)),
-            ]),
         ])
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true })
@@ -136,5 +105,31 @@ mod tests {
         assert_eq!(overlay.message, message);
         assert_eq!(overlay.selected_yes, selected_yes);
         assert_eq!(overlay.title, title);
+    }
+
+    #[test]
+    fn test_confirmation_overlay_render_hides_bottom_navigation_hints() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let overlay = ConfirmationOverlay::new("Confirm Delete", "Delete session?", true);
+
+        // Act
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                crate::ui::Component::render(&overlay, f, area);
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let buffer = terminal.backend().buffer();
+        let content = buffer.content();
+        let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(text.contains("Yes"));
+        assert!(text.contains("No"));
+        assert!(!text.contains("Left/Right"));
+        assert!(!text.contains(": choose"));
+        assert!(!text.contains(": select"));
     }
 }
