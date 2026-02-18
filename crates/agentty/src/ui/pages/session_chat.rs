@@ -402,17 +402,35 @@ impl<'a> SessionChatPage<'a> {
             return;
         }
 
-        let help_text = if session.status == Status::Done {
-            "q: back | o: open | j/k: scroll | ?: help"
-        } else if self.plan_followup_action.is_some() {
-            "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | p: pr | m: \
-             merge | r: rebase | S-Tab: mode | j/k: scroll | ?: help"
-        } else {
-            "q: back | enter: reply | o: open | d: diff | p: pr | m: merge | r: rebase | S-Tab: \
-             mode | j/k: scroll | ?: help"
-        };
+        let help_text = Self::view_help_text(session, self.plan_followup_action);
         let help_message = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, bottom_area);
+    }
+
+    fn view_help_text(
+        session: &Session,
+        plan_followup_action: Option<PlanFollowupAction>,
+    ) -> &'static str {
+        if session.status == Status::Done {
+            return "q: back | o: open | j/k: scroll | ?: help";
+        }
+
+        if plan_followup_action.is_some() {
+            return if session.commit_count > 0 {
+                "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | p: pr | \
+                 m: merge | r: rebase | S-Tab: mode | j/k: scroll | ?: help"
+            } else {
+                "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | S-Tab: \
+                 mode | j/k: scroll | ?: help"
+            };
+        }
+
+        if session.commit_count > 0 {
+            "q: back | enter: reply | o: open | d: diff | p: pr | m: merge | r: rebase | S-Tab: \
+             mode | j/k: scroll | ?: help"
+        } else {
+            "q: back | enter: reply | o: open | d: diff | S-Tab: mode | j/k: scroll | ?: help"
+        }
     }
 }
 
@@ -847,5 +865,49 @@ mod tests {
         // Assert
         assert!(rendered.contains("Implement the plan"));
         assert!(rendered.contains("Type feedback"));
+    }
+
+    #[test]
+    fn test_view_help_text_without_commits_excludes_git_actions() {
+        // Arrange
+        let session = session_fixture();
+
+        // Act
+        let help_text = SessionChatPage::view_help_text(&session, None);
+
+        // Assert
+        assert!(!help_text.contains("p: pr"));
+        assert!(!help_text.contains("m: merge"));
+        assert!(!help_text.contains("r: rebase"));
+    }
+
+    #[test]
+    fn test_view_help_text_with_commits_includes_git_actions() {
+        // Arrange
+        let mut session = session_fixture();
+        session.commit_count = 1;
+
+        // Act
+        let help_text = SessionChatPage::view_help_text(&session, None);
+
+        // Assert
+        assert!(help_text.contains("p: pr"));
+        assert!(help_text.contains("m: merge"));
+        assert!(help_text.contains("r: rebase"));
+    }
+
+    #[test]
+    fn test_view_help_text_plan_followup_without_commits_excludes_git_actions() {
+        // Arrange
+        let session = session_fixture();
+
+        // Act
+        let help_text =
+            SessionChatPage::view_help_text(&session, Some(PlanFollowupAction::ImplementPlan));
+
+        // Assert
+        assert!(!help_text.contains("p: pr"));
+        assert!(!help_text.contains("m: merge"));
+        assert!(!help_text.contains("r: rebase"));
     }
 }
