@@ -5,6 +5,10 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use crate::model::{PermissionMode, Session, SessionSize, Status};
 use crate::ui::Page;
+use crate::ui::util::{first_table_column_width, truncate_with_ellipsis};
+
+const ROW_HIGHLIGHT_SYMBOL: &str = ">> ";
+const TABLE_COLUMN_SPACING: u16 = 1;
 
 /// Session list page renderer.
 pub struct SessionListPage<'a> {
@@ -41,10 +45,33 @@ impl Page for SessionListPage<'_> {
             .style(normal_style)
             .height(1)
             .bottom_margin(1);
+
+        let block = Block::default().borders(Borders::ALL).title("Sessions");
+        let column_constraints = [
+            Constraint::Min(0),
+            project_column_width(self.sessions),
+            model_column_width(self.sessions),
+            mode_column_width(),
+            size_column_width(),
+            status_column_width(),
+        ];
+        let has_selection = !self.sessions.is_empty() && self.table_state.selected().is_some();
+        let selection_width = if has_selection {
+            u16::try_from(ROW_HIGHLIGHT_SYMBOL.chars().count()).unwrap_or(u16::MAX)
+        } else {
+            0
+        };
+        let title_column_width = first_table_column_width(
+            block.inner(main_area).width,
+            &column_constraints,
+            TABLE_COLUMN_SPACING,
+            selection_width,
+        );
         let rows = self.sessions.iter().map(|session| {
             let status = session.status;
+            let display_title = truncate_with_ellipsis(session.display_title(), title_column_width);
             let cells = vec![
-                Cell::from(session.display_title().to_string()),
+                Cell::from(display_title),
                 Cell::from(session.project_name.clone()),
                 Cell::from(session.model.clone()),
                 Cell::from(session.permission_mode.display_label()),
@@ -54,21 +81,12 @@ impl Page for SessionListPage<'_> {
             ];
             Row::new(cells).height(1)
         });
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Min(0),
-                project_column_width(self.sessions),
-                model_column_width(self.sessions),
-                mode_column_width(),
-                size_column_width(),
-                status_column_width(),
-            ],
-        )
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Sessions"))
-        .row_highlight_style(selected_style)
-        .highlight_symbol(">> ");
+        let table = Table::new(rows, column_constraints)
+            .column_spacing(TABLE_COLUMN_SPACING)
+            .header(header)
+            .block(block)
+            .row_highlight_style(selected_style)
+            .highlight_symbol(ROW_HIGHLIGHT_SYMBOL);
 
         f.render_stateful_widget(table, main_area, self.table_state);
 

@@ -91,6 +91,53 @@ pub fn wrap_lines(text: &str, width: usize) -> Vec<Line<'_>> {
     wrapped
 }
 
+/// Calculate the rendered width of the first table column.
+///
+/// This mirrors ratatui's table layout behavior, including highlight selection
+/// space and column spacing.
+pub fn first_table_column_width(
+    table_width: u16,
+    column_constraints: &[Constraint],
+    column_spacing: u16,
+    selection_width: u16,
+) -> usize {
+    if column_constraints.is_empty() {
+        return 0;
+    }
+
+    let [_selection_area, columns_area] =
+        Layout::horizontal([Constraint::Length(selection_width), Constraint::Fill(0)])
+            .areas(Rect::new(0, 0, table_width, 1));
+    let columns = Layout::horizontal(column_constraints.iter().copied())
+        .spacing(column_spacing)
+        .split(columns_area);
+
+    columns
+        .first()
+        .map_or(0, |column| usize::from(column.width))
+}
+
+/// Truncate text to `max_width` and append `...` when it overflows.
+pub fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let text_width = text.chars().count();
+    if text_width <= max_width {
+        return text.to_string();
+    }
+
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+
+    let visible_width = max_width - 3;
+    let truncated: String = text.chars().take(visible_width).collect();
+
+    format!("{truncated}...")
+}
+
 fn move_input_cursor_vertical(
     input: &str,
     width: u16,
@@ -674,6 +721,64 @@ mod tests {
         assert_eq!(wrapped.len(), 2);
         assert_eq!(wrapped[0].to_string(), "hello");
         assert_eq!(wrapped[1].to_string(), "world");
+    }
+
+    #[test]
+    fn test_first_table_column_width_uses_remaining_layout_space() {
+        // Arrange
+        let constraints = [
+            Constraint::Min(0),
+            Constraint::Length(7),
+            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Length(6),
+        ];
+
+        // Act
+        let width = first_table_column_width(50, &constraints, 1, 3);
+
+        // Assert
+        assert_eq!(width, 21);
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_keeps_full_text_when_it_fits() {
+        // Arrange
+        let text = "short title";
+
+        // Act
+        let truncated = truncate_with_ellipsis(text, 20);
+
+        // Assert
+        assert_eq!(truncated, "short title");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_adds_three_dots_when_text_overflows() {
+        // Arrange
+        let text = "1234567890";
+
+        // Act
+        let truncated = truncate_with_ellipsis(text, 8);
+
+        // Assert
+        assert_eq!(truncated, "12345...");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_uses_only_dots_for_tiny_widths() {
+        // Arrange
+        let text = "overflow";
+
+        // Act
+        let width_three = truncate_with_ellipsis(text, 3);
+        let width_two = truncate_with_ellipsis(text, 2);
+        let width_zero = truncate_with_ellipsis(text, 0);
+
+        // Assert
+        assert_eq!(width_three, "...");
+        assert_eq!(width_two, "..");
+        assert_eq!(width_zero, "");
     }
 
     #[test]
