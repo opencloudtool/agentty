@@ -32,6 +32,7 @@ Application-layer workflows and orchestration.
   - Operation state is persisted so interrupted work can be reconciled on startup.
 
 ## Directory Index
+- [assist.rs](assist.rs) - Shared assistance helpers for commit/rebase recovery loops.
 - [mod.rs](mod.rs) - Shared app state and module wiring.
 - [pr.rs](pr.rs) - Pull request workflow orchestration.
 - [project.rs](project.rs) - Project discovery and switching logic.

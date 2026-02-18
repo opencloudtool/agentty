@@ -4,6 +4,8 @@ use std::process::Command;
 
 use crate::gh;
 
+const COMMIT_ALL_HOOK_RETRY_ATTEMPTS: usize = 5;
+
 /// Result of attempting a rebase step.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RebaseStepResult {
@@ -537,28 +539,56 @@ pub fn commit_all(repo_path: &Path, commit_message: &str, no_verify: bool) -> Re
     // Stage all changes
     stage_all(repo_path)?;
 
-    // Commit
-    let mut args = vec!["commit", "-m", commit_message];
-    if no_verify {
-        args.push("--no-verify");
-    }
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()
-        .map_err(|e| format!("Failed to execute git: {e}"))?;
+    for _ in 0..COMMIT_ALL_HOOK_RETRY_ATTEMPTS {
+        let output = run_commit_command(repo_path, commit_message, no_verify)?;
 
-    if !output.status.success() {
+        if output.status.success() {
+            return Ok(());
+        }
+
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         // Check if there's nothing to commit
         if stdout.contains("nothing to commit") || stderr.contains("nothing to commit") {
             return Err("Nothing to commit: no changes detected".to_string());
         }
+
+        if is_hook_modified_error(&stdout, &stderr) {
+            stage_all(repo_path)?;
+
+            continue;
+        }
+
         return Err(format!("Failed to commit: {}", stderr.trim()));
     }
 
-    Ok(())
+    Err(format!(
+        "Failed to commit: commit hooks kept modifying files after \
+         {COMMIT_ALL_HOOK_RETRY_ATTEMPTS} attempts"
+    ))
+}
+
+fn run_commit_command(
+    repo_path: &Path,
+    commit_message: &str,
+    no_verify: bool,
+) -> Result<std::process::Output, String> {
+    let mut args = vec!["commit", "-m", commit_message];
+    if no_verify {
+        args.push("--no-verify");
+    }
+
+    Command::new("git")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .map_err(|error| format!("Failed to execute git: {error}"))
+}
+
+fn is_hook_modified_error(stdout: &str, stderr: &str) -> bool {
+    let combined = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+
+    combined.contains("files were modified by this hook")
 }
 
 /// Returns the short hash of the current `HEAD` commit.
@@ -1968,6 +1998,71 @@ mod tests {
     }
 
     #[test]
+    fn test_commit_all_retries_when_hook_modifies_files() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        fs::write(dir.path().join("tracked.txt"), "needs-fix\n").expect("test setup failed");
+        write_pre_commit_hook(
+            dir.path(),
+            r#"#!/bin/sh
+if grep -q "needs-fix" tracked.txt; then
+  printf "fixed\n" > tracked.txt
+  echo "hook id: clippy-fix" >&2
+  echo "files were modified by this hook" >&2
+  exit 1
+fi
+exit 0
+"#,
+        );
+
+        // Act
+        let result = commit_all(dir.path(), "Retry commit message", false);
+
+        // Assert
+        assert!(
+            result.is_ok(),
+            "expected commit to succeed, got: {result:?}"
+        );
+
+        let output = Command::new("git")
+            .args(["show", "HEAD:tracked.txt"])
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to read committed file");
+        let content = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(content, "fixed\n");
+    }
+
+    #[test]
+    fn test_commit_all_returns_error_when_hook_keeps_modifying_files() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path()).expect("test setup failed");
+        fs::write(dir.path().join("tracked.txt"), "start\n").expect("test setup failed");
+        write_pre_commit_hook(
+            dir.path(),
+            r#"#!/bin/sh
+printf "loop\n" >> tracked.txt
+echo "hook id: clippy-fix" >&2
+echo "files were modified by this hook" >&2
+exit 1
+"#,
+        );
+
+        // Act
+        let result = commit_all(dir.path(), "Looping hook commit", false);
+
+        // Assert
+        assert!(result.is_err(), "expected commit to fail");
+        let error = result.expect_err("expected error");
+        assert!(
+            error.contains("kept modifying files"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn test_head_short_hash_returns_current_commit_hash() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
@@ -2213,5 +2308,18 @@ mod tests {
             .current_dir(path)
             .output()?;
         Ok(())
+    }
+
+    fn write_pre_commit_hook(repo_path: &Path, script: &str) {
+        let hook_path = repo_path.join(".git/hooks/pre-commit");
+        fs::write(&hook_path, script).expect("failed to write pre-commit hook");
+        let status = Command::new("chmod")
+            .args(["+x", hook_path.to_string_lossy().as_ref()])
+            .status()
+            .expect("failed to run chmod for pre-commit hook");
+        assert!(
+            status.success(),
+            "failed to make pre-commit hook executable"
+        );
     }
 }

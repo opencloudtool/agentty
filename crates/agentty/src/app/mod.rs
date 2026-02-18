@@ -17,6 +17,7 @@ use crate::model::{
     AppMode, PermissionMode, PlanFollowupAction, Session, SessionHandles, Status, Tab,
 };
 
+mod assist;
 mod pr;
 mod project;
 mod service;

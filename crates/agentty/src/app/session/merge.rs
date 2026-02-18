@@ -13,7 +13,11 @@ use tokio::sync::mpsc;
 use super::access::{SESSION_HANDLES_NOT_FOUND_ERROR, SESSION_NOT_FOUND_ERROR};
 use super::{COMMIT_MESSAGE, session_branch};
 use crate::agent::AgentKind;
-use crate::app::task::{RunAgentAssistTaskInput, TaskService};
+use crate::app::assist::{
+    AssistContext, AssistPolicy, FailureTracker, append_assist_header, effective_permission_mode,
+    format_detail_lines, run_agent_assist,
+};
+use crate::app::task::TaskService;
 use crate::app::title::TitleService;
 use crate::app::{AppEvent, AppServices, PrManager, ProjectManager, SessionManager};
 use crate::db::Database;
@@ -21,7 +25,10 @@ use crate::git;
 use crate::model::{PermissionMode, Status};
 
 const MERGE_COMMIT_MESSAGE_TIMEOUT: Duration = Duration::from_mins(2);
-const REBASE_ASSIST_MAX_ATTEMPTS: usize = 3;
+const REBASE_ASSIST_POLICY: AssistPolicy = AssistPolicy {
+    max_attempts: 3,
+    max_identical_failure_streak: 2,
+};
 const REBASE_ASSIST_PROMPT_TEMPLATE: &str =
     include_str!("../../../resources/rebase_assist_prompt.md");
 const SESSION_SUMMARY_TIMEOUT: Duration = Duration::from_secs(8);
@@ -481,6 +488,9 @@ impl SessionManager {
     /// Returns an error when conflict resolution fails after all attempts or
     /// when git/agent operations fail.
     async fn run_rebase_assist_loop(input: RebaseAssistInput) -> Result<(), String> {
+        let mut failure_tracker =
+            FailureTracker::new(REBASE_ASSIST_POLICY.max_identical_failure_streak);
+
         let rebase_in_progress = Self::is_rebase_in_progress(&input).await?;
         if !rebase_in_progress {
             let initial_step = Self::run_rebase_start(&input).await?;
@@ -489,7 +499,7 @@ impl SessionManager {
             }
         }
 
-        for assist_attempt in 1..=REBASE_ASSIST_MAX_ATTEMPTS {
+        for assist_attempt in 1..=REBASE_ASSIST_POLICY.max_attempts {
             let conflicted_files = Self::load_conflicted_files(&input).await?;
             if conflicted_files.is_empty() {
                 let continue_step = Self::run_rebase_continue(&input).await?;
@@ -498,7 +508,16 @@ impl SessionManager {
                         return Ok(());
                     }
                     git::RebaseStepResult::Conflict { detail } => {
-                        if assist_attempt == REBASE_ASSIST_MAX_ATTEMPTS {
+                        if failure_tracker.observe(&detail) {
+                            Self::abort_rebase_after_assist_failure(&input.folder).await;
+
+                            return Err(format!(
+                                "Rebase assistance made no progress: repeated identical conflict \
+                                 state. Last detail: {detail}"
+                            ));
+                        }
+
+                        if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
                             Self::abort_rebase_after_assist_failure(&input.folder).await;
 
                             return Err(format!(
@@ -511,12 +530,22 @@ impl SessionManager {
                 continue;
             }
 
+            let conflict_fingerprint = Self::conflicted_file_fingerprint(&conflicted_files);
+            if failure_tracker.observe(&conflict_fingerprint) {
+                Self::abort_rebase_after_assist_failure(&input.folder).await;
+
+                return Err(
+                    "Rebase assistance made no progress: conflicted files did not change"
+                        .to_string(),
+                );
+            }
+
             Self::append_rebase_assist_header(&input, assist_attempt, &conflicted_files).await;
             Self::run_rebase_assist_agent(&input, &conflicted_files).await?;
 
             let has_unmerged_paths = Self::stage_and_check_unmerged_paths(&input).await?;
             if has_unmerged_paths {
-                if assist_attempt == REBASE_ASSIST_MAX_ATTEMPTS {
+                if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
                     Self::abort_rebase_after_assist_failure(&input.folder).await;
 
                     return Err(
@@ -533,7 +562,16 @@ impl SessionManager {
                     return Ok(());
                 }
                 git::RebaseStepResult::Conflict { detail } => {
-                    if assist_attempt == REBASE_ASSIST_MAX_ATTEMPTS {
+                    if failure_tracker.observe(&detail) {
+                        Self::abort_rebase_after_assist_failure(&input.folder).await;
+
+                        return Err(format!(
+                            "Rebase assistance made no progress: repeated identical conflict \
+                             state. Last detail: {detail}"
+                        ));
+                    }
+
+                    if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
                         Self::abort_rebase_after_assist_failure(&input.folder).await;
 
                         return Err(format!(
@@ -599,16 +637,13 @@ impl SessionManager {
         conflicted_files: &[String],
     ) {
         let conflict_summary = Self::format_conflicted_file_list(conflicted_files);
-        let assist_header = format!(
-            "\n[Rebase Assist] Attempt {assist_attempt}/{REBASE_ASSIST_MAX_ATTEMPTS}. Resolving \
-             conflicts in:\n{conflict_summary}\n"
-        );
-        TaskService::append_session_output(
-            &input.output,
-            &input.db,
-            &input.app_event_tx,
-            &input.id,
-            &assist_header,
+        append_assist_header(
+            &Self::assist_context(input),
+            "Rebase",
+            assist_attempt,
+            REBASE_ASSIST_POLICY.max_attempts,
+            "Resolving conflicts in:",
+            &conflict_summary,
         )
         .await;
     }
@@ -622,24 +657,13 @@ impl SessionManager {
         conflicted_files: &[String],
     ) -> Result<(), String> {
         let prompt = Self::rebase_assist_prompt(&input.base_branch, conflicted_files);
-        let effective_permission_mode = Self::rebase_assist_permission_mode(input.permission_mode);
-        let backend = input.session_agent.create_backend();
-        let command = backend.build_resume_command(
-            &input.folder,
-            &prompt,
-            &input.session_model,
-            effective_permission_mode,
-        );
-        TaskService::run_agent_assist_task(RunAgentAssistTaskInput {
-            agent: input.session_agent,
-            app_event_tx: input.app_event_tx.clone(),
-            cmd: command,
-            db: input.db.clone(),
-            id: input.id.clone(),
-            output: Arc::clone(&input.output),
-            permission_mode: effective_permission_mode,
-        })
-        .await
+        let mut assist_context = Self::assist_context(input);
+        assist_context.permission_mode =
+            Self::rebase_assist_permission_mode(assist_context.permission_mode);
+
+        run_agent_assist(&assist_context, &prompt)
+            .await
+            .map_err(|error| format!("Rebase assistance failed: {error}"))
     }
 
     /// Stages worktree edits and checks whether unresolved paths remain.
@@ -687,20 +711,32 @@ impl SessionManager {
 
     /// Resolves effective permission mode for rebase assistance runs.
     fn rebase_assist_permission_mode(permission_mode: PermissionMode) -> PermissionMode {
-        if permission_mode == PermissionMode::Plan {
-            return PermissionMode::AutoEdit;
-        }
-
-        permission_mode
+        effective_permission_mode(permission_mode)
     }
 
     /// Formats conflicted file paths as a bullet list for prompt rendering.
     fn format_conflicted_file_list(conflicted_files: &[String]) -> String {
-        conflicted_files
-            .iter()
-            .map(|path| format!("- {path}"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        format_detail_lines(&conflicted_files.join("\n"))
+    }
+
+    fn conflicted_file_fingerprint(conflicted_files: &[String]) -> String {
+        let mut normalized_paths = conflicted_files.to_vec();
+        normalized_paths.sort_unstable();
+
+        normalized_paths.join("\n")
+    }
+
+    fn assist_context(input: &RebaseAssistInput) -> AssistContext {
+        AssistContext {
+            agent: input.session_agent,
+            app_event_tx: input.app_event_tx.clone(),
+            db: input.db.clone(),
+            folder: input.folder.clone(),
+            id: input.id.clone(),
+            output: Arc::clone(&input.output),
+            permission_mode: input.permission_mode,
+            session_model: input.session_model.clone(),
+        }
     }
 
     /// Aborts rebase after assistance fails to keep worktree state clean.
