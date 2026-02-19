@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use super::SESSION_REFRESH_INTERVAL;
-use crate::app::{AppServices, PrManager, ProjectManager, SessionManager};
+use crate::app::{AppServices, ProjectManager, SessionManager};
 use crate::model::AppMode;
 
 impl SessionManager {
@@ -16,7 +16,6 @@ impl SessionManager {
         &mut self,
         mode: &mut AppMode,
         projects: &ProjectManager,
-        prs: &PrManager,
         services: &AppServices,
     ) {
         if !self.is_session_refresh_due() {
@@ -33,7 +32,7 @@ impl SessionManager {
             return;
         }
 
-        self.reload_sessions(mode, projects, prs, services, Some(sessions_metadata))
+        self.reload_sessions(mode, projects, services, Some(sessions_metadata))
             .await;
     }
 
@@ -42,11 +41,10 @@ impl SessionManager {
         &mut self,
         mode: &mut AppMode,
         projects: &ProjectManager,
-        prs: &PrManager,
         services: &AppServices,
     ) {
         let sessions_metadata = services.db().load_sessions_metadata().await.ok();
-        self.reload_sessions(mode, projects, prs, services, sessions_metadata)
+        self.reload_sessions(mode, projects, services, sessions_metadata)
             .await;
         self.refresh_deadline = Instant::now() + SESSION_REFRESH_INTERVAL;
     }
@@ -55,7 +53,6 @@ impl SessionManager {
         &mut self,
         mode: &mut AppMode,
         projects: &ProjectManager,
-        prs: &PrManager,
         services: &AppServices,
         sessions_metadata: Option<(i64, i64)>,
     ) {
@@ -71,7 +68,6 @@ impl SessionManager {
             &mut self.handles,
         )
         .await;
-        prs.start_pr_polling_for_pull_request_sessions(services, self);
         self.restore_table_selection(selected_session_id.as_deref(), selected_index);
         self.ensure_mode_session_exists(mode);
 

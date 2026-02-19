@@ -139,8 +139,6 @@ pub enum Status {
     Review,
     Rebasing,
     Merging,
-    CreatingPullRequest,
-    PullRequest,
     Done,
     Canceled,
 }
@@ -165,8 +163,6 @@ impl std::fmt::Display for Status {
             Status::Review => write!(f, "Review"),
             Status::Rebasing => write!(f, "Rebasing"),
             Status::Merging => write!(f, "Merging"),
-            Status::CreatingPullRequest => write!(f, "CreatingPullRequest"),
-            Status::PullRequest => write!(f, "PullRequest"),
             Status::Done => write!(f, "Done"),
             Status::Canceled => write!(f, "Canceled"),
         }
@@ -180,11 +176,9 @@ impl std::str::FromStr for Status {
         match s {
             "New" => Ok(Status::New),
             "InProgress" | "Committing" => Ok(Status::InProgress),
-            "Review" => Ok(Status::Review),
+            "Review" | "PullRequest" | "CreatingPullRequest" | "Processing" => Ok(Status::Review),
             "Rebasing" => Ok(Status::Rebasing),
             "Merging" => Ok(Status::Merging),
-            "CreatingPullRequest" => Ok(Status::CreatingPullRequest),
-            "PullRequest" | "Processing" => Ok(Status::PullRequest),
             "Done" => Ok(Status::Done),
             "Canceled" => Ok(Status::Canceled),
             _ => Err(format!("Unknown status: {s}")),
@@ -621,7 +615,6 @@ impl HelpContext {
                 ("Enter", "Reply"),
                 ("Ctrl+c", "Stop agent"),
                 ("d", "Show diff"),
-                ("p", "Create PR"),
                 ("m", "Merge"),
                 ("r", "Rebase"),
                 ("S-Tab", "Toggle permission mode"),
@@ -830,31 +823,17 @@ impl Status {
                 | (Status::New | Status::InProgress, Status::Rebasing)
                 | (
                     Status::Review,
-                    Status::InProgress
-                        | Status::PullRequest
-                        | Status::Rebasing
-                        | Status::Merging
-                        | Status::Canceled
-                        | Status::CreatingPullRequest
+                    Status::InProgress | Status::Rebasing | Status::Merging | Status::Canceled
                 )
                 | (Status::InProgress | Status::Rebasing, Status::Review)
-                | (
-                    Status::CreatingPullRequest,
-                    Status::PullRequest | Status::Review
-                )
                 | (Status::Merging, Status::Done | Status::Review)
-                | (Status::PullRequest, Status::Done | Status::Canceled)
         )
     }
 
     pub fn icon(self) -> Icon {
         match self {
             Status::New | Status::Review => Icon::Pending,
-            Status::InProgress
-            | Status::Rebasing
-            | Status::Merging
-            | Status::PullRequest
-            | Status::CreatingPullRequest => Icon::current_spinner(),
+            Status::InProgress | Status::Rebasing | Status::Merging => Icon::current_spinner(),
             Status::Done => Icon::Check,
             Status::Canceled => Icon::Cross,
         }
@@ -865,10 +844,7 @@ impl Status {
             Status::New => Color::DarkGray,
             Status::InProgress => Color::Yellow,
             Status::Review => Color::LightBlue,
-            Status::Rebasing
-            | Status::Merging
-            | Status::PullRequest
-            | Status::CreatingPullRequest => Color::Cyan,
+            Status::Rebasing | Status::Merging => Color::Cyan,
             Status::Done => Color::Green,
             Status::Canceled => Color::Red,
         }
@@ -949,11 +925,6 @@ mod tests {
         assert!(matches!(Status::InProgress.icon(), Icon::Spinner(_)));
         assert_eq!(Status::Review.icon(), Icon::Pending);
         assert!(matches!(Status::Merging.icon(), Icon::Spinner(_)));
-        assert!(matches!(
-            Status::CreatingPullRequest.icon(),
-            Icon::Spinner(_)
-        ));
-        assert!(matches!(Status::PullRequest.icon(), Icon::Spinner(_)));
         assert_eq!(Status::Done.icon(), Icon::Check);
         assert_eq!(Status::Canceled.icon(), Icon::Cross);
     }
@@ -965,8 +936,6 @@ mod tests {
         assert_eq!(Status::InProgress.color(), Color::Yellow);
         assert_eq!(Status::Review.color(), Color::LightBlue);
         assert_eq!(Status::Merging.color(), Color::Cyan);
-        assert_eq!(Status::CreatingPullRequest.color(), Color::Cyan);
-        assert_eq!(Status::PullRequest.color(), Color::Cyan);
         assert_eq!(Status::Done.color(), Color::Green);
         assert_eq!(Status::Canceled.color(), Color::Red);
     }
@@ -1023,15 +992,6 @@ mod tests {
     }
 
     #[test]
-    fn test_status_from_str_legacy_processing_maps_to_pull_request() {
-        // Arrange & Act
-        let status = "Processing".parse::<Status>().expect("failed to parse");
-
-        // Assert
-        assert_eq!(status, Status::PullRequest);
-    }
-
-    #[test]
     fn test_status_from_str_canceled() {
         // Arrange & Act
         let status = "Canceled".parse::<Status>().expect("failed to parse");
@@ -1059,19 +1019,11 @@ mod tests {
         assert!(Status::InProgress.can_transition_to(Status::Rebasing));
         assert!(Status::Review.can_transition_to(Status::InProgress));
         assert!(Status::Review.can_transition_to(Status::Merging));
-        assert!(Status::Review.can_transition_to(Status::PullRequest));
-        assert!(Status::Review.can_transition_to(Status::CreatingPullRequest));
         assert!(Status::Review.can_transition_to(Status::Canceled));
-        assert!(Status::CreatingPullRequest.can_transition_to(Status::PullRequest));
-        assert!(Status::CreatingPullRequest.can_transition_to(Status::Review));
-        assert!(!Status::CreatingPullRequest.can_transition_to(Status::Canceled));
         assert!(Status::Merging.can_transition_to(Status::Done));
         assert!(Status::Merging.can_transition_to(Status::Review));
-        assert!(!Status::Merging.can_transition_to(Status::PullRequest));
         assert!(Status::InProgress.can_transition_to(Status::Review));
         assert!(!Status::InProgress.can_transition_to(Status::Canceled));
-        assert!(Status::PullRequest.can_transition_to(Status::Done));
-        assert!(Status::PullRequest.can_transition_to(Status::Canceled));
         assert!(!Status::New.can_transition_to(Status::Canceled));
         assert!(!Status::InProgress.can_transition_to(Status::Done));
         assert!(!Status::Done.can_transition_to(Status::InProgress));
@@ -1612,7 +1564,6 @@ mod tests {
 
         // Assert
         assert!(bindings.iter().any(|(key, _)| *key == "d"));
-        assert!(bindings.iter().any(|(key, _)| *key == "p"));
         assert!(bindings.iter().any(|(key, _)| *key == "r"));
     }
 

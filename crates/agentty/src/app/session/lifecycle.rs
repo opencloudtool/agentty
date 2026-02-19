@@ -12,7 +12,7 @@ use crate::agent::{AgentBackend, AgentKind, AgentModel};
 use crate::app::session::worker::SessionCommand;
 use crate::app::task::TaskService;
 use crate::app::title::TitleService;
-use crate::app::{AppEvent, AppServices, PrManager, ProjectManager, SessionManager};
+use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::git;
 use crate::model::{PermissionMode, SESSION_DATA_DIR, Session, Status};
 
@@ -448,7 +448,6 @@ impl SessionManager {
     pub async fn delete_selected_session(
         &mut self,
         projects: &ProjectManager,
-        prs: &PrManager,
         services: &AppServices,
     ) {
         let Some(index) = self.table_state.selected() else {
@@ -467,8 +466,6 @@ impl SessionManager {
             .await;
         self.clear_session_worker(&session.id);
         let _ = services.db().delete_session(&session.id).await;
-        prs.cancel_pr_polling_for_session(&session.id);
-        prs.clear_pr_creation_in_flight(&session.id);
 
         if projects.has_git_branch() {
             let branch_name = session_branch(&session.id);

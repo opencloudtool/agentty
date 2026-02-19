@@ -18,14 +18,12 @@ use crate::model::{
 };
 
 mod assist;
-mod pr;
 mod project;
 mod service;
 pub(crate) mod session;
 mod task;
 mod title;
 
-pub use pr::PrManager;
 pub use project::ProjectManager;
 pub use service::AppServices;
 pub use session::SessionManager;
@@ -63,10 +61,6 @@ pub(crate) enum AppEvent {
         permission_mode: PermissionMode,
         session_id: String,
     },
-    /// Indicates a PR creation task has finished for a session.
-    PrCreationCleared { session_id: String },
-    /// Indicates a PR polling task has stopped for a session.
-    PrPollingStopped { session_id: String },
     /// Requests a full session list refresh.
     RefreshSessions,
     /// Indicates that a session handle snapshot changed in-memory.
@@ -75,7 +69,6 @@ pub(crate) enum AppEvent {
 
 #[derive(Default)]
 struct AppEventBatch {
-    cleared_pr_creation_ids: HashSet<String>,
     cleared_session_history_ids: HashSet<String>,
     git_status_update: Option<(u32, u32)>,
     has_git_status_update: bool,
@@ -83,7 +76,6 @@ struct AppEventBatch {
     session_ids: HashSet<String>,
     session_permission_mode_updates: HashMap<String, PermissionMode>,
     should_force_reload: bool,
-    stopped_pr_poll_ids: HashSet<String>,
 }
 
 /// Holds all in-memory state related to session listing and refresh tracking.
@@ -163,7 +155,6 @@ pub struct App {
     pub current_tab: Tab,
     pub mode: AppMode,
     pub(crate) projects: ProjectManager,
-    pub(crate) prs: PrManager,
     pub(crate) services: AppServices,
     pub(crate) sessions: SessionManager,
     event_rx: mpsc::UnboundedReceiver<AppEvent>,
@@ -239,7 +230,6 @@ impl App {
                 sessions_updated_at_max,
             ),
         );
-        let prs = PrManager::new();
 
         if projects.has_git_branch() {
             task::TaskService::spawn_git_status_task(
@@ -249,20 +239,15 @@ impl App {
             );
         }
 
-        let app = Self {
+        Self {
             current_tab: Tab::Sessions,
             mode: AppMode::List,
             projects,
-            prs,
             services,
             sessions,
             event_rx,
             plan_followup_actions: HashMap::new(),
-        };
-
-        app.start_pr_polling_for_pull_request_sessions();
-
-        app
+        }
     }
 
     /// Returns the active project identifier.
@@ -466,7 +451,7 @@ impl App {
     /// Deletes the selected session and schedules list refresh.
     pub async fn delete_selected_session(&mut self) {
         self.sessions
-            .delete_selected_session(&self.projects, &self.prs, &self.services)
+            .delete_selected_session(&self.projects, &self.services)
             .await;
         self.process_pending_app_events().await;
     }
@@ -520,7 +505,7 @@ impl App {
     /// invalid.
     pub async fn merge_session(&self, session_id: &str) -> Result<(), String> {
         self.sessions
-            .merge_session(session_id, &self.projects, &self.prs, &self.services)
+            .merge_session(session_id, &self.projects, &self.services)
             .await
     }
 
@@ -534,34 +519,18 @@ impl App {
             .await
     }
 
-    /// Starts pull-request creation for a reviewed session.
-    ///
-    /// # Errors
-    /// Returns an error if session is not eligible.
-    pub async fn create_pr_session(&self, session_id: &str) -> Result<(), String> {
-        self.prs
-            .create_pr_session(&self.services, &self.sessions, session_id)
-            .await
-    }
-
     /// Reloads sessions when metadata cache indicates changes.
     pub async fn refresh_sessions_if_needed(&mut self) {
         self.sessions
-            .refresh_sessions_if_needed(&mut self.mode, &self.projects, &self.prs, &self.services)
+            .refresh_sessions_if_needed(&mut self.mode, &self.projects, &self.services)
             .await;
     }
 
     /// Forces immediate session list reload.
     pub(crate) async fn refresh_sessions_now(&mut self) {
         self.sessions
-            .refresh_sessions_now(&mut self.mode, &self.projects, &self.prs, &self.services)
+            .refresh_sessions_now(&mut self.mode, &self.projects, &self.services)
             .await;
-    }
-
-    /// Ensures PR polling tasks run for sessions currently in `PullRequest`.
-    pub(super) fn start_pr_polling_for_pull_request_sessions(&self) {
-        self.prs
-            .start_pr_polling_for_pull_request_sessions(&self.services, &self.sessions);
     }
 
     /// Applies one or more queued app events through a single reducer path.
@@ -632,18 +601,6 @@ impl App {
 
         if event_batch.has_git_status_update {
             self.projects.set_git_status(event_batch.git_status_update);
-        }
-
-        if let Ok(mut in_flight) = self.prs.pr_creation_in_flight().lock() {
-            for session_id in &event_batch.cleared_pr_creation_ids {
-                in_flight.remove(session_id);
-            }
-        }
-
-        if let Ok(mut polling) = self.prs.pr_poll_cancel().lock() {
-            for session_id in &event_batch.stopped_pr_poll_ids {
-                polling.remove(session_id);
-            }
         }
 
         for session_id in &event_batch.cleared_session_history_ids {
@@ -744,12 +701,6 @@ impl AppEventBatch {
             } => {
                 self.session_permission_mode_updates
                     .insert(session_id, permission_mode);
-            }
-            AppEvent::PrCreationCleared { session_id } => {
-                self.cleared_pr_creation_ids.insert(session_id);
-            }
-            AppEvent::PrPollingStopped { session_id } => {
-                self.stopped_pr_poll_ids.insert(session_id);
             }
             AppEvent::RefreshSessions => {
                 self.should_force_reload = true;
@@ -870,24 +821,6 @@ mod tests {
             event_batch.session_permission_mode_updates.get("session-4"),
             Some(&PermissionMode::Autonomous)
         );
-    }
-
-    #[test]
-    fn test_app_event_batch_collects_pr_updates() {
-        // Arrange
-        let mut event_batch = AppEventBatch::default();
-
-        // Act
-        event_batch.collect_event(AppEvent::PrCreationCleared {
-            session_id: "session-1".to_string(),
-        });
-        event_batch.collect_event(AppEvent::PrPollingStopped {
-            session_id: "session-2".to_string(),
-        });
-
-        // Assert
-        assert!(event_batch.cleared_pr_creation_ids.contains("session-1"));
-        assert!(event_batch.stopped_pr_poll_ids.contains("session-2"));
     }
 
     #[tokio::test]

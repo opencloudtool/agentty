@@ -1,9 +1,7 @@
 //! Merge, rebase, and cleanup workflows for session branches.
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +17,7 @@ use crate::app::assist::{
 };
 use crate::app::task::TaskService;
 use crate::app::title::TitleService;
-use crate::app::{AppEvent, AppServices, PrManager, ProjectManager, SessionManager};
+use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::db::Database;
 use crate::git;
 use crate::model::{PermissionMode, Status};
@@ -53,8 +51,6 @@ struct MergeTaskInput {
     folder: PathBuf,
     id: String,
     output: Arc<Mutex<String>>,
-    pr_creation_in_flight: Arc<Mutex<HashSet<String>>>,
-    pr_poll_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     repo_root: PathBuf,
     session_agent: AgentKind,
     session_model: String,
@@ -97,7 +93,6 @@ impl SessionManager {
         &self,
         session_id: &str,
         projects: &ProjectManager,
-        prs: &PrManager,
         services: &AppServices,
     ) -> Result<(), String> {
         let session = self
@@ -155,8 +150,6 @@ impl SessionManager {
             folder,
             id: id.clone(),
             output,
-            pr_creation_in_flight: prs.pr_creation_in_flight(),
-            pr_poll_cancel: prs.pr_poll_cancel(),
             repo_root,
             session_agent,
             session_model: session_model.as_str().to_string(),
@@ -178,8 +171,6 @@ impl SessionManager {
             folder,
             id,
             output,
-            pr_creation_in_flight,
-            pr_poll_cancel,
             repo_root,
             session_agent,
             session_model,
@@ -243,8 +234,6 @@ impl SessionManager {
                 return Err("Invalid status transition to Done".to_string());
             }
 
-            Self::cancel_pr_polling_state(&pr_poll_cancel, &id);
-            Self::clear_pr_creation_in_flight_state(&pr_creation_in_flight, &id);
             let summary_folder = repo_root.clone();
             Self::cleanup_merged_session_worktree(
                 folder.clone(),
@@ -434,29 +423,6 @@ impl SessionManager {
         }
 
         let _ = TaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
-    }
-
-    /// Updates the persisted terminal summary for a session.
-    pub(crate) async fn update_terminal_session_summary(
-        db: &Database,
-        session_id: &str,
-        folder: &Path,
-        base_branch: &str,
-        session_agent: AgentKind,
-        session_model: &str,
-        terminal_status: Status,
-    ) {
-        let diff = Self::session_diff_for_summary(folder, base_branch).await;
-        Self::update_terminal_session_summary_from_diff(
-            db,
-            session_id,
-            folder,
-            &diff,
-            session_agent,
-            session_model,
-            terminal_status,
-        )
-        .await;
     }
 
     /// Updates the persisted terminal summary using a precomputed diff.
@@ -745,26 +711,6 @@ impl SessionManager {
         let _ = tokio::task::spawn_blocking(move || git::abort_rebase(&folder)).await;
     }
 
-    fn cancel_pr_polling_state(
-        pr_poll_cancel: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-        id: &str,
-    ) {
-        if let Ok(mut polling) = pr_poll_cancel.lock()
-            && let Some(cancel) = polling.remove(id)
-        {
-            cancel.store(true, Ordering::Relaxed);
-        }
-    }
-
-    fn clear_pr_creation_in_flight_state(
-        pr_creation_in_flight: &Arc<Mutex<HashSet<String>>>,
-        id: &str,
-    ) {
-        if let Ok(mut in_flight) = pr_creation_in_flight.lock() {
-            in_flight.remove(id);
-        }
-    }
-
     fn generate_merge_commit_message_from_diff(
         folder: &Path,
         session_agent: AgentKind,
@@ -954,21 +900,6 @@ impl SessionManager {
             Ok(Err(error)) => Err(format!("Join error: {error}")),
             Err(_) => Err("Session summary model timed out".to_string()),
         }
-    }
-
-    pub(crate) async fn session_diff_for_summary(folder: &Path, base_branch: &str) -> String {
-        if !folder.is_dir() {
-            return String::new();
-        }
-
-        let folder = folder.to_path_buf();
-        let base_branch = base_branch.to_string();
-
-        tokio::task::spawn_blocking(move || git::diff(&folder, &base_branch))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default()
     }
 
     fn generate_terminal_summary_with_model(

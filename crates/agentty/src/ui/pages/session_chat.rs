@@ -268,11 +268,7 @@ impl<'a> SessionChatPage<'a> {
 
         if matches!(
             status,
-            Status::InProgress
-                | Status::Rebasing
-                | Status::Merging
-                | Status::PullRequest
-                | Status::CreatingPullRequest
+            Status::InProgress | Status::Rebasing | Status::Merging
         ) {
             while lines.last().is_some_and(|line| line.width() == 0) {
                 lines.pop();
@@ -377,8 +373,6 @@ impl<'a> SessionChatPage<'a> {
             Status::InProgress => "Thinking...",
             Status::Rebasing => "Rebasing...",
             Status::Merging => "Merging...",
-            Status::CreatingPullRequest => "Creating PR...",
-            Status::PullRequest => "Waiting for PR merge...",
             Status::New | Status::Review | Status::Done | Status::Canceled => "",
         }
     }
@@ -446,8 +440,8 @@ impl<'a> SessionChatPage<'a> {
 
         if plan_followup_action.is_some() {
             return if session.commit_count > 0 {
-                "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | p: pr | \
-                 m: merge | r: rebase | S-Tab: mode | j/k: scroll | ?: help"
+                "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | m: merge \
+                 | r: rebase | S-Tab: mode | j/k: scroll | ?: help"
             } else {
                 "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | S-Tab: \
                  mode | j/k: scroll | ?: help"
@@ -455,8 +449,8 @@ impl<'a> SessionChatPage<'a> {
         }
 
         if session.commit_count > 0 {
-            "q: back | enter: reply | o: open | d: diff | p: pr | m: merge | r: rebase | S-Tab: \
-             mode | j/k: scroll | ?: help"
+            "q: back | enter: reply | o: open | d: diff | m: merge | r: rebase | S-Tab: mode | \
+             j/k: scroll | ?: help"
         } else {
             "q: back | enter: reply | o: open | d: diff | S-Tab: mode | j/k: scroll | ?: help"
         }
@@ -932,7 +926,6 @@ mod tests {
         let help_text = SessionChatPage::view_help_text(&session, None);
 
         // Assert
-        assert!(!help_text.contains("p: pr"));
         assert!(!help_text.contains("m: merge"));
         assert!(!help_text.contains("r: rebase"));
     }
@@ -947,7 +940,6 @@ mod tests {
         let help_text = SessionChatPage::view_help_text(&session, None);
 
         // Assert
-        assert!(help_text.contains("p: pr"));
         assert!(help_text.contains("m: merge"));
         assert!(help_text.contains("r: rebase"));
     }
@@ -962,7 +954,6 @@ mod tests {
             SessionChatPage::view_help_text(&session, Some(PlanFollowupAction::ImplementPlan));
 
         // Assert
-        assert!(!help_text.contains("p: pr"));
         assert!(!help_text.contains("m: merge"));
         assert!(!help_text.contains("r: rebase"));
     }

@@ -107,9 +107,6 @@ pub(crate) async fn handle(
         KeyCode::Char('r') if !is_done && has_git_actions => {
             rebase_view_session(app, &view_context.session_id).await;
         }
-        KeyCode::Char('p') if !is_done && has_git_actions => {
-            create_pr_for_view_session(app, &view_context.session_id).await;
-        }
         KeyCode::BackTab => {
             let _ = app
                 .toggle_session_permission_mode(&view_context.session_id)
@@ -378,13 +375,6 @@ async fn rebase_view_session(app: &mut App, session_id: &str) {
 async fn stop_view_session(app: &mut App, session_id: &str) {
     if let Err(error) = app.stop_session(session_id).await {
         app.append_output_for_session(session_id, &format!("\n[Stop Error] {error}\n"))
-            .await;
-    }
-}
-
-async fn create_pr_for_view_session(app: &mut App, session_id: &str) {
-    if let Err(error) = app.create_pr_session(session_id).await {
-        app.append_output_for_session(session_id, &format!("\n[PR Error] {error}\n"))
             .await;
     }
 }
@@ -715,21 +705,6 @@ mod tests {
         app.sessions.sync_from_handles();
         let output = app.sessions.sessions[0].output.clone();
         assert!(output.contains("[Rebase Error]"));
-    }
-
-    #[tokio::test]
-    async fn test_create_pr_for_view_session_appends_error_output_without_review_status() {
-        // Arrange
-        let (app, _base_dir, session_id) = new_test_app_with_session().await;
-        let mut app = app;
-
-        // Act
-        create_pr_for_view_session(&mut app, &session_id).await;
-
-        // Assert
-        app.sessions.sync_from_handles();
-        let output = app.sessions.sessions[0].output.clone();
-        assert!(output.contains("[PR Error]"));
     }
 
     #[tokio::test]

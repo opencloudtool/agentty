@@ -145,8 +145,6 @@ fn status_column_width() -> Constraint {
             Status::InProgress,
             Status::Review,
             Status::Merging,
-            Status::CreatingPullRequest,
-            Status::PullRequest,
             Status::Done,
             Status::Canceled,
         ]
@@ -237,8 +235,7 @@ mod tests {
     #[test]
     fn test_status_column_width_uses_longest_possible_status_label() {
         // Arrange
-        let expected_width =
-            u16::try_from("CreatingPullRequest".chars().count()).unwrap_or(u16::MAX);
+        let expected_width = u16::try_from("InProgress".chars().count()).unwrap_or(u16::MAX);
 
         // Act
         let width = status_column_width();

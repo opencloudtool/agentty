@@ -156,7 +156,6 @@ mod tests {
 
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
-    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
     use tempfile::tempdir;
@@ -1912,63 +1911,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_pr_session_no_git() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app(dir.path().to_path_buf()).await;
-        add_manual_session(&mut app, dir.path(), "manual01", "Test");
-
-        // Act
-        let result = app.create_pr_session("manual01").await;
-
-        // Assert
-        assert!(result.is_err());
-        assert!(
-            result
-                .expect_err("should be error")
-                .contains("No git worktree")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_create_pr_session_requires_review_status() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app(dir.path().to_path_buf()).await;
-        add_manual_session(&mut app, dir.path(), "manual01", "Test");
-        app.sessions.sessions[0].status = Status::Done;
-
-        // Act
-        let result = app.create_pr_session("manual01").await;
-
-        // Assert
-        assert!(result.is_err());
-        assert!(
-            result
-                .expect_err("should be error")
-                .contains("must be in review")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_create_pr_session_invalid_id() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let app = new_test_app(dir.path().to_path_buf()).await;
-
-        // Act
-        let result = app.create_pr_session("missing").await;
-
-        // Assert
-        assert!(result.is_err());
-        assert!(
-            result
-                .expect_err("should be error")
-                .contains("Session not found")
-        );
-    }
-
-    #[tokio::test]
     async fn test_cancel_session() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
@@ -2136,32 +2078,6 @@ mod tests {
         assert_eq!(app.working_dir(), Path::new("/tmp/other"));
         assert_eq!(app.git_branch(), Some("develop"));
         assert!(app.sessions.sessions.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_switch_project_keeps_existing_pr_polling_sessions() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app(dir.path().to_path_buf()).await;
-        let other_id = app
-            .services
-            .db()
-            .upsert_project("/tmp/other", None)
-            .await
-            .expect("failed to upsert");
-        if let Ok(mut polling) = app.prs.pr_poll_cancel().lock() {
-            polling.insert("manual01".to_string(), Arc::new(AtomicBool::new(false)));
-        }
-
-        // Act
-        app.switch_project(other_id)
-            .await
-            .expect("failed to switch");
-
-        // Assert
-        let polling_state = app.prs.pr_poll_cancel();
-        let polling = polling_state.lock().expect("failed to lock polling");
-        assert!(polling.contains_key("manual01"));
     }
 
     #[tokio::test]

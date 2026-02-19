@@ -11,7 +11,6 @@ Application-layer workflows and orchestration.
   - `App` is a facade/orchestrator.
   - `SessionManager` owns session snapshots, runtime handles, and session worker queues.
   - `ProjectManager` owns project list, active project context, and git status tracking state.
-  - `PrManager` owns PR in-flight/polling runtime state.
   - `AppServices` holds shared dependencies (`Database`, base path, app-event sender).
 - Session state model:
   - `Session` is a render-friendly data snapshot.
@@ -24,7 +23,7 @@ Application-layer workflows and orchestration.
   - Foreground `App` wrappers process queued events to keep reducer-driven state coherent.
 - Execution model:
   - Work is serialized per session through worker queues.
-  - PR and merge workflows run in background tasks and report progress through events and persisted status/output.
+  - Merge workflows run in background tasks and report progress through events and persisted status/output.
 - Refresh model:
   - List reloads are event-driven (`RefreshSessions`) at lifecycle boundaries.
   - A low-frequency metadata poll remains as a safety fallback.
@@ -34,7 +33,6 @@ Application-layer workflows and orchestration.
 ## Directory Index
 - [assist.rs](assist.rs) - Shared assistance helpers for commit/rebase recovery loops.
 - [mod.rs](mod.rs) - Shared app state and module wiring.
-- [pr.rs](pr.rs) - Pull request workflow orchestration.
 - [project.rs](project.rs) - Project discovery and switching logic.
 - [session/](session/) - Session workflows and their local docs/index.
 - [service.rs](service.rs) - Shared app dependency container (`Database`, base path, app event sender).

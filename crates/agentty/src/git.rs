@@ -2,8 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::gh;
-
 const COMMIT_ALL_HOOK_RETRY_ATTEMPTS: usize = 5;
 
 /// Result of attempting a rebase step.
@@ -852,72 +850,6 @@ fn is_rebase_conflict(detail: &str) -> bool {
         || detail.contains("Resolve all conflicts manually")
         || detail.contains("could not apply")
         || detail.contains("mark them as resolved")
-}
-
-/// Pushes the source branch to origin and creates a Pull Request via GitHub
-/// CLI.
-///
-/// # Arguments
-/// * `repo_path` - Path to the git repository root
-/// * `source_branch` - Name of the branch to push and create PR from
-/// * `target_branch` - Name of the base branch for the PR
-/// * `title` - Title for the Pull Request
-///
-/// # Returns
-/// Ok(url) on success, Err(msg) with detailed error message on failure
-///
-/// # Errors
-/// Returns an error if branch push or PR creation fails.
-pub fn create_pr(
-    repo_path: &Path,
-    source_branch: &str,
-    target_branch: &str,
-    title: &str,
-) -> Result<String, String> {
-    // 1. Push source branch to origin
-    let output = Command::new("git")
-        .args(["push", "-u", "origin", source_branch])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|e| format!("Failed to execute git push: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Git push failed: {}", stderr.trim()));
-    }
-
-    gh::create_pull_request(repo_path, source_branch, target_branch, title)
-}
-
-/// Returns whether the PR for `source_branch` has been merged.
-///
-/// # Arguments
-/// * `repo_path` - Path to a git repository or worktree
-/// * `source_branch` - Branch used to create the PR (e.g., `agentty/abc123`)
-///
-/// # Returns
-/// Ok(true) when merged, Ok(false) when still open, Err(msg) on failure
-///
-/// # Errors
-/// Returns an error if `gh pr view` fails or returns an unexpected value.
-pub fn is_pr_merged(repo_path: &Path, source_branch: &str) -> Result<bool, String> {
-    gh::is_pull_request_merged(repo_path, source_branch)
-}
-
-/// Returns whether the PR for `source_branch` has been closed without merge.
-///
-/// # Arguments
-/// * `repo_path` - Path to a git repository or worktree
-/// * `source_branch` - Branch used to create the PR (e.g., `agentty/abc123`)
-///
-/// # Returns
-/// Ok(true) when closed, Ok(false) when still open or merged, Err(msg) on
-/// failure.
-///
-/// # Errors
-/// Returns an error if `gh pr view` fails or returns an unexpected value.
-pub fn is_pr_closed(repo_path: &Path, source_branch: &str) -> Result<bool, String> {
-    gh::is_pull_request_closed(repo_path, source_branch)
 }
 
 #[cfg(test)]
@@ -2208,73 +2140,12 @@ exit 1
     }
 
     #[test]
-    fn test_create_pr_push_fails_no_remote() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path()).expect("test setup failed");
-
-        // Create a feature branch
-        Command::new("git")
-            .args(["checkout", "-b", "agentty/test123"])
-            .current_dir(dir.path())
-            .output()
-            .expect("test setup failed");
-
-        // Act — push should fail because there is no remote
-        let result = create_pr(dir.path(), "agentty/test123", "main", "Test PR");
-
-        // Assert
-        assert!(result.is_err());
-        let error = result.expect_err("should be error");
-        assert!(
-            error.contains("Git push failed"),
-            "Expected 'Git push failed', got: {error}"
-        );
-    }
-
-    #[test]
-    fn test_create_pr_invalid_repo() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-
-        // Act — no git repo at all
-        let result = create_pr(dir.path(), "some-branch", "main", "Test PR");
-
-        // Assert
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_repo_url_invalid_repo() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
 
         // Act
         let result = repo_url(dir.path());
-
-        // Assert
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_is_pr_merged_invalid_repo() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-
-        // Act
-        let result = is_pr_merged(dir.path(), "agentty/test123");
-
-        // Assert
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_is_pr_closed_invalid_repo() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-
-        // Act
-        let result = is_pr_closed(dir.path(), "agentty/test123");
 
         // Assert
         assert!(result.is_err());
