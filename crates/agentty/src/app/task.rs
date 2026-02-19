@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use tokio::sync::mpsc;
 
-use crate::agent::AgentKind;
+use crate::agent::{AgentKind, AgentModel};
 use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, effective_permission_mode,
     format_detail_lines, run_agent_assist,
@@ -32,7 +32,6 @@ pub(super) struct TaskService;
 
 /// Inputs needed to execute one session command.
 pub(super) struct RunSessionTaskInput {
-    pub(super) agent: AgentKind,
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     pub(super) child_pid: Arc<Mutex<Option<u32>>>,
     pub(super) cmd: Command,
@@ -41,7 +40,7 @@ pub(super) struct RunSessionTaskInput {
     pub(super) id: String,
     pub(super) output: Arc<Mutex<String>>,
     pub(super) permission_mode: PermissionMode,
-    pub(super) session_model: String,
+    pub(super) session_model: AgentModel,
     pub(super) status: Arc<Mutex<Status>>,
 }
 
@@ -121,7 +120,6 @@ impl TaskService {
     /// Returns an error when process spawning fails.
     pub(super) async fn run_session_task(input: RunSessionTaskInput) -> Result<(), String> {
         let RunSessionTaskInput {
-            agent,
             app_event_tx,
             child_pid,
             cmd,
@@ -133,6 +131,7 @@ impl TaskService {
             session_model,
             status,
         } = input;
+        let agent = session_model.kind();
 
         let mut tokio_cmd = tokio::process::Command::from(cmd);
         // Prevent the child process from inheriting the TUI's terminal on
@@ -185,7 +184,6 @@ impl TaskService {
 
                     let _ = db.update_session_stats(&id, &parsed.stats).await;
                     Self::handle_auto_commit(AssistContext {
-                        agent,
                         app_event_tx: app_event_tx.clone(),
                         db: db.clone(),
                         folder,
@@ -325,14 +323,13 @@ impl TaskService {
         let effective_permission_mode =
             Self::auto_commit_assist_permission_mode(context.permission_mode);
         let assist_context = AssistContext {
-            agent: context.agent,
             app_event_tx: context.app_event_tx.clone(),
             db: context.db.clone(),
             folder: context.folder.clone(),
             id: context.id.clone(),
             output: Arc::clone(&context.output),
             permission_mode: effective_permission_mode,
-            session_model: context.session_model.clone(),
+            session_model: context.session_model,
         };
 
         run_agent_assist(&assist_context, &prompt)
@@ -708,7 +705,6 @@ mod tests {
         database
             .insert_session(
                 "session-id",
-                "claude",
                 "claude-sonnet-4-20250514",
                 "main",
                 "Review",
@@ -764,14 +760,7 @@ mod tests {
             .await
             .expect("failed to upsert project");
         database
-            .insert_session(
-                "session-id",
-                "codex",
-                "gpt-5.3-codex",
-                "main",
-                "Review",
-                project_id,
-            )
+            .insert_session("session-id", "gpt-5.3-codex", "main", "Review", project_id)
             .await
             .expect("failed to insert session");
 
@@ -834,7 +823,6 @@ mod tests {
         database
             .insert_session(
                 "session-id",
-                "claude",
                 "claude-sonnet-4-20250514",
                 "main",
                 "Review",

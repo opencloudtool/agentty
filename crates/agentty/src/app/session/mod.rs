@@ -9,7 +9,7 @@ use std::time::Duration;
 use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
-use crate::agent::{AgentKind, AgentModel};
+use crate::agent::AgentModel;
 use crate::app::SessionState;
 use crate::model::{PermissionMode, Session, Status};
 
@@ -27,7 +27,6 @@ pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
 
 /// Session domain state and worker orchestration state.
 pub struct SessionManager {
-    default_session_agent: AgentKind,
     default_session_model: AgentModel,
     default_session_permission_mode: PermissionMode,
     state: SessionState,
@@ -37,13 +36,11 @@ pub struct SessionManager {
 impl SessionManager {
     /// Creates a session manager from persisted snapshot state and defaults.
     pub fn new(
-        default_session_agent: AgentKind,
         default_session_model: AgentModel,
         default_session_permission_mode: PermissionMode,
         state: SessionState,
     ) -> Self {
         Self {
-            default_session_agent,
             default_session_model,
             default_session_permission_mode,
             state,
@@ -84,10 +81,9 @@ impl SessionManager {
 
     /// Applies reducer updates after session agent/model changes are
     /// persisted.
-    pub(crate) fn apply_session_agent_model_updated(
+    pub(crate) fn apply_session_model_updated(
         &mut self,
         session_id: &str,
-        session_agent: AgentKind,
         session_model: AgentModel,
     ) {
         if let Some(session) = self
@@ -96,11 +92,9 @@ impl SessionManager {
             .iter_mut()
             .find(|session| session.id == session_id)
         {
-            session.agent = session_agent.to_string();
-            session.model = session_model.as_str().to_string();
+            session.model = session_model;
         }
 
-        self.default_session_agent = session_agent;
         self.default_session_model = session_model;
     }
 
@@ -249,12 +243,11 @@ mod tests {
             SessionHandles::new(String::new(), Status::Review),
         );
         app.sessions.sessions.push(Session {
-            agent: "gemini".to_string(),
             base_branch: "main".to_string(),
             commit_count: 0,
             folder,
             id: id.to_string(),
-            model: "gemini-3-flash-preview".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             permission_mode: PermissionMode::default(),
             project_name: String::new(),
@@ -284,7 +277,7 @@ mod tests {
                 &session_id,
                 prompt,
                 &start_backend,
-                "gemini-3-flash-preview",
+                AgentModel::Gemini3FlashPreview,
             )
             .await;
     }
@@ -497,10 +490,9 @@ mod tests {
         assert_eq!(app.sessions.sessions[0].display_title(), "No title");
         assert_eq!(app.sessions.sessions[0].status, Status::New);
         assert_eq!(app.sessions.table_state.selected(), Some(0));
-        assert_eq!(app.sessions.sessions[0].agent, "gemini");
         assert_eq!(
             app.sessions.sessions[0].model,
-            AgentKind::Gemini.default_model().as_str()
+            AgentKind::Gemini.default_model()
         );
         assert_eq!(
             app.sessions.sessions[0].permission_mode,
@@ -521,7 +513,6 @@ mod tests {
             .await
             .expect("failed to load");
         assert_eq!(db_sessions.len(), 1);
-        assert_eq!(db_sessions[0].agent, "gemini");
         assert_eq!(db_sessions[0].base_branch, "main");
         assert_eq!(
             db_sessions[0].model,
@@ -543,13 +534,9 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create first session");
-        app.set_session_agent_and_model(
-            &first_session_id,
-            AgentKind::Codex,
-            AgentModel::Gpt52Codex,
-        )
-        .await
-        .expect("failed to set session agent/model");
+        app.set_session_model(&first_session_id, AgentModel::Gpt52Codex)
+            .await
+            .expect("failed to set session model");
         app.toggle_session_permission_mode(&first_session_id)
             .await
             .expect("failed to toggle permission mode");
@@ -567,8 +554,7 @@ mod tests {
             .iter()
             .find(|session| session.id == second_session_id)
             .expect("missing second session");
-        assert_eq!(second_session.agent, "codex");
-        assert_eq!(second_session.model, "gpt-5.2-codex");
+        assert_eq!(second_session.model, AgentModel::Gpt52Codex);
         assert_eq!(second_session.permission_mode, PermissionMode::Autonomous);
 
         let db_sessions = app
@@ -581,7 +567,6 @@ mod tests {
             .iter()
             .find(|session| session.id == second_session_id)
             .expect("missing second session in db");
-        assert_eq!(db_second_session.agent, "codex");
         assert_eq!(db_second_session.model, "gpt-5.2-codex");
         assert_eq!(
             db_second_session.permission_mode,
@@ -756,16 +741,9 @@ mod tests {
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session(
-            "12345678",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("12345678", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
 
         let session_dir = dir.path().join("12345678");
         let data_dir = session_dir.join(SESSION_DATA_DIR);
@@ -793,7 +771,6 @@ mod tests {
         assert_eq!(app.sessions.sessions[0].prompt, "Existing");
         let output = app.sessions.sessions[0].output.clone();
         assert_eq!(output, "Output");
-        assert_eq!(app.sessions.sessions[0].agent, "claude");
         assert_eq!(app.sessions.table_state.selected(), Some(0));
     }
 
@@ -811,7 +788,6 @@ mod tests {
             .expect("failed to upsert project");
         db.insert_session(
             "alpha0001",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "Done",
@@ -821,7 +797,6 @@ mod tests {
         .expect("failed to insert alpha0001");
         db.insert_session(
             "beta00002",
-            "claude",
             AgentModel::ClaudeHaiku4520251001.as_str(),
             "main",
             "Done",
@@ -882,11 +857,7 @@ mod tests {
             .iter()
             .find(|session| session.id == created_session_id)
             .expect("missing created session");
-        assert_eq!(created_session.agent, "claude");
-        assert_eq!(
-            created_session.model,
-            AgentModel::ClaudeHaiku4520251001.as_str()
-        );
+        assert_eq!(created_session.model, AgentModel::ClaudeHaiku4520251001);
         assert_eq!(created_session.permission_mode, PermissionMode::Autonomous);
     }
 
@@ -901,19 +872,11 @@ mod tests {
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session(
-            "alpha000",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert alpha000");
+        db.insert_session("alpha000", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert alpha000");
         db.insert_session(
             "beta0000",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "Done",
@@ -985,7 +948,6 @@ mod tests {
             .expect("failed to upsert project");
         db.insert_session(
             "alpha000",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "InProgress",
@@ -993,16 +955,9 @@ mod tests {
         )
         .await
         .expect("failed to insert alpha000");
-        db.insert_session(
-            "beta0000",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert beta0000");
+        db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert beta0000");
         sqlx::query(
             r"
     UPDATE session
@@ -1068,7 +1023,6 @@ mod tests {
             .expect("failed to upsert project");
         db.insert_session(
             "alpha000",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "InProgress",
@@ -1076,16 +1030,9 @@ mod tests {
         )
         .await
         .expect("failed to insert alpha000");
-        db.insert_session(
-            "beta0000",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert beta0000");
+        db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert beta0000");
         sqlx::query(
             r"
     UPDATE session
@@ -1165,7 +1112,6 @@ mod tests {
             .expect("failed to upsert project");
         db.insert_session(
             "missing01",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "Done",
@@ -1202,7 +1148,6 @@ mod tests {
             .expect("failed to upsert project");
         db.insert_session(
             "missing02",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "InProgress",
@@ -1365,7 +1310,7 @@ mod tests {
                 &session_id,
                 "SpawnInit",
                 &mock,
-                "gemini-3-flash-preview",
+                AgentModel::Gemini3FlashPreview,
             )
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -1405,7 +1350,7 @@ mod tests {
                 &session_id,
                 "SpawnReply",
                 &resume_mock,
-                "gemini-3-flash-preview",
+                AgentModel::Gemini3FlashPreview,
             )
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -1461,7 +1406,7 @@ mod tests {
                 &session_id,
                 "AutoCommit",
                 &mock,
-                "gemini-3-flash-preview",
+                AgentModel::Gemini3FlashPreview,
             )
             .await;
 
@@ -1516,7 +1461,7 @@ mod tests {
                 &session_id,
                 "NoChanges",
                 &mock,
-                "gemini-3-flash-preview",
+                AgentModel::Gemini3FlashPreview,
             )
             .await;
 
@@ -2410,11 +2355,7 @@ mod tests {
         wait_for_status(&mut app, &session_id, Status::Review).await;
         let session_id = app.sessions.sessions[0].id.clone();
         let _ = app
-            .set_session_agent_and_model(
-                &session_id,
-                AgentKind::Claude,
-                AgentKind::Claude.default_model(),
-            )
+            .set_session_model(&session_id, AgentKind::Claude.default_model())
             .await;
 
         // Act
@@ -2424,8 +2365,7 @@ mod tests {
 
         // Assert
         let session = &app.sessions.sessions[0];
-        assert_eq!(session.agent, "claude");
-        assert_eq!(session.model, AgentKind::Claude.default_model().as_str());
+        assert_eq!(session.model, AgentKind::Claude.default_model());
     }
 
     #[tokio::test]

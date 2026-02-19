@@ -10,13 +10,12 @@ use tokio::sync::mpsc;
 
 use super::access::{SESSION_HANDLES_NOT_FOUND_ERROR, SESSION_NOT_FOUND_ERROR};
 use super::{COMMIT_MESSAGE, session_branch};
-use crate::agent::AgentKind;
+use crate::agent::AgentModel;
 use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, effective_permission_mode,
     format_detail_lines, run_agent_assist,
 };
 use crate::app::task::TaskService;
-use crate::app::title::TitleService;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::db::Database;
 use crate::git;
@@ -52,8 +51,7 @@ struct MergeTaskInput {
     id: String,
     output: Arc<Mutex<String>>,
     repo_root: PathBuf,
-    session_agent: AgentKind,
-    session_model: String,
+    session_model: AgentModel,
     source_branch: String,
     status: Arc<Mutex<Status>>,
 }
@@ -66,8 +64,7 @@ struct RebaseAssistInput {
     id: String,
     output: Arc<Mutex<String>>,
     permission_mode: PermissionMode,
-    session_agent: AgentKind,
-    session_model: String,
+    session_model: AgentModel,
 }
 
 struct RebaseTaskInput {
@@ -78,8 +75,7 @@ struct RebaseTaskInput {
     id: String,
     output: Arc<Mutex<String>>,
     permission_mode: PermissionMode,
-    session_agent: AgentKind,
-    session_model: String,
+    session_model: AgentModel,
     status: Arc<Mutex<Status>>,
 }
 
@@ -105,7 +101,7 @@ impl SessionManager {
         let db = services.db().clone();
         let folder = session.folder.clone();
         let id = session.id.clone();
-        let (session_agent, session_model) = TitleService::resolve_session_agent_and_model(session);
+        let session_model = session.model;
         let app_event_tx = services.event_sender();
 
         let handles = self
@@ -151,8 +147,7 @@ impl SessionManager {
             id: id.clone(),
             output,
             repo_root,
-            session_agent,
-            session_model: session_model.as_str().to_string(),
+            session_model,
             source_branch: session_branch(&id),
             status,
         };
@@ -172,7 +167,6 @@ impl SessionManager {
             id,
             output,
             repo_root,
-            session_agent,
             session_model,
             source_branch,
             status,
@@ -196,14 +190,12 @@ impl SessionManager {
                 Self::fallback_merge_commit_message(&source_branch, &base_branch);
             let commit_message = {
                 let folder = folder.clone();
-                let session_model = session_model.clone();
                 let squash_diff = squash_diff.clone();
                 let fallback_commit_message_for_task = fallback_commit_message.clone();
                 let generate_message = tokio::task::spawn_blocking(move || {
                     Self::generate_merge_commit_message_from_diff(
                         &folder,
-                        session_agent,
-                        &session_model,
+                        session_model,
                         &squash_diff,
                     )
                     .unwrap_or(fallback_commit_message_for_task)
@@ -250,8 +242,7 @@ impl SessionManager {
                 &id,
                 &summary_folder,
                 &summary_diff,
-                session_agent,
-                &session_model,
+                session_model,
                 Status::Done,
             )
             .await;
@@ -329,7 +320,7 @@ impl SessionManager {
 
         let id = session.id.clone();
         let permission_mode = session.permission_mode;
-        let (session_agent, session_model) = TitleService::resolve_session_agent_and_model(session);
+        let session_model = session.model;
 
         let rebase_task_input = RebaseTaskInput {
             app_event_tx,
@@ -339,8 +330,7 @@ impl SessionManager {
             id,
             output,
             permission_mode,
-            session_agent,
-            session_model: session_model.as_str().to_string(),
+            session_model,
             status,
         };
         tokio::spawn(async move {
@@ -359,7 +349,6 @@ impl SessionManager {
             id,
             output,
             permission_mode,
-            session_agent,
             session_model,
             status,
         } = input;
@@ -383,8 +372,7 @@ impl SessionManager {
                 id: id.clone(),
                 output: Arc::clone(&output),
                 permission_mode,
-                session_agent,
-                session_model: session_model.clone(),
+                session_model,
             };
             if let Err(error) = Self::run_rebase_assist_loop(rebase_input).await {
                 return Err(format!("Failed to rebase: {error}"));
@@ -431,14 +419,12 @@ impl SessionManager {
         session_id: &str,
         summary_folder: &Path,
         diff: &str,
-        session_agent: AgentKind,
-        session_model: &str,
+        session_model: AgentModel,
         terminal_status: Status,
     ) {
         let summary = Self::build_terminal_session_summary_from_diff(
             summary_folder,
             diff,
-            session_agent,
             session_model,
             terminal_status,
         )
@@ -694,14 +680,13 @@ impl SessionManager {
 
     fn assist_context(input: &RebaseAssistInput) -> AssistContext {
         AssistContext {
-            agent: input.session_agent,
             app_event_tx: input.app_event_tx.clone(),
             db: input.db.clone(),
             folder: input.folder.clone(),
             id: input.id.clone(),
             output: Arc::clone(&input.output),
             permission_mode: input.permission_mode,
-            session_model: input.session_model.clone(),
+            session_model: input.session_model,
         }
     }
 
@@ -713,18 +698,12 @@ impl SessionManager {
 
     fn generate_merge_commit_message_from_diff(
         folder: &Path,
-        session_agent: AgentKind,
-        session_model: &str,
+        session_model: AgentModel,
         diff: &str,
     ) -> Option<String> {
         let prompt = Self::merge_commit_message_prompt(diff);
-        let model_response = Self::generate_merge_commit_message_with_model(
-            folder,
-            session_agent,
-            session_model,
-            &prompt,
-        )
-        .ok()?;
+        let model_response =
+            Self::generate_merge_commit_message_with_model(folder, session_model, &prompt).ok()?;
         let parsed_response = Self::parse_merge_commit_message_response(&model_response)?;
         let message = if parsed_response.description.is_empty() {
             parsed_response.title
@@ -740,13 +719,16 @@ impl SessionManager {
 
     fn generate_merge_commit_message_with_model(
         folder: &Path,
-        agent: AgentKind,
-        model: &str,
+        session_model: AgentModel,
         prompt: &str,
     ) -> Result<String, String> {
-        let backend = agent.create_backend();
-        let mut command =
-            backend.build_start_command(folder, prompt, model, PermissionMode::AutoEdit);
+        let backend = session_model.kind().create_backend();
+        let mut command = backend.build_start_command(
+            folder,
+            prompt,
+            session_model.as_str(),
+            PermissionMode::AutoEdit,
+        );
         command.stdin(Stdio::null());
         let output = command
             .output()
@@ -754,7 +736,10 @@ impl SessionManager {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let parsed = agent.parse_response(&stdout, &stderr, PermissionMode::AutoEdit);
+        let parsed =
+            session_model
+                .kind()
+                .parse_response(&stdout, &stderr, PermissionMode::AutoEdit);
         let content = parsed.content.trim().to_string();
 
         if content.is_empty() {
@@ -864,8 +849,7 @@ impl SessionManager {
     async fn build_terminal_session_summary_from_diff(
         summary_folder: &Path,
         diff: &str,
-        session_agent: AgentKind,
-        session_model: &str,
+        session_model: AgentModel,
         terminal_status: Status,
     ) -> Result<String, String> {
         if !summary_folder.is_dir() {
@@ -883,15 +867,9 @@ impl SessionManager {
         let prompt = Self::terminal_summary_prompt(terminal_status, diff);
         let model_task = {
             let summary_folder = summary_folder.to_path_buf();
-            let session_model = session_model.to_string();
 
             tokio::task::spawn_blocking(move || {
-                Self::generate_terminal_summary_with_model(
-                    &summary_folder,
-                    session_agent,
-                    &session_model,
-                    &prompt,
-                )
+                Self::generate_terminal_summary_with_model(&summary_folder, session_model, &prompt)
             })
         };
 
@@ -904,13 +882,16 @@ impl SessionManager {
 
     fn generate_terminal_summary_with_model(
         folder: &Path,
-        agent: AgentKind,
-        model: &str,
+        session_model: AgentModel,
         prompt: &str,
     ) -> Result<String, String> {
-        let backend = agent.create_backend();
-        let mut command =
-            backend.build_start_command(folder, prompt, model, PermissionMode::AutoEdit);
+        let backend = session_model.kind().create_backend();
+        let mut command = backend.build_start_command(
+            folder,
+            prompt,
+            session_model.as_str(),
+            PermissionMode::AutoEdit,
+        );
         command.stdin(Stdio::null());
         let output = command
             .output()
@@ -918,7 +899,10 @@ impl SessionManager {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let parsed = agent.parse_response(&stdout, &stderr, PermissionMode::AutoEdit);
+        let parsed =
+            session_model
+                .kind()
+                .parse_response(&stdout, &stderr, PermissionMode::AutoEdit);
         let content = parsed.content.trim().to_string();
 
         if content.is_empty() {

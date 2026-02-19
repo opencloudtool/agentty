@@ -398,8 +398,7 @@ async fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContex
                 .sessions
                 .sessions
                 .get(prompt_context.session_index)
-                .and_then(|session| session.agent.parse::<AgentKind>().ok())
-                .unwrap_or(AgentKind::Gemini);
+                .map_or(AgentKind::Gemini, |session| session.model.kind());
             let selected_agent = selected_agent.unwrap_or(fallback_agent);
             let Some(selected_model) = selected_agent.models().get(selected_index).copied() else {
                 return;
@@ -414,11 +413,7 @@ async fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContex
             }
 
             let _ = app
-                .set_session_agent_and_model(
-                    &prompt_context.session_id,
-                    selected_agent,
-                    selected_model,
-                )
+                .set_session_model(&prompt_context.session_id, selected_model)
                 .await;
         }
     }

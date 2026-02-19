@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::session_folder;
-use crate::agent::AgentKind;
+use crate::agent::{AgentKind, AgentModel};
 use crate::app::SessionManager;
 use crate::db::Database;
 use crate::git;
@@ -42,12 +42,10 @@ impl SessionManager {
                 continue;
             }
 
-            let session_agent = row.agent.parse::<AgentKind>().unwrap_or(AgentKind::Gemini);
-            let session_model = session_agent
-                .parse_model(&row.model)
-                .unwrap_or_else(|| session_agent.default_model())
-                .as_str()
-                .to_string();
+            let session_model = row
+                .model
+                .parse::<AgentModel>()
+                .unwrap_or_else(|_| AgentKind::Gemini.default_model());
             let project_name = row
                 .project_id
                 .and_then(|id| project_names.get(&id))
@@ -82,7 +80,6 @@ impl SessionManager {
                 Self::session_commit_count_for_folder(&folder, &row.base_branch).await;
 
             sessions.push(Session {
-                agent: row.agent,
                 base_branch: row.base_branch,
                 commit_count,
                 folder,

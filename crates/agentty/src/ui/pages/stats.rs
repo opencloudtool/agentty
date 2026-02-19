@@ -43,7 +43,7 @@ impl Page for StatsPage<'_> {
             let cells = vec![
                 Cell::from(session.display_title().to_string()),
                 Cell::from(session.project_name.clone()),
-                Cell::from(session.model.clone()),
+                Cell::from(session.model.as_str()),
                 Cell::from(format_optional_tokens(session.stats.input_tokens)),
                 Cell::from(format_optional_tokens(session.stats.output_tokens)),
             ];

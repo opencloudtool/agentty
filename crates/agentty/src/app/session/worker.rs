@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::agent::AgentKind;
+use crate::agent::AgentModel;
 use crate::app::task::{RunSessionTaskInput, TaskService};
 use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::db::Database;
@@ -19,18 +19,16 @@ const CANCEL_BEFORE_EXECUTION_REASON: &str = "Session canceled before execution"
 /// Command variants serialized per session worker.
 pub(super) enum SessionCommand {
     Reply {
-        agent: AgentKind,
         command: Command,
         operation_id: String,
         permission_mode: PermissionMode,
-        session_model: String,
+        session_model: AgentModel,
     },
     StartPrompt {
-        agent: AgentKind,
         command: Command,
         operation_id: String,
         permission_mode: PermissionMode,
-        session_model: String,
+        session_model: AgentModel,
     },
 }
 
@@ -171,14 +169,12 @@ impl SessionManager {
 
                 let result = match command {
                     SessionCommand::StartPrompt {
-                        agent,
                         command,
                         permission_mode,
                         session_model,
                         ..
                     } => {
                         TaskService::run_session_task(RunSessionTaskInput {
-                            agent,
                             app_event_tx: context.app_event_tx.clone(),
                             child_pid: Arc::clone(&context.child_pid),
                             cmd: command,
@@ -193,7 +189,6 @@ impl SessionManager {
                         .await
                     }
                     SessionCommand::Reply {
-                        agent,
                         command,
                         permission_mode,
                         session_model,
@@ -209,7 +204,6 @@ impl SessionManager {
                         .await;
 
                         TaskService::run_session_task(RunSessionTaskInput {
-                            agent,
                             app_event_tx: context.app_event_tx.clone(),
                             child_pid: Arc::clone(&context.child_pid),
                             cmd: command,
@@ -282,18 +276,16 @@ mod tests {
     fn test_session_command_kind_values() {
         // Arrange
         let reply_command = SessionCommand::Reply {
-            agent: AgentKind::Gemini,
             command: Command::new("echo"),
             operation_id: "a".to_string(),
             permission_mode: PermissionMode::AutoEdit,
-            session_model: "gemini-3-flash-preview".to_string(),
+            session_model: AgentModel::Gemini3FlashPreview,
         };
         let start_prompt_command = SessionCommand::StartPrompt {
-            agent: AgentKind::Gemini,
             command: Command::new("echo"),
             operation_id: "b".to_string(),
             permission_mode: PermissionMode::AutoEdit,
-            session_model: "gemini-3-flash-preview".to_string(),
+            session_model: AgentModel::Gemini3FlashPreview,
         };
 
         // Act
@@ -315,7 +307,6 @@ mod tests {
             .expect("failed to upsert project");
         db.insert_session(
             "sess1",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "InProgress",
@@ -352,7 +343,6 @@ mod tests {
             .expect("failed to upsert");
         db.insert_session(
             "sess1",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "InProgress",

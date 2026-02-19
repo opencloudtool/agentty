@@ -88,7 +88,6 @@ pub struct ProjectRow {
 
 /// Row returned when loading a session from the `session` table.
 pub struct SessionRow {
-    pub agent: String,
     pub base_branch: String,
     pub created_at: i64,
     pub id: String,
@@ -252,7 +251,6 @@ ORDER BY path
     pub async fn insert_session(
         &self,
         id: &str,
-        agent: &str,
         model: &str,
         base_branch: &str,
         status: &str,
@@ -260,12 +258,11 @@ ORDER BY path
     ) -> Result<(), String> {
         sqlx::query(
             r"
-INSERT INTO session (id, agent, model, base_branch, status, project_id, prompt, output)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO session (id, model, base_branch, status, project_id, prompt, output)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ",
         )
         .bind(id)
-        .bind(agent)
         .bind(model)
         .bind(base_branch)
         .bind(status)
@@ -286,7 +283,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
         let rows = sqlx::query(
             r"
-SELECT id, agent, model, base_branch, status, title, project_id, prompt, output,
+SELECT id, model, base_branch, status, title, project_id, prompt, output,
        created_at, updated_at, input_tokens, output_tokens, permission_mode, size, summary
 FROM session
 ORDER BY updated_at DESC, id
@@ -299,7 +296,6 @@ ORDER BY updated_at DESC, id
         Ok(rows
             .iter()
             .map(|row| SessionRow {
-                agent: row.get("agent"),
                 base_branch: row.get("base_branch"),
                 created_at: row.get("created_at"),
                 id: row.get("id"),
@@ -500,29 +496,23 @@ WHERE id = ?
         Ok(())
     }
 
-    /// Updates the persisted agent/model pair for a session.
+    /// Updates the persisted model for a session.
     ///
     /// # Errors
     /// Returns an error if the session row cannot be updated.
-    pub async fn update_session_agent_and_model(
-        &self,
-        id: &str,
-        agent: &str,
-        model: &str,
-    ) -> Result<(), String> {
+    pub async fn update_session_model(&self, id: &str, model: &str) -> Result<(), String> {
         sqlx::query(
             r"
 UPDATE session
-SET agent = ?, model = ?
+SET model = ?
 WHERE id = ?
 ",
         )
-        .bind(agent)
         .bind(model)
         .bind(id)
         .execute(&self.pool)
         .await
-        .map_err(|err| format!("Failed to update session agent/model: {err}"))?;
+        .map_err(|err| format!("Failed to update session model: {err}"))?;
 
         Ok(())
     }
@@ -1111,14 +1101,7 @@ mod tests {
 
         // Act
         let result = db
-            .insert_session(
-                "sess1",
-                "claude",
-                "claude-opus-4-6",
-                "main",
-                "Done",
-                project_id,
-            )
+            .insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
             .await;
 
         // Assert
@@ -1141,22 +1124,14 @@ mod tests {
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let result = db
             .insert_session(
                 "sess1",
-                "gemini",
                 "gemini-3-flash-preview",
                 "develop",
                 "Done",
@@ -1176,16 +1151,9 @@ mod tests {
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "New",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "New", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let sessions = db.load_sessions().await.expect("failed to load");
@@ -1215,19 +1183,11 @@ mod tests {
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "beta",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("beta", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
         db.insert_session(
             "alpha",
-            "gemini",
             "gemini-3-flash-preview",
             "develop",
             "InProgress",
@@ -1262,12 +1222,10 @@ WHERE id = 'beta'
         // Assert
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].id, "beta");
-        assert_eq!(sessions[0].agent, "claude");
         assert_eq!(sessions[0].base_branch, "main");
         assert_eq!(sessions[0].model, "claude-opus-4-6");
         assert_eq!(sessions[0].status, "Done");
         assert_eq!(sessions[1].id, "alpha");
-        assert_eq!(sessions[1].agent, "gemini");
         assert_eq!(sessions[1].base_branch, "develop");
         assert_eq!(sessions[1].model, "gemini-3-flash-preview");
         assert_eq!(sessions[1].status, "InProgress");
@@ -1285,19 +1243,11 @@ WHERE id = 'beta'
             .upsert_project("/tmp/beta", Some("develop"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_a,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_a)
+            .await
+            .expect("failed to insert");
         db.insert_session(
             "sess2",
-            "gemini",
             "gemini-3-flash-preview",
             "develop",
             "Done",
@@ -1358,7 +1308,6 @@ WHERE id = 'beta'
             .expect("failed to upsert");
         db.insert_session(
             "alpha",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "InProgress",
@@ -1366,16 +1315,9 @@ WHERE id = 'beta'
         )
         .await
         .expect("failed to insert alpha");
-        db.insert_session(
-            "beta",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert beta");
+        db.insert_session("beta", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert beta");
         sqlx::query(
             r"
 UPDATE session
@@ -1415,16 +1357,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let result = db.delete_session("sess1").await;
@@ -1455,16 +1390,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "InProgress",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "InProgress", project_id)
+            .await
+            .expect("failed to insert");
 
         let initial_sessions = db.load_sessions().await.expect("failed to load");
         let initial_updated_at = initial_sessions[0].updated_at;
@@ -1491,16 +1419,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "InProgress",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "InProgress", project_id)
+            .await
+            .expect("failed to insert");
         let initial_sessions = db.load_sessions().await.expect("failed to load");
         let initial_updated_at = initial_sessions[0].updated_at;
 
@@ -1526,16 +1447,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "New",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "New", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let result = db.update_session_title("sess1", "Fix the login bug").await;
@@ -1554,16 +1468,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
         let summary = "Session completed with database and UI updates.";
 
         // Act
@@ -1583,16 +1490,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let stats = SessionStats {
@@ -1616,16 +1516,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let first = SessionStats {
@@ -1658,16 +1551,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let stats = SessionStats {
@@ -1691,16 +1577,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let sessions = db.load_sessions().await.expect("failed to load");
@@ -1711,37 +1590,27 @@ WHERE id = 'beta'
     }
 
     #[tokio::test]
-    async fn test_update_session_agent_and_model() {
+    async fn test_update_session_model() {
         // Arrange
         let db = Database::open_in_memory().await.expect("failed to open db");
         let project_id = db
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "New",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "New", project_id)
+            .await
+            .expect("failed to insert");
 
         let initial_sessions = db.load_sessions().await.expect("failed to load");
         let initial_updated_at = initial_sessions[0].updated_at;
 
         // Act
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        let result = db
-            .update_session_agent_and_model("sess1", "codex", "gpt-5.2-codex")
-            .await;
+        let result = db.update_session_model("sess1", "gpt-5.2-codex").await;
 
         // Assert
         assert!(result.is_ok());
         let sessions = db.load_sessions().await.expect("failed to load");
-        assert_eq!(sessions[0].agent, "codex");
         assert_eq!(sessions[0].model, "gpt-5.2-codex");
         assert!(
             sessions[0].updated_at > initial_updated_at,
@@ -1757,16 +1626,9 @@ WHERE id = 'beta'
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Review",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Review", project_id)
+            .await
+            .expect("failed to insert");
         db.update_session_prompt("sess1", "Fix the bug")
             .await
             .expect("failed to update prompt");
@@ -1801,7 +1663,6 @@ WHERE id = 'beta'
         assert_eq!(sessions[0].input_tokens, Some(1000));
         assert_eq!(sessions[0].output_tokens, Some(500));
         // Preserved fields
-        assert_eq!(sessions[0].agent, "claude");
         assert_eq!(sessions[0].model, "claude-opus-4-6");
         assert_eq!(sessions[0].base_branch, "main");
     }
@@ -1829,12 +1690,11 @@ WHERE id = 'beta'
         // Insert session without project_id (simulates legacy data)
         sqlx::query(
             r"
-INSERT INTO session (id, agent, base_branch)
-VALUES (?, ?, ?)
+INSERT INTO session (id, base_branch)
+VALUES (?, ?)
 ",
         )
         .bind("orphan")
-        .bind("claude")
         .bind("main")
         .execute(db.pool())
         .await
@@ -1860,16 +1720,9 @@ VALUES (?, ?, ?)
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "claude",
-            "claude-opus-4-6",
-            "main",
-            "Done",
-            project_id,
-        )
-        .await
-        .expect("failed to insert");
+        db.insert_session("sess1", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert");
 
         // Act
         let branch = db
@@ -1904,16 +1757,9 @@ VALUES (?, ?, ?)
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "gemini",
-            "gemini-3-flash-preview",
-            "main",
-            "New",
-            project_id,
-        )
-        .await
-        .expect("failed to insert session");
+        db.insert_session("sess1", "gemini-3-flash-preview", "main", "New", project_id)
+            .await
+            .expect("failed to insert session");
         db.insert_session_operation("op-1", "sess1", "start_prompt")
             .await
             .expect("failed to insert operation");
@@ -1943,7 +1789,6 @@ VALUES (?, ?, ?)
             .expect("failed to upsert");
         db.insert_session(
             "sess1",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "InProgress",
@@ -1981,16 +1826,9 @@ VALUES (?, ?, ?)
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert");
-        db.insert_session(
-            "sess1",
-            "gemini",
-            "gemini-3-flash-preview",
-            "main",
-            "New",
-            project_id,
-        )
-        .await
-        .expect("failed to insert session");
+        db.insert_session("sess1", "gemini-3-flash-preview", "main", "New", project_id)
+            .await
+            .expect("failed to insert session");
         db.insert_session_operation("op-2", "sess1", "reply")
             .await
             .expect("failed to insert operation");
@@ -2027,7 +1865,6 @@ VALUES (?, ?, ?)
             .expect("failed to upsert");
         db.insert_session(
             "sess1",
-            "gemini",
             "gemini-3-flash-preview",
             "main",
             "InProgress",

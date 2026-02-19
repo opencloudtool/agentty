@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::agent::AgentKind;
+use crate::agent::AgentModel;
 use crate::app::AppEvent;
 use crate::app::task::{RunAgentAssistTaskInput, TaskService};
 use crate::db::Database;
@@ -22,14 +22,13 @@ pub(super) struct AssistPolicy {
 
 /// Shared context required to execute one assistance attempt.
 pub(super) struct AssistContext {
-    pub(super) agent: AgentKind,
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     pub(super) db: Database,
     pub(super) folder: PathBuf,
     pub(super) id: String,
     pub(super) output: Arc<Mutex<String>>,
     pub(super) permission_mode: PermissionMode,
-    pub(super) session_model: String,
+    pub(super) session_model: AgentModel,
 }
 
 /// Tracks repeated identical failures to stop non-progressing assist loops.
@@ -121,16 +120,16 @@ pub(super) async fn append_assist_header(
 /// interrupted.
 pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> Result<(), String> {
     let effective_permission_mode = effective_permission_mode(context.permission_mode);
-    let backend = context.agent.create_backend();
+    let backend = context.session_model.kind().create_backend();
     let command = backend.build_start_command(
         &context.folder,
         prompt,
-        &context.session_model,
+        context.session_model.as_str(),
         effective_permission_mode,
     );
 
     TaskService::run_agent_assist_task(RunAgentAssistTaskInput {
-        agent: context.agent,
+        agent: context.session_model.kind(),
         app_event_tx: context.app_event_tx.clone(),
         cmd: command,
         db: context.db.clone(),

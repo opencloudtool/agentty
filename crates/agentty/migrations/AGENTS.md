@@ -21,3 +21,4 @@ SQLite migrations for the `agentty` crate.
 - [016_backfill_summary_with_output.sql](016_backfill_summary_with_output.sql) - Backfills missing terminal `summary` values from persisted `output`.
 - [017_drop_commit_count_from_session.sql](017_drop_commit_count_from_session.sql) - Drops persisted `commit_count` from `session`.
 - [018_migrate_pr_statuses_to_review.sql](018_migrate_pr_statuses_to_review.sql) - Migrates legacy PR-related statuses to `Review`.
+- [019_drop_agent_from_session.sql](019_drop_agent_from_session.sql) - Drops the `agent` column from `session`.

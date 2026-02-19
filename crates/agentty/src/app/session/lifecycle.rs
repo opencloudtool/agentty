@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::access::SESSION_NOT_FOUND_ERROR;
 use super::{session_branch, session_folder};
-use crate::agent::{AgentBackend, AgentKind, AgentModel};
+use crate::agent::{AgentBackend, AgentModel};
 use crate::app::session::worker::SessionCommand;
 use crate::app::task::TaskService;
 use crate::app::title::TitleService;
@@ -75,7 +75,6 @@ impl SessionManager {
         let base_branch = projects
             .git_branch()
             .ok_or_else(|| "Git branch is required to create a session".to_string())?;
-        let session_agent = self.default_session_agent;
         let session_model = self.default_session_model;
         let session_permission_mode = self.default_session_permission_mode;
 
@@ -123,7 +122,6 @@ impl SessionManager {
             .db()
             .insert_session(
                 &session_id,
-                &session_agent.to_string(),
                 session_model.as_str(),
                 base_branch,
                 &Status::New.to_string(),
@@ -163,7 +161,7 @@ impl SessionManager {
             return Err(format!("Failed to save session permission mode: {error}"));
         }
 
-        session_agent.create_backend().setup(&folder);
+        session_model.kind().create_backend().setup(&folder);
         services.emit_app_event(AppEvent::RefreshSessions);
 
         Ok(session_id)
@@ -180,7 +178,7 @@ impl SessionManager {
         prompt: String,
     ) -> Result<(), String> {
         let session_index = self.session_index_or_err(session_id)?;
-        let (folder, permission_mode, persisted_session_id, session_agent, session_model, title) = {
+        let (folder, permission_mode, persisted_session_id, session_model, title) = {
             let session = self
                 .sessions
                 .get_mut(session_index)
@@ -190,14 +188,12 @@ impl SessionManager {
 
             let title = TitleService::summarize_title(&prompt);
             session.title = Some(title.clone());
-            let (session_agent, session_model) =
-                TitleService::resolve_session_agent_and_model(session);
+            let session_model = session.model;
 
             (
                 session.folder.clone(),
                 session.permission_mode,
                 session.id.clone(),
-                session_agent,
                 session_model,
                 title,
             )
@@ -236,7 +232,7 @@ impl SessionManager {
         )
         .await;
 
-        let command = session_agent.create_backend().build_start_command(
+        let command = session_model.kind().create_backend().build_start_command(
             &folder,
             &prompt,
             session_model.as_str(),
@@ -247,11 +243,10 @@ impl SessionManager {
             services,
             &persisted_session_id,
             SessionCommand::StartPrompt {
-                agent: session_agent,
                 command,
                 operation_id,
                 permission_mode,
-                session_model: session_model.as_str().to_string(),
+                session_model,
             },
         )
         .await?;
@@ -303,45 +298,35 @@ impl SessionManager {
         let Ok(session) = self.session_or_err(session_id) else {
             return;
         };
-        let (session_agent, session_model) = TitleService::resolve_session_agent_and_model(session);
-        let backend = session_agent.create_backend();
+        let session_model = session.model;
+        let backend = session_model.kind().create_backend();
         self.reply_with_backend(
             services,
             session_id,
             prompt,
             backend.as_ref(),
-            session_model.as_str(),
+            session_model,
         )
         .await;
     }
 
-    /// Updates and persists the agent/model pair for a single session.
+    /// Updates and persists the model for a single session.
     ///
     /// # Errors
-    /// Returns an error if the session is missing or the model does not belong
-    /// to the selected agent, or persistence fails.
-    pub async fn set_session_agent_and_model(
+    /// Returns an error if the session is missing or persistence fails.
+    pub async fn set_session_model(
         &mut self,
         services: &AppServices,
         session_id: &str,
-        session_agent: AgentKind,
         session_model: AgentModel,
     ) -> Result<(), String> {
-        if session_model.kind() != session_agent {
-            return Err("Model does not belong to selected agent".to_string());
-        }
-
         let _ = self.session_index_or_err(session_id)?;
-
-        let agent = session_agent.to_string();
-        let model = session_model.as_str().to_string();
 
         services
             .db()
-            .update_session_agent_and_model(session_id, &agent, &model)
+            .update_session_model(session_id, session_model.as_str())
             .await?;
-        services.emit_app_event(AppEvent::SessionAgentModelUpdated {
-            session_agent,
+        services.emit_app_event(AppEvent::SessionModelUpdated {
             session_id: session_id.to_string(),
             session_model,
         });
@@ -497,7 +482,7 @@ impl SessionManager {
         session_id: &str,
         prompt: &str,
         backend: &dyn AgentBackend,
-        model: &str,
+        session_model: AgentModel,
     ) {
         let Ok(session_index) = self.session_index_or_err(session_id) else {
             return;
@@ -527,10 +512,6 @@ impl SessionManager {
                 }
 
                 Some((
-                    session
-                        .agent
-                        .parse::<AgentKind>()
-                        .unwrap_or(AgentKind::Gemini),
                     session.folder.clone(),
                     is_first_message,
                     session.id.clone(),
@@ -547,8 +528,7 @@ impl SessionManager {
 
             return;
         }
-        let Some((agent, folder, is_first_message, persisted_session_id, title_to_save)) =
-            reply_context
+        let Some((folder, is_first_message, persisted_session_id, title_to_save)) = reply_context
         else {
             return;
         };
@@ -590,11 +570,10 @@ impl SessionManager {
         .await;
 
         let command = Self::build_session_command(
-            agent,
             backend,
             &folder,
             prompt,
-            model,
+            session_model,
             permission_mode,
             is_first_message,
         );
@@ -609,11 +588,10 @@ impl SessionManager {
     }
 
     fn build_session_command(
-        agent: AgentKind,
         backend: &dyn AgentBackend,
         folder: &Path,
         prompt: &str,
-        model: &str,
+        session_model: AgentModel,
         permission_mode: PermissionMode,
         is_first_message: bool,
     ) -> SessionCommand {
@@ -621,19 +599,27 @@ impl SessionManager {
 
         if is_first_message {
             SessionCommand::StartPrompt {
-                agent,
-                command: backend.build_start_command(folder, prompt, model, permission_mode),
+                command: backend.build_start_command(
+                    folder,
+                    prompt,
+                    session_model.as_str(),
+                    permission_mode,
+                ),
                 operation_id,
                 permission_mode,
-                session_model: model.to_string(),
+                session_model,
             }
         } else {
             SessionCommand::Reply {
-                agent,
-                command: backend.build_resume_command(folder, prompt, model, permission_mode),
+                command: backend.build_resume_command(
+                    folder,
+                    prompt,
+                    session_model.as_str(),
+                    permission_mode,
+                ),
                 operation_id,
                 permission_mode,
-                session_model: model.to_string(),
+                session_model,
             }
         }
     }

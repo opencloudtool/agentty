@@ -94,12 +94,7 @@ impl<'a> SessionChatPage<'a> {
                     .collect(),
             ),
             PromptSlashStage::Model => {
-                let session_agent = selected_agent.unwrap_or_else(|| {
-                    session
-                        .agent
-                        .parse::<AgentKind>()
-                        .unwrap_or(AgentKind::Gemini)
-                });
+                let session_agent = selected_agent.unwrap_or_else(|| session.model.kind());
                 let models = session_agent
                     .models()
                     .iter()
@@ -234,7 +229,7 @@ impl<'a> SessionChatPage<'a> {
         let title = format!(
             " {} — {status} - {commit_count} {commits_label} [{}] ({}) ",
             session.display_title(),
-            session.model,
+            session.model.as_str(),
             session.permission_mode.label()
         );
         let lines = Self::output_lines(session, output_area, status, self.plan_followup_action);
@@ -470,17 +465,17 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::agent::AgentModel;
     use crate::file_list::FileEntry;
     use crate::model::{PermissionMode, SessionSize, SessionStats};
 
     fn session_fixture() -> Session {
         Session {
-            agent: "gemini".to_string(),
             base_branch: "main".to_string(),
             commit_count: 0,
             folder: PathBuf::new(),
             id: "session-id".to_string(),
-            model: "gemini-3-flash-preview".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             permission_mode: PermissionMode::default(),
             project_name: "project".to_string(),

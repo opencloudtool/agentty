@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use ratatui::style::Color;
 
-use crate::agent::AgentKind;
+use crate::agent::{AgentKind, AgentModel};
 use crate::file_list::FileEntry;
 use crate::icon::Icon;
 
@@ -742,12 +742,11 @@ pub struct SessionStats {
 /// Live runtime state (output streaming and status transitions) is managed
 /// separately via [`SessionHandles`] in `SessionState`.
 pub struct Session {
-    pub agent: String,
     pub base_branch: String,
     pub commit_count: i64,
     pub folder: PathBuf,
     pub id: String,
-    pub model: String,
+    pub model: AgentModel,
     pub output: String,
     pub permission_mode: PermissionMode,
     pub project_name: String,
@@ -859,12 +858,11 @@ mod tests {
     fn test_display_title() {
         // Arrange
         let session = Session {
-            agent: "gemini".to_string(),
             base_branch: String::new(),
             commit_count: 0,
             folder: PathBuf::new(),
             id: "abc123".to_string(),
-            model: "gemini-3-flash-preview".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             permission_mode: PermissionMode::default(),
             project_name: String::new(),
@@ -884,12 +882,11 @@ mod tests {
     fn test_display_title_none() {
         // Arrange
         let session = Session {
-            agent: "gemini".to_string(),
             base_branch: String::new(),
             commit_count: 0,
             folder: PathBuf::new(),
             id: "abc123".to_string(),
-            model: "gemini-3-flash-preview".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             permission_mode: PermissionMode::default(),
             project_name: String::new(),

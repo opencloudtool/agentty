@@ -73,7 +73,7 @@ impl Page for SessionListPage<'_> {
             let cells = vec![
                 Cell::from(display_title),
                 Cell::from(session.project_name.clone()),
-                Cell::from(session.model.clone()),
+                Cell::from(session.model.as_str()),
                 Cell::from(session.permission_mode.display_label()),
                 Cell::from(session.size.to_string())
                     .style(Style::default().fg(size_color(session.size))),

@@ -50,9 +50,8 @@ pub(crate) enum AppEvent {
     GitStatusUpdated { status: Option<(u32, u32)> },
     /// Indicates a session history reset has been persisted.
     SessionHistoryCleared { session_id: String },
-    /// Indicates a session agent/model selection has been persisted.
-    SessionAgentModelUpdated {
-        session_agent: AgentKind,
+    /// Indicates a session model selection has been persisted.
+    SessionModelUpdated {
         session_id: String,
         session_model: AgentModel,
     },
@@ -72,7 +71,7 @@ struct AppEventBatch {
     cleared_session_history_ids: HashSet<String>,
     git_status_update: Option<(u32, u32)>,
     has_git_status_update: bool,
-    session_agent_model_updates: HashMap<String, (AgentKind, AgentModel)>,
+    session_model_updates: HashMap<String, AgentModel>,
     session_ids: HashSet<String>,
     session_permission_mode_updates: HashMap<String, PermissionMode>,
     should_force_reload: bool,
@@ -188,20 +187,10 @@ impl App {
             SessionManager::load_sessions(&base_path, &db, &projects, &mut handles).await;
         let (sessions_row_count, sessions_updated_at_max) =
             db.load_sessions_metadata().await.unwrap_or((0, 0));
-        let (default_session_agent, default_session_model, default_session_permission_mode) =
-            sessions.first().map_or(
-                (
-                    AgentKind::Gemini,
-                    AgentKind::Gemini.default_model(),
-                    PermissionMode::default(),
-                ),
-                |session| {
-                    let (session_agent, session_model) =
-                        title::TitleService::resolve_session_agent_and_model(session);
-
-                    (session_agent, session_model, session.permission_mode)
-                },
-            );
+        let (default_session_model, default_session_permission_mode) = sessions.first().map_or(
+            (AgentKind::Gemini.default_model(), PermissionMode::default()),
+            |session| (session.model, session.permission_mode),
+        );
         if sessions.is_empty() {
             table_state.select(None);
         } else {
@@ -219,7 +208,6 @@ impl App {
             working_dir,
         );
         let sessions = SessionManager::new(
-            default_session_agent,
             default_session_model,
             default_session_permission_mode,
             SessionState::new(
@@ -337,19 +325,17 @@ impl App {
             .await;
     }
 
-    /// Persists and applies an agent/model selection for a session.
+    /// Persists and applies a model selection for a session.
     ///
     /// # Errors
-    /// Returns an error if the model is invalid for the selected agent or
-    /// persistence fails.
-    pub async fn set_session_agent_and_model(
+    /// Returns an error if persistence fails.
+    pub async fn set_session_model(
         &mut self,
         session_id: &str,
-        session_agent: AgentKind,
         session_model: AgentModel,
     ) -> Result<(), String> {
         self.sessions
-            .set_session_agent_and_model(&self.services, session_id, session_agent, session_model)
+            .set_session_model(&self.services, session_id, session_model)
             .await?;
         self.process_pending_app_events().await;
 
@@ -607,13 +593,9 @@ impl App {
             self.sessions.apply_session_history_cleared(session_id);
         }
 
-        for (session_id, (session_agent, session_model)) in event_batch.session_agent_model_updates
-        {
-            self.sessions.apply_session_agent_model_updated(
-                &session_id,
-                session_agent,
-                session_model,
-            );
+        for (session_id, session_model) in event_batch.session_model_updates {
+            self.sessions
+                .apply_session_model_updated(&session_id, session_model);
         }
 
         for (session_id, permission_mode) in event_batch.session_permission_mode_updates {
@@ -687,13 +669,11 @@ impl AppEventBatch {
             AppEvent::SessionHistoryCleared { session_id } => {
                 self.cleared_session_history_ids.insert(session_id);
             }
-            AppEvent::SessionAgentModelUpdated {
-                session_agent,
+            AppEvent::SessionModelUpdated {
                 session_id,
                 session_model,
             } => {
-                self.session_agent_model_updates
-                    .insert(session_id, (session_agent, session_model));
+                self.session_model_updates.insert(session_id, session_model);
             }
             AppEvent::SessionPermissionModeUpdated {
                 permission_mode,
@@ -749,14 +729,7 @@ mod tests {
             .await
             .expect("failed to upsert project");
         database
-            .insert_session(
-                "seed0000",
-                "gemini",
-                "gemini-2.5-flash",
-                "main",
-                "Done",
-                project_id,
-            )
+            .insert_session("seed0000", "gemini-2.5-flash", "main", "Done", project_id)
             .await
             .expect("failed to insert session");
 
@@ -796,8 +769,7 @@ mod tests {
         event_batch.collect_event(AppEvent::SessionHistoryCleared {
             session_id: "session-2".to_string(),
         });
-        event_batch.collect_event(AppEvent::SessionAgentModelUpdated {
-            session_agent: AgentKind::Claude,
+        event_batch.collect_event(AppEvent::SessionModelUpdated {
             session_id: "session-3".to_string(),
             session_model: AgentModel::ClaudeOpus46,
         });
@@ -814,8 +786,8 @@ mod tests {
                 .contains("session-2")
         );
         assert_eq!(
-            event_batch.session_agent_model_updates.get("session-3"),
-            Some(&(AgentKind::Claude, AgentModel::ClaudeOpus46))
+            event_batch.session_model_updates.get("session-3"),
+            Some(&AgentModel::ClaudeOpus46)
         );
         assert_eq!(
             event_batch.session_permission_mode_updates.get("session-4"),
@@ -860,7 +832,6 @@ mod tests {
         database
             .insert_session(
                 "seed0000",
-                "gemini",
                 "gemini-2.5-flash",
                 "main",
                 "InProgress",
@@ -909,7 +880,6 @@ mod tests {
         database
             .insert_session(
                 "seed0000",
-                "gemini",
                 "gemini-2.5-flash",
                 "main",
                 "InProgress",
@@ -952,14 +922,7 @@ mod tests {
             .await
             .expect("failed to upsert project");
         database
-            .insert_session(
-                "seed0000",
-                "gemini",
-                "gemini-2.5-flash",
-                "main",
-                "Review",
-                project_id,
-            )
+            .insert_session("seed0000", "gemini-2.5-flash", "main", "Review", project_id)
             .await
             .expect("failed to insert session");
         std::fs::create_dir_all(base_path.join("seed0000"))
@@ -999,14 +962,7 @@ mod tests {
             .await
             .expect("failed to upsert project");
         database
-            .insert_session(
-                "seed0000",
-                "gemini",
-                "gemini-2.5-flash",
-                "main",
-                "Review",
-                project_id,
-            )
+            .insert_session("seed0000", "gemini-2.5-flash", "main", "Review", project_id)
             .await
             .expect("failed to insert session");
         std::fs::create_dir_all(base_path.join("seed0000"))
