@@ -62,6 +62,7 @@ pub(super) struct StreamOutputContext {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
     db: Database,
     id: String,
+    non_response_stream_output_seen: Arc<AtomicBool>,
     output: Arc<Mutex<String>>,
     streamed_response_seen: Arc<AtomicBool>,
 }
@@ -405,6 +406,7 @@ impl TaskService {
         let raw_stdout = Arc::new(Mutex::new(String::new()));
         let raw_stderr = Arc::new(Mutex::new(String::new()));
         let mut handles = Vec::new();
+        let non_response_stream_output_seen = Arc::new(AtomicBool::new(false));
         let streamed_response_seen = Arc::new(AtomicBool::new(false));
 
         if let Some(stdout) = stdout {
@@ -414,6 +416,7 @@ impl TaskService {
                 app_event_tx: app_event_tx.clone(),
                 db: db.clone(),
                 id: id.to_string(),
+                non_response_stream_output_seen: Arc::clone(&non_response_stream_output_seen),
                 output: Arc::clone(output),
                 streamed_response_seen: Arc::clone(&streamed_response_seen),
             };
@@ -526,7 +529,18 @@ impl TaskService {
                 continue;
             }
 
-            let formatted_stream_text = format!("{stream_text}\n");
+            let should_prefix_blank_line = is_response_content
+                && !stream_context
+                    .streamed_response_seen
+                    .load(Ordering::Relaxed)
+                && stream_context
+                    .non_response_stream_output_seen
+                    .load(Ordering::Relaxed);
+            let formatted_stream_text = if should_prefix_blank_line {
+                format!("\n{stream_text}\n")
+            } else {
+                format!("{stream_text}\n")
+            };
             Self::append_session_output(
                 &stream_context.output,
                 &stream_context.db,
@@ -538,6 +552,10 @@ impl TaskService {
             if is_response_content {
                 stream_context
                     .streamed_response_seen
+                    .store(true, Ordering::Relaxed);
+            } else {
+                stream_context
+                    .non_response_stream_output_seen
                     .store(true, Ordering::Relaxed);
             }
         }
@@ -738,6 +756,7 @@ mod tests {
         );
         let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
         assert!(output_text.contains("[command_execution] in progress..."));
+        assert!(output_text.contains("[command_execution] in progress...\n\nFinal answer\n"));
         assert_eq!(output_text.matches("Final answer").count(), 1);
         let sessions = database
             .load_sessions()
