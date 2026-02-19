@@ -23,7 +23,7 @@ cargo install agentty
 ### npm
 
 ```sh
-npm install -g @opencloudtool/agentty
+npm install -g agentty
 ```
 
 ### npx
@@ -31,7 +31,7 @@ npm install -g @opencloudtool/agentty
 Run without installing:
 
 ```sh
-npx @opencloudtool/agentty
+npx agentty
 ```
 
 ## Prerequisites
