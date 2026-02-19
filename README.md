@@ -1,6 +1,6 @@
 # Agentty
 
-![NPM Version](https://img.shields.io/npm/v/%40opencloudtool%2Fagentty)
+![NPM Version](https://img.shields.io/npm/v/agentty)
 
 A terminal UI tool for managing agents, built with Rust and [Ratatui](https://ratatui.rs).
 
