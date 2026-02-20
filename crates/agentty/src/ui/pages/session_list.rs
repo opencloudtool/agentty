@@ -197,9 +197,8 @@ mod tests {
     #[test]
     fn test_model_column_width_uses_longest_model_value() {
         // Arrange
-        let expected_width =
-            u16::try_from("claude-sonnet-4-5-20250929".chars().count()).unwrap_or(u16::MAX);
-        let models = ["gpt-5.2-codex", "claude-sonnet-4-5-20250929"];
+        let expected_width = u16::try_from("claude-sonnet-4-6".chars().count()).unwrap_or(u16::MAX);
+        let models = ["gpt-5.2-codex", "claude-sonnet-4-6"];
 
         // Act
         let width = text_column_width("Model", models.into_iter());

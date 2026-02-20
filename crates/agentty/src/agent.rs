@@ -246,7 +246,7 @@ pub enum AgentModel {
     Gpt53Codex,
     Gpt52Codex,
     ClaudeOpus46,
-    ClaudeSonnet4520250929,
+    ClaudeSonnet46,
     ClaudeHaiku4520251001,
 }
 
@@ -258,7 +258,7 @@ impl AgentModel {
             Self::Gpt53Codex => "gpt-5.3-codex",
             Self::Gpt52Codex => "gpt-5.2-codex",
             Self::ClaudeOpus46 => "claude-opus-4-6",
-            Self::ClaudeSonnet4520250929 => "claude-sonnet-4-5-20250929",
+            Self::ClaudeSonnet46 => "claude-sonnet-4-6",
             Self::ClaudeHaiku4520251001 => "claude-haiku-4-5-20251001",
         }
     }
@@ -267,7 +267,7 @@ impl AgentModel {
         match self {
             Self::Gemini3FlashPreview | Self::Gemini3ProPreview => AgentKind::Gemini,
             Self::Gpt53Codex | Self::Gpt52Codex => AgentKind::Codex,
-            Self::ClaudeOpus46 | Self::ClaudeSonnet4520250929 | Self::ClaudeHaiku4520251001 => {
+            Self::ClaudeOpus46 | Self::ClaudeSonnet46 | Self::ClaudeHaiku4520251001 => {
                 AgentKind::Claude
             }
         }
@@ -284,7 +284,7 @@ impl FromStr for AgentModel {
             "gpt-5.3-codex" => Ok(Self::Gpt53Codex),
             "gpt-5.2-codex" => Ok(Self::Gpt52Codex),
             "claude-opus-4-6" => Ok(Self::ClaudeOpus46),
-            "claude-sonnet-4-5-20250929" => Ok(Self::ClaudeSonnet4520250929),
+            "claude-sonnet-4-6" => Ok(Self::ClaudeSonnet46),
             "claude-haiku-4-5-20251001" => Ok(Self::ClaudeHaiku4520251001),
             other => Err(format!("unknown model: {other}")),
         }
@@ -303,7 +303,7 @@ impl AgentSelectionMetadata for AgentModel {
             Self::Gpt53Codex => "Latest Codex model for coding quality.",
             Self::Gpt52Codex => "Faster Codex model with lower cost.",
             Self::ClaudeOpus46 => "Top-tier Claude model for complex tasks.",
-            Self::ClaudeSonnet4520250929 => "Balanced Claude model for quality and latency.",
+            Self::ClaudeSonnet46 => "Balanced Claude model for quality and latency.",
             Self::ClaudeHaiku4520251001 => "Fast Claude model for lighter tasks.",
         }
     }
@@ -436,7 +436,7 @@ impl AgentKind {
         ];
         const CLAUDE_MODELS: &[AgentModel] = &[
             AgentModel::ClaudeOpus46,
-            AgentModel::ClaudeSonnet4520250929,
+            AgentModel::ClaudeSonnet46,
             AgentModel::ClaudeHaiku4520251001,
         ];
         const CODEX_MODELS: &[AgentModel] = &[AgentModel::Gpt53Codex, AgentModel::Gpt52Codex];
@@ -1259,7 +1259,7 @@ mod tests {
             claude_models,
             &[
                 AgentModel::ClaudeOpus46,
-                AgentModel::ClaudeSonnet4520250929,
+                AgentModel::ClaudeSonnet46,
                 AgentModel::ClaudeHaiku4520251001,
             ]
         );
@@ -1302,7 +1302,7 @@ mod tests {
     fn test_agent_model_metadata() {
         // Arrange
         let gemini_model = AgentModel::Gemini3FlashPreview;
-        let claude_model = AgentModel::ClaudeSonnet4520250929;
+        let claude_model = AgentModel::ClaudeSonnet46;
         let codex_model = AgentModel::Gpt53Codex;
 
         // Act & Assert
@@ -1311,7 +1311,7 @@ mod tests {
             gemini_model.description(),
             "Fast Gemini model for quick iterations."
         );
-        assert_eq!(claude_model.name(), "claude-sonnet-4-5-20250929");
+        assert_eq!(claude_model.name(), "claude-sonnet-4-6");
         assert_eq!(
             claude_model.description(),
             "Balanced Claude model for quality and latency."
