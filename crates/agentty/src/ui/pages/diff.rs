@@ -1,12 +1,14 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::model::Session;
 use crate::ui::Page;
-use crate::ui::util::{DiffLineKind, max_diff_line_number, parse_diff_lines, wrap_diff_content};
+use crate::ui::util::{
+    DiffLine, DiffLineKind, max_diff_line_number, parse_diff_lines, wrap_diff_content,
+};
 
 const BORDER_HORIZONTAL_WIDTH: u16 = 2;
 const FOOTER_HEIGHT: u16 = 1;
@@ -34,22 +36,50 @@ impl<'a> DiffPage<'a> {
             session,
         }
     }
-}
 
-impl Page for DiffPage<'_> {
-    fn render(&mut self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .constraints([Constraint::Min(0), Constraint::Length(FOOTER_HEIGHT)])
-            .margin(LAYOUT_MARGIN)
-            .split(area);
+    fn render_file_list(f: &mut Frame, area: Rect, parsed: &[DiffLine]) {
+        let mut file_list_lines = Vec::new();
+        for line in parsed {
+            if line.kind == DiffLineKind::FileHeader && line.content.starts_with("diff --git") {
+                let text = if let Some(stripped) = line.content.strip_prefix("diff --git a/") {
+                    if let Some((old, new)) = stripped.split_once(" b/") {
+                        if old == new {
+                            old.to_string()
+                        } else {
+                            format!("{old} -> {new}")
+                        }
+                    } else {
+                        stripped.to_string()
+                    }
+                } else {
+                    line.content.replace("diff --git ", "")
+                };
+                file_list_lines.push(Line::from(Span::styled(
+                    text,
+                    Style::default().fg(Color::Cyan),
+                )));
+            }
+        }
 
-        let output_area = chunks[0];
-        let footer_area = chunks[1];
+        if file_list_lines.is_empty() {
+            file_list_lines.push(Line::from(Span::styled(
+                "No files",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
 
+        let file_list_paragraph = Paragraph::new(file_list_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(" Files ", Style::default().fg(Color::Cyan))),
+        );
+        f.render_widget(file_list_paragraph, area);
+    }
+
+    fn render_diff_content(&self, f: &mut Frame, area: Rect, parsed: &[DiffLine]) {
         let title = format!(" Diff — {} ", self.session.display_title());
 
-        let parsed = parse_diff_lines(&self.diff);
-        let max_num = max_diff_line_number(&parsed);
+        let max_num = max_diff_line_number(parsed);
         let gutter_width = if max_num == 0 {
             MIN_GUTTER_WIDTH
         } else {
@@ -60,13 +90,13 @@ impl Page for DiffPage<'_> {
         // sign column: 1 char
         let prefix_width =
             gutter_width * LINE_NUMBER_COLUMN_COUNT + GUTTER_EXTRA_WIDTH + SIGN_COLUMN_WIDTH;
-        let inner_width = output_area.width.saturating_sub(BORDER_HORIZONTAL_WIDTH) as usize;
+        let inner_width = area.width.saturating_sub(BORDER_HORIZONTAL_WIDTH) as usize;
 
         let gutter_style = Style::default().fg(Color::DarkGray);
 
         let mut lines: Vec<Line<'_>> = Vec::with_capacity(parsed.len());
 
-        for diff_line in &parsed {
+        for diff_line in parsed {
             let (sign, content_style) = match diff_line.kind {
                 DiffLineKind::FileHeader => {
                     if diff_line.content.starts_with("diff ") && !lines.is_empty() {
@@ -133,7 +163,32 @@ impl Page for DiffPage<'_> {
             )
             .scroll((self.scroll_offset, SCROLL_X_OFFSET));
 
-        f.render_widget(paragraph, output_area);
+        f.render_widget(paragraph, area);
+    }
+}
+
+impl Page for DiffPage<'_> {
+    fn render(&mut self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .constraints([Constraint::Min(0), Constraint::Length(FOOTER_HEIGHT)])
+            .margin(LAYOUT_MARGIN)
+            .split(area);
+
+        let content_area = chunks[0];
+        let footer_area = chunks[1];
+
+        let content_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
+            .split(content_area);
+
+        let file_list_area = content_layout[0];
+        let diff_area = content_layout[1];
+
+        let parsed = parse_diff_lines(&self.diff);
+
+        Self::render_file_list(f, file_list_area, &parsed);
+        self.render_diff_content(f, diff_area, &parsed);
 
         let help_message = Paragraph::new("q: back | j/k: scroll | ?: help")
             .style(Style::default().fg(Color::Gray));
