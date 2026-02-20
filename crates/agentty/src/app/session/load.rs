@@ -76,12 +76,8 @@ impl SessionManager {
 
                 computed_size
             };
-            let commit_count =
-                Self::session_commit_count_for_folder(&folder, &row.base_branch).await;
-
             sessions.push(Session {
                 base_branch: row.base_branch,
-                commit_count,
                 folder,
                 id: row.id,
                 model: session_model,
@@ -116,17 +112,5 @@ impl SessionManager {
             .unwrap_or_default();
 
         SessionSize::from_diff(&diff)
-    }
-
-    async fn session_commit_count_for_folder(folder: &Path, base_branch: &str) -> i64 {
-        if !folder.is_dir() {
-            return 0;
-        }
-
-        let folder = folder.to_path_buf();
-        let base_branch = base_branch.to_string();
-        git::count_commits_since_base(folder, base_branch)
-            .await
-            .unwrap_or(0)
     }
 }

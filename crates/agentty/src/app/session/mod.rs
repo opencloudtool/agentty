@@ -244,7 +244,6 @@ mod tests {
         );
         app.sessions.sessions.push(Session {
             base_branch: "main".to_string(),
-            commit_count: 0,
             folder,
             id: id.to_string(),
             model: AgentModel::Gemini3FlashPreview,
@@ -1482,7 +1481,6 @@ mod tests {
             output.contains("[Commit] committed with hash"),
             "expected auto-commit output, got: {output}"
         );
-        assert_eq!(session.commit_count, 1);
     }
 
     #[tokio::test]
@@ -1915,10 +1913,7 @@ mod tests {
             status_output.stdout.is_empty(),
             "worktree should be clean after auto-commit"
         );
-
-        // Verify commit count incremented
         app.refresh_sessions_now().await;
-        assert_eq!(app.sessions.sessions[0].commit_count, 1);
     }
 
     #[tokio::test]

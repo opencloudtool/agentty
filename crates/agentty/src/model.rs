@@ -743,7 +743,6 @@ pub struct SessionStats {
 /// separately via [`SessionHandles`] in `SessionState`.
 pub struct Session {
     pub base_branch: String,
-    pub commit_count: i64,
     pub folder: PathBuf,
     pub id: String,
     pub model: AgentModel,
@@ -859,7 +858,6 @@ mod tests {
         // Arrange
         let session = Session {
             base_branch: String::new(),
-            commit_count: 0,
             folder: PathBuf::new(),
             id: "abc123".to_string(),
             model: AgentModel::Gemini3FlashPreview,
@@ -883,7 +881,6 @@ mod tests {
         // Arrange
         let session = Session {
             base_branch: String::new(),
-            commit_count: 0,
             folder: PathBuf::new(),
             id: "abc123".to_string(),
             model: AgentModel::Gemini3FlashPreview,

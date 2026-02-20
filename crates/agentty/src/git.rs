@@ -757,46 +757,6 @@ pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), String> 
     .map_err(|e| format!("Join error: {e}"))?
 }
 
-/// Returns the number of commits in `HEAD` that are not in `base_branch`.
-///
-/// # Arguments
-/// * `repo_path` - Path to the git repository or worktree
-/// * `base_branch` - Branch to compare against (for example, `main`)
-///
-/// # Returns
-/// The count of commits reachable from `HEAD` and not from `base_branch`.
-///
-/// # Errors
-/// Returns an error if `git rev-list` fails or output cannot be parsed.
-pub async fn count_commits_since_base(
-    repo_path: PathBuf,
-    base_branch: String,
-) -> Result<i64, String> {
-    spawn_blocking(move || {
-        let revision_range = format!("{base_branch}..HEAD");
-        let output = Command::new("git")
-            .args(["rev-list", "--count", revision_range.as_str()])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!("Git rev-list failed: {}", stderr.trim()));
-        }
-
-        let count = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse::<i64>()
-            .map_err(|error| format!("Failed to parse commit count: {error}"))?;
-
-        Ok(count)
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))?
-}
-
 /// Returns the origin repository URL normalized to HTTPS form when possible.
 ///
 /// # Arguments
@@ -2208,48 +2168,6 @@ exit 1
         // Assert
         let hash = result.expect("should succeed");
         assert!(!hash.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_count_commits_since_base_returns_zero_when_no_commits_ahead() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path()).expect("test setup failed");
-
-        // Act
-        let result = count_commits_since_base(dir.path().to_path_buf(), "main".to_string()).await;
-
-        // Assert
-        assert_eq!(result, Ok(0));
-    }
-
-    #[tokio::test]
-    async fn test_count_commits_since_base_returns_commits_ahead_of_base() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path()).expect("test setup failed");
-        Command::new("git")
-            .args(["checkout", "-b", "feature-branch"])
-            .current_dir(dir.path())
-            .output()
-            .expect("test setup failed");
-        fs::write(dir.path().join("feature.txt"), "feature").expect("test setup failed");
-        Command::new("git")
-            .args(["add", "feature.txt"])
-            .current_dir(dir.path())
-            .output()
-            .expect("test setup failed");
-        Command::new("git")
-            .args(["commit", "-m", "feat: add feature"])
-            .current_dir(dir.path())
-            .output()
-            .expect("test setup failed");
-
-        // Act
-        let result = count_commits_since_base(dir.path().to_path_buf(), "main".to_string()).await;
-
-        // Assert
-        assert_eq!(result, Ok(1));
     }
 
     #[tokio::test]

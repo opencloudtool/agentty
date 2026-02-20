@@ -426,14 +426,8 @@ impl<'a> SessionChatPage<'a> {
             ..
         } = self.mode
         {
-            let commit_count = session.commit_count;
-            let commits_label = if commit_count == 1 {
-                "commit"
-            } else {
-                "commits"
-            };
             let title = format!(
-                " {commit_count} {commits_label} [{}] ({}) ",
+                " [{}] ({}) ",
                 session.model.as_str(),
                 session.permission_mode.label()
             );
@@ -482,21 +476,12 @@ impl<'a> SessionChatPage<'a> {
         }
 
         if plan_followup_action.is_some() {
-            return if session.commit_count > 0 {
-                "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | m: merge \
-                 | r: rebase | S-Tab: mode | j/k: scroll | ?: help"
-            } else {
-                "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | S-Tab: \
-                 mode | j/k: scroll | ?: help"
-            };
+            return "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | m: \
+                    merge | r: rebase | S-Tab: mode | j/k: scroll | ?: help";
         }
 
-        if session.commit_count > 0 {
-            "q: back | enter: reply | o: open | d: diff | m: merge | r: rebase | S-Tab: mode | \
-             j/k: scroll | ?: help"
-        } else {
-            "q: back | enter: reply | o: open | d: diff | S-Tab: mode | j/k: scroll | ?: help"
-        }
+        "q: back | enter: reply | o: open | d: diff | m: merge | r: rebase | S-Tab: mode | j/k: \
+         scroll | ?: help"
     }
 }
 
@@ -520,7 +505,6 @@ mod tests {
     fn session_fixture() -> Session {
         Session {
             base_branch: "main".to_string(),
-            commit_count: 0,
             folder: PathBuf::new(),
             id: "session-id".to_string(),
             model: AgentModel::Gemini3FlashPreview,
@@ -995,23 +979,9 @@ mod tests {
     }
 
     #[test]
-    fn test_view_help_text_without_commits_excludes_git_actions() {
+    fn test_view_help_text_includes_git_actions() {
         // Arrange
         let session = session_fixture();
-
-        // Act
-        let help_text = SessionChatPage::view_help_text(&session, None);
-
-        // Assert
-        assert!(!help_text.contains("m: merge"));
-        assert!(!help_text.contains("r: rebase"));
-    }
-
-    #[test]
-    fn test_view_help_text_with_commits_includes_git_actions() {
-        // Arrange
-        let mut session = session_fixture();
-        session.commit_count = 1;
 
         // Act
         let help_text = SessionChatPage::view_help_text(&session, None);
@@ -1022,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn test_view_help_text_plan_followup_without_commits_excludes_git_actions() {
+    fn test_view_help_text_plan_followup_includes_git_actions() {
         // Arrange
         let session = session_fixture();
 
@@ -1031,7 +1001,7 @@ mod tests {
             SessionChatPage::view_help_text(&session, Some(PlanFollowupAction::ImplementPlan));
 
         // Assert
-        assert!(!help_text.contains("m: merge"));
-        assert!(!help_text.contains("r: rebase"));
+        assert!(help_text.contains("m: merge"));
+        assert!(help_text.contains("r: rebase"));
     }
 }

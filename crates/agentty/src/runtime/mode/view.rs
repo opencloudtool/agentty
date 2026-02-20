@@ -44,7 +44,6 @@ pub(crate) async fn handle(
         return Ok(EventResult::Continue);
     };
     let is_done = session.status == Status::Done;
-    let has_git_actions = has_session_git_actions(session.commit_count);
     let is_in_progress = session.status == Status::InProgress;
     let session_output = session.output.clone();
 
@@ -101,10 +100,10 @@ pub(crate) async fn handle(
         KeyCode::Char('d') if !key.modifiers.contains(event::KeyModifiers::CONTROL) && !is_done => {
             show_diff_for_view_session(app, &view_context).await;
         }
-        KeyCode::Char('m') if !is_done && has_git_actions => {
+        KeyCode::Char('m') if !is_done => {
             merge_view_session(app, &view_context.session_id).await;
         }
-        KeyCode::Char('r') if !is_done && has_git_actions => {
+        KeyCode::Char('r') if !is_done => {
             rebase_view_session(app, &view_context.session_id).await;
         }
         KeyCode::BackTab => {
@@ -132,10 +131,6 @@ pub(crate) async fn handle(
     }
 
     Ok(EventResult::Continue)
-}
-
-fn has_session_git_actions(commit_count: i64) -> bool {
-    commit_count > 0
 }
 
 fn switch_view_to_prompt(
@@ -536,30 +531,6 @@ mod tests {
 
         // Assert
         assert!(total_lines > raw_line_count);
-    }
-
-    #[test]
-    fn test_has_session_git_actions_false_without_commits() {
-        // Arrange
-        let commit_count = 0;
-
-        // Act
-        let has_actions = has_session_git_actions(commit_count);
-
-        // Assert
-        assert!(!has_actions);
-    }
-
-    #[test]
-    fn test_has_session_git_actions_true_with_commits() {
-        // Arrange
-        let commit_count = 1;
-
-        // Act
-        let has_actions = has_session_git_actions(commit_count);
-
-        // Assert
-        assert!(has_actions);
     }
 
     #[test]
