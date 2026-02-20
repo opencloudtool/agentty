@@ -1856,6 +1856,55 @@ mod tests {
         let commit_message = String::from_utf8_lossy(&commit_output.stdout);
         assert!(!commit_message.trim().is_empty());
         assert!(!commit_message.contains("Test merge commit"));
+
+        let commit_summary = commit_message.trim().to_string();
+        let commit_title = commit_summary
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(str::trim)
+            .expect("commit title should be present")
+            .to_string();
+
+        let mut persisted_title = None;
+        let mut persisted_summary = None;
+        for _ in 0..200 {
+            let sessions = app
+                .services
+                .db()
+                .load_sessions()
+                .await
+                .expect("failed to load sessions");
+            if let Some(session) = sessions.iter().find(|session| session.id == session_id) {
+                persisted_title = session.title.clone();
+                persisted_summary = session.summary.clone();
+                if persisted_title.as_deref() == Some(commit_title.as_str())
+                    && persisted_summary.as_deref() == Some(commit_summary.as_str())
+                {
+                    break;
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        assert_eq!(persisted_title.as_deref(), Some(commit_title.as_str()));
+        assert_eq!(persisted_summary.as_deref(), Some(commit_summary.as_str()));
+
+        app.refresh_sessions_now().await;
+        let refreshed_session = app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing refreshed session");
+        assert_eq!(
+            refreshed_session.title.as_deref(),
+            Some(commit_title.as_str())
+        );
+        assert_eq!(
+            refreshed_session.summary.as_deref(),
+            Some(commit_summary.as_str())
+        );
     }
 
     #[tokio::test]

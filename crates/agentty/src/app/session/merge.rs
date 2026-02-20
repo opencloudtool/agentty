@@ -28,11 +28,8 @@ const REBASE_ASSIST_POLICY: AssistPolicy = AssistPolicy {
 };
 const REBASE_ASSIST_PROMPT_TEMPLATE: &str =
     include_str!("../../../resources/rebase_assist_prompt.md");
-const SESSION_SUMMARY_TIMEOUT: Duration = Duration::from_mins(2);
 const MERGE_COMMIT_MESSAGE_PROMPT_TEMPLATE: &str =
     include_str!("../../../resources/merge_commit_message_prompt.md");
-const SESSION_TERMINAL_SUMMARY_PROMPT_TEMPLATE: &str =
-    include_str!("../../../resources/session_terminal_summary_prompt.md");
 
 #[derive(Deserialize)]
 /// Parsed response schema used when generating merge commit messages via model.
@@ -235,14 +232,10 @@ impl SessionManager {
                 git::squash_merge(repo_root, source_branch, base_branch, commit_message).await?;
             }
 
-            // Reuse the pre-merge diff since the worktree is now merged and clean.
-            let summary_diff = squash_diff;
-
             if !TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Done).await {
                 return Err("Invalid status transition to Done".to_string());
             }
 
-            let summary_folder = repo_root.clone();
             Self::cleanup_merged_session_worktree(
                 folder.clone(),
                 source_branch.clone(),
@@ -253,13 +246,11 @@ impl SessionManager {
                 format!("Merged successfully but failed to remove worktree: {error}")
             })?;
 
-            Self::update_terminal_session_summary_from_diff(
+            Self::update_session_title_and_summary_from_commit_message(
                 &db,
                 &id,
-                &summary_folder,
-                &summary_diff,
-                session_model,
-                Status::Done,
+                &commit_message,
+                &app_event_tx,
             )
             .await;
 
@@ -435,25 +426,40 @@ impl SessionManager {
         let _ = TaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
     }
 
-    /// Updates the persisted terminal summary using a precomputed diff.
-    pub(crate) async fn update_terminal_session_summary_from_diff(
+    /// Updates persisted session title and summary from the final squash commit
+    /// message.
+    pub(crate) async fn update_session_title_and_summary_from_commit_message(
         db: &Database,
         session_id: &str,
-        summary_folder: &Path,
-        diff: &str,
-        session_model: AgentModel,
-        terminal_status: Status,
+        commit_message: &str,
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
     ) {
-        let summary = Self::build_terminal_session_summary_from_diff(
-            summary_folder,
-            diff,
-            session_model,
-            terminal_status,
-        )
-        .await
-        .unwrap_or_else(|_| Self::fallback_terminal_summary(terminal_status));
+        let (title, summary) = Self::session_title_and_summary_from_commit_message(commit_message);
+
+        let _ = db.update_session_title(session_id, &title).await;
 
         let _ = db.update_session_summary(session_id, &summary).await;
+
+        let _ = app_event_tx.send(AppEvent::RefreshSessions);
+    }
+
+    fn session_title_and_summary_from_commit_message(commit_message: &str) -> (String, String) {
+        let trimmed_message = commit_message.trim();
+        if trimmed_message.is_empty() {
+            let fallback_message = "Apply session updates".to_string();
+
+            return (fallback_message.clone(), fallback_message);
+        }
+
+        let title = trimmed_message
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("Apply session updates")
+            .to_string();
+        let summary = trimmed_message.to_string();
+
+        (title, summary)
     }
 
     /// Runs a bounded rebase-assistance loop until conflicts are resolved.
@@ -842,77 +848,6 @@ impl SessionManager {
 
         git::head_short_hash(folder).await
     }
-
-    async fn build_terminal_session_summary_from_diff(
-        summary_folder: &Path,
-        diff: &str,
-        session_model: AgentModel,
-        terminal_status: Status,
-    ) -> Result<String, String> {
-        let prompt = Self::terminal_summary_prompt(terminal_status, diff);
-        let model_task = {
-            let summary_folder = summary_folder.to_path_buf();
-
-            tokio::task::spawn_blocking(move || {
-                Self::generate_terminal_summary_with_model(&summary_folder, session_model, &prompt)
-            })
-        };
-
-        match tokio::time::timeout(SESSION_SUMMARY_TIMEOUT, model_task).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => Err(format!("Join error: {error}")),
-            Err(_) => Err("Session summary model timed out".to_string()),
-        }
-    }
-
-    fn generate_terminal_summary_with_model(
-        folder: &Path,
-        session_model: AgentModel,
-        prompt: &str,
-    ) -> Result<String, String> {
-        let backend = session_model.kind().create_backend();
-        let mut command = backend.build_start_command(
-            folder,
-            prompt,
-            session_model.as_str(),
-            PermissionMode::AutoEdit,
-        );
-        command.stdin(Stdio::null());
-        let output = command
-            .output()
-            .map_err(|error| format!("Failed to run session summary model: {error}"))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let parsed =
-            session_model
-                .kind()
-                .parse_response(&stdout, &stderr, PermissionMode::AutoEdit);
-        let content = parsed.content.trim().to_string();
-
-        if content.is_empty() {
-            let stderr_text = stderr.trim();
-            if stderr_text.is_empty() {
-                return Err("Session summary model returned empty output".to_string());
-            }
-
-            return Err(format!(
-                "Session summary model returned empty output: {stderr_text}"
-            ));
-        }
-
-        Ok(content)
-    }
-
-    fn terminal_summary_prompt(terminal_status: Status, diff: &str) -> String {
-        SESSION_TERMINAL_SUMMARY_PROMPT_TEMPLATE
-            .replace("{{status}}", &terminal_status.to_string())
-            .replace("{{diff}}", diff)
-    }
-
-    fn fallback_terminal_summary(terminal_status: Status) -> String {
-        format!("Session finished with status `{terminal_status}`.")
-    }
 }
 
 #[cfg(test)]
@@ -959,29 +894,45 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_summary_prompt_interpolates_status_and_diff() {
+    fn test_session_title_and_summary_from_commit_message() {
         // Arrange
-        let terminal_status = Status::Done;
-        let diff = "diff --git a/src/main.rs b/src/main.rs";
+        let commit_message = "Refine merge flow\n\n- Update title handling";
 
         // Act
-        let prompt = SessionManager::terminal_summary_prompt(terminal_status, diff);
+        let (title, summary) =
+            SessionManager::session_title_and_summary_from_commit_message(commit_message);
 
         // Assert
-        assert!(prompt.contains("The session ended with status: `Done`."));
-        assert!(prompt.contains("Diff:\ndiff --git a/src/main.rs b/src/main.rs"));
+        assert_eq!(title, "Refine merge flow");
+        assert_eq!(summary, "Refine merge flow\n\n- Update title handling");
     }
 
     #[test]
-    fn test_fallback_terminal_summary_mentions_status() {
+    fn test_session_title_and_summary_from_commit_message_skips_blank_prefix() {
         // Arrange
-        let terminal_status = Status::Done;
+        let commit_message = "\n\nRefine merge flow\n\n- Update title handling";
 
         // Act
-        let summary = SessionManager::fallback_terminal_summary(terminal_status);
+        let (title, summary) =
+            SessionManager::session_title_and_summary_from_commit_message(commit_message);
 
         // Assert
-        assert_eq!(summary, "Session finished with status `Done`.");
+        assert_eq!(title, "Refine merge flow");
+        assert_eq!(summary, "Refine merge flow\n\n- Update title handling");
+    }
+
+    #[test]
+    fn test_session_title_and_summary_from_commit_message_empty_uses_fallback() {
+        // Arrange
+        let commit_message = "  \n";
+
+        // Act
+        let (title, summary) =
+            SessionManager::session_title_and_summary_from_commit_message(commit_message);
+
+        // Assert
+        assert_eq!(title, "Apply session updates");
+        assert_eq!(summary, "Apply session updates");
     }
 
     #[tokio::test]
