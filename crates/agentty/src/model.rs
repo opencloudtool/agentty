@@ -9,6 +9,7 @@ use crate::file_list::FileEntry;
 use crate::icon::Icon;
 
 pub const PLAN_MODE_INSTRUCTIONS: &str = include_str!("../resources/plan_mode.md");
+const PLAN_MODE_PROMPT_TEMPLATE: &str = include_str!("../resources/plan_mode_prompt.md");
 
 pub const SESSION_DATA_DIR: &str = ".agentty";
 
@@ -69,11 +70,16 @@ impl PermissionMode {
     /// Other modes return the prompt unchanged.
     pub fn apply_to_prompt(self, prompt: &str) -> Cow<'_, str> {
         match self {
-            PermissionMode::Plan => Cow::Owned(format!(
-                "[PLAN MODE] {PLAN_MODE_INSTRUCTIONS} Prompt: {prompt}"
-            )),
+            PermissionMode::Plan => Cow::Owned(Self::plan_mode_prompt(prompt)),
             _ => Cow::Borrowed(prompt),
         }
+    }
+
+    fn plan_mode_prompt(prompt: &str) -> String {
+        PLAN_MODE_PROMPT_TEMPLATE
+            .trim_end()
+            .replace("{plan_mode_instructions}", PLAN_MODE_INSTRUCTIONS)
+            .replace("{prompt}", prompt)
     }
 }
 

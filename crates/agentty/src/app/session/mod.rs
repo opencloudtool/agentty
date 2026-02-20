@@ -1,7 +1,7 @@
 //! Session lifecycle orchestration for creation, refresh, prompt handling,
 //! history management, merge, and cleanup.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,6 +29,7 @@ pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
 pub struct SessionManager {
     default_session_model: AgentModel,
     default_session_permission_mode: PermissionMode,
+    pending_history_replay: HashSet<String>,
     state: SessionState,
     workers: HashMap<String, mpsc::UnboundedSender<crate::app::session::worker::SessionCommand>>,
 }
@@ -43,6 +44,7 @@ impl SessionManager {
         Self {
             default_session_model,
             default_session_permission_mode,
+            pending_history_replay: HashSet::new(),
             state,
             workers: HashMap::new(),
         }
@@ -55,6 +57,8 @@ impl SessionManager {
 
     /// Applies reducer updates after session history was cleared.
     pub(crate) fn apply_session_history_cleared(&mut self, session_id: &str) {
+        self.pending_history_replay.remove(session_id);
+
         if let Some(handles) = self.state.handles.get(session_id) {
             if let Ok(mut output_buffer) = handles.output.lock() {
                 output_buffer.clear();
@@ -1388,9 +1392,10 @@ mod tests {
 
         // Act — reply (resume command)
         let mut resume_mock = MockAgentBackend::new();
-        resume_mock
-            .expect_build_resume_command()
-            .returning(|folder, prompt, _, _| {
+        resume_mock.expect_build_resume_command().returning(
+            |folder, prompt, _, _, session_output| {
+                assert!(session_output.is_none());
+
                 let mut cmd = Command::new("echo");
                 cmd.arg("--prompt")
                     .arg(prompt)
@@ -1402,7 +1407,8 @@ mod tests {
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
                 cmd
-            });
+            },
+        );
         let session_id = app.sessions.sessions[0].id.clone();
         app.sessions
             .reply_with_backend(
@@ -1425,6 +1431,99 @@ mod tests {
             assert!(output.contains("latest"));
             assert_eq!(session.status, Status::Review);
         }
+    }
+
+    #[tokio::test]
+    async fn test_reply_with_backend_replays_history_once_after_model_switch() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let mut app = App::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            Some("main".to_string()),
+            db,
+        )
+        .await;
+
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        let start_backend = create_mock_backend();
+        app.sessions
+            .reply_with_backend(
+                &app.services,
+                &session_id,
+                "Initial prompt",
+                &start_backend,
+                AgentModel::Gemini3FlashPreview,
+            )
+            .await;
+        wait_for_output_contains(&mut app, &session_id, "mock-start", 40).await;
+
+        app.set_session_model(&session_id, AgentModel::Gpt53Codex)
+            .await
+            .expect("failed to switch model");
+
+        // Act
+        let mut first_resume_mock = MockAgentBackend::new();
+        first_resume_mock.expect_build_resume_command().returning(
+            |folder, prompt, _, _, session_output| {
+                let session_output = session_output.expect("expected session output");
+                assert!(session_output.contains("Initial prompt"));
+                assert!(session_output.contains("mock-start"));
+
+                let mut cmd = Command::new("echo");
+                cmd.arg("--prompt")
+                    .arg(prompt)
+                    .arg("history-replayed")
+                    .current_dir(folder)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
+                cmd
+            },
+        );
+        app.sessions
+            .reply_with_backend(
+                &app.services,
+                &session_id,
+                "Switch reply",
+                &first_resume_mock,
+                AgentModel::Gpt53Codex,
+            )
+            .await;
+        wait_for_output_contains(&mut app, &session_id, "history-replayed", 40).await;
+
+        // Assert
+        let mut second_resume_mock = MockAgentBackend::new();
+        second_resume_mock.expect_build_resume_command().returning(
+            |folder, prompt, _, _, session_output| {
+                assert!(session_output.is_none());
+
+                let mut cmd = Command::new("echo");
+                cmd.arg("--prompt")
+                    .arg(prompt)
+                    .arg("history-not-replayed")
+                    .current_dir(folder)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
+                cmd
+            },
+        );
+        app.sessions
+            .reply_with_backend(
+                &app.services,
+                &session_id,
+                "Second reply",
+                &second_resume_mock,
+                AgentModel::Gpt53Codex,
+            )
+            .await;
+        wait_for_output_contains(&mut app, &session_id, "history-not-replayed", 40).await;
     }
 
     #[tokio::test]

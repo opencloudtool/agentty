@@ -318,7 +318,11 @@ impl SessionManager {
         session_id: &str,
         session_model: AgentModel,
     ) -> Result<(), String> {
-        let _ = self.session_index_or_err(session_id)?;
+        let session_index = self.session_index_or_err(session_id)?;
+        let model_changed = self
+            .sessions
+            .get(session_index)
+            .is_some_and(|session| session.model != session_model);
 
         services
             .db()
@@ -328,6 +332,10 @@ impl SessionManager {
             session_id: session_id.to_string(),
             session_model,
         });
+
+        if model_changed {
+            self.pending_history_replay.insert(session_id.to_string());
+        }
 
         Ok(())
     }
@@ -442,6 +450,7 @@ impl SessionManager {
 
         let session = self.sessions.remove(index);
         self.handles.remove(&session.id);
+        self.pending_history_replay.remove(&session.id);
 
         let _ = services
             .db()
@@ -484,14 +493,13 @@ impl SessionManager {
             .sessions
             .get(session_index)
             .map_or(PermissionMode::default(), |session| session.permission_mode);
+        let should_replay_history = self.pending_history_replay.contains(session_id);
         let mut blocked_session_id = None;
         let reply_context = {
             let Some(session) = self.sessions.get_mut(session_index) else {
                 return;
             };
 
-            // If the session was persisted with a blank prompt (e.g. app closed
-            // before first message), treat the first reply as the initial start.
             let is_first_message = session.prompt.is_empty();
             let allowed = session.status == Status::Review
                 || (is_first_message && session.status == Status::New);
@@ -506,6 +514,11 @@ impl SessionManager {
 
                 Some((
                     session.folder.clone(),
+                    if should_replay_history && !is_first_message {
+                        Some(session.output.clone())
+                    } else {
+                        None
+                    },
                     is_first_message,
                     session.id.clone(),
                     title_to_save,
@@ -521,10 +534,14 @@ impl SessionManager {
 
             return;
         }
-        let Some((folder, is_first_message, persisted_session_id, title_to_save)) = reply_context
+        let Some((folder, session_output, is_first_message, persisted_session_id, title_to_save)) =
+            reply_context
         else {
             return;
         };
+        if should_replay_history {
+            self.pending_history_replay.remove(&persisted_session_id);
+        }
         let app_event_tx = services.event_sender();
 
         let Ok(handles) = self.session_handles_or_err(&persisted_session_id) else {
@@ -534,20 +551,13 @@ impl SessionManager {
         let status = Arc::clone(&handles.status);
 
         if let Some(title) = title_to_save {
-            let _ = services
-                .db()
-                .update_session_title(&persisted_session_id, &title)
-                .await;
-            let _ = services
-                .db()
-                .update_session_prompt(&persisted_session_id, prompt)
-                .await;
-            let _ = TaskService::update_status(
+            self.persist_first_reply_metadata(
+                services,
                 &status,
-                services.db(),
                 &app_event_tx,
                 &persisted_session_id,
-                Status::InProgress,
+                prompt,
+                &title,
             )
             .await;
         }
@@ -569,6 +579,7 @@ impl SessionManager {
             session_model,
             permission_mode,
             is_first_message,
+            session_output,
         );
         self.enqueue_reply_command(
             services,
@@ -580,6 +591,30 @@ impl SessionManager {
         .await;
     }
 
+    async fn persist_first_reply_metadata(
+        &self,
+        services: &AppServices,
+        status: &Arc<Mutex<Status>>,
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
+        session_id: &str,
+        prompt: &str,
+        title: &str,
+    ) {
+        let _ = services.db().update_session_title(session_id, title).await;
+        let _ = services
+            .db()
+            .update_session_prompt(session_id, prompt)
+            .await;
+        let _ = TaskService::update_status(
+            status,
+            services.db(),
+            app_event_tx,
+            session_id,
+            Status::InProgress,
+        )
+        .await;
+    }
+
     fn build_session_command(
         backend: &dyn AgentBackend,
         folder: &Path,
@@ -587,6 +622,7 @@ impl SessionManager {
         session_model: AgentModel,
         permission_mode: PermissionMode,
         is_first_message: bool,
+        session_output: Option<String>,
     ) -> SessionCommand {
         let operation_id = Uuid::new_v4().to_string();
 
@@ -609,6 +645,7 @@ impl SessionManager {
                     prompt,
                     session_model.as_str(),
                     permission_mode,
+                    session_output,
                 ),
                 operation_id,
                 permission_mode,

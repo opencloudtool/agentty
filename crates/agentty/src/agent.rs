@@ -9,6 +9,9 @@ use serde::Deserialize;
 
 use crate::model::{PermissionMode, SessionStats};
 
+const RESUME_WITH_SESSION_OUTPUT_PROMPT_TEMPLATE: &str =
+    include_str!("../resources/resume_with_session_output_prompt.md");
+
 /// Parsed agent response including content text and usage statistics.
 pub struct ParsedResponse {
     pub content: String,
@@ -34,7 +37,22 @@ pub trait AgentBackend: Send + Sync {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        session_output: Option<String>,
     ) -> Command;
+}
+
+fn build_resume_prompt(prompt: &str, session_output: Option<&str>) -> String {
+    let Some(session_output) = session_output
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return prompt.to_string();
+    };
+
+    RESUME_WITH_SESSION_OUTPUT_PROMPT_TEMPLATE
+        .trim_end()
+        .replace("{session_output}", session_output)
+        .replace("{prompt}", prompt)
 }
 
 pub struct GeminiBackend;
@@ -50,8 +68,10 @@ impl AgentBackend for GeminiBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        session_output: Option<String>,
     ) -> Command {
-        let mut cmd = self.build_start_command(folder, prompt, model, permission_mode);
+        let prompt = build_resume_prompt(prompt, session_output.as_deref());
+        let mut cmd = self.build_start_command(folder, &prompt, model, permission_mode);
         cmd.arg("--resume").arg("latest");
 
         cmd
@@ -120,8 +140,10 @@ impl AgentBackend for ClaudeBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        session_output: Option<String>,
     ) -> Command {
-        let prompt = permission_mode.apply_to_prompt(prompt);
+        let prompt = build_resume_prompt(prompt, session_output.as_deref());
+        let prompt = permission_mode.apply_to_prompt(&prompt);
         let mut cmd = Command::new("claude");
         cmd.arg("-c").arg("-p").arg(prompt.as_ref());
         Self::apply_permission_args(&mut cmd, permission_mode);
@@ -193,8 +215,10 @@ impl AgentBackend for CodexBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        session_output: Option<String>,
     ) -> Command {
-        let prompt = permission_mode.apply_to_prompt(prompt);
+        let prompt = build_resume_prompt(prompt, session_output.as_deref());
+        let prompt = permission_mode.apply_to_prompt(&prompt);
         let approval_flag = Self::approval_flag(permission_mode);
         let mut cmd = Command::new("codex");
         cmd.arg("exec")
@@ -927,6 +951,7 @@ mod tests {
             "follow-up",
             "gemini-3-pro-preview",
             PermissionMode::AutoEdit,
+            None,
         );
 
         // Assert
@@ -938,6 +963,31 @@ mod tests {
         assert!(debug.contains("gemini-3-pro-preview"));
         assert!(debug.contains("--output-format"));
         assert!(debug.contains("\"json\""));
+    }
+
+    #[test]
+    fn test_gemini_resume_command_includes_session_output() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = GeminiBackend;
+        let session_output = "assistant: completed task\nuser: needs update";
+
+        // Act
+        let cmd = AgentBackend::build_resume_command(
+            &backend,
+            dir.path(),
+            "follow-up",
+            "gemini-3-pro-preview",
+            PermissionMode::AutoEdit,
+            Some(session_output.to_string()),
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("full transcript below"));
+        assert!(debug.contains("assistant: completed task"));
+        assert!(debug.contains("User prompt"));
+        assert!(debug.contains("follow-up"));
     }
 
     #[test]
@@ -1030,6 +1080,7 @@ mod tests {
             "follow-up",
             "claude-haiku-4-5-20251001",
             PermissionMode::AutoEdit,
+            None,
         );
 
         // Assert
@@ -1046,6 +1097,31 @@ mod tests {
             command_env_value(&cmd, "ANTHROPIC_MODEL"),
             Some("claude-haiku-4-5-20251001".to_string())
         );
+    }
+
+    #[test]
+    fn test_claude_resume_command_includes_session_output() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = ClaudeBackend;
+        let session_output = "assistant: completed task\nuser: needs update";
+
+        // Act
+        let cmd = AgentBackend::build_resume_command(
+            &backend,
+            dir.path(),
+            "follow-up",
+            "claude-opus-4-6",
+            PermissionMode::AutoEdit,
+            Some(session_output.to_string()),
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("full transcript below"));
+        assert!(debug.contains("assistant: completed task"));
+        assert!(debug.contains("User prompt"));
+        assert!(debug.contains("follow-up"));
     }
 
     #[test]
@@ -1106,6 +1182,7 @@ mod tests {
             "follow-up",
             "gpt-5.2-codex",
             PermissionMode::AutoEdit,
+            None,
         );
 
         // Assert
@@ -1119,6 +1196,31 @@ mod tests {
         assert!(debug.contains("--json"));
         assert!(debug.contains("follow-up"));
         assert!(!debug.contains("--dangerously-bypass-approvals-and-sandbox"));
+    }
+
+    #[test]
+    fn test_codex_resume_command_includes_session_output() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = CodexBackend;
+        let session_output = "assistant: completed task\nuser: needs update";
+
+        // Act
+        let cmd = AgentBackend::build_resume_command(
+            &backend,
+            dir.path(),
+            "follow-up",
+            "gpt-5.2-codex",
+            PermissionMode::AutoEdit,
+            Some(session_output.to_string()),
+        );
+
+        // Assert
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("full transcript below"));
+        assert!(debug.contains("assistant: completed task"));
+        assert!(debug.contains("User prompt"));
+        assert!(debug.contains("follow-up"));
     }
 
     #[test]
@@ -1744,6 +1846,7 @@ mod tests {
             "follow-up",
             "claude-opus-4-6",
             PermissionMode::Autonomous,
+            None,
         );
 
         // Assert
@@ -1812,6 +1915,7 @@ mod tests {
             "follow-up",
             "gemini-3-flash-preview",
             PermissionMode::Plan,
+            None,
         );
 
         // Assert
@@ -1859,6 +1963,7 @@ mod tests {
             "follow-up",
             "claude-opus-4-6",
             PermissionMode::Plan,
+            None,
         );
 
         // Assert
@@ -1905,6 +2010,7 @@ mod tests {
             "follow-up",
             "gpt-5.3-codex",
             PermissionMode::Plan,
+            None,
         );
 
         // Assert
