@@ -104,7 +104,7 @@ impl<'a> ChatInput<'a> {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw("   "),
+                Span::raw("  "),
                 Span::styled(self.placeholder, Style::default().fg(Color::DarkGray)),
             ])];
 
