@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.13] - 2026-02-19
+
+### Added
+- **Session Output:** Render styled markdown in session chat output.
+- **Session Output:** Switch to stream-json output and parse Gemini stream events.
+- **Session Output:** Extract session output into dedicated UI component.
+- **Update Check:** Show update availability in status bar and onboarding page.
+- **Models:** Update Gemini Pro to version 3.1 and Claude Sonnet to version 4.6.
+- **Models:** Add verbose flag to Claude stream-json commands.
+
+### Changed
+- **Session Metadata:** Move session status to output panel title and metadata to chat input border.
+- **Session Titles:** Persist session title and summary from squash commit message.
+- **Session Titles:** Use full prompt as session title for new sessions.
+- **Session Replay:** Replay session transcript once after model switch.
+- **Git Actions:** Remove session commit count and always show git actions.
+- **Diff View:** Use merge-base for session diff to accurately exclude base branch updates.
+- **Rebase:** Refactor rebase logic into a reusable workflow.
+- **Database:** Make session token stats non-nullable with zero defaults.
+- **NPM:** Update package name to `agentty` in docs and badges.
+
+### Fixed
+- **UI:** Fix session list table column layout constraints.
+- **Runtime:** Add shutdown signal to event reader thread for cleaner exit.
+
+### Contributors
+- @andagaev
+- @minev-dev
+
 ## [v0.1.12] - 2026-02-19
 
 ### Added
