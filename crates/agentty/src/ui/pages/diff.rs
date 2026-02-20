@@ -5,10 +5,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::model::Session;
-use crate::ui::Page;
+use crate::ui::components::file_explorer::FileExplorer;
 use crate::ui::util::{
     DiffLine, DiffLineKind, max_diff_line_number, parse_diff_lines, wrap_diff_content,
 };
+use crate::ui::{Component, Page};
 
 const BORDER_HORIZONTAL_WIDTH: u16 = 2;
 const FOOTER_HEIGHT: u16 = 1;
@@ -35,45 +36,6 @@ impl<'a> DiffPage<'a> {
             scroll_offset,
             session,
         }
-    }
-
-    fn render_file_list(f: &mut Frame, area: Rect, parsed: &[DiffLine]) {
-        let mut file_list_lines = Vec::new();
-        for line in parsed {
-            if line.kind == DiffLineKind::FileHeader && line.content.starts_with("diff --git") {
-                let text = if let Some(stripped) = line.content.strip_prefix("diff --git a/") {
-                    if let Some((old, new)) = stripped.split_once(" b/") {
-                        if old == new {
-                            old.to_string()
-                        } else {
-                            format!("{old} -> {new}")
-                        }
-                    } else {
-                        stripped.to_string()
-                    }
-                } else {
-                    line.content.replace("diff --git ", "")
-                };
-                file_list_lines.push(Line::from(Span::styled(
-                    text,
-                    Style::default().fg(Color::Cyan),
-                )));
-            }
-        }
-
-        if file_list_lines.is_empty() {
-            file_list_lines.push(Line::from(Span::styled(
-                "No files",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-
-        let file_list_paragraph = Paragraph::new(file_list_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(" Files ", Style::default().fg(Color::Cyan))),
-        );
-        f.render_widget(file_list_paragraph, area);
     }
 
     fn render_diff_content(&self, f: &mut Frame, area: Rect, parsed: &[DiffLine]) {
@@ -187,7 +149,7 @@ impl Page for DiffPage<'_> {
 
         let parsed = parse_diff_lines(&self.diff);
 
-        Self::render_file_list(f, file_list_area, &parsed);
+        FileExplorer::new(&parsed).render(f, file_list_area);
         self.render_diff_content(f, diff_area, &parsed);
 
         let help_message = Paragraph::new("q: back | j/k: scroll | ?: help")
