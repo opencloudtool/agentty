@@ -74,7 +74,7 @@ impl<'a> SessionOutput<'a> {
 
         if matches!(
             status,
-            Status::InProgress | Status::Rebasing | Status::Merging
+            Status::InProgress | Status::Queued | Status::Rebasing | Status::Merging
         ) {
             while lines.last().is_some_and(|line| line.width() == 0) {
                 lines.pop();
@@ -82,9 +82,10 @@ impl<'a> SessionOutput<'a> {
 
             lines.push(Line::from(""));
 
+            let status_icon = Self::status_icon(status);
             let status_message = Self::status_message(status, active_progress);
             lines.push(Line::from(vec![Span::styled(
-                format!("{} {}", Icon::current_spinner(), status_message),
+                format!("{status_icon} {status_message}"),
                 Style::default().fg(status.color()),
             )]));
         } else {
@@ -156,9 +157,20 @@ impl<'a> SessionOutput<'a> {
 
         match status {
             Status::InProgress => "Thinking...".to_string(),
+            Status::Queued => "Waiting in merge queue...".to_string(),
             Status::Rebasing => "Rebasing...".to_string(),
             Status::Merging => "Merging...".to_string(),
             Status::New | Status::Review | Status::Done | Status::Canceled => String::new(),
+        }
+    }
+
+    /// Returns the status indicator icon used for inline status messages.
+    fn status_icon(status: Status) -> Icon {
+        match status {
+            Status::InProgress | Status::Rebasing | Status::Merging => Icon::current_spinner(),
+            Status::Queued | Status::New | Status::Review | Status::Done | Status::Canceled => {
+                Icon::Pending
+            }
         }
     }
 
@@ -492,6 +504,15 @@ mod tests {
 
         // Assert
         assert_eq!(message, "Merging...");
+    }
+
+    #[test]
+    fn test_status_message_for_queued() {
+        // Arrange & Act
+        let message = SessionOutput::status_message(Status::Queued, None);
+
+        // Assert
+        assert_eq!(message, "Waiting in merge queue...");
     }
 
     #[test]

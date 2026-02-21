@@ -85,7 +85,8 @@ struct RebaseTaskInput {
 }
 
 impl SessionManager {
-    /// Starts a squash merge for a reviewed session branch in the background.
+    /// Starts a squash merge for a review-ready or queued session branch in
+    /// the background.
     ///
     /// # Errors
     /// Returns an error if the session is invalid for merge, required git
@@ -99,8 +100,8 @@ impl SessionManager {
         let session = self
             .session_or_err(session_id)
             .map_err(|_| SESSION_NOT_FOUND_ERROR.to_string())?;
-        if session.status != Status::Review {
-            return Err("Session must be in review status".to_string());
+        if !matches!(session.status, Status::Review | Status::Queued) {
+            return Err("Session must be in review or queued status".to_string());
         }
 
         let db = services.db().clone();

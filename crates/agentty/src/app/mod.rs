@@ -35,6 +35,7 @@ pub use session::SessionManager;
 pub use settings::SettingsManager;
 pub use state::SessionState;
 pub use tab::{Tab, TabManager};
+use task::TaskService;
 
 /// Relative directory name used for session git worktrees under `~/.agentty`.
 pub const AGENTTY_WT_DIR: &str = "wt";
@@ -462,7 +463,7 @@ impl App {
         Ok(())
     }
 
-    /// Starts squash-merge workflow for a reviewed session.
+    /// Starts squash-merge workflow for a review-ready session.
     ///
     /// # Errors
     /// Returns an error if session is not mergeable, queueing fails, or
@@ -473,10 +474,14 @@ impl App {
         }
 
         self.validate_merge_request(session_id)?;
-        self.merge_queue.enqueue(session_id.to_string());
         if self.merge_queue.has_active() {
+            self.mark_session_as_queued_for_merge(session_id).await?;
+            self.merge_queue.enqueue(session_id.to_string());
+
             return Ok(());
         }
+
+        self.merge_queue.enqueue(session_id.to_string());
 
         self.start_next_merge_from_queue(true).await
     }
@@ -615,15 +620,66 @@ impl App {
 
     /// Validates whether a session is currently eligible for merge queueing.
     ///
+    /// Sessions are eligible while actively under review or already marked as
+    /// `Queued` (for example, after app restart).
+    ///
     /// # Errors
-    /// Returns an error when the session does not exist or is not in `Review`.
+    /// Returns an error when the session does not exist or has an ineligible
+    /// status.
     fn validate_merge_request(&self, session_id: &str) -> Result<(), String> {
         let session = self.sessions.session_or_err(session_id)?;
-        if session.status != Status::Review {
-            return Err("Session must be in review status".to_string());
+        if !matches!(session.status, Status::Review | Status::Queued) {
+            return Err("Session must be in review or queued status".to_string());
         }
 
         Ok(())
+    }
+
+    /// Marks one session as waiting in the merge queue.
+    ///
+    /// # Errors
+    /// Returns an error when status transition to `Queued` is invalid.
+    async fn mark_session_as_queued_for_merge(&self, session_id: &str) -> Result<(), String> {
+        let handles = self.sessions.session_handles_or_err(session_id)?;
+        let app_event_tx = self.services.event_sender();
+        let status_updated = TaskService::update_status(
+            handles.status.as_ref(),
+            self.services.db(),
+            &app_event_tx,
+            session_id,
+            Status::Queued,
+        )
+        .await;
+
+        if !status_updated {
+            return Err("Invalid status transition to Queued".to_string());
+        }
+
+        Ok(())
+    }
+
+    /// Restores a queued session to `Review` if merge start fails.
+    async fn restore_queued_session_to_review(&self, session_id: &str) {
+        let session_status = self
+            .sessions
+            .session_or_err(session_id)
+            .map(|session| session.status);
+        if session_status != Ok(Status::Queued) {
+            return;
+        }
+
+        let Ok(handles) = self.sessions.session_handles_or_err(session_id) else {
+            return;
+        };
+        let app_event_tx = self.services.event_sender();
+        let _ = TaskService::update_status(
+            handles.status.as_ref(),
+            self.services.db(),
+            &app_event_tx,
+            session_id,
+            Status::Review,
+        )
+        .await;
     }
 
     /// Starts the next pending merge request when no merge is currently active.
@@ -651,6 +707,9 @@ impl App {
                     return Ok(());
                 }
                 Err(error) => {
+                    self.restore_queued_session_to_review(&next_session_id)
+                        .await;
+
                     let merge_error = format!("\n[Merge Error] {error}\n");
                     self.append_output_for_session(&next_session_id, &merge_error)
                         .await;

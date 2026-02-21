@@ -11,10 +11,13 @@ use super::permission::PermissionMode;
 pub const SESSION_DATA_DIR: &str = ".agentty";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// High-level lifecycle state for one session.
 pub enum Status {
     New,
     InProgress,
     Review,
+    /// Session is waiting in the merge queue for its turn to merge.
+    Queued,
     Rebasing,
     Merging,
     Done,
@@ -22,17 +25,20 @@ pub enum Status {
 }
 
 impl Status {
+    /// Returns the UI color associated with this status.
     pub fn color(&self) -> Color {
         match self {
             Status::New => Color::DarkGray,
             Status::InProgress => Color::Yellow,
             Status::Review => Color::LightBlue,
+            Status::Queued => Color::LightCyan,
             Status::Rebasing | Status::Merging => Color::Cyan,
             Status::Done => Color::Green,
             Status::Canceled => Color::Red,
         }
     }
 
+    /// Returns whether a transition to `next` is valid.
     pub fn can_transition_to(self, next: Status) -> bool {
         if self == next {
             return true;
@@ -44,8 +50,13 @@ impl Status {
                 | (Status::New | Status::InProgress, Status::Rebasing)
                 | (
                     Status::Review,
-                    Status::InProgress | Status::Rebasing | Status::Merging | Status::Canceled
+                    Status::InProgress
+                        | Status::Queued
+                        | Status::Rebasing
+                        | Status::Merging
+                        | Status::Canceled
                 )
+                | (Status::Queued, Status::Merging | Status::Review)
                 | (Status::InProgress | Status::Rebasing, Status::Review)
                 | (Status::Merging, Status::Done | Status::Review)
         )
@@ -58,6 +69,7 @@ impl fmt::Display for Status {
             Status::New => write!(f, "New"),
             Status::InProgress => write!(f, "InProgress"),
             Status::Review => write!(f, "Review"),
+            Status::Queued => write!(f, "Queued"),
             Status::Rebasing => write!(f, "Rebasing"),
             Status::Merging => write!(f, "Merging"),
             Status::Done => write!(f, "Done"),
@@ -74,6 +86,7 @@ impl FromStr for Status {
             "New" => Ok(Status::New),
             "InProgress" | "Committing" => Ok(Status::InProgress),
             "Review" => Ok(Status::Review),
+            "Queued" => Ok(Status::Queued),
             "Rebasing" => Ok(Status::Rebasing),
             "Merging" => Ok(Status::Merging),
             "Done" => Ok(Status::Done),
@@ -222,5 +235,72 @@ impl SessionHandles {
         if let Ok(mut buf) = self.output.lock() {
             buf.push_str(message);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_from_str_queued() {
+        // Arrange
+        let raw_status = "Queued";
+
+        // Act
+        let status = raw_status
+            .parse::<Status>()
+            .expect("failed to parse status");
+
+        // Assert
+        assert_eq!(status, Status::Queued);
+    }
+
+    #[test]
+    fn test_status_display_queued() {
+        // Arrange
+        let status = Status::Queued;
+
+        // Act
+        let displayed_status = status.to_string();
+
+        // Assert
+        assert_eq!(displayed_status, "Queued");
+    }
+
+    #[test]
+    fn test_status_transition_review_to_queued() {
+        // Arrange
+        let current_status = Status::Review;
+
+        // Act
+        let can_transition = current_status.can_transition_to(Status::Queued);
+
+        // Assert
+        assert!(can_transition);
+    }
+
+    #[test]
+    fn test_status_transition_queued_to_merging() {
+        // Arrange
+        let current_status = Status::Queued;
+
+        // Act
+        let can_transition = current_status.can_transition_to(Status::Merging);
+
+        // Assert
+        assert!(can_transition);
+    }
+
+    #[test]
+    fn test_status_transition_queued_to_in_progress_is_rejected() {
+        // Arrange
+        let current_status = Status::Queued;
+
+        // Act
+        let can_transition = current_status.can_transition_to(Status::InProgress);
+
+        // Assert
+        assert!(!can_transition);
     }
 }

@@ -413,14 +413,16 @@ mod tests {
             .expect("failed to commit queued change");
     }
 
-    /// Waits for the first merge to finish and asserts second merge has not
-    /// started prematurely.
+    /// Waits for the first merge to finish and asserts second merge is queued
+    /// first instead of starting prematurely.
     async fn wait_for_first_merge_to_complete_before_second_starts(
         app: &mut App,
         first_session_id: &str,
         second_session_id: &str,
     ) {
         let mut first_merge_completed = false;
+        let mut first_merge_pending_observed = false;
+        let mut second_merge_was_queued = false;
 
         for _ in 0..5000 {
             app.process_pending_app_events().await;
@@ -428,11 +430,15 @@ mod tests {
 
             let first_status = session_status_or_done(app, first_session_id);
             let second_status = session_status_or_done(app, second_session_id);
+            if second_status == Status::Queued {
+                second_merge_was_queued = true;
+            }
             if first_status == Status::Done {
                 first_merge_completed = true;
 
                 break;
             }
+            first_merge_pending_observed = true;
 
             assert_ne!(
                 second_status,
@@ -447,6 +453,12 @@ mod tests {
             first_merge_completed,
             "first merge did not complete within timeout"
         );
+        if first_merge_pending_observed {
+            assert!(
+                second_merge_was_queued,
+                "second merge never entered queued status before first completed"
+            );
+        }
     }
 
     /// Waits for the queued second merge to enter `Merging` or `Done`.
@@ -2161,8 +2173,8 @@ mod tests {
         create_and_start_session(&mut app, "Queue merge two").await;
         let first_session_id = app.sessions.sessions[0].id.clone();
         let second_session_id = app.sessions.sessions[1].id.clone();
-        wait_for_status_with_retries(&mut app, &first_session_id, Status::Review, 200).await;
-        wait_for_status_with_retries(&mut app, &second_session_id, Status::Review, 200).await;
+        wait_for_status_with_retries(&mut app, &first_session_id, Status::Review, 400).await;
+        wait_for_status_with_retries(&mut app, &second_session_id, Status::Review, 400).await;
 
         let first_folder = app.sessions.sessions[0].folder.clone();
         let second_folder = app.sessions.sessions[1].folder.clone();

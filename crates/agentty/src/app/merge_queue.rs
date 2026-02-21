@@ -58,6 +58,7 @@ impl MergeQueue {
     /// This clears an active merge once it transitions away from `Merging`.
     /// It returns `StartNext` when the active merge either:
     /// - Transitions from `Merging` to any other state, or
+    /// - Is touched in a reducer batch while already no longer `Merging`, or
     /// - Disappears from the session list after processing.
     pub(crate) fn progress_from_status_updates(
         &mut self,
@@ -82,6 +83,12 @@ impl MergeQueue {
             .get(&active_session_id)
             .map(|(_, previous_status)| *previous_status);
         if previous_status != Some(Status::Merging) {
+            if current_active_status != Some(Status::Merging) {
+                self.active_session_id = None;
+
+                return MergeQueueProgress::StartNext;
+            }
+
             return MergeQueueProgress::NoAction;
         }
 
@@ -221,5 +228,23 @@ mod tests {
         // Assert
         assert_eq!(progress, MergeQueueProgress::NoAction);
         assert!(queue.has_active());
+    }
+
+    #[test]
+    fn test_progress_from_status_updates_handles_synced_done_without_previous_merging() {
+        // Arrange
+        let session_id = "session-1";
+        let mut queue = MergeQueue::default();
+        queue.set_active(session_id.to_string());
+        let touched_ids = touched_session_ids(session_id);
+        let previous_states = HashMap::new();
+
+        // Act
+        let progress =
+            queue.progress_from_status_updates(Some(Status::Done), &touched_ids, &previous_states);
+
+        // Assert
+        assert_eq!(progress, MergeQueueProgress::StartNext);
+        assert!(!queue.has_active());
     }
 }

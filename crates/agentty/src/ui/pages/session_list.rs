@@ -153,7 +153,7 @@ fn grouped_session_rows(sessions: &[Session]) -> Vec<SessionTableRow<'_>> {
 
 /// Returns `true` when a session belongs to the merge queue group.
 fn is_merge_queue_session(session: &Session) -> bool {
-    session.status == Status::Merging
+    matches!(session.status, Status::Queued | Status::Merging)
 }
 
 /// Returns `true` when a session belongs to the archive group.
@@ -262,6 +262,7 @@ fn status_column_width() -> Constraint {
             Status::New,
             Status::InProgress,
             Status::Review,
+            Status::Queued,
             Status::Merging,
             Status::Done,
             Status::Canceled,
@@ -325,6 +326,7 @@ mod tests {
         // Arrange
         let sessions = vec![
             test_session("active-1", Status::Review),
+            test_session("queued-1", Status::Queued),
             test_session("merge-1", Status::Merging),
             test_session("done-1", Status::Done),
             test_session("canceled-1", Status::Canceled),
@@ -346,6 +348,7 @@ mod tests {
             labels_and_ids,
             vec![
                 SessionGroup::MergeQueue.label().to_string(),
+                "queued-1".to_string(),
                 "merge-1".to_string(),
                 SessionGroup::ActiveSessions.label().to_string(),
                 "active-1".to_string(),
@@ -362,17 +365,18 @@ mod tests {
         // Arrange
         let sessions = vec![
             test_session("active-1", Status::Review),
+            test_session("queued-1", Status::Queued),
             test_session("merge-1", Status::Merging),
             test_session("active-2", Status::New),
         ];
         let rows = grouped_session_rows(&sessions);
-        let selected_session_id = selected_session_id(&sessions, Some(2));
+        let selected_session_id = selected_session_id(&sessions, Some(3));
 
         // Act
         let row_index = selected_render_row(&rows, selected_session_id);
 
         // Assert
-        assert_eq!(row_index, Some(4));
+        assert_eq!(row_index, Some(5));
     }
 
     #[test]
