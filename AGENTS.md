@@ -2,6 +2,17 @@
 
 TUI tool to manage agents.
 
+# MANDATORY
+
+> **STOP! Read this section before proceeding.**
+> These rules are absolute and take precedence over all others.
+
+- **Document Code:** Document all added or updated code using docstrings. When touching existing code, add or refresh docstrings so the changed behavior is clearly described.
+- **Update AGENTS.md:** Update the relevant `AGENTS.md` file only when a user instruction establishes a critical, persistent preference, convention, or workflow rule. Do not update it for one-off tasks.
+- **Directory Indexing:** Maintain the "Directory Index" section in the local `AGENTS.md`. If you create, rename, or delete a file/directory, update the index immediately.
+- **Context First:** Before listing a directory or reading source code, ALWAYS read the local `AGENTS.md` first. This provides immediate context on the folder structure and file purposes, reducing the need for broad discovery actions.
+- **Context7 First:** If Context7 is connected as an MCP server, use it to retrieve the latest documentation and API details for the tools and libraries used in the task.
+
 ## Project Facts
 - Project is a Rust workspace.
 - The `crates/` directory contains all workspace members.
@@ -180,11 +191,6 @@ git worktree prune
 ```
 
 ## Agent Instructions
-- **MANDATORY:** Update the relevant `AGENTS.md` file only when a user instruction establishes a critical, persistent preference, convention, or workflow rule that should apply across future sessions (e.g., quality gates, coding standards, review policy, process constraints). Do not update `AGENTS.md` for routine one-off implementation requests in regular source files. Both `CLAUDE.md` and `GEMINI.md` are symlinks to `AGENTS.md`, so a single update keeps all AI assistants in sync.
-- **MANDATORY:** Document all added or updated code using docstrings. When touching existing code, add or refresh docstrings so the changed behavior is clearly described.
-- **Directory Indexing:** Maintain the "Directory Index" section in the local `AGENTS.md`. If you create, rename, or delete a file/directory, update the index immediately to reflect the change.
-- **Context First:** Before listing a directory or reading source code, ALWAYS read the local `AGENTS.md` first. This provides immediate context on the folder structure and file purposes, reducing the need for broad discovery actions.
-- **Context7 First for Fresh Tool Info:** If Context7 is connected as an MCP server, use it to retrieve the latest documentation and API details for the tools and libraries used in the task.
 - **Pragmatic Abstractions:** Introduce new abstractions only when they provide clear payoff (reuse, reduced complexity, or materially better testability). For straightforward changes, prefer direct in-place edits with minimal diff.
 - **Test Coverage:** Try to maintain 100% test coverage when it makes sense. Ensure critical logic is always covered, but pragmatic exceptions are allowed for boilerplate or untestable I/O.
 - **Readability:** Use descriptive variable names. Do NOT use single-letter variables (e.g., `f`, `p`, `c`) or single-letter prefixes. Code should be self-documenting.
