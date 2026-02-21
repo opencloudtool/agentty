@@ -17,8 +17,21 @@ enum BlockState {
 pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut rendered_lines = Vec::new();
     let mut block_state = BlockState::Paragraph;
+    let mut is_user_prompt_block = false;
 
     for raw_line in text.split('\n') {
+        let starts_user_prompt_block = raw_line.starts_with(USER_PROMPT_PREFIX);
+        if let Some(prompt_line) = user_prompt_block_line(raw_line, &mut is_user_prompt_block) {
+            if starts_user_prompt_block {
+                // Prompt lines are session metadata, not markdown content.
+                block_state = BlockState::Paragraph;
+            }
+
+            rendered_lines.extend(render_user_prompt_line(prompt_line, width));
+
+            continue;
+        }
+
         if is_fence_delimiter(raw_line) {
             block_state = match block_state {
                 BlockState::Paragraph => opening_fence_block_state(raw_line),
@@ -40,6 +53,43 @@ pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     }
 
     rendered_lines
+}
+
+/// Returns prompt block lines that must be rendered with prompt styling.
+///
+/// Prompt blocks start with `USER_PROMPT_PREFIX` and continue until the first
+/// empty line.
+fn user_prompt_block_line<'a>(
+    raw_line: &'a str,
+    is_user_prompt_block: &mut bool,
+) -> Option<&'a str> {
+    if *is_user_prompt_block && raw_line.is_empty() {
+        *is_user_prompt_block = false;
+
+        return Some(raw_line);
+    }
+
+    if raw_line.starts_with(USER_PROMPT_PREFIX) {
+        *is_user_prompt_block = true;
+
+        return Some(raw_line);
+    }
+
+    if *is_user_prompt_block {
+        return Some(raw_line);
+    }
+
+    None
+}
+
+/// Renders a user prompt line verbatim so markdown syntax in prompts is not
+/// parsed.
+fn render_user_prompt_line(raw_line: &str, width: usize) -> Vec<Line<'static>> {
+    if raw_line.is_empty() {
+        return vec![Line::from("")];
+    }
+
+    wrap_verbatim_line(raw_line, user_prompt_style(), width)
 }
 
 fn render_markdown_line(raw_line: &str, width: usize) -> Vec<Line<'static>> {
@@ -508,6 +558,38 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].to_string(), input);
         assert_eq!(lines[0].spans[0].style, user_prompt_style());
+    }
+
+    #[test]
+    fn test_render_markdown_styles_multiline_user_prompt() {
+        // Arrange
+        let input = " › first line\nsecond line\n\nassistant line";
+
+        // Act
+        let lines = render_markdown(input, 80);
+
+        // Assert
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].to_string(), " › first line");
+        assert_eq!(lines[1].to_string(), "second line");
+        assert_eq!(lines[3].to_string(), "assistant line");
+        assert_eq!(lines[0].spans[0].style, user_prompt_style());
+        assert_eq!(lines[1].spans[0].style, user_prompt_style());
+        assert_eq!(lines[3].spans[0].style, Style::default());
+    }
+
+    #[test]
+    fn test_render_markdown_keeps_prompt_continuation_line_verbatim() {
+        // Arrange
+        let input = " › first line\n**bold**\n\nassistant";
+
+        // Act
+        let lines = render_markdown(input, 80);
+
+        // Assert
+        assert_eq!(lines[1].to_string(), "**bold**");
+        assert_eq!(lines[1].spans[0].style, user_prompt_style());
+        assert_eq!(lines[1].spans.len(), 1);
     }
 
     #[test]
