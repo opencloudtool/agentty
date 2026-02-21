@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use tracing::error;
 
 #[cfg_attr(test, mockall::automock)]
@@ -247,48 +248,85 @@ fn get_local_entries(directory: &Path, tracked_files: &[String]) -> Vec<String> 
 
 /// Parses the `Directory Index` section of an `AGENTS.md` file.
 ///
-/// The parser collects markdown link destinations from index bullets so
-/// formatter changes to link text do not affect validation.
+/// The parser uses markdown events and collects link destinations from index
+/// bullets so formatter changes to link text do not affect validation.
 fn parse_index(content: &str) -> Option<Vec<String>> {
-    let index_header = "## Directory Index";
-    let header_pos = content.find(index_header)?;
+    collect_directory_index_destinations(content)
+}
 
-    let index_section = &content[header_pos..];
+/// Collects link destinations from the `Directory Index` section.
+///
+/// The section starts at an `H2` heading with text equal to `Directory Index`
+/// and ends when the next `H1` or `H2` heading starts.
+fn collect_directory_index_destinations(content: &str) -> Option<Vec<String>> {
     let mut indexed_files = Vec::new();
-    let mut first_line = true;
+    let mut is_in_directory_index = false;
+    let mut current_heading_level = None;
+    let mut current_heading_text = String::new();
 
-    for line in index_section.split('\n') {
-        if !first_line && line.starts_with("##") {
-            break;
-        }
-        first_line = false;
+    for event in Parser::new(content) {
+        if let Event::Start(Tag::Heading { level, .. }) = &event {
+            if is_in_directory_index && is_section_terminator(*level) {
+                break;
+            }
 
-        if let Some(destination) = parse_index_entry_destination(line) {
-            indexed_files.push(destination);
+            current_heading_level = Some(*level);
+            current_heading_text.clear();
+
+            continue;
         }
+
+        if let Some(level) = current_heading_level {
+            append_heading_text(&mut current_heading_text, &event);
+
+            if let Event::End(TagEnd::Heading(end_level)) = &event {
+                if *end_level == level
+                    && level == HeadingLevel::H2
+                    && current_heading_text.trim() == "Directory Index"
+                {
+                    is_in_directory_index = true;
+                }
+
+                if *end_level == level {
+                    current_heading_level = None;
+                    current_heading_text.clear();
+                }
+            }
+
+            continue;
+        }
+
+        if !is_in_directory_index {
+            continue;
+        }
+
+        if let Event::Start(Tag::Link { dest_url, .. }) = &event {
+            let destination = dest_url.trim();
+            if !destination.is_empty() {
+                indexed_files.push(destination.to_string());
+            }
+        }
+    }
+
+    if !is_in_directory_index {
+        return None;
     }
 
     Some(indexed_files)
 }
 
-/// Parses a markdown index bullet and returns the link destination.
-///
-/// The destination is the canonical path used for index validation because
-/// the link text may be escaped or formatted (for example, `\_index.md` or
-/// `` `_index.md` ``) by markdown formatters.
-fn parse_index_entry_destination(line: &str) -> Option<String> {
-    let link_start = line.find('[')?;
-    let destination_start_offset = line[link_start..].find("](")?;
-    let destination_start = link_start + destination_start_offset + 2;
-    let destination_end_offset = line[destination_start..].find(')')?;
-    let destination_end = destination_start + destination_end_offset;
-    let destination = line[destination_start..destination_end].trim();
-
-    if destination.is_empty() {
-        return None;
+/// Appends heading text events to a single normalized heading buffer.
+fn append_heading_text(current_heading_text: &mut String, event: &Event<'_>) {
+    match event {
+        Event::Text(text) | Event::Code(text) => current_heading_text.push_str(text),
+        Event::SoftBreak | Event::HardBreak => current_heading_text.push(' '),
+        _ => {}
     }
+}
 
-    Some(destination.to_string())
+/// Returns whether a heading level starts a new top-level index section.
+fn is_section_terminator(level: HeadingLevel) -> bool {
+    level == HeadingLevel::H1 || level == HeadingLevel::H2
 }
 
 #[cfg(test)]
@@ -366,7 +404,7 @@ mod tests {
     fn test_parse_index_basic() {
         // Arrange
         let content = "# Title\n\n## Directory Index\n- [file1](file1) - Desc\n- [dir1/](dir1/) - \
-                       Desc\n\n## Next Section";
+                       Desc\n\n## Next Section\n- [ignored](ignored) - Desc";
 
         // Act
         let files = parse_index(content).expect("Failed to parse index");

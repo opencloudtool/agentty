@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 clap.workspace = true
+pulldown-cmark.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
