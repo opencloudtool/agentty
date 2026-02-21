@@ -4,7 +4,7 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 
 use crate::app::App;
 use crate::domain::input::InputState;
-use crate::domain::permission::{PermissionMode, PlanFollowupAction};
+use crate::domain::permission::{PermissionMode, PlanFollowupOption};
 use crate::domain::session::Status;
 use crate::infra::git;
 use crate::runtime::{EventResult, TuiTerminal};
@@ -159,6 +159,10 @@ async fn handle_plan_followup_action_key(
         return false;
     }
 
+    let uses_vertical_navigation = app
+        .plan_followup(&view_context.session_id)
+        .is_some_and(|plan_followup| plan_followup.options.len() >= 4);
+
     match key.code {
         KeyCode::Left => {
             app.select_previous_plan_followup_action(&view_context.session_id);
@@ -170,15 +174,28 @@ async fn handle_plan_followup_action_key(
 
             true
         }
+        KeyCode::Up if uses_vertical_navigation => {
+            app.select_previous_plan_followup_action(&view_context.session_id);
+
+            true
+        }
+        KeyCode::Down if uses_vertical_navigation => {
+            app.select_next_plan_followup_action(&view_context.session_id);
+
+            true
+        }
         KeyCode::Enter => {
             let selected_action = app
                 .consume_plan_followup_action(&view_context.session_id)
-                .unwrap_or_default();
+                .unwrap_or(PlanFollowupOption::ImplementPlan);
             match selected_action {
-                PlanFollowupAction::ImplementPlan => {
+                PlanFollowupOption::ImplementPlan => {
                     implement_plan_followup_action(app, &view_context.session_id).await;
                 }
-                PlanFollowupAction::TypeFeedback => {
+                PlanFollowupOption::AnswerQuestion(question) => {
+                    app.reply(&view_context.session_id, &question).await;
+                }
+                PlanFollowupOption::TypeFeedback => {
                     let history_state = app
                         .sessions
                         .sessions
@@ -281,7 +298,7 @@ fn view_metrics(
 }
 
 fn view_total_lines(app: &App, session_id: &str, session_index: usize, output_width: u16) -> u16 {
-    let plan_followup_action = app.plan_followup_action(session_id);
+    let plan_followup = app.plan_followup(session_id);
     let active_progress = app.session_progress_message(session_id);
 
     app.sessions
@@ -291,7 +308,7 @@ fn view_total_lines(app: &App, session_id: &str, session_index: usize, output_wi
             SessionChatPage::rendered_output_line_count(
                 session,
                 output_width,
-                plan_followup_action,
+                plan_followup,
                 active_progress,
             )
         })
@@ -394,7 +411,7 @@ mod tests {
     use super::*;
     use crate::app::AppEvent;
     use crate::db::Database;
-    use crate::domain::permission::PermissionMode;
+    use crate::domain::permission::{PermissionMode, PlanFollowupOption};
 
     async fn new_test_app() -> (App, tempfile::TempDir) {
         let base_dir = tempdir().expect("failed to create temp dir");
@@ -732,10 +749,11 @@ mod tests {
 
         // Assert
         assert!(handled);
-        assert_eq!(
-            app.plan_followup_action(&session_id),
-            Some(PlanFollowupAction::TypeFeedback)
-        );
+        let selected_option = app
+            .plan_followup(&session_id)
+            .and_then(|plan_followup| plan_followup.selected_option())
+            .cloned();
+        assert_eq!(selected_option, Some(PlanFollowupOption::TypeFeedback));
     }
 
     #[tokio::test]
@@ -781,6 +799,49 @@ mod tests {
             assert_eq!(session_id, &context.session_id);
             assert_eq!(*scroll_offset, context.scroll_offset);
         }
+    }
+
+    #[tokio::test]
+    async fn test_handle_plan_followup_action_key_down_selects_question_option() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.mode = AppMode::View {
+            session_id: session_id.clone(),
+            scroll_offset: Some(0),
+        };
+        app.sessions.sessions[0].permission_mode = PermissionMode::Plan;
+        app.sessions.sessions[0].output =
+            "### Questions\n1. Keep sqlite?\n2. Add telemetry?\n".to_string();
+        app.sessions.sessions[0].status = Status::InProgress;
+        if let Some(handles) = app.sessions.handles.get(&session_id)
+            && let Ok(mut status) = handles.status.lock()
+        {
+            *status = Status::Review;
+        }
+        app.apply_app_events(AppEvent::SessionUpdated {
+            session_id: session_id.clone(),
+        })
+        .await;
+        let context = ViewContext {
+            scroll_offset: Some(0),
+            session_id: session_id.clone(),
+            session_index: 0,
+        };
+        let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+
+        // Act
+        let handled = handle_plan_followup_action_key(&mut app, key, &context).await;
+
+        // Assert
+        assert!(handled);
+        let selected_option = app
+            .plan_followup(&session_id)
+            .and_then(|plan_followup| plan_followup.selected_option())
+            .cloned();
+        assert_eq!(
+            selected_option,
+            Some(PlanFollowupOption::AnswerQuestion("Keep sqlite?".to_string()))
+        );
     }
 
     #[tokio::test]

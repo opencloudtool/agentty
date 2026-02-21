@@ -840,6 +840,7 @@ impl SessionManager {
             prompt,
             session_model.as_str(),
             PermissionMode::AutoEdit,
+            false,
         );
         command.stdin(Stdio::null());
         let output = command
@@ -852,7 +853,6 @@ impl SessionManager {
             session_model.kind(),
             &stdout,
             &stderr,
-            PermissionMode::AutoEdit,
         );
         let content = parsed.content.trim().to_string();
 

@@ -27,6 +27,7 @@ pub trait AgentBackend: Send + Sync {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        is_initial_plan_prompt: bool,
     ) -> Command;
     /// Build a Command for resuming/replying.
     ///
@@ -39,6 +40,7 @@ pub trait AgentBackend: Send + Sync {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        is_initial_plan_prompt: bool,
         session_output: Option<String>,
     ) -> Command;
 }
@@ -70,13 +72,20 @@ impl AgentBackend for GeminiBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        is_initial_plan_prompt: bool,
         session_output: Option<String>,
     ) -> Command {
         let has_history_replay = session_output
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
         let prompt = build_resume_prompt(prompt, session_output.as_deref());
-        let mut cmd = self.build_start_command(folder, &prompt, model, permission_mode);
+        let mut cmd = self.build_start_command(
+            folder,
+            &prompt,
+            model,
+            permission_mode,
+            is_initial_plan_prompt,
+        );
 
         if !has_history_replay {
             cmd.arg("--resume").arg("latest");
@@ -91,8 +100,9 @@ impl AgentBackend for GeminiBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        is_initial_plan_prompt: bool,
     ) -> Command {
-        let prompt = permission_mode.apply_to_prompt(prompt);
+        let prompt = permission_mode.apply_to_prompt(prompt, is_initial_plan_prompt);
         let approval_mode = match permission_mode {
             PermissionMode::AutoEdit | PermissionMode::Plan => "auto_edit",
             PermissionMode::Autonomous => "yolo",
@@ -127,8 +137,9 @@ impl AgentBackend for ClaudeBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        is_initial_plan_prompt: bool,
     ) -> Command {
-        let prompt = permission_mode.apply_to_prompt(prompt);
+        let prompt = permission_mode.apply_to_prompt(prompt, is_initial_plan_prompt);
         let mut cmd = Command::new("claude");
         cmd.arg("-p").arg(prompt.as_ref());
         Self::apply_permission_args(&mut cmd, permission_mode);
@@ -149,10 +160,11 @@ impl AgentBackend for ClaudeBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        is_initial_plan_prompt: bool,
         session_output: Option<String>,
     ) -> Command {
         let prompt = build_resume_prompt(prompt, session_output.as_deref());
-        let prompt = permission_mode.apply_to_prompt(&prompt);
+        let prompt = permission_mode.apply_to_prompt(&prompt, is_initial_plan_prompt);
         let mut cmd = Command::new("claude");
         cmd.arg("-c").arg("-p").arg(prompt.as_ref());
         Self::apply_permission_args(&mut cmd, permission_mode);
@@ -171,14 +183,11 @@ impl AgentBackend for ClaudeBackend {
 impl ClaudeBackend {
     fn apply_permission_args(cmd: &mut Command, permission_mode: PermissionMode) {
         match permission_mode {
-            PermissionMode::AutoEdit => {
+            PermissionMode::AutoEdit | PermissionMode::Plan => {
                 cmd.arg("--allowedTools").arg("Edit");
             }
             PermissionMode::Autonomous => {
                 cmd.arg("--dangerously-skip-permissions");
-            }
-            PermissionMode::Plan => {
-                cmd.arg("--permission-mode").arg("plan");
             }
         }
     }
@@ -202,8 +211,9 @@ impl AgentBackend for CodexBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        is_initial_plan_prompt: bool,
     ) -> Command {
-        let prompt = permission_mode.apply_to_prompt(prompt);
+        let prompt = permission_mode.apply_to_prompt(prompt, is_initial_plan_prompt);
         let approval_flag = Self::approval_flag(permission_mode);
         let mut cmd = Command::new("codex");
         cmd.arg("exec")
@@ -225,10 +235,11 @@ impl AgentBackend for CodexBackend {
         prompt: &str,
         model: &str,
         permission_mode: PermissionMode,
+        is_initial_plan_prompt: bool,
         session_output: Option<String>,
     ) -> Command {
         let prompt = build_resume_prompt(prompt, session_output.as_deref());
-        let prompt = permission_mode.apply_to_prompt(&prompt);
+        let prompt = permission_mode.apply_to_prompt(&prompt, is_initial_plan_prompt);
         let approval_flag = Self::approval_flag(permission_mode);
         let mut cmd = Command::new("codex");
         cmd.arg("exec")
@@ -259,22 +270,8 @@ impl CodexBackend {
 /// Claude CLI JSON response shape (`--output-format json`).
 #[derive(Deserialize)]
 struct ClaudeResponse {
-    permission_denials: Option<Vec<ClaudePermissionDenial>>,
     result: Option<String>,
     usage: Option<ClaudeUsage>,
-}
-
-/// A single permission denial from the Claude CLI JSON output.
-#[derive(Deserialize)]
-struct ClaudePermissionDenial {
-    tool_input: Option<ClaudeToolInput>,
-    tool_name: Option<String>,
-}
-
-/// Tool input payload from a denied `ExitPlanMode` call.
-#[derive(Deserialize)]
-struct ClaudeToolInput {
-    plan: Option<String>,
 }
 
 /// Token usage from a Claude CLI response.
@@ -370,10 +367,9 @@ pub fn parse_response(
     kind: AgentKind,
     stdout: &str,
     stderr: &str,
-    permission_mode: PermissionMode,
 ) -> ParsedResponse {
     match kind {
-        AgentKind::Claude => parse_claude_response(stdout, permission_mode),
+        AgentKind::Claude => parse_claude_response(stdout),
         AgentKind::Gemini => parse_gemini_response(stdout),
         AgentKind::Codex => parse_codex_response(stdout),
     }
@@ -399,9 +395,9 @@ pub(crate) fn parse_stream_output_line(
     }
 }
 
-fn parse_claude_response(stdout: &str, permission_mode: PermissionMode) -> Option<ParsedResponse> {
+fn parse_claude_response(stdout: &str) -> Option<ParsedResponse> {
     let trimmed_stdout = stdout.trim();
-    if let Some(parsed_response) = parse_claude_response_payload(trimmed_stdout, permission_mode) {
+    if let Some(parsed_response) = parse_claude_response_payload(trimmed_stdout) {
         return Some(parsed_response);
     }
 
@@ -410,8 +406,7 @@ fn parse_claude_response(stdout: &str, permission_mode: PermissionMode) -> Optio
         if trimmed_line.is_empty() {
             continue;
         }
-        if let Some(parsed_response) = parse_claude_response_payload(trimmed_line, permission_mode)
-        {
+        if let Some(parsed_response) = parse_claude_response_payload(trimmed_line) {
             return Some(parsed_response);
         }
     }
@@ -433,17 +428,6 @@ fn parse_claude_stream_output_line(stdout_line: &str) -> Option<(String, bool)> 
     let progress_message = compact_progress_message_from_json(&stream_event)?;
 
     Some((progress_message, false))
-}
-
-/// Extracts the plan content from a denied `ExitPlanMode` tool call.
-fn extract_plan_from_denials(denials: Option<&[ClaudePermissionDenial]>) -> Option<String> {
-    denials?.iter().find_map(|denial| {
-        if denial.tool_name.as_deref() != Some("ExitPlanMode") {
-            return None;
-        }
-
-        denial.tool_input.as_ref()?.plan.clone()
-    })
 }
 
 fn parse_gemini_response(stdout: &str) -> Option<ParsedResponse> {
@@ -512,16 +496,9 @@ fn parse_gemini_stream_output_line(stdout_line: &str) -> Option<(String, bool)> 
     Some((progress_message, false))
 }
 
-fn parse_claude_response_payload(
-    stdout: &str,
-    permission_mode: PermissionMode,
-) -> Option<ParsedResponse> {
+fn parse_claude_response_payload(stdout: &str) -> Option<ParsedResponse> {
     let response = serde_json::from_str::<ClaudeResponse>(stdout).ok()?;
-    let content = if permission_mode == PermissionMode::Plan {
-        extract_plan_from_denials(response.permission_denials.as_deref()).or(response.result)?
-    } else {
-        response.result?
-    };
+    let content = response.result?;
     let stats = SessionStats {
         input_tokens: response
             .usage
@@ -550,9 +527,8 @@ fn parse_gemini_response_payload(stdout: &str) -> Option<ParsedResponse> {
 
 fn extract_claude_stream_result(stdout_line: &str) -> Option<String> {
     let response = serde_json::from_str::<ClaudeResponse>(stdout_line).ok()?;
-    let extracted_plan = extract_plan_from_denials(response.permission_denials.as_deref());
 
-    extracted_plan.or(response.result)
+    response.result
 }
 
 fn extract_gemini_stream_response(stdout_line: &str) -> Option<String> {
@@ -813,5 +789,42 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn test_claude_plan_mode_uses_allowed_tools_edit() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let backend = ClaudeBackend;
+
+        // Act
+        let command = AgentBackend::build_start_command(
+            &backend,
+            dir.path(),
+            "Plan prompt",
+            "claude-sonnet-4-6",
+            PermissionMode::Plan,
+            true,
+        );
+        let debug = format!("{command:?}");
+
+        // Assert
+        assert!(debug.contains("--allowedTools"));
+        assert!(debug.contains("Edit"));
+        assert!(!debug.contains("--permission-mode"));
+    }
+
+    #[test]
+    fn test_claude_parse_response_reads_result_payload() {
+        // Arrange
+        let stdout = r#"{"result":"Planned response","usage":{"input_tokens":11,"output_tokens":7}}"#;
+
+        // Act
+        let parsed = parse_response(AgentKind::Claude, stdout, "");
+
+        // Assert
+        assert_eq!(parsed.content, "Planned response");
+        assert_eq!(parsed.stats.input_tokens, 11);
+        assert_eq!(parsed.stats.output_tokens, 7);
     }
 }

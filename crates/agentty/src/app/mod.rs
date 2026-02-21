@@ -12,7 +12,8 @@ use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
 use crate::domain::agent::{AgentKind, AgentModel};
-use crate::domain::permission::{PermissionMode, PlanFollowupAction};
+use crate::domain::permission::{PermissionMode, PlanFollowup, PlanFollowupOption};
+use crate::domain::plan::extract_plan_questions;
 use crate::domain::session::{Session, Status};
 use crate::infra::db::Database;
 use crate::ui::state::app_mode::AppMode;
@@ -112,7 +113,7 @@ pub struct App {
     event_rx: mpsc::UnboundedReceiver<AppEvent>,
     latest_available_version: Option<String>,
     merge_queue: MergeQueue,
-    plan_followup_actions: HashMap<String, PlanFollowupAction>,
+    plan_followups: HashMap<String, PlanFollowup>,
     session_progress_messages: HashMap<String, String>,
 }
 
@@ -200,7 +201,7 @@ impl App {
             event_rx,
             latest_available_version: None,
             merge_queue: MergeQueue::default(),
-            plan_followup_actions: HashMap::new(),
+            plan_followups: HashMap::new(),
             session_progress_messages: HashMap::new(),
         }
     }
@@ -367,14 +368,14 @@ impl App {
         self.sessions.session_index_for_id(session_id)
     }
 
-    /// Returns the currently selected post-plan action for a session.
-    pub fn plan_followup_action(&self, session_id: &str) -> Option<PlanFollowupAction> {
-        self.plan_followup_actions.get(session_id).copied()
+    /// Returns post-plan follow-up state for a session.
+    pub fn plan_followup(&self, session_id: &str) -> Option<&PlanFollowup> {
+        self.plan_followups.get(session_id)
     }
 
-    /// Returns a snapshot of pending post-plan actions by session id.
-    pub fn plan_followup_actions_snapshot(&self) -> HashMap<String, PlanFollowupAction> {
-        self.plan_followup_actions.clone()
+    /// Returns a snapshot of pending post-plan follow-ups by session id.
+    pub fn plan_followup_snapshot(&self) -> HashMap<String, PlanFollowup> {
+        self.plan_followups.clone()
     }
 
     /// Returns compact live progress text for a session, if available.
@@ -391,26 +392,32 @@ impl App {
 
     /// Returns whether a session has pending post-plan actions.
     pub fn has_plan_followup_action(&self, session_id: &str) -> bool {
-        self.plan_followup_actions.contains_key(session_id)
+        self.plan_followups.contains_key(session_id)
     }
 
     /// Selects the previous post-plan action for a session.
     pub fn select_previous_plan_followup_action(&mut self, session_id: &str) {
-        if let Some(action) = self.plan_followup_actions.get_mut(session_id) {
-            *action = action.previous();
+        if let Some(followup) = self.plan_followups.get_mut(session_id) {
+            followup.select_previous();
         }
     }
 
     /// Selects the next post-plan action for a session.
     pub fn select_next_plan_followup_action(&mut self, session_id: &str) {
-        if let Some(action) = self.plan_followup_actions.get_mut(session_id) {
-            *action = action.next();
+        if let Some(followup) = self.plan_followups.get_mut(session_id) {
+            followup.select_next();
         }
     }
 
-    /// Clears and returns the pending post-plan action for a session.
-    pub fn consume_plan_followup_action(&mut self, session_id: &str) -> Option<PlanFollowupAction> {
-        self.plan_followup_actions.remove(session_id)
+    /// Clears and returns the pending selected post-plan option for a
+    /// session.
+    pub fn consume_plan_followup_action(
+        &mut self,
+        session_id: &str,
+    ) -> Option<PlanFollowupOption> {
+        let followup = self.plan_followups.remove(session_id)?;
+
+        followup.selected_option().cloned()
     }
 
     /// Deletes the selected session and schedules list refresh.
@@ -765,13 +772,13 @@ impl App {
                 .iter()
                 .find(|session| session.id == *session_id)
             else {
-                self.plan_followup_actions.remove(session_id);
+                self.plan_followups.remove(session_id);
 
                 continue;
             };
 
             if session.permission_mode != PermissionMode::Plan || session.status != Status::Review {
-                self.plan_followup_actions.remove(session_id);
+                self.plan_followups.remove(session_id);
 
                 continue;
             }
@@ -781,14 +788,15 @@ impl App {
             };
 
             if *previous_status == Status::InProgress {
-                self.plan_followup_actions
-                    .insert(session_id.clone(), PlanFollowupAction::ImplementPlan);
+                let questions = extract_plan_questions(&session.output);
+                self.plan_followups
+                    .insert(session_id.clone(), PlanFollowup::new(questions));
             }
         }
     }
 
     fn retain_valid_plan_followup_actions(&mut self) {
-        self.plan_followup_actions.retain(|session_id, _| {
+        self.plan_followups.retain(|session_id, _| {
             self.sessions
                 .sessions
                 .iter()

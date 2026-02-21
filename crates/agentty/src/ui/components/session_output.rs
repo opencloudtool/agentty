@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::domain::permission::PlanFollowupAction;
+use crate::domain::permission::PlanFollowup;
 use crate::domain::session::{Session, Status};
 use crate::icon::Icon;
 use crate::ui::Component;
@@ -16,7 +16,7 @@ use crate::ui::util::truncate_with_ellipsis;
 /// Session chat output panel renderer.
 pub struct SessionOutput<'a> {
     active_progress: Option<&'a str>,
-    plan_followup_action: Option<PlanFollowupAction>,
+    plan_followup: Option<&'a PlanFollowup>,
     scroll_offset: Option<u16>,
     session: &'a Session,
 }
@@ -26,12 +26,12 @@ impl<'a> SessionOutput<'a> {
     pub fn new(
         session: &'a Session,
         scroll_offset: Option<u16>,
-        plan_followup_action: Option<PlanFollowupAction>,
+        plan_followup: Option<&'a PlanFollowup>,
         active_progress: Option<&'a str>,
     ) -> Self {
         Self {
             active_progress,
-            plan_followup_action,
+            plan_followup,
             scroll_offset,
             session,
         }
@@ -45,17 +45,11 @@ impl<'a> SessionOutput<'a> {
     pub(crate) fn rendered_line_count(
         session: &Session,
         output_width: u16,
-        plan_followup_action: Option<PlanFollowupAction>,
+        plan_followup: Option<&PlanFollowup>,
         active_progress: Option<&str>,
     ) -> u16 {
         let output_area = Rect::new(0, 0, output_width, 0);
-        let lines = Self::output_lines(
-            session,
-            output_area,
-            session.status,
-            plan_followup_action,
-            active_progress,
-        );
+        let lines = Self::output_lines(session, output_area, session.status, plan_followup, active_progress);
 
         u16::try_from(lines.len()).unwrap_or(u16::MAX)
     }
@@ -64,7 +58,7 @@ impl<'a> SessionOutput<'a> {
         session: &Session,
         output_area: Rect,
         status: Status,
-        plan_followup_action: Option<PlanFollowupAction>,
+        plan_followup: Option<&PlanFollowup>,
         active_progress: Option<&str>,
     ) -> Vec<Line<'static>> {
         let output_text = Self::output_text(session, status);
@@ -92,13 +86,9 @@ impl<'a> SessionOutput<'a> {
             lines.push(Line::from(""));
         }
 
-        if let Some(selected_action) = plan_followup_action {
+        if let Some(plan_followup) = plan_followup {
             lines.push(Line::from(""));
-            lines.push(Self::plan_followup_action_line(selected_action));
-            lines.push(Line::from(vec![Span::styled(
-                "Use \u{2190}/\u{2192} to select and Enter to confirm.",
-                Style::default().fg(Color::DarkGray),
-            )]));
+            lines.extend(Self::plan_followup_lines(plan_followup));
         }
 
         lines
@@ -227,33 +217,68 @@ impl<'a> SessionOutput<'a> {
         }
     }
 
-    fn plan_followup_action_line(selected_action: PlanFollowupAction) -> Line<'static> {
-        let implement_style = if selected_action == PlanFollowupAction::ImplementPlan {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        let feedback_style = if selected_action == PlanFollowupAction::TypeFeedback {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
+    fn plan_followup_lines(plan_followup: &PlanFollowup) -> Vec<Line<'static>> {
+        if plan_followup.options.len() >= 4 {
+            return Self::plan_followup_vertical_lines(plan_followup);
+        }
 
-        Line::from(vec![
-            Span::styled(
-                format!("[ {} ]", PlanFollowupAction::ImplementPlan.label()),
-                implement_style,
-            ),
-            Span::styled("  ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("[ {} ]", PlanFollowupAction::TypeFeedback.label()),
-                feedback_style,
-            ),
-        ])
+        vec![
+            Self::plan_followup_horizontal_line(plan_followup),
+            Line::from(vec![Span::styled(
+                "Use \u{2190}/\u{2192} to select and Enter to confirm.",
+                Style::default().fg(Color::DarkGray),
+            )]),
+        ]
+    }
+
+    fn plan_followup_horizontal_line(plan_followup: &PlanFollowup) -> Line<'static> {
+        let mut spans = Vec::new();
+        for (option_index, option) in plan_followup.options.iter().enumerate() {
+            let is_selected = plan_followup.selected_index() == option_index;
+            let option_style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let option_label = option.label();
+
+            spans.push(Span::styled(format!("[ {option_label} ]"), option_style));
+
+            if option_index < plan_followup.options.len() - 1 {
+                spans.push(Span::styled("  ", Style::default().fg(Color::Gray)));
+            }
+        }
+
+        Line::from(spans)
+    }
+
+    fn plan_followup_vertical_lines(plan_followup: &PlanFollowup) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        for (option_index, option) in plan_followup.options.iter().enumerate() {
+            let is_selected = plan_followup.selected_index() == option_index;
+            let option_style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let option_label = option.label();
+
+            lines.push(Line::from(vec![Span::styled(
+                format!("[ {option_label} ]"),
+                option_style,
+            )]));
+        }
+
+        lines.push(Line::from(vec![Span::styled(
+            "Use \u{2191}/\u{2193} to select and Enter to confirm.",
+            Style::default().fg(Color::DarkGray),
+        )]));
+
+        lines
     }
 
     fn final_scroll_offset(&self, output_area: Rect, line_count: usize) -> u16 {
@@ -282,7 +307,7 @@ impl Component for SessionOutput<'_> {
             self.session,
             output_area,
             status,
-            self.plan_followup_action,
+            self.plan_followup,
             self.active_progress,
         );
         let final_scroll = self.final_scroll_offset(output_area, lines.len());
@@ -306,7 +331,7 @@ mod tests {
 
     use super::*;
     use crate::agent::AgentModel;
-    use crate::domain::permission::PermissionMode;
+    use crate::domain::permission::{PermissionMode, PlanFollowup};
     use crate::domain::session::{SessionSize, SessionStats};
 
     fn session_fixture() -> Session {
@@ -472,6 +497,7 @@ mod tests {
     fn test_output_lines_include_plan_followup_actions_when_present() {
         // Arrange
         let session = session_fixture();
+        let followup = PlanFollowup::new(Vec::new());
         let area = Rect {
             x: 0,
             y: 0,
@@ -484,7 +510,7 @@ mod tests {
             &session,
             area,
             Status::Review,
-            Some(PlanFollowupAction::ImplementPlan),
+            Some(&followup),
             None,
         );
         let rendered = lines
@@ -542,14 +568,37 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_followup_action_line_contains_both_actions() {
-        // Arrange & Act
-        let line = SessionOutput::plan_followup_action_line(PlanFollowupAction::TypeFeedback);
+    fn test_plan_followup_horizontal_line_contains_both_actions() {
+        // Arrange
+        let followup = PlanFollowup::new(Vec::new());
+
+        // Act
+        let line = SessionOutput::plan_followup_horizontal_line(&followup);
         let rendered = line.to_string();
 
         // Assert
         assert!(rendered.contains("Implement the plan"));
         assert!(rendered.contains("Type feedback"));
+    }
+
+    #[test]
+    fn test_plan_followup_vertical_lines_include_up_down_hint() {
+        // Arrange
+        let followup = PlanFollowup::new(vec![
+            "Question one?".to_string(),
+            "Question two?".to_string(),
+        ]);
+
+        // Act
+        let lines = SessionOutput::plan_followup_vertical_lines(&followup);
+        let rendered = lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(rendered.contains("Use \u{2191}/\u{2193}"));
     }
 
     #[test]

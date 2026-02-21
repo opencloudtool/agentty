@@ -14,7 +14,7 @@ use ratatui::widgets::TableState;
 
 use crate::app::session::session_branch;
 use crate::app::{SettingsManager, Tab};
-use crate::domain::permission::PlanFollowupAction;
+use crate::domain::permission::PlanFollowup;
 use crate::domain::project::Project;
 use crate::domain::session::{DailyActivity, Session};
 use crate::ui::state::app_mode::{AppMode, HelpContext};
@@ -38,7 +38,7 @@ pub struct RenderContext<'a> {
     pub git_status: Option<(u32, u32)>,
     pub latest_available_version: Option<&'a str>,
     pub mode: &'a AppMode,
-    pub plan_followup_actions: &'a HashMap<String, PlanFollowupAction>,
+    pub plan_followups: &'a HashMap<String, PlanFollowup>,
     pub projects: &'a [Project],
     pub session_progress_messages: &'a HashMap<String, String>,
     pub settings: &'a mut SettingsManager,
@@ -51,7 +51,7 @@ pub struct RenderContext<'a> {
 
 struct SessionChatRenderContext<'a> {
     mode: &'a AppMode,
-    plan_followup_actions: Option<&'a HashMap<String, PlanFollowupAction>>,
+    plan_followups: Option<&'a HashMap<String, PlanFollowup>>,
     scroll_offset: Option<u16>,
     session_id: &'a str,
     session_progress_messages: &'a HashMap<String, String>,
@@ -60,7 +60,7 @@ struct SessionChatRenderContext<'a> {
 struct HelpBackgroundRenderContext<'a> {
     context: &'a HelpContext,
     current_tab: Tab,
-    plan_followup_actions: &'a HashMap<String, PlanFollowupAction>,
+    plan_followups: &'a HashMap<String, PlanFollowup>,
     session_progress_messages: &'a HashMap<String, String>,
     sessions: &'a [Session],
     settings: &'a mut SettingsManager,
@@ -105,7 +105,7 @@ struct ListModeRenderContext<'a> {
 struct SessionModeRenderContext<'a> {
     current_tab: Tab,
     mode: &'a AppMode,
-    plan_followup_actions: &'a HashMap<String, PlanFollowupAction>,
+    plan_followups: &'a HashMap<String, PlanFollowup>,
     session_progress_messages: &'a HashMap<String, String>,
     sessions: &'a [Session],
     settings: &'a mut SettingsManager,
@@ -179,7 +179,7 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
         active_project_id,
         current_tab,
         mode,
-        plan_followup_actions,
+        plan_followups,
         projects,
         session_progress_messages,
         settings,
@@ -216,7 +216,7 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
             SessionModeRenderContext {
                 current_tab,
                 mode,
-                plan_followup_actions,
+                plan_followups,
                 session_progress_messages,
                 sessions,
                 settings,
@@ -318,7 +318,7 @@ fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRe
     let SessionModeRenderContext {
         current_tab,
         mode,
-        plan_followup_actions,
+        plan_followups,
         session_progress_messages,
         sessions,
         settings,
@@ -336,7 +336,7 @@ fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRe
             sessions,
             &view_session_chat_context(
                 mode,
-                plan_followup_actions,
+                plan_followups,
                 *scroll_offset,
                 session_id,
                 session_progress_messages,
@@ -382,7 +382,7 @@ fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRe
             HelpBackgroundRenderContext {
                 context,
                 current_tab,
-                plan_followup_actions,
+                plan_followups,
                 session_progress_messages,
                 sessions,
                 settings,
@@ -396,14 +396,14 @@ fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRe
 
 fn view_session_chat_context<'a>(
     mode: &'a AppMode,
-    plan_followup_actions: &'a HashMap<String, PlanFollowupAction>,
+    plan_followups: &'a HashMap<String, PlanFollowup>,
     scroll_offset: Option<u16>,
     session_id: &'a str,
     session_progress_messages: &'a HashMap<String, String>,
 ) -> SessionChatRenderContext<'a> {
     SessionChatRenderContext {
         mode,
-        plan_followup_actions: Some(plan_followup_actions),
+        plan_followups: Some(plan_followups),
         scroll_offset,
         session_id,
         session_progress_messages,
@@ -418,7 +418,7 @@ fn prompt_session_chat_context<'a>(
 ) -> SessionChatRenderContext<'a> {
     SessionChatRenderContext {
         mode,
-        plan_followup_actions: None,
+        plan_followups: None,
         scroll_offset,
         session_id,
         session_progress_messages,
@@ -452,14 +452,13 @@ fn render_session_chat_mode(
     context: &SessionChatRenderContext<'_>,
 ) {
     let mode = context.mode;
-    let plan_followup_actions = context.plan_followup_actions;
+    let plan_followups = context.plan_followups;
     let scroll_offset = context.scroll_offset;
     let session_id = context.session_id;
     let session_progress_messages = context.session_progress_messages;
 
     if let Some(session_index) = sessions.iter().position(|session| session.id == session_id) {
-        let plan_followup_action =
-            plan_followup_actions.and_then(|actions| actions.get(session_id).copied());
+        let plan_followup = plan_followups.and_then(|followups| followups.get(session_id));
         let active_progress = session_progress_messages
             .get(session_id)
             .map(std::string::String::as_str);
@@ -468,7 +467,7 @@ fn render_session_chat_mode(
             session_index,
             scroll_offset,
             mode,
-            plan_followup_action,
+            plan_followup,
             active_progress,
         )
         .render(f, area);
@@ -480,7 +479,7 @@ fn render_help_background(f: &mut Frame, area: Rect, context: HelpBackgroundRend
     let HelpBackgroundRenderContext {
         context,
         current_tab,
-        plan_followup_actions,
+        plan_followups,
         session_progress_messages,
         sessions,
         settings,
@@ -512,7 +511,7 @@ fn render_help_background(f: &mut Frame, area: Rect, context: HelpBackgroundRend
                     session_id: session_id.clone(),
                     scroll_offset: *view_scroll,
                 };
-                let plan_followup_action = plan_followup_actions.get(session_id).copied();
+                let plan_followup = plan_followups.get(session_id);
                 let active_progress = session_progress_messages
                     .get(session_id)
                     .map(std::string::String::as_str);
@@ -521,7 +520,7 @@ fn render_help_background(f: &mut Frame, area: Rect, context: HelpBackgroundRend
                     session_index,
                     *view_scroll,
                     &bg_mode,
-                    plan_followup_action,
+                    plan_followup,
                     active_progress,
                 )
                 .render(f, area);

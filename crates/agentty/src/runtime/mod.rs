@@ -77,7 +77,7 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
         .latest_available_version()
         .map(std::string::ToString::to_string);
     let current_active_project_id = app.active_project_id();
-    let plan_followup_actions = app.plan_followup_actions_snapshot();
+    let plan_followups = app.plan_followup_snapshot();
     let session_progress_messages = app.session_progress_snapshot();
     let show_onboarding = app.should_show_onboarding();
     let mode = &app.mode;
@@ -95,7 +95,7 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
                 git_status: current_git_status,
                 latest_available_version: latest_available_version.as_deref(),
                 mode,
-                plan_followup_actions: &plan_followup_actions,
+                plan_followups: &plan_followups,
                 projects,
                 session_progress_messages: &session_progress_messages,
                 settings,

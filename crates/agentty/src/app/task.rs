@@ -58,7 +58,6 @@ pub(super) struct RunAgentAssistTaskInput {
     pub(super) db: Database,
     pub(super) id: String,
     pub(super) output: Arc<Mutex<String>>,
-    pub(super) permission_mode: PermissionMode,
     pub(super) session_model: AgentModel,
 }
 
@@ -222,7 +221,6 @@ impl TaskService {
                         agent,
                         &captured.stdout_text,
                         &captured.stderr_text,
-                        permission_mode,
                     );
                     if !captured.streamed_response_seen {
                         Self::append_session_output(
@@ -395,7 +393,6 @@ impl TaskService {
             db,
             id,
             output,
-            permission_mode,
             session_model,
         } = input;
 
@@ -441,7 +438,6 @@ impl TaskService {
             agent,
             &captured.stdout_text,
             &captured.stderr_text,
-            permission_mode,
         );
 
         if !captured.streamed_response_seen {
@@ -1054,7 +1050,6 @@ mod tests {
             db: database.clone(),
             id: "session-id".to_string(),
             output: Arc::clone(&output),
-            permission_mode: PermissionMode::AutoEdit,
             session_model: AgentModel::ClaudeOpus46,
         })
         .await;
@@ -1114,7 +1109,6 @@ mod tests {
             db: database.clone(),
             id: "session-id".to_string(),
             output: Arc::clone(&output),
-            permission_mode: PermissionMode::AutoEdit,
             session_model: AgentModel::Gpt53Codex,
         })
         .await;
@@ -1178,7 +1172,6 @@ mod tests {
             db: database,
             id: "session-id".to_string(),
             output: Arc::clone(&output),
-            permission_mode: PermissionMode::AutoEdit,
             session_model: AgentModel::Gpt53Codex,
         })
         .await;
@@ -1237,7 +1230,6 @@ mod tests {
             db: database.clone(),
             id: "session-id".to_string(),
             output: Arc::clone(&output),
-            permission_mode: PermissionMode::AutoEdit,
             session_model: AgentModel::ClaudeOpus46,
         })
         .await;
@@ -1307,7 +1299,6 @@ mod tests {
             db: database.clone(),
             id: "session-id".to_string(),
             output: Arc::clone(&output),
-            permission_mode: PermissionMode::AutoEdit,
             session_model: AgentModel::Gemini3FlashPreview,
         })
         .await;
@@ -1374,7 +1365,6 @@ mod tests {
             db: database,
             id: "session-id".to_string(),
             output: Arc::clone(&output),
-            permission_mode: PermissionMode::AutoEdit,
             session_model: AgentModel::Gpt53Codex,
         })
         .await;
@@ -1464,7 +1454,6 @@ mod tests {
             db: database,
             id: "session-id".to_string(),
             output,
-            permission_mode: PermissionMode::AutoEdit,
             session_model: AgentModel::ClaudeOpus46,
         })
         .await;

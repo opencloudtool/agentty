@@ -5,7 +5,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::domain::agent::{AgentKind, AgentSelectionMetadata};
 use crate::domain::input::extract_at_mention_query;
-use crate::domain::permission::PlanFollowupAction;
+use crate::domain::permission::PlanFollowup;
 use crate::domain::session::{Session, Status};
 use crate::file_list;
 use crate::ui::components::chat_input::{ChatInput, SlashMenu, SlashMenuOption};
@@ -19,7 +19,7 @@ use crate::ui::{Component, Page};
 pub struct SessionChatPage<'a> {
     pub active_progress: Option<&'a str>,
     pub mode: &'a AppMode,
-    pub plan_followup_action: Option<PlanFollowupAction>,
+    pub plan_followup: Option<&'a PlanFollowup>,
     pub scroll_offset: Option<u16>,
     pub session_index: usize,
     pub sessions: &'a [Session],
@@ -32,13 +32,13 @@ impl<'a> SessionChatPage<'a> {
         session_index: usize,
         scroll_offset: Option<u16>,
         mode: &'a AppMode,
-        plan_followup_action: Option<PlanFollowupAction>,
+        plan_followup: Option<&'a PlanFollowup>,
         active_progress: Option<&'a str>,
     ) -> Self {
         Self {
             active_progress,
             mode,
-            plan_followup_action,
+            plan_followup,
             scroll_offset,
             session_index,
             sessions,
@@ -53,15 +53,10 @@ impl<'a> SessionChatPage<'a> {
     pub(crate) fn rendered_output_line_count(
         session: &Session,
         output_width: u16,
-        plan_followup_action: Option<PlanFollowupAction>,
+        plan_followup: Option<&PlanFollowup>,
         active_progress: Option<&str>,
     ) -> u16 {
-        SessionOutput::rendered_line_count(
-            session,
-            output_width,
-            plan_followup_action,
-            active_progress,
-        )
+        SessionOutput::rendered_line_count(session, output_width, plan_followup, active_progress)
     }
 
     fn build_slash_menu(
@@ -194,7 +189,7 @@ impl<'a> SessionChatPage<'a> {
         SessionOutput::new(
             session,
             self.scroll_offset,
-            self.plan_followup_action,
+            self.plan_followup,
             self.active_progress,
         )
         .render(f, chunks[0]);
@@ -275,20 +270,22 @@ impl<'a> SessionChatPage<'a> {
             return;
         }
 
-        let help_text = Self::view_help_text(session, self.plan_followup_action);
+        let help_text = Self::view_help_text(session, self.plan_followup);
         let help_message = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, bottom_area);
     }
 
-    fn view_help_text(
-        session: &Session,
-        plan_followup_action: Option<PlanFollowupAction>,
-    ) -> &'static str {
+    fn view_help_text(session: &Session, plan_followup: Option<&PlanFollowup>) -> &'static str {
         if session.status == Status::Done {
             return "q: back | o: open | j/k: scroll | ?: help";
         }
 
-        if plan_followup_action.is_some() {
+        if let Some(plan_followup) = plan_followup {
+            if plan_followup.options.len() >= 4 {
+                return "q: back | \u{2191}/\u{2193}: choose action | enter: confirm | d: diff | \
+                        m: queue merge | r: rebase | S-Tab: mode | j/k: scroll | ?: help";
+            }
+
             return "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | m: \
                     queue merge | r: rebase | S-Tab: mode | j/k: scroll | ?: help";
         }
@@ -631,13 +628,29 @@ mod tests {
     fn test_view_help_text_plan_followup_includes_git_actions() {
         // Arrange
         let session = session_fixture();
+        let followup = PlanFollowup::new(Vec::new());
 
         // Act
-        let help_text =
-            SessionChatPage::view_help_text(&session, Some(PlanFollowupAction::ImplementPlan));
+        let help_text = SessionChatPage::view_help_text(&session, Some(&followup));
 
         // Assert
         assert!(help_text.contains("m: queue merge"));
         assert!(help_text.contains("r: rebase"));
+    }
+
+    #[test]
+    fn test_view_help_text_question_followup_uses_up_down_hints() {
+        // Arrange
+        let session = session_fixture();
+        let followup = PlanFollowup::new(vec![
+            "Question one?".to_string(),
+            "Question two?".to_string(),
+        ]);
+
+        // Act
+        let help_text = SessionChatPage::view_help_text(&session, Some(&followup));
+
+        // Assert
+        assert!(help_text.contains("\u{2191}/\u{2193}"));
     }
 }

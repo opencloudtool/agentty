@@ -126,6 +126,7 @@ pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> R
         prompt,
         context.session_model.as_str(),
         effective_permission_mode,
+        false,
     );
 
     TaskService::run_agent_assist_task(RunAgentAssistTaskInput {
@@ -135,7 +136,6 @@ pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> R
         db: context.db.clone(),
         id: context.id.clone(),
         output: Arc::clone(&context.output),
-        permission_mode: effective_permission_mode,
         session_model: context.session_model,
     })
     .await

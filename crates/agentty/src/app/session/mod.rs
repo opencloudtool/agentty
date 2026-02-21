@@ -199,7 +199,7 @@ mod tests {
     fn create_mock_backend() -> MockAgentBackend {
         let mut mock = MockAgentBackend::new();
         mock.expect_build_start_command()
-            .returning(|folder, _, _, _| {
+            .returning(|folder, _, _, _, _| {
                 let mut cmd = Command::new("echo");
                 cmd.arg("mock-start")
                     .current_dir(folder)
@@ -1694,7 +1694,7 @@ mod tests {
             .expect("failed to open in-memory db");
         let mut mock = MockAgentBackend::new();
         mock.expect_build_start_command()
-            .returning(|folder, prompt, _, _| {
+            .returning(|folder, prompt, _, _, _| {
                 let mut cmd = Command::new("echo");
                 cmd.arg("--prompt")
                     .arg(prompt)
@@ -1743,7 +1743,7 @@ mod tests {
         // Act — reply (resume command)
         let mut resume_mock = MockAgentBackend::new();
         resume_mock.expect_build_resume_command().returning(
-            |folder, prompt, _, _, session_output| {
+            |folder, prompt, _, _, _, session_output| {
                 assert!(session_output.is_none());
 
                 let mut cmd = Command::new("echo");
@@ -1822,7 +1822,7 @@ mod tests {
         // Act
         let mut first_resume_mock = MockAgentBackend::new();
         first_resume_mock.expect_build_resume_command().returning(
-            |folder, prompt, _, _, session_output| {
+            |folder, prompt, _, _, _, session_output| {
                 let session_output = session_output.expect("expected session output");
                 assert!(session_output.contains("Initial prompt"));
                 assert!(session_output.contains("mock-start"));
@@ -1851,7 +1851,7 @@ mod tests {
         // Assert
         let mut second_resume_mock = MockAgentBackend::new();
         second_resume_mock.expect_build_resume_command().returning(
-            |folder, prompt, _, _, session_output| {
+            |folder, prompt, _, _, _, session_output| {
                 assert!(session_output.is_none());
 
                 let mut cmd = Command::new("echo");
@@ -1895,7 +1895,7 @@ mod tests {
         // Create a session that writes a file so commit_all has something to commit
         let mut mock = MockAgentBackend::new();
         mock.expect_build_start_command()
-            .returning(|folder, _, _, _| {
+            .returning(|folder, _, _, _, _| {
                 let target = folder.join("auto-committed.txt");
                 let mut cmd = Command::new("bash");
                 cmd.arg("-c")
@@ -1951,7 +1951,7 @@ mod tests {
         // Agent that produces no file changes
         let mut mock = MockAgentBackend::new();
         mock.expect_build_start_command()
-            .returning(|folder, _, _, _| {
+            .returning(|folder, _, _, _, _| {
                 let mut cmd = Command::new("echo");
                 cmd.arg("no-changes")
                     .current_dir(folder)
