@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.14] - 2026-02-21
+
+### Added
+
+- **Stats:** Add activity heatmap to the Stats tab.
+- **Stats:** Track per-model session usage and render usage summaries.
+- **Settings:** Add settings tab and persist default model.
+- **Diff View:** Split diff view into file list and content panels with file explorer navigation.
+- **Diff View:** Render changed files as a tree in the file explorer.
+- **Diff View:** Filter diff view content by selected file explorer item.
+- **Site:** Add agentty.xyz documentation site with GitHub Pages deployment workflow.
+
+### Changed
+
+- **Architecture:** Refactor codebase into domain, infrastructure, and UI state modules.
+- **Architecture:** Move tab state into a dedicated tab manager.
+- **Session List:** Group sessions by merge queue and separate archived sessions with placeholders.
+- **Session List:** Align session navigation with grouped list order.
+- **Session Output:** Render session output and user prompt blocks as markdown.
+- **Session Output:** Preserve multiline user prompt block spacing and verbatim rendering.
+- **Merge Queue:** Queue session merges in FIFO order and handle queued sessions across app and UI.
+- **Merge Queue:** Advance merge queue progression and retry on git index lock failures.
+- **Merge:** Treat already-applied squash merges as successful.
+- **Rebase:** Harden rebase assist loop against partially resolved conflicts.
+- **Output:** Task service batches streamed output before flushing.
+- **Output:** Separate streamed response messages for Codex output spacing.
+- **Models:** Load default session model from persisted setting.
+- **Models:** Use npm semver for version checks and restore version display in status bar.
+- **Prompt:** Handle multiline paste and control-key newlines in prompt input.
+- **Site:** Redesign landing page with dark terminal theme, Tailwind CSS v4, and theme selector.
+- **Deps:** Bump dependency versions.
+
+### Fixed
+
+- **Build:** Fix refactor regressions and restore build stability after module restructure.
+
+### Contributors
+
+- @andagaev
+- @dependabot[bot]
+- @minev-dev
+
 ## [v0.1.13] - 2026-02-19
 
 ### Added
