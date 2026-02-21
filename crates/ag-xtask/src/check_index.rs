@@ -18,6 +18,7 @@ impl CommandRunner for RealCommandRunner {
     }
 }
 
+/// Runs repository-wide `AGENTS.md` directory index validation.
 pub(crate) fn run() -> Result<(), String> {
     run_with_runner(&RealCommandRunner)
 }
@@ -244,6 +245,10 @@ fn get_local_entries(directory: &Path, tracked_files: &[String]) -> Vec<String> 
     all_entries
 }
 
+/// Parses the `Directory Index` section of an `AGENTS.md` file.
+///
+/// The parser collects markdown link destinations from index bullets so
+/// formatter changes to link text do not affect validation.
 fn parse_index(content: &str) -> Option<Vec<String>> {
     let index_header = "## Directory Index";
     let header_pos = content.find(index_header)?;
@@ -258,15 +263,32 @@ fn parse_index(content: &str) -> Option<Vec<String>> {
         }
         first_line = false;
 
-        if let Some(start) = line.find('[')
-            && let Some(end) = line[start..].find(']')
-        {
-            let name = &line[start + 1..start + end];
-            indexed_files.push(name.to_string());
+        if let Some(destination) = parse_index_entry_destination(line) {
+            indexed_files.push(destination);
         }
     }
 
     Some(indexed_files)
+}
+
+/// Parses a markdown index bullet and returns the link destination.
+///
+/// The destination is the canonical path used for index validation because
+/// the link text may be escaped or formatted (for example, `\_index.md` or
+/// `` `_index.md` ``) by markdown formatters.
+fn parse_index_entry_destination(line: &str) -> Option<String> {
+    let link_start = line.find('[')?;
+    let destination_start_offset = line[link_start..].find("](")?;
+    let destination_start = link_start + destination_start_offset + 2;
+    let destination_end_offset = line[destination_start..].find(')')?;
+    let destination_end = destination_start + destination_end_offset;
+    let destination = line[destination_start..destination_end].trim();
+
+    if destination.is_empty() {
+        return None;
+    }
+
+    Some(destination.to_string())
 }
 
 #[cfg(test)]
@@ -351,6 +373,30 @@ mod tests {
 
         // Assert
         assert_eq!(files, vec!["file1", "dir1/"]);
+    }
+
+    #[test]
+    fn test_parse_index_prefers_destination_over_escaped_link_text() {
+        // Arrange
+        let content = "## Directory Index\n- [\\_index.md](_index.md) - Homepage content.\n";
+
+        // Act
+        let files = parse_index(content).expect("Failed to parse index");
+
+        // Assert
+        assert_eq!(files, vec!["_index.md"]);
+    }
+
+    #[test]
+    fn test_parse_index_prefers_destination_over_code_formatted_link_text() {
+        // Arrange
+        let content = "## Directory Index\n- [`_index.md`](_index.md) - Homepage content.\n";
+
+        // Act
+        let files = parse_index(content).expect("Failed to parse index");
+
+        // Assert
+        assert_eq!(files, vec!["_index.md"]);
     }
 
     #[test]
