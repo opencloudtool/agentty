@@ -9,10 +9,12 @@ use std::time::Duration;
 use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
-use crate::agent::AgentModel;
+use crate::domain::agent::AgentModel;
 use crate::app::settings::SettingName;
 use crate::app::{AppServices, SessionState};
-use crate::model::{DailyActivity, PermissionMode, Session, Status};
+use crate::domain::permission::PermissionMode;
+use crate::domain::session::{Session, Status};
+use crate::model::DailyActivity;
 
 mod access;
 mod lifecycle;
@@ -182,15 +184,17 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::agent::{AgentKind, AgentModel, MockAgentBackend};
+    use crate::domain::agent::{AgentKind, AgentModel};
+    use crate::infra::agent::MockAgentBackend;
     use crate::app::settings::SettingName;
     use crate::app::{App, Tab};
-    use crate::db::Database;
-    use crate::git;
-    use crate::model::{
-        AppMode, DailyActivity, PermissionMode, Project, SESSION_DATA_DIR, Session, SessionHandles,
-        SessionSize, SessionStats, Status,
-    };
+    use crate::infra::db::Database;
+    use crate::infra::git;
+    use crate::ui::state::app_mode::AppMode;
+    use crate::domain::permission::PermissionMode;
+    use crate::domain::session::{SESSION_DATA_DIR, Session, SessionHandles, SessionSize, SessionStats, Status};
+    use crate::domain::project::Project;
+    use crate::model::DailyActivity;
 
     fn create_mock_backend() -> MockAgentBackend {
         let mut mock = MockAgentBackend::new();

@@ -38,5 +38,6 @@ Application-layer workflows and orchestration.
 - [session/](session/) - Session workflows and their local docs/index.
 - [service.rs](service.rs) - Shared app dependency container (`Database`, base path, app event sender).
 - [settings.rs](settings.rs) - Settings management and persistence.
+- [state.rs](state.rs) - Session state management.
 - [tab.rs](tab.rs) - Top-level tab definitions and tab selection state management.
 - [task.rs](task.rs) - Background task spawning and output handling.

@@ -3,8 +3,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 
-#[cfg(test)]
-use mockall::automock;
 use serde::Deserialize;
 
 use crate::model::{PermissionMode, SessionStats};
@@ -18,7 +16,7 @@ pub struct ParsedResponse {
     pub stats: SessionStats,
 }
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(test, mockall::automock)]
 pub trait AgentBackend: Send + Sync {
     /// One-time setup in agent folder before first run (e.g. config files).
     fn setup(&self, folder: &Path);

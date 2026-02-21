@@ -3,11 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-#[cfg(test)]
-use mockall::{automock, predicate::*};
 use tracing::error;
 
-#[cfg_attr(test, automock)]
+#[cfg_attr(test, mockall::automock)]
 trait CommandRunner {
     fn run(&self, command: &mut Command) -> std::io::Result<Output>;
 }

@@ -8,13 +8,15 @@ use uuid::Uuid;
 
 use super::access::SESSION_NOT_FOUND_ERROR;
 use super::{session_branch, session_folder};
-use crate::agent::{AgentBackend, AgentModel};
+use crate::infra::agent::AgentBackend;
+use crate::domain::agent::AgentModel;
 use crate::app::session::worker::SessionCommand;
 use crate::app::settings::SettingName;
 use crate::app::task::TaskService;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
-use crate::git;
-use crate::model::{PermissionMode, SESSION_DATA_DIR, Session, Status};
+use crate::infra::git;
+use crate::domain::permission::PermissionMode;
+use crate::domain::session::{SESSION_DATA_DIR, Session, Status};
 
 impl SessionManager {
     /// Moves selection to the next session in the list.
@@ -161,7 +163,7 @@ impl SessionManager {
             return Err(format!("Failed to save session permission mode: {error}"));
         }
 
-        session_model.kind().create_backend().setup(&folder);
+        crate::infra::agent::create_backend(session_model.kind()).setup(&folder);
         services.emit_app_event(AppEvent::RefreshSessions);
 
         Ok(session_id)
@@ -232,7 +234,7 @@ impl SessionManager {
         )
         .await;
 
-        let command = session_model.kind().create_backend().build_start_command(
+        let command = crate::infra::agent::create_backend(session_model.kind()).build_start_command(
             &folder,
             &prompt,
             session_model.as_str(),
@@ -299,7 +301,7 @@ impl SessionManager {
             return;
         };
         let session_model = session.model;
-        let backend = session_model.kind().create_backend();
+        let backend = crate::infra::agent::create_backend(session_model.kind());
         self.reply_with_backend(
             services,
             session_id,

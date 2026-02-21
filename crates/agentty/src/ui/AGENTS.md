@@ -45,7 +45,10 @@ When working within `crates/agentty/src/ui/`:
 - [AGENTS.md](AGENTS.md) - UI specific instructions.
 - [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.
 - [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
+- [icon.rs](icon.rs) - UI icons.
 - [markdown.rs](markdown.rs) - Styled markdown renderer for session output.
 - [mod.rs](mod.rs) - UI module definition and main render loop.
 - [README.md](README.md) - Additional documentation.
+- [state/](state/) - UI state definitions.
+- [style.rs](style.rs) - UI styling constants.
 - [util.rs](util.rs) - Shared UI utilities and layout logic.

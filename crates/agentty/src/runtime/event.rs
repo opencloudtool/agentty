@@ -4,15 +4,13 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crossterm::event::Event;
-#[cfg(test)]
-use mockall::{Sequence, automock, predicate::eq};
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
 use crate::runtime::{EventResult, TuiTerminal, key_handler};
 
 /// Reads terminal events from an underlying event backend.
-#[cfg_attr(test, automock)]
+#[cfg_attr(test, mockall::automock)]
 pub(crate) trait EventSource: Send + Sync + 'static {
     /// Polls for an available event.
     fn poll(&self, timeout: Duration) -> io::Result<bool>;
@@ -140,6 +138,7 @@ mod tests {
     use std::io::ErrorKind;
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use mockall::{Sequence, predicate::eq};
 
     use super::*;
 

@@ -5,11 +5,11 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::agent::AgentModel;
+use crate::domain::agent::AgentModel;
 use crate::app::AppEvent;
 use crate::app::task::{RunAgentAssistTaskInput, TaskService};
-use crate::db::Database;
-use crate::model::PermissionMode;
+use crate::infra::db::Database;
+use crate::domain::permission::PermissionMode;
 
 /// Policy knobs controlling one assisted recovery loop.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,7 +120,7 @@ pub(super) async fn append_assist_header(
 /// interrupted.
 pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> Result<(), String> {
     let effective_permission_mode = effective_permission_mode(context.permission_mode);
-    let backend = context.session_model.kind().create_backend();
+    let backend = crate::infra::agent::create_backend(context.session_model.kind());
     let command = backend.build_start_command(
         &context.folder,
         prompt,

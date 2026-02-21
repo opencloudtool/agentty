@@ -3,8 +3,9 @@ use std::io;
 use crossterm::event::{self, KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::{AppMode, PaletteCommand, PaletteFocus};
 use crate::runtime::EventResult;
+use crate::ui::state::app_mode::AppMode;
+use crate::ui::state::palette::{PaletteCommand, PaletteFocus};
 
 enum PaletteAction {
     None,

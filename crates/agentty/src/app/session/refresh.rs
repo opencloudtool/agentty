@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use super::SESSION_REFRESH_INTERVAL;
 use crate::app::{AppServices, ProjectManager, SessionManager};
-use crate::model::AppMode;
+use crate::ui::state::app_mode::AppMode;
 
 impl SessionManager {
     /// Reloads session rows when the metadata cache indicates a change.

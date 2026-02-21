@@ -11,15 +11,16 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use tokio::sync::mpsc;
 
-use crate::agent::{AgentKind, AgentModel};
+use crate::domain::agent::{AgentKind, AgentModel};
 use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, effective_permission_mode,
     format_detail_lines, run_agent_assist,
 };
 use crate::app::{AppEvent, SessionManager};
-use crate::db::Database;
-use crate::git;
-use crate::model::{PermissionMode, Status};
+use crate::infra::db::Database;
+use crate::infra::git;
+use crate::domain::permission::PermissionMode;
+use crate::domain::session::Status;
 
 const AUTO_COMMIT_ASSIST_PROMPT_TEMPLATE: &str =
     include_str!("../../resources/auto_commit_assist_prompt.md");
@@ -204,7 +205,8 @@ impl TaskService {
                     let message = "\n[Stopped] Agent interrupted by user.\n";
                     Self::append_session_output(&output, &db, &app_event_tx, &id, message).await;
                 } else {
-                    let parsed = agent.parse_response(
+                    let parsed = crate::infra::agent::parse_response(
+                        agent,
                         &captured.stdout_text,
                         &captured.stderr_text,
                         permission_mode,
@@ -422,7 +424,8 @@ impl TaskService {
             ));
         }
 
-        let parsed = agent.parse_response(
+        let parsed = crate::infra::agent::parse_response(
+            agent,
             &captured.stdout_text,
             &captured.stderr_text,
             permission_mode,
@@ -582,7 +585,7 @@ impl TaskService {
             };
 
             let Some((stream_text, is_response_content)) =
-                stream_context.agent.parse_stream_output_line(&line)
+                crate::infra::agent::parse_stream_output_line(stream_context.agent, &line)
             else {
                 // Flush session output batch if any, even if this line was skipped
                 Self::flush_session_output_if_needed(

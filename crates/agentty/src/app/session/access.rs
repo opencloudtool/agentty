@@ -1,7 +1,7 @@
 //! Shared session lookup helpers and canonical lookup error strings.
 
 use crate::app::SessionManager;
-use crate::model::{Session, SessionHandles};
+use crate::domain::session::{Session, SessionHandles};
 
 /// Canonical session-handle-not-found error string used by app workflows.
 pub(crate) const SESSION_HANDLES_NOT_FOUND_ERROR: &str = "Session handles not found";

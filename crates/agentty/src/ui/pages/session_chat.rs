@@ -3,12 +3,13 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 
-use crate::agent::{AgentKind, AgentSelectionMetadata};
+use crate::domain::agent::{AgentKind, AgentSelectionMetadata};
+use crate::domain::input::extract_at_mention_query;
+use crate::domain::permission::PlanFollowupAction;
+use crate::domain::session::{Session, Status};
 use crate::file_list;
-use crate::model::{
-    AppMode, PlanFollowupAction, PromptAtMentionState, PromptSlashStage, Session, Status,
-    extract_at_mention_query,
-};
+use crate::ui::state::app_mode::AppMode;
+use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::ui::components::chat_input::{ChatInput, SlashMenu, SlashMenuOption};
 use crate::ui::components::session_output::SessionOutput;
 use crate::ui::util::calculate_input_height;
@@ -311,8 +312,9 @@ mod tests {
 
     use super::*;
     use crate::agent::AgentModel;
-    use crate::file_list::FileEntry;
-    use crate::model::{PermissionMode, SessionSize, SessionStats};
+    use crate::domain::file::FileEntry;
+    use crate::domain::permission::PermissionMode;
+    use crate::domain::session::{SessionSize, SessionStats};
 
     fn session_fixture() -> Session {
         Session {

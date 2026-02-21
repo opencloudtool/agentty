@@ -1,9 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::{AppMode, HelpContext};
 use crate::runtime::EventResult;
 use crate::ui::components::file_explorer::FileExplorer;
+use crate::ui::state::app_mode::{AppMode, HelpContext};
 use crate::ui::util::parse_diff_lines;
 
 pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {

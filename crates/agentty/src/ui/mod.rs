@@ -1,6 +1,8 @@
 pub mod components;
+pub mod icon;
 pub mod markdown;
 pub mod pages;
+pub mod state;
 pub mod util;
 
 use std::collections::HashMap;
@@ -12,10 +14,12 @@ use ratatui::widgets::TableState;
 
 use crate::app::session::session_branch;
 use crate::app::{SettingsManager, Tab};
-use crate::model::{
-    AppMode, DailyActivity, HelpContext, PaletteCommand, PaletteFocus, PlanFollowupAction, Project,
-    Session,
-};
+use crate::domain::permission::PlanFollowupAction;
+use crate::domain::project::Project;
+use crate::domain::session::Session;
+use crate::model::DailyActivity;
+use crate::ui::state::app_mode::{AppMode, HelpContext};
+use crate::ui::state::palette::{PaletteCommand, PaletteFocus};
 
 /// A trait for UI pages that enforces a standard rendering interface.
 pub trait Page {

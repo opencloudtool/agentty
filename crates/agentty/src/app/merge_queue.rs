@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::model::{PermissionMode, Status};
+use crate::domain::permission::PermissionMode;
+use crate::domain::session::Status;
 
 /// Queue progression outcome after applying a status update batch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

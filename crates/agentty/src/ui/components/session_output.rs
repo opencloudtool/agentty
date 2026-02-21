@@ -6,8 +6,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::domain::permission::PlanFollowupAction;
+use crate::domain::session::{Session, Status};
 use crate::icon::Icon;
-use crate::model::{PlanFollowupAction, Session, Status};
 use crate::ui::Component;
 use crate::ui::markdown::render_markdown;
 use crate::ui::util::truncate_with_ellipsis;
@@ -255,7 +256,8 @@ mod tests {
 
     use super::*;
     use crate::agent::AgentModel;
-    use crate::model::{PermissionMode, SessionSize, SessionStats};
+    use crate::domain::permission::PermissionMode;
+    use crate::domain::session::{SessionSize, SessionStats};
 
     fn session_fixture() -> Session {
         Session {

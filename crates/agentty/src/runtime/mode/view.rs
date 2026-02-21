@@ -3,13 +3,14 @@ use std::io;
 use crossterm::event::{self, KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::git;
-use crate::model::{
-    AppMode, HelpContext, InputState, PermissionMode, PlanFollowupAction, PromptHistoryState,
-    PromptSlashState, Status,
-};
+use crate::infra::git;
+use crate::domain::input::InputState;
+use crate::domain::permission::{PermissionMode, PlanFollowupAction};
+use crate::domain::session::Status;
 use crate::runtime::{EventResult, TuiTerminal};
 use crate::ui::pages::session_chat::SessionChatPage;
+use crate::ui::state::app_mode::{AppMode, HelpContext};
+use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
 
 const IMPLEMENT_PLAN_PROMPT: &str = "Implement the approved plan from your previous response \
                                      end-to-end. Make the required code changes, run all relevant \
@@ -393,7 +394,7 @@ mod tests {
     use super::*;
     use crate::app::AppEvent;
     use crate::db::Database;
-    use crate::model::PermissionMode;
+    use crate::domain::permission::PermissionMode;
 
     async fn new_test_app() -> (App, tempfile::TempDir) {
         let base_dir = tempdir().expect("failed to create temp dir");

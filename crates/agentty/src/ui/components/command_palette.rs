@@ -4,8 +4,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::model::{PaletteCommand, PaletteFocus, Project};
+use crate::domain::project::Project;
 use crate::ui::Component;
+use crate::ui::state::palette::{PaletteCommand, PaletteFocus};
 
 pub struct CommandPaletteInput<'a> {
     focus: PaletteFocus,

@@ -3,7 +3,8 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
-use crate::model::{PermissionMode, Session, SessionSize, Status};
+use crate::domain::permission::PermissionMode;
+use crate::domain::session::{Session, SessionSize, Status};
 use crate::ui::Page;
 use crate::ui::util::{first_table_column_width, truncate_with_ellipsis};
 

@@ -3,8 +3,8 @@ use std::io;
 use crossterm::event::KeyEvent;
 
 use crate::app::App;
-use crate::model::AppMode;
 use crate::runtime::{EventResult, TuiTerminal, mode};
+use crate::ui::state::app_mode::AppMode;
 
 pub(crate) async fn handle_key_event(
     app: &mut App,

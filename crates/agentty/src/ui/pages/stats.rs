@@ -4,7 +4,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use crate::model::{DailyActivity, Session};
+use crate::domain::session::Session;
+use crate::model::DailyActivity;
 use crate::ui::Page;
 use crate::ui::pages::session_list::{model_column_width, project_column_width};
 use crate::ui::util::{

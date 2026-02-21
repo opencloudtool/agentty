@@ -3,10 +3,12 @@ use std::io;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::{App, Tab};
-use crate::model::{
-    AppMode, HelpContext, InputState, PaletteFocus, PromptHistoryState, PromptSlashState, Status,
-};
+use crate::domain::input::InputState;
+use crate::domain::session::Status;
 use crate::runtime::EventResult;
+use crate::ui::state::app_mode::{AppMode, HelpContext};
+use crate::ui::state::palette::PaletteFocus;
+use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
 
 /// Handles key input while the app is in list mode.
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {

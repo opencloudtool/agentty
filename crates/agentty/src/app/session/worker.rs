@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::agent::AgentModel;
+use crate::domain::agent::AgentModel;
 use crate::app::task::{RunSessionTaskInput, TaskService};
 use crate::app::{AppEvent, AppServices, SessionManager};
-use crate::db::Database;
-use crate::model::{PermissionMode, Status};
+use crate::infra::db::Database;
+use crate::domain::permission::PermissionMode;
+use crate::domain::session::Status;
 
 const RESTART_FAILURE_REASON: &str = "Interrupted by app restart";
 const CANCEL_BEFORE_EXECUTION_REASON: &str = "Session canceled before execution";

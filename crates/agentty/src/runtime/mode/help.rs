@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::AppMode;
 use crate::runtime::EventResult;
+use crate::ui::state::app_mode::AppMode;
 
 /// Handles key input while the app is showing the help overlay.
 pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {
@@ -37,8 +37,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::db::Database;
-    use crate::model::HelpContext;
+    use crate::infra::db::Database;
+    use crate::ui::state::app_mode::HelpContext;
 
     async fn new_test_app() -> (App, tempfile::TempDir) {
         let base_dir = tempdir().expect("failed to create temp dir");

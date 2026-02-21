@@ -1,0 +1,189 @@
+use std::fmt;
+use std::str::FromStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentKind {
+    Gemini,
+    Claude,
+    Codex,
+}
+
+/// Supported agent model names across all providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentModel {
+    Gemini3FlashPreview,
+    Gemini3ProPreview,
+    Gpt53Codex,
+    Gpt52Codex,
+    ClaudeOpus46,
+    ClaudeSonnet46,
+    ClaudeHaiku4520251001,
+}
+
+/// Human-readable metadata for slash-menu selectable items.
+pub trait AgentSelectionMetadata {
+    /// Returns a stable item name shown in menus.
+    fn name(&self) -> &'static str;
+
+    /// Returns a short descriptive subtitle shown in menus.
+    fn description(&self) -> &'static str;
+}
+
+impl AgentModel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Gemini3FlashPreview => "gemini-3-flash-preview",
+            // TODO: Update to `gemini-3.1-pro-preview` when
+            // https://github.com/google-gemini/gemini-cli/issues/19532 is resolved.
+            Self::Gemini3ProPreview => "gemini-3-pro-preview",
+            Self::Gpt53Codex => "gpt-5.3-codex",
+            Self::Gpt52Codex => "gpt-5.2-codex",
+            Self::ClaudeOpus46 => "claude-opus-4-6",
+            Self::ClaudeSonnet46 => "claude-sonnet-4-6",
+            Self::ClaudeHaiku4520251001 => "claude-haiku-4-5-20251001",
+        }
+    }
+
+    pub fn kind(self) -> AgentKind {
+        match self {
+            Self::Gemini3FlashPreview | Self::Gemini3ProPreview => AgentKind::Gemini,
+            Self::Gpt53Codex | Self::Gpt52Codex => AgentKind::Codex,
+            Self::ClaudeOpus46 | Self::ClaudeSonnet46 | Self::ClaudeHaiku4520251001 => {
+                AgentKind::Claude
+            }
+        }
+    }
+}
+
+impl FromStr for AgentModel {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "gemini-3-flash-preview" => Ok(Self::Gemini3FlashPreview),
+            "gemini-3-pro-preview" => Ok(Self::Gemini3ProPreview),
+            "gpt-5.3-codex" => Ok(Self::Gpt53Codex),
+            "gpt-5.2-codex" => Ok(Self::Gpt52Codex),
+            "claude-opus-4-6" => Ok(Self::ClaudeOpus46),
+            "claude-sonnet-4-6" => Ok(Self::ClaudeSonnet46),
+            "claude-haiku-4-5-20251001" => Ok(Self::ClaudeHaiku4520251001),
+            other => Err(format!("unknown model: {other}")),
+        }
+    }
+}
+
+impl AgentSelectionMetadata for AgentModel {
+    fn name(&self) -> &'static str {
+        (*self).as_str()
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::Gemini3FlashPreview => "Fast Gemini model for quick iterations.",
+            Self::Gemini3ProPreview => "Higher-quality Gemini model for deeper reasoning.",
+            Self::Gpt53Codex => "Latest Codex model for coding quality.",
+            Self::Gpt52Codex => "Faster Codex model with lower cost.",
+            Self::ClaudeOpus46 => "Top-tier Claude model for complex tasks.",
+            Self::ClaudeSonnet46 => "Balanced Claude model for quality and latency.",
+            Self::ClaudeHaiku4520251001 => "Fast Claude model for lighter tasks.",
+        }
+    }
+}
+
+impl AgentKind {
+    /// All available agent kinds, in display order.
+    pub const ALL: &[AgentKind] = &[AgentKind::Gemini, AgentKind::Claude, AgentKind::Codex];
+
+    /// Parse from `AGENTTY_AGENT` env var, defaulting to Gemini.
+    pub fn from_env() -> Self {
+        std::env::var("AGENTTY_AGENT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(Self::Gemini)
+    }
+
+    /// Returns the default model for this agent kind.
+    pub fn default_model(self) -> AgentModel {
+        match self {
+            Self::Gemini => AgentModel::Gemini3FlashPreview,
+            Self::Claude => AgentModel::ClaudeOpus46,
+            Self::Codex => AgentModel::Gpt53Codex,
+        }
+    }
+
+    /// Returns the model string when it belongs to this agent kind.
+    pub fn model_str(self, model: AgentModel) -> Option<&'static str> {
+        if model.kind() != self {
+            return None;
+        }
+
+        Some(model.as_str())
+    }
+
+    /// Returns the curated model list for this agent kind.
+    pub fn models(self) -> &'static [AgentModel] {
+        const GEMINI_MODELS: &[AgentModel] = &[
+            AgentModel::Gemini3FlashPreview,
+            AgentModel::Gemini3ProPreview,
+        ];
+        const CLAUDE_MODELS: &[AgentModel] = &[
+            AgentModel::ClaudeOpus46,
+            AgentModel::ClaudeSonnet46,
+            AgentModel::ClaudeHaiku4520251001,
+        ];
+        const CODEX_MODELS: &[AgentModel] = &[AgentModel::Gpt53Codex, AgentModel::Gpt52Codex];
+
+        match self {
+            Self::Gemini => GEMINI_MODELS,
+            Self::Claude => CLAUDE_MODELS,
+            Self::Codex => CODEX_MODELS,
+        }
+    }
+
+    /// Parses a provider-specific model string for this agent kind.
+    pub fn parse_model(self, value: &str) -> Option<AgentModel> {
+        let model = value.parse::<AgentModel>().ok()?;
+        if model.kind() != self {
+            return None;
+        }
+
+        Some(model)
+    }
+}
+
+impl AgentSelectionMetadata for AgentKind {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Gemini => "gemini",
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::Gemini => "Google Gemini CLI agent.",
+            Self::Claude => "Anthropic Claude Code agent.",
+            Self::Codex => "OpenAI Codex CLI agent.",
+        }
+    }
+}
+
+impl fmt::Display for AgentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl FromStr for AgentKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "gemini" => Ok(Self::Gemini),
+            "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
+            other => Err(format!("unknown agent kind: {other}")),
+        }
+    }
+}

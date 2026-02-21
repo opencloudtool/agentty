@@ -3,8 +3,8 @@ use std::io;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
-use crate::model::AppMode;
 use crate::runtime::EventResult;
+use crate::ui::state::app_mode::AppMode;
 
 const YES_OPTION_INDEX: usize = 0;
 const NO_OPTION_INDEX: usize = 1;

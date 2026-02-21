@@ -4,7 +4,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::model::Session;
+use crate::domain::session::Session;
 use crate::ui::components::file_explorer::FileExplorer;
 use crate::ui::util::{
     DiffLine, DiffLineKind, max_diff_line_number, parse_diff_lines, wrap_diff_content,
@@ -177,7 +177,8 @@ mod tests {
 
     use super::*;
     use crate::agent::AgentModel;
-    use crate::model::{PermissionMode, SessionSize, SessionStats, Status};
+    use crate::domain::permission::PermissionMode;
+    use crate::domain::session::{SessionSize, SessionStats, Status};
 
     fn session_fixture() -> Session {
         Session {

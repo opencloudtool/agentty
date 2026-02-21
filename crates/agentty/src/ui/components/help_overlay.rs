@@ -4,8 +4,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::model::HelpContext;
 use crate::ui::Component;
+use crate::ui::state::app_mode::HelpContext;
 
 const OVERLAY_WIDTH_PERCENT: u16 = 40;
 

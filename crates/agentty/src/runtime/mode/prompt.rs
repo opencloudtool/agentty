@@ -2,10 +2,12 @@ use std::io;
 
 use crossterm::event::{self, KeyCode, KeyEvent};
 
-use crate::agent::AgentKind;
+use crate::domain::agent::AgentKind;
 use crate::app::App;
 use crate::file_list;
-use crate::model::{AppMode, InputState, PromptAtMentionState, PromptSlashStage};
+use crate::domain::input::InputState;
+use crate::ui::state::app_mode::AppMode;
+use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::runtime::{EventResult, TuiTerminal};
 use crate::ui::util::{move_input_cursor_down, move_input_cursor_up};
 
@@ -812,8 +814,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::db::Database;
-    use crate::model::{PromptAtMentionState, PromptHistoryState};
+    use crate::infra::db::Database;
+    use crate::ui::state::prompt::{PromptAtMentionState, PromptHistoryState};
 
     fn setup_test_git_repo(path: &Path) {
         Command::new("git")
@@ -874,7 +876,7 @@ mod tests {
         app.mode = AppMode::Prompt {
             at_mention_state,
             history_state: PromptHistoryState::new(Vec::new()),
-            slash_state: crate::model::PromptSlashState::new(),
+            slash_state: crate::ui::state::prompt::PromptSlashState::new(),
             session_id,
             input: InputState::with_text(input_text.to_string()),
             scroll_offset: None,

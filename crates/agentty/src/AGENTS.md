@@ -12,6 +12,8 @@
 
 ## Directory Index
 - [app/](app/) - Application state and workflows split by concern (`session`, `project`, `task`).
+- [domain/](domain/) - Domain layer entities and logic.
+- [infra/](infra/) - Infrastructure layer implementations.
 - [runtime/](runtime/) - Runtime event loop, terminal integration, and mode key handling.
 - [ui/](ui/) - User Interface module.
 - [agent.rs](agent.rs) - `AgentBackend` trait and concrete backends (`GeminiBackend`, `ClaudeBackend`).
