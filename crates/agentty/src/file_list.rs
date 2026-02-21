@@ -59,8 +59,9 @@ fn sort_and_limit_entries(entries: &mut Vec<FileEntry>) {
 ///
 /// Query characters must appear in order (case-insensitive) within the
 /// path. Results are ranked by: consecutive-character runs, matches at
-/// the start of path segments (`/`, `.`), and filename matches. If the
-/// query ends with `/`, directory entries are prioritized before files.
+/// the start of path segments (`/`, `.`), and a basename-substring bonus
+/// for intuitive file-name-first matches. If the query ends with `/`,
+/// directory entries are prioritized before files.
 pub fn filter_entries<'a>(entries: &'a [FileEntry], query: &str) -> Vec<&'a FileEntry> {
     if query.is_empty() {
         return entries.iter().collect();
@@ -108,6 +109,7 @@ fn prioritize_directories_for_trailing_slash(entries: &mut Vec<&FileEntry>, quer
 fn fuzzy_score(path: &str, query_chars: &[char]) -> Option<i32> {
     let path_lower: Vec<char> = path.to_lowercase().chars().collect();
     let path_chars: Vec<char> = path.chars().collect();
+    let query_lower: String = query_chars.iter().collect();
 
     if query_chars.len() > path_lower.len() {
         return None;
@@ -143,10 +145,43 @@ fn fuzzy_score(path: &str, query_chars: &[char]) -> Option<i32> {
     }
 
     if query_index == query_chars.len() {
-        Some(score)
+        Some(score + basename_match_bonus(path, &query_lower))
     } else {
         None
     }
+}
+
+/// Returns an extra score when the query text is found in the basename.
+///
+/// This prioritizes intuitive `@` mention matches such as `@settings`
+/// matching `settings.rs` before unrelated paths that only match through
+/// scattered fuzzy characters.
+fn basename_match_bonus(path: &str, query: &str) -> i32 {
+    if query.is_empty() || query.contains('/') {
+        return 0;
+    }
+
+    let normalized_path = path.trim_end_matches('/');
+    let basename = normalized_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(normalized_path);
+    let basename_lower = basename.to_lowercase();
+    let basename_stem = basename_lower.split('.').next().unwrap_or("");
+
+    if basename_stem == query {
+        return 60;
+    }
+
+    if basename_lower.starts_with(query) {
+        return 45;
+    }
+
+    if basename_lower.contains(query) {
+        return 30;
+    }
+
+    0
 }
 
 #[cfg(test)]
@@ -458,6 +493,28 @@ mod tests {
 
         // Assert — consecutive match ranked first
         assert_eq!(filtered[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_filter_entries_prioritizes_basename_match() {
+        // Arrange
+        let entries = vec![
+            FileEntry {
+                is_dir: false,
+                path: "crates/agentty/src/infra/git.rs".to_string(),
+            },
+            FileEntry {
+                is_dir: false,
+                path: "crates/agentty/src/app/settings.rs".to_string(),
+            },
+        ];
+
+        // Act
+        let filtered = filter_entries(&entries, "settings");
+
+        // Assert
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].path, "crates/agentty/src/app/settings.rs");
     }
 
     #[test]
