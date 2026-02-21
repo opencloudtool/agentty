@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use tokio::sync::mpsc;
@@ -26,6 +27,10 @@ const AUTO_COMMIT_ASSIST_POLICY: AssistPolicy = AssistPolicy {
     max_attempts: 10,
     max_identical_failure_streak: 3,
 };
+/// Maximum wall-clock delay before buffered output is flushed.
+const OUTPUT_BATCH_INTERVAL: Duration = Duration::from_millis(50);
+/// Maximum buffered output size before a flush is triggered.
+const OUTPUT_BATCH_SIZE: usize = 1024; // 1KB
 
 /// Stateless helpers for background tasks and session process output handling.
 pub(super) struct TaskService;
@@ -547,86 +552,93 @@ impl TaskService {
         stream_context: Option<StreamOutputContext>,
     ) {
         let mut reader = tokio::io::BufReader::new(source).lines();
+        let mut raw_buffer_batch = String::new();
+        let mut session_output_batch = String::new();
+        let mut last_flush = std::time::Instant::now();
+
         while let Ok(Some(line)) = reader.next_line().await {
-            if let Ok(mut buf) = buffer.lock() {
-                buf.push_str(&line);
-                buf.push('\n');
-            }
+            raw_buffer_batch.push_str(&line);
+            raw_buffer_batch.push('\n');
+
+            let should_flush = raw_buffer_batch.len() >= OUTPUT_BATCH_SIZE
+                || session_output_batch.len() >= OUTPUT_BATCH_SIZE
+                || last_flush.elapsed() >= OUTPUT_BATCH_INTERVAL;
+
+            Self::flush_raw_buffer_if_needed(buffer, &mut raw_buffer_batch, should_flush);
 
             let Some(stream_context) = &stream_context else {
+                if should_flush {
+                    last_flush = std::time::Instant::now();
+                }
                 continue;
             };
+
             let Some((stream_text, is_response_content)) =
                 stream_context.agent.parse_stream_output_line(&line)
             else {
+                // Flush session output batch if any, even if this line was skipped
+                Self::flush_session_output_if_needed(
+                    stream_context,
+                    &mut session_output_batch,
+                    should_flush,
+                    &mut last_flush,
+                )
+                .await;
                 continue;
             };
+
             if stream_text.trim().is_empty() {
+                Self::flush_session_output_if_needed(
+                    stream_context,
+                    &mut session_output_batch,
+                    should_flush,
+                    &mut last_flush,
+                )
+                .await;
                 continue;
             }
 
             if is_response_content {
-                let should_prefix_blank_line = !stream_context
-                    .streamed_response_seen
-                    .load(Ordering::Relaxed)
-                    && stream_context
-                        .non_response_stream_output_seen
-                        .load(Ordering::Relaxed);
-                let formatted_stream_text = if should_prefix_blank_line {
-                    format!("\n{stream_text}\n")
-                } else {
-                    format!("{stream_text}\n")
-                };
-                Self::append_session_output(
-                    &stream_context.output,
-                    &stream_context.db,
-                    &stream_context.app_event_tx,
-                    &stream_context.id,
-                    &formatted_stream_text,
+                Self::handle_response_content_line(
+                    stream_context,
+                    &stream_text,
+                    &mut session_output_batch,
+                    should_flush,
+                    &mut last_flush,
                 )
                 .await;
-                stream_context
-                    .streamed_response_seen
-                    .store(true, Ordering::Relaxed);
-
-                let previous_progress_message =
-                    Self::take_active_progress_message(&stream_context.active_progress_message);
-                if previous_progress_message.is_some() {
-                    Self::append_progress_completion_if_needed(
-                        stream_context,
-                        previous_progress_message,
-                    )
-                    .await;
-                    Self::set_session_progress(
-                        &stream_context.app_event_tx,
-                        &stream_context.id,
-                        None,
-                    );
-                }
 
                 continue;
             }
 
-            stream_context
-                .non_response_stream_output_seen
-                .store(true, Ordering::Relaxed);
-            let previous_progress_message = match Self::replace_active_progress_message_if_changed(
-                &stream_context.active_progress_message,
-                &stream_text,
-            ) {
-                ActiveProgressMessageUpdate::NoChange => continue,
-                ActiveProgressMessageUpdate::Updated {
-                    previous_progress_message,
-                } => previous_progress_message,
-            };
+            Self::handle_progress_content_line(
+                stream_context,
+                stream_text,
+                &mut session_output_batch,
+                should_flush,
+                &mut last_flush,
+            )
+            .await;
+        }
 
-            Self::append_progress_completion_if_needed(stream_context, previous_progress_message)
-                .await;
-            Self::set_session_progress(
+        // Final flush
+        if !raw_buffer_batch.is_empty()
+            && let Ok(mut buf) = buffer.lock()
+        {
+            buf.push_str(&raw_buffer_batch);
+        }
+
+        if let Some(stream_context) = stream_context
+            && !session_output_batch.is_empty()
+        {
+            Self::append_session_output(
+                &stream_context.output,
+                &stream_context.db,
                 &stream_context.app_event_tx,
                 &stream_context.id,
-                Some(stream_text),
-            );
+                &session_output_batch,
+            )
+            .await;
         }
     }
 
@@ -645,6 +657,145 @@ impl TaskService {
         let _ = app_event_tx.send(AppEvent::SessionUpdated {
             session_id: id.to_string(),
         });
+    }
+
+    /// Flushes raw stream text into the shared in-memory output buffer.
+    fn flush_raw_buffer_if_needed(
+        buffer: &Arc<Mutex<String>>,
+        raw_buffer_batch: &mut String,
+        should_flush: bool,
+    ) {
+        if should_flush && !raw_buffer_batch.is_empty() {
+            if let Ok(mut buf) = buffer.lock() {
+                buf.push_str(raw_buffer_batch);
+            }
+
+            raw_buffer_batch.clear();
+        }
+    }
+
+    /// Flushes session-visible output when the caller indicates a flush point.
+    async fn flush_session_output_if_needed(
+        stream_context: &StreamOutputContext,
+        session_output_batch: &mut String,
+        should_flush: bool,
+        last_flush: &mut std::time::Instant,
+    ) {
+        if !should_flush {
+            return;
+        }
+
+        Self::flush_session_output_batch(stream_context, session_output_batch).await;
+        *last_flush = std::time::Instant::now();
+    }
+
+    /// Handles parsed response content and reconciles progress state
+    /// transitions.
+    async fn handle_response_content_line(
+        stream_context: &StreamOutputContext,
+        stream_text: &str,
+        session_output_batch: &mut String,
+        should_flush: bool,
+        last_flush: &mut std::time::Instant,
+    ) {
+        let should_prefix_blank_line = !stream_context
+            .streamed_response_seen
+            .load(Ordering::Relaxed)
+            && stream_context
+                .non_response_stream_output_seen
+                .load(Ordering::Relaxed);
+
+        if should_prefix_blank_line {
+            session_output_batch.push('\n');
+        }
+
+        session_output_batch.push_str(stream_text);
+        session_output_batch.push('\n');
+
+        if should_flush {
+            Self::flush_session_output_batch(stream_context, session_output_batch).await;
+            *last_flush = std::time::Instant::now();
+        }
+
+        stream_context
+            .streamed_response_seen
+            .store(true, Ordering::Relaxed);
+
+        let previous_progress_message =
+            Self::take_active_progress_message(&stream_context.active_progress_message);
+
+        if previous_progress_message.is_some() {
+            // Flush any pending session output before adding completion message
+            Self::flush_session_output_batch(stream_context, session_output_batch).await;
+            Self::append_progress_completion_if_needed(stream_context, previous_progress_message)
+                .await;
+            Self::set_session_progress(&stream_context.app_event_tx, &stream_context.id, None);
+        }
+    }
+
+    /// Handles parsed non-response progress content and publishes progress
+    /// updates.
+    async fn handle_progress_content_line(
+        stream_context: &StreamOutputContext,
+        stream_text: String,
+        session_output_batch: &mut String,
+        should_flush: bool,
+        last_flush: &mut std::time::Instant,
+    ) {
+        stream_context
+            .non_response_stream_output_seen
+            .store(true, Ordering::Relaxed);
+
+        let previous_progress_message = match Self::replace_active_progress_message_if_changed(
+            &stream_context.active_progress_message,
+            &stream_text,
+        ) {
+            ActiveProgressMessageUpdate::NoChange => {
+                Self::flush_session_output_if_needed(
+                    stream_context,
+                    session_output_batch,
+                    should_flush,
+                    last_flush,
+                )
+                .await;
+
+                return;
+            }
+            ActiveProgressMessageUpdate::Updated {
+                previous_progress_message,
+            } => previous_progress_message,
+        };
+
+        // Flush pending output before handling progress updates
+        Self::flush_session_output_batch(stream_context, session_output_batch).await;
+        Self::append_progress_completion_if_needed(stream_context, previous_progress_message).await;
+        Self::set_session_progress(
+            &stream_context.app_event_tx,
+            &stream_context.id,
+            Some(stream_text),
+        );
+
+        // Reset flush timer as we just did a potential write (progress update events
+        // are immediate)
+        *last_flush = std::time::Instant::now();
+    }
+
+    /// Persists and clears the session output batch when it contains data.
+    async fn flush_session_output_batch(
+        stream_context: &StreamOutputContext,
+        session_output_batch: &mut String,
+    ) {
+        if !session_output_batch.is_empty() {
+            Self::append_session_output(
+                &stream_context.output,
+                &stream_context.db,
+                &stream_context.app_event_tx,
+                &stream_context.id,
+                session_output_batch,
+            )
+            .await;
+            session_output_batch.clear();
+        }
     }
 
     async fn append_progress_completion_if_needed(
