@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
-use crate::agent::AgentModel;
+use crate::agent::{AgentKind, AgentModel};
 use crate::db::Database;
 use crate::model::{
     AppMode, PermissionMode, PlanFollowupAction, Session, SessionHandles, Status, Tab,
@@ -226,8 +226,13 @@ impl App {
             working_dir,
         );
         let settings = SettingsManager::new(&services).await;
+        let default_session_model = SessionManager::load_default_session_model(
+            &services,
+            AgentKind::Gemini.default_model(),
+        )
+        .await;
         let sessions = SessionManager::new(
-            settings.default_model,
+            default_session_model,
             default_session_permission_mode,
             SessionState::new(
                 handles,

@@ -10,6 +10,7 @@ use super::access::SESSION_NOT_FOUND_ERROR;
 use super::{session_branch, session_folder};
 use crate::agent::{AgentBackend, AgentModel};
 use crate::app::session::worker::SessionCommand;
+use crate::app::settings::SettingName;
 use crate::app::task::TaskService;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::git;
@@ -74,7 +75,8 @@ impl SessionManager {
         let base_branch = projects
             .git_branch()
             .ok_or_else(|| "Git branch is required to create a session".to_string())?;
-        let session_model = self.default_session_model;
+        let session_model = self.resolve_default_session_model(services).await;
+        self.default_session_model = session_model;
         let session_permission_mode = self.default_session_permission_mode;
 
         let session_id = Uuid::new_v4().to_string();
@@ -693,6 +695,17 @@ impl SessionManager {
             )
             .await;
         }
+    }
+
+    async fn resolve_default_session_model(&self, services: &AppServices) -> AgentModel {
+        services
+            .db()
+            .get_setting(SettingName::DefaultModel.as_str())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|setting_value| setting_value.parse().ok())
+            .unwrap_or(self.default_session_model)
     }
 
     /// Reverts filesystem and database changes after session creation failure.

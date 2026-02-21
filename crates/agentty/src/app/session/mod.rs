@@ -10,7 +10,8 @@ use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
 use crate::agent::AgentModel;
-use crate::app::SessionState;
+use crate::app::settings::SettingName;
+use crate::app::{AppServices, SessionState};
 use crate::model::{PermissionMode, Session, Status};
 
 mod access;
@@ -48,6 +49,21 @@ impl SessionManager {
             state,
             workers: HashMap::new(),
         }
+    }
+
+    /// Loads the default model persisted for new sessions.
+    pub(crate) async fn load_default_session_model(
+        services: &AppServices,
+        fallback_model: AgentModel,
+    ) -> AgentModel {
+        services
+            .db()
+            .get_setting(SettingName::DefaultModel.as_str())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|setting_value| setting_value.parse().ok())
+            .unwrap_or(fallback_model)
     }
 
     /// Returns split immutable/mutable references needed by render.
@@ -161,6 +177,7 @@ mod tests {
     use super::*;
     use crate::agent::{AgentKind, AgentModel, MockAgentBackend};
     use crate::app::App;
+    use crate::app::settings::SettingName;
     use crate::db::Database;
     use crate::git;
     use crate::model::{
@@ -633,7 +650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_session_uses_last_used_agent_model_and_permission_mode() {
+    async fn test_create_session_keeps_default_model_setting_when_session_model_changes() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
@@ -647,6 +664,12 @@ mod tests {
         app.toggle_session_permission_mode(&first_session_id)
             .await
             .expect("failed to toggle permission mode");
+        let default_model_setting = app
+            .services
+            .db()
+            .get_setting(SettingName::DefaultModel.as_str())
+            .await
+            .expect("failed to load setting");
 
         // Act
         let second_session_id = app
@@ -663,6 +686,7 @@ mod tests {
             .expect("missing second session");
         assert_eq!(second_session.model, AgentModel::Gpt52Codex);
         assert_eq!(second_session.permission_mode, PermissionMode::Autonomous);
+        assert_eq!(default_model_setting, None);
 
         let db_sessions = app
             .services
@@ -679,6 +703,36 @@ mod tests {
             db_second_session.permission_mode,
             PermissionMode::Autonomous.label()
         );
+    }
+
+    #[tokio::test]
+    async fn test_create_session_reads_default_model_from_db_setting() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        app.services
+            .db()
+            .upsert_setting(
+                SettingName::DefaultModel.as_str(),
+                AgentModel::ClaudeHaiku4520251001.as_str(),
+            )
+            .await
+            .expect("failed to upsert default model setting");
+
+        // Act
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+
+        // Assert
+        let created_session = app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing created session");
+        assert_eq!(created_session.model, AgentModel::ClaudeHaiku4520251001);
     }
 
     #[tokio::test]
@@ -975,9 +1029,12 @@ mod tests {
         db.update_session_permission_mode("beta00002", PermissionMode::Autonomous.label())
             .await
             .expect("failed to update beta00002 permission mode");
-        db.upsert_setting("DefaultModel", AgentModel::ClaudeHaiku4520251001.as_str())
-            .await
-            .expect("failed to upsert default model setting");
+        db.upsert_setting(
+            SettingName::DefaultModel.as_str(),
+            AgentModel::ClaudeHaiku4520251001.as_str(),
+        )
+        .await
+        .expect("failed to upsert default model setting");
         sqlx::query(
             r"
     UPDATE session

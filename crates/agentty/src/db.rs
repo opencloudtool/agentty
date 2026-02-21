@@ -1751,6 +1751,9 @@ WHERE id = 'beta'
         db.insert_session("sess1", "claude-opus-4-6", "main", "New", project_id)
             .await
             .expect("failed to insert");
+        db.upsert_setting("DefaultModel", "claude-opus-4-6")
+            .await
+            .expect("failed to upsert setting");
 
         let initial_sessions = db.load_sessions().await.expect("failed to load");
         let initial_updated_at = initial_sessions[0].updated_at;
@@ -1763,6 +1766,11 @@ WHERE id = 'beta'
         assert!(result.is_ok());
         let sessions = db.load_sessions().await.expect("failed to load");
         assert_eq!(sessions[0].model, "gpt-5.2-codex");
+        let default_model_setting = db
+            .get_setting("DefaultModel")
+            .await
+            .expect("failed to load setting");
+        assert_eq!(default_model_setting, Some("claude-opus-4-6".to_string()));
         assert!(
             sessions[0].updated_at > initial_updated_at,
             "updated_at should be updated by trigger"

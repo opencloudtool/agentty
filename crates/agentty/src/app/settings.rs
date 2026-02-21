@@ -3,13 +3,15 @@ use ratatui::widgets::TableState;
 use crate::agent::{AgentKind, AgentModel};
 use crate::app::AppServices;
 
+/// Names of persisted application settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SettingName {
+pub(crate) enum SettingName {
     DefaultModel,
 }
 
 impl SettingName {
-    fn as_str(self) -> &'static str {
+    /// Returns the persisted key name for this setting.
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::DefaultModel => "DefaultModel",
         }
@@ -83,14 +85,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn as_str_returns_default_model_setting_name() {
-        // Arrange
-        let setting_name = SettingName::DefaultModel;
-
-        // Act
-        let setting_name_value = setting_name.as_str();
+    fn setting_name_as_str_returns_default_model() {
+        // Arrange & Act
+        let setting_name = SettingName::DefaultModel.as_str();
 
         // Assert
-        assert_eq!(setting_name_value, "DefaultModel");
+        assert_eq!(setting_name, "DefaultModel");
     }
 }
