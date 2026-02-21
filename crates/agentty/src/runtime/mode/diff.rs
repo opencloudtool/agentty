@@ -49,12 +49,22 @@ pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {
             KeyCode::Char('j') => {
                 let parsed = parse_diff_lines(diff);
                 let count = FileExplorer::count_items(&parsed);
-                *file_explorer_selected_index = file_explorer_selected_index
+                let new_index = file_explorer_selected_index
                     .saturating_add(1)
                     .min(count.saturating_sub(1));
+
+                if *file_explorer_selected_index != new_index {
+                    *file_explorer_selected_index = new_index;
+                    *scroll_offset = 0;
+                }
             }
             KeyCode::Char('k') => {
-                *file_explorer_selected_index = file_explorer_selected_index.saturating_sub(1);
+                let new_index = file_explorer_selected_index.saturating_sub(1);
+
+                if *file_explorer_selected_index != new_index {
+                    *file_explorer_selected_index = new_index;
+                    *scroll_offset = 0;
+                }
             }
             KeyCode::Down => {
                 *scroll_offset = scroll_offset.saturating_add(1);
@@ -181,6 +191,62 @@ mod tests {
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_handle_j_resets_scroll_offset() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::Diff {
+            session_id: "session-id".to_string(),
+            diff: "diff --git a/src/main.rs b/src/main.rs\n+added".to_string(),
+            scroll_offset: 10,
+            file_explorer_selected_index: 0,
+        };
+
+        // Act
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Diff {
+                scroll_offset: 0,
+                file_explorer_selected_index: 1,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_k_resets_scroll_offset() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::Diff {
+            session_id: "session-id".to_string(),
+            diff: "diff --git a/src/main.rs b/src/main.rs\n+added".to_string(),
+            scroll_offset: 10,
+            file_explorer_selected_index: 1,
+        };
+
+        // Act
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Diff {
+                scroll_offset: 0,
+                file_explorer_selected_index: 0,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

@@ -24,6 +24,15 @@ const TREE_PREFIX_SPACER: &str = "  ";
 const RENAME_ORIGIN_PREFIX: &str = " <- ";
 const ROOT_TREE_PREFIX: &str = "";
 
+/// Identifies what a tree line in the file explorer represents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileTreeItem {
+    /// A folder prefix path (e.g. `"src/ui/"`).
+    Folder(String),
+    /// A full file path (e.g. `"src/ui/components/file_explorer.rs"`).
+    File(String),
+}
+
 /// Diff file explorer panel rendering the changed file list.
 pub struct FileExplorer {
     file_list_lines: Vec<Line<'static>>,
@@ -87,7 +96,7 @@ impl FileTreeNode {
 impl FileExplorer {
     /// Creates a new file explorer component from parsed diff lines.
     pub fn new(parsed_lines: &[DiffLine<'_>], selected_index: usize) -> Self {
-        let file_list_lines = Self::file_list_lines(parsed_lines);
+        let (file_list_lines, _) = Self::build_tree(parsed_lines);
 
         Self {
             file_list_lines,
@@ -97,11 +106,58 @@ impl FileExplorer {
 
     /// Returns the number of items (files and folders) in the explorer list.
     pub fn count_items(parsed_lines: &[DiffLine<'_>]) -> usize {
-        Self::file_list_lines(parsed_lines).len()
+        let (lines, _) = Self::build_tree(parsed_lines);
+
+        lines.len()
     }
 
-    /// Builds tree-rendered lines from parsed diff headers.
-    fn file_list_lines(parsed_lines: &[DiffLine<'_>]) -> Vec<Line<'static>> {
+    /// Returns the [`FileTreeItem`] list for the given parsed diff lines.
+    ///
+    /// Each entry corresponds one-to-one to a rendered tree line so the
+    /// selected index can be used to look up the matching item.
+    pub fn file_tree_items(parsed_lines: &[DiffLine<'_>]) -> Vec<FileTreeItem> {
+        let (_, items) = Self::build_tree(parsed_lines);
+
+        items
+    }
+
+    /// Filters `parsed_lines` to only the lines belonging to the given
+    /// [`FileTreeItem`].
+    ///
+    /// For a [`FileTreeItem::File`] the result contains the diff section
+    /// whose `diff --git` header references that file path.  For a
+    /// [`FileTreeItem::Folder`] the result contains all sections whose
+    /// file paths start with the folder prefix.
+    pub fn filter_diff_lines<'a>(
+        parsed_lines: &[DiffLine<'a>],
+        item: &FileTreeItem,
+    ) -> Vec<DiffLine<'a>> {
+        let mut result = Vec::new();
+        let mut include_section = false;
+
+        for diff_line in parsed_lines {
+            if diff_line.kind == DiffLineKind::FileHeader
+                && diff_line.content.starts_with(DIFF_GIT_FILE_HEADER_PREFIX)
+            {
+                include_section = Self::header_matches_item(diff_line.content, item);
+            }
+
+            if include_section {
+                result.push(DiffLine {
+                    kind: diff_line.kind,
+                    old_line: diff_line.old_line,
+                    new_line: diff_line.new_line,
+                    content: diff_line.content,
+                });
+            }
+        }
+
+        result
+    }
+
+    /// Builds the tree display lines and parallel [`FileTreeItem`] list from
+    /// parsed diff headers.
+    fn build_tree(parsed_lines: &[DiffLine<'_>]) -> (Vec<Line<'static>>, Vec<FileTreeItem>) {
         let mut file_tree = FileTreeNode::default();
 
         for diff_line in parsed_lines {
@@ -117,8 +173,15 @@ impl FileExplorer {
         }
 
         let mut file_list_lines = Vec::new();
+        let mut items = Vec::new();
         file_tree.sort_recursive();
-        Self::append_tree_lines(&file_tree, ROOT_TREE_PREFIX, &mut file_list_lines);
+        Self::append_tree_lines(
+            &file_tree,
+            ROOT_TREE_PREFIX,
+            ROOT_TREE_PREFIX,
+            &mut file_list_lines,
+            &mut items,
+        );
 
         if file_list_lines.is_empty() {
             file_list_lines.push(Line::from(Span::styled(
@@ -127,7 +190,27 @@ impl FileExplorer {
             )));
         }
 
-        file_list_lines
+        (file_list_lines, items)
+    }
+
+    /// Checks whether a `diff --git` header line matches the given tree item.
+    fn header_matches_item(header_line: &str, item: &FileTreeItem) -> bool {
+        let file_path = Self::extract_new_path(header_line);
+
+        match item {
+            FileTreeItem::File(path) => file_path.as_deref() == Some(path.as_str()),
+            FileTreeItem::Folder(prefix) => {
+                file_path.is_some_and(|path| path.starts_with(prefix.as_str()))
+            }
+        }
+    }
+
+    /// Extracts the new (b-side) file path from a `diff --git` header.
+    fn extract_new_path(header_line: &str) -> Option<String> {
+        let stripped = header_line.strip_prefix(DIFF_GIT_PATH_PREFIX)?;
+        let (_, new_path) = stripped.split_once(DIFF_GIT_PATH_SEPARATOR)?;
+
+        Some(new_path.to_string())
     }
 
     /// Parses a diff header into a normalized path representation for tree
@@ -174,8 +257,14 @@ impl FileExplorer {
     }
 
     /// Appends a depth-first textual tree representation for the node and its
-    /// children.
-    fn append_tree_lines(node: &FileTreeNode, prefix: &str, lines: &mut Vec<Line<'static>>) {
+    /// children, while building a parallel [`FileTreeItem`] list.
+    fn append_tree_lines(
+        node: &FileTreeNode,
+        prefix: &str,
+        path_prefix: &str,
+        lines: &mut Vec<Line<'static>>,
+        items: &mut Vec<FileTreeItem>,
+    ) {
         let total_children = node.folders.len() + node.files.len();
         let mut child_index = 0;
 
@@ -188,11 +277,13 @@ impl FileExplorer {
                 TREE_BRANCH_MIDDLE
             };
             let line_text = format!("{prefix}{branch_prefix}{folder_name}{FOLDER_SUFFIX}");
+            let folder_path = format!("{path_prefix}{folder_name}/");
 
             lines.push(Line::from(Span::styled(
                 line_text,
                 Style::default().fg(Color::Yellow),
             )));
+            items.push(FileTreeItem::Folder(folder_path.clone()));
 
             let child_prefix = if is_last_child {
                 format!("{prefix}{TREE_PREFIX_SPACER}")
@@ -200,7 +291,7 @@ impl FileExplorer {
                 format!("{prefix}{TREE_PREFIX_CONTINUATION}")
             };
 
-            Self::append_tree_lines(folder_node, &child_prefix, lines);
+            Self::append_tree_lines(folder_node, &child_prefix, &folder_path, lines, items);
         }
 
         for file in &node.files {
@@ -212,6 +303,7 @@ impl FileExplorer {
                 TREE_BRANCH_MIDDLE
             };
             let file_name = format!("{prefix}{branch_prefix}{}", file.name);
+            let file_path = format!("{path_prefix}{}", file.name);
             let mut spans = vec![Span::styled(file_name, Style::default().fg(Color::Cyan))];
 
             if let Some(rename_from) = &file.rename_from {
@@ -222,6 +314,7 @@ impl FileExplorer {
             }
 
             lines.push(Line::from(spans));
+            items.push(FileTreeItem::File(file_path));
         }
     }
 }
@@ -285,7 +378,7 @@ mod tests {
         }];
 
         // Act
-        let lines = FileExplorer::file_list_lines(&parsed_lines);
+        let lines = FileExplorer::build_tree(&parsed_lines).0;
 
         // Assert
         assert_eq!(lines.len(), 2);
@@ -304,7 +397,7 @@ mod tests {
         }];
 
         // Act
-        let lines = FileExplorer::file_list_lines(&parsed_lines);
+        let lines = FileExplorer::build_tree(&parsed_lines).0;
 
         // Assert
         assert_eq!(lines.len(), 2);
@@ -324,7 +417,7 @@ mod tests {
         }];
 
         // Act
-        let lines = FileExplorer::file_list_lines(&parsed_lines);
+        let lines = FileExplorer::build_tree(&parsed_lines).0;
 
         // Assert
         assert_eq!(lines.len(), 1);
@@ -356,7 +449,7 @@ mod tests {
         ];
 
         // Act
-        let lines = FileExplorer::file_list_lines(&parsed_lines);
+        let lines = FileExplorer::build_tree(&parsed_lines).0;
 
         // Assert
         let line_text: Vec<String> = lines
@@ -388,10 +481,183 @@ mod tests {
         }];
 
         // Act
-        let lines = FileExplorer::file_list_lines(&parsed_lines);
+        let lines = FileExplorer::build_tree(&parsed_lines).0;
 
         // Assert
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].spans[0].content, NO_FILES_LABEL);
+    }
+
+    #[test]
+    fn test_file_tree_items_returns_folders_and_files() {
+        // Arrange
+        let parsed_lines = vec![DiffLine {
+            kind: DiffLineKind::FileHeader,
+            old_line: None,
+            new_line: None,
+            content: DIFF_SAME_PATH_HEADER,
+        }];
+
+        // Act
+        let items = FileExplorer::file_tree_items(&parsed_lines);
+
+        // Assert
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], FileTreeItem::Folder("src/".to_string()));
+        assert_eq!(items[1], FileTreeItem::File("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_file_tree_items_nested_structure() {
+        // Arrange
+        let parsed_lines = vec![
+            DiffLine {
+                kind: DiffLineKind::FileHeader,
+                old_line: None,
+                new_line: None,
+                content: DIFF_SAME_PATH_HEADER,
+            },
+            DiffLine {
+                kind: DiffLineKind::FileHeader,
+                old_line: None,
+                new_line: None,
+                content: DIFF_NESTED_HEADER,
+            },
+            DiffLine {
+                kind: DiffLineKind::FileHeader,
+                old_line: None,
+                new_line: None,
+                content: DIFF_README_HEADER,
+            },
+        ];
+
+        // Act
+        let items = FileExplorer::file_tree_items(&parsed_lines);
+
+        // Assert
+        assert_eq!(
+            items,
+            vec![
+                FileTreeItem::Folder("src/".to_string()),
+                FileTreeItem::Folder("src/ui/".to_string()),
+                FileTreeItem::Folder("src/ui/components/".to_string()),
+                FileTreeItem::File("src/ui/components/file_explorer.rs".to_string()),
+                FileTreeItem::File("src/main.rs".to_string()),
+                FileTreeItem::File("README.md".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_file_tree_items_with_rename() {
+        // Arrange
+        let parsed_lines = vec![DiffLine {
+            kind: DiffLineKind::FileHeader,
+            old_line: None,
+            new_line: None,
+            content: DIFF_RENAME_HEADER,
+        }];
+
+        // Act
+        let items = FileExplorer::file_tree_items(&parsed_lines);
+
+        // Assert
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], FileTreeItem::Folder("src/".to_string()));
+        assert_eq!(items[1], FileTreeItem::File("src/new.rs".to_string()));
+    }
+
+    #[test]
+    fn test_filter_diff_lines_by_file() {
+        // Arrange
+        let parsed_lines = vec![
+            DiffLine {
+                kind: DiffLineKind::FileHeader,
+                old_line: None,
+                new_line: None,
+                content: DIFF_SAME_PATH_HEADER,
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                content: "added in main",
+            },
+            DiffLine {
+                kind: DiffLineKind::FileHeader,
+                old_line: None,
+                new_line: None,
+                content: DIFF_README_HEADER,
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                content: "added in readme",
+            },
+        ];
+        let item = FileTreeItem::File("src/main.rs".to_string());
+
+        // Act
+        let filtered = FileExplorer::filter_diff_lines(&parsed_lines, &item);
+
+        // Assert
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].content, DIFF_SAME_PATH_HEADER);
+        assert_eq!(filtered[1].content, "added in main");
+    }
+
+    #[test]
+    fn test_filter_diff_lines_by_folder() {
+        // Arrange
+        let parsed_lines = vec![
+            DiffLine {
+                kind: DiffLineKind::FileHeader,
+                old_line: None,
+                new_line: None,
+                content: DIFF_SAME_PATH_HEADER,
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                content: "added in main",
+            },
+            DiffLine {
+                kind: DiffLineKind::FileHeader,
+                old_line: None,
+                new_line: None,
+                content: DIFF_NESTED_HEADER,
+            },
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(5),
+                new_line: None,
+                content: "deleted in explorer",
+            },
+            DiffLine {
+                kind: DiffLineKind::FileHeader,
+                old_line: None,
+                new_line: None,
+                content: DIFF_README_HEADER,
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                content: "added in readme",
+            },
+        ];
+        let item = FileTreeItem::Folder("src/".to_string());
+
+        // Act
+        let filtered = FileExplorer::filter_diff_lines(&parsed_lines, &item);
+
+        // Assert
+        assert_eq!(filtered.len(), 4);
+        assert_eq!(filtered[0].content, DIFF_SAME_PATH_HEADER);
+        assert_eq!(filtered[1].content, "added in main");
+        assert_eq!(filtered[2].content, DIFF_NESTED_HEADER);
+        assert_eq!(filtered[3].content, "deleted in explorer");
     }
 }

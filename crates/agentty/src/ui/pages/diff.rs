@@ -155,9 +155,15 @@ impl Page for DiffPage<'_> {
         let diff_area = content_layout[1];
 
         let parsed = parse_diff_lines(&self.diff);
+        let tree_items = FileExplorer::file_tree_items(&parsed);
 
         FileExplorer::new(&parsed, self.file_explorer_selected_index).render(f, file_list_area);
-        self.render_diff_content(f, diff_area, &parsed);
+
+        let filtered = tree_items
+            .get(self.file_explorer_selected_index)
+            .map(|item| FileExplorer::filter_diff_lines(&parsed, item))
+            .unwrap_or_default();
+        self.render_diff_content(f, diff_area, &filtered);
 
         let help_message = Paragraph::new("q: back | j/k: scroll | ?: help")
             .style(Style::default().fg(Color::Gray));
