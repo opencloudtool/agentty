@@ -6,6 +6,7 @@ compile_sass = true
 minify_html = true
 build_search_index = false
 generate_feeds = false
+ignored_content = ["**/AGENTS.md", "**/CLAUDE.md", "**/GEMINI.md"]
 
 [markdown]
 render_emoji = true
@@ -13,7 +14,7 @@ external_links_target_blank = true
 
 [markdown.highlighting]
 style = "inline"
-theme = "gruvbox-dark"
+theme = "gruvbox-dark-medium"
 
 [extra]
 github_repo = "https://github.com/opencloudtool/agentty"
