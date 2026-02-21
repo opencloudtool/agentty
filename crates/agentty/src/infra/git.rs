@@ -18,6 +18,15 @@ pub enum RebaseStepResult {
     Conflict { detail: String },
 }
 
+/// Outcome of attempting a squash merge operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SquashMergeOutcome {
+    /// Squash merge staged changes and created a commit.
+    Committed,
+    /// Squash merge staged nothing because changes already exist in target.
+    AlreadyPresentInTarget,
+}
+
 /// Detects git repository information for the given directory.
 /// Returns the current branch name if in a git repository, None otherwise.
 pub async fn detect_git_info(dir: PathBuf) -> Option<String> {
@@ -196,7 +205,7 @@ pub async fn squash_merge_diff(
 /// * `commit_message` - Message for the squash commit
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure
+/// A [`SquashMergeOutcome`] describing whether a squash commit was created.
 ///
 /// # Errors
 /// Returns an error if the repository is on the wrong branch, the merge
@@ -206,7 +215,7 @@ pub async fn squash_merge(
     source_branch: String,
     target_branch: String,
     commit_message: String,
-) -> Result<(), String> {
+) -> Result<SquashMergeOutcome, String> {
     spawn_blocking(move || {
         // Verify that repo_path is already on the target branch. Switching
         // branches here would disrupt the user's working directory.
@@ -244,10 +253,15 @@ pub async fn squash_merge(
             .map_err(|e| format!("Failed to execute git: {e}"))?;
 
         if cached_diff.status.success() {
-            return Err(
-                "Nothing to merge: the session changes are already present in the base branch"
-                    .to_string(),
-            );
+            return Ok(SquashMergeOutcome::AlreadyPresentInTarget);
+        }
+
+        if cached_diff.status.code() != Some(1) {
+            let detail = command_output_detail(&cached_diff.stdout, &cached_diff.stderr);
+
+            return Err(format!(
+                "Failed to inspect staged squash merge diff: {detail}"
+            ));
         }
 
         // Commit the squashed changes. Skip pre-commit hooks (`--no-verify`)
@@ -265,7 +279,7 @@ pub async fn squash_merge(
             return Err(format!("Failed to commit squash merge: {}", stderr.trim()));
         }
 
-        Ok(())
+        Ok(SquashMergeOutcome::Committed)
     })
     .await
     .map_err(|e| format!("Join error: {e}"))?
@@ -1042,7 +1056,88 @@ fn is_rebase_conflict(detail: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use tempfile::tempdir;
+
     use super::*;
+
+    fn run_git_command(repo_path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to run git command");
+
+        assert!(
+            output.status.success(),
+            "git command {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn setup_test_git_repo(repo_path: &Path) {
+        run_git_command(repo_path, &["init", "-b", "main"]);
+        run_git_command(repo_path, &["config", "user.name", "Test User"]);
+        run_git_command(repo_path, &["config", "user.email", "test@example.com"]);
+
+        fs::write(repo_path.join("README.md"), "test repo").expect("failed to write file");
+        run_git_command(repo_path, &["add", "README.md"]);
+        run_git_command(repo_path, &["commit", "-m", "Initial commit"]);
+    }
+
+    #[tokio::test]
+    async fn test_squash_merge_returns_committed_when_changes_exist() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        run_git_command(dir.path(), &["checkout", "-b", "feature-branch"]);
+        fs::write(dir.path().join("feature.txt"), "feature content").expect("failed to write file");
+        run_git_command(dir.path(), &["add", "feature.txt"]);
+        run_git_command(dir.path(), &["commit", "-m", "Add feature"]);
+        run_git_command(dir.path(), &["checkout", "main"]);
+
+        // Act
+        let result = squash_merge(
+            dir.path().to_path_buf(),
+            "feature-branch".to_string(),
+            "main".to_string(),
+            "Squash merge feature".to_string(),
+        )
+        .await;
+
+        // Assert
+        assert_eq!(result, Ok(SquashMergeOutcome::Committed));
+    }
+
+    #[tokio::test]
+    async fn test_squash_merge_returns_already_present_when_changes_exist_in_target() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        run_git_command(dir.path(), &["checkout", "-b", "session-branch"]);
+        fs::write(dir.path().join("session.txt"), "session change").expect("failed to write file");
+        run_git_command(dir.path(), &["add", "session.txt"]);
+        run_git_command(dir.path(), &["commit", "-m", "Session change"]);
+        run_git_command(dir.path(), &["checkout", "main"]);
+        fs::write(dir.path().join("session.txt"), "session change").expect("failed to write file");
+        run_git_command(dir.path(), &["add", "session.txt"]);
+        run_git_command(dir.path(), &["commit", "-m", "Apply same change on main"]);
+
+        // Act
+        let result = squash_merge(
+            dir.path().to_path_buf(),
+            "session-branch".to_string(),
+            "main".to_string(),
+            "Merge session".to_string(),
+        )
+        .await;
+
+        // Assert
+        assert_eq!(result, Ok(SquashMergeOutcome::AlreadyPresentInTarget));
+    }
 
     #[test]
     fn test_is_rebase_conflict_detects_conflict_keyword() {

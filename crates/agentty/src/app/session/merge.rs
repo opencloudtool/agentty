@@ -210,34 +210,41 @@ impl SessionManager {
                     .map_err(|error| format!("Failed to inspect merge diff: {error}"))?
             };
 
-            let fallback_commit_message =
-                Self::fallback_merge_commit_message(&source_branch, &base_branch);
-            let commit_message = {
-                let folder = folder.clone();
-                let squash_diff = squash_diff.clone();
-                let fallback_commit_message_for_task = fallback_commit_message.clone();
-                let generate_message = tokio::task::spawn_blocking(move || {
-                    Self::generate_merge_commit_message_from_diff(
-                        &folder,
-                        session_model,
-                        &squash_diff,
-                    )
-                    .unwrap_or(fallback_commit_message_for_task)
-                });
+            let (merge_outcome, commit_message) = if squash_diff.trim().is_empty() {
+                (git::SquashMergeOutcome::AlreadyPresentInTarget, None)
+            } else {
+                let fallback_commit_message =
+                    Self::fallback_merge_commit_message(&source_branch, &base_branch);
+                let commit_message = {
+                    let folder = folder.clone();
+                    let squash_diff = squash_diff.clone();
+                    let fallback_commit_message_for_task = fallback_commit_message.clone();
+                    let generate_message = tokio::task::spawn_blocking(move || {
+                        Self::generate_merge_commit_message_from_diff(
+                            &folder,
+                            session_model,
+                            &squash_diff,
+                        )
+                        .unwrap_or(fallback_commit_message_for_task)
+                    });
 
-                match tokio::time::timeout(MERGE_COMMIT_MESSAGE_TIMEOUT, generate_message).await {
-                    Ok(Ok(message)) => message,
-                    Ok(Err(_)) | Err(_) => fallback_commit_message,
-                }
+                    match tokio::time::timeout(MERGE_COMMIT_MESSAGE_TIMEOUT, generate_message).await
+                    {
+                        Ok(Ok(message)) => message,
+                        Ok(Err(_)) | Err(_) => fallback_commit_message,
+                    }
+                };
+
+                let merge_outcome = {
+                    let repo_root = repo_root.clone();
+                    let source_branch = source_branch.clone();
+                    let base_branch = base_branch.clone();
+                    let commit_message = commit_message.clone();
+                    git::squash_merge(repo_root, source_branch, base_branch, commit_message).await?
+                };
+
+                (merge_outcome, Some(commit_message))
             };
-
-            {
-                let repo_root = repo_root.clone();
-                let source_branch = source_branch.clone();
-                let base_branch = base_branch.clone();
-                let commit_message = commit_message.clone();
-                git::squash_merge(repo_root, source_branch, base_branch, commit_message).await?;
-            }
 
             if !TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Done).await {
                 return Err("Invalid status transition to Done".to_string());
@@ -253,16 +260,20 @@ impl SessionManager {
                 format!("Merged successfully but failed to remove worktree: {error}")
             })?;
 
-            Self::update_session_title_and_summary_from_commit_message(
-                &db,
-                &id,
-                &commit_message,
-                &app_event_tx,
-            )
-            .await;
+            if let Some(commit_message) = commit_message {
+                Self::update_session_title_and_summary_from_commit_message(
+                    &db,
+                    &id,
+                    &commit_message,
+                    &app_event_tx,
+                )
+                .await;
+            }
 
-            Ok(format!(
-                "Successfully merged {source_branch} into {base_branch}"
+            Ok(Self::merge_success_message(
+                &source_branch,
+                &base_branch,
+                merge_outcome,
             ))
         }
         .await;
@@ -290,6 +301,22 @@ impl SessionManager {
                     .await;
                 let _ =
                     TaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
+            }
+        }
+    }
+
+    /// Builds merge success output text for commit and no-op outcomes.
+    fn merge_success_message(
+        source_branch: &str,
+        base_branch: &str,
+        merge_outcome: git::SquashMergeOutcome,
+    ) -> String {
+        match merge_outcome {
+            git::SquashMergeOutcome::Committed => {
+                format!("Successfully merged {source_branch} into {base_branch}")
+            }
+            git::SquashMergeOutcome::AlreadyPresentInTarget => {
+                format!("Session changes from {source_branch} are already present in {base_branch}")
             }
         }
     }

@@ -2258,6 +2258,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_merge_session_marks_done_when_changes_are_already_in_base() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        create_and_start_session(&mut app, "No-op merge").await;
+        let session_id = app.sessions.sessions[0].id.clone();
+        wait_for_status(&mut app, &session_id, Status::Review).await;
+        let session_folder = app.sessions.sessions[0].folder.clone();
+        let branch_name = session_branch(&session_id);
+
+        std::fs::write(session_folder.join("session-change.txt"), "same content")
+            .expect("failed to write session change");
+        git::commit_all(
+            session_folder.clone(),
+            "Session-side change".to_string(),
+            false,
+        )
+        .await
+        .expect("failed to commit session change");
+
+        std::fs::write(dir.path().join("session-change.txt"), "same content")
+            .expect("failed to write main change");
+        Command::new("git")
+            .args(["add", "session-change.txt"])
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to stage main change");
+        Command::new("git")
+            .args(["commit", "-m", "Apply same change on main"])
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to commit main change");
+
+        let head_before_merge = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to read HEAD before merge");
+        let head_before_merge = String::from_utf8_lossy(&head_before_merge.stdout)
+            .trim()
+            .to_string();
+
+        // Act
+        let result = app.merge_session(&session_id).await;
+
+        // Assert
+        assert!(result.is_ok(), "merge should enqueue successfully");
+        wait_for_status_with_retries(&mut app, &session_id, Status::Done, 5000).await;
+        wait_for_output_contains(&mut app, &session_id, "[Merge] Session changes from", 5000).await;
+
+        app.sessions.sync_from_handles();
+        let session = app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing session after merge");
+        assert!(!session.output.contains("[Merge Error]"));
+
+        let head_after_merge = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to read HEAD after merge");
+        let head_after_merge = String::from_utf8_lossy(&head_after_merge.stdout)
+            .trim()
+            .to_string();
+        assert_eq!(head_after_merge, head_before_merge);
+
+        let mut branches = String::new();
+        for _ in 0..400 {
+            let branch_output = Command::new("git")
+                .args(["branch", "--list", &branch_name])
+                .current_dir(dir.path())
+                .output()
+                .expect("failed to list branches");
+            branches = String::from_utf8_lossy(&branch_output.stdout).to_string();
+            if !session_folder.exists() && branches.trim().is_empty() {
+                break;
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        assert!(!session_folder.exists(), "worktree should be removed");
+        assert!(
+            branches.trim().is_empty(),
+            "branch should be removed after no-op merge"
+        );
+    }
+
+    #[tokio::test]
     async fn test_merge_session_queue_processes_sessions_in_fifo_order() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
