@@ -20,6 +20,7 @@ const MIN_GUTTER_WIDTH: usize = 1;
 const SCROLL_X_OFFSET: u16 = 0;
 const SIGN_COLUMN_WIDTH: usize = 1;
 const WRAPPED_CHUNK_START_INDEX: usize = 0;
+const HELP_HINT: &str = "q: back | j/k: select file | Up/Down: scroll selected file | ?: help";
 
 /// Renders the current session's git diff in a scrollable page.
 pub struct DiffPage<'a> {
@@ -165,8 +166,69 @@ impl Page for DiffPage<'_> {
             .unwrap_or_default();
         self.render_diff_content(f, diff_area, &filtered);
 
-        let help_message = Paragraph::new("q: back | j/k: scroll | ?: help")
-            .style(Style::default().fg(Color::Gray));
+        let help_message = Paragraph::new(HELP_HINT).style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, footer_area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::agent::AgentModel;
+    use crate::model::{PermissionMode, SessionSize, SessionStats, Status};
+
+    fn session_fixture() -> Session {
+        Session {
+            base_branch: "main".to_string(),
+            folder: PathBuf::new(),
+            id: "session-id".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            permission_mode: PermissionMode::default(),
+            project_name: "project".to_string(),
+            prompt: String::new(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::Review,
+            summary: None,
+            title: Some("Diff Session".to_string()),
+        }
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn test_render_shows_updated_diff_help_hint() {
+        // Arrange
+        let session = session_fixture();
+        let mut diff_page = DiffPage::new(
+            &session,
+            "diff --git a/src/main.rs b/src/main.rs\n+added".to_string(),
+            0,
+            0,
+        );
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                crate::ui::Page::render(&mut diff_page, frame, area);
+            })
+            .expect("failed to draw diff page");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("j/k: select file"));
+        assert!(text.contains("Up/Down: scroll selected file"));
     }
 }

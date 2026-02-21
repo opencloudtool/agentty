@@ -632,7 +632,12 @@ impl HelpContext {
                 ("Ctrl+u", "Half page up"),
                 ("?", "Help"),
             ],
-            HelpContext::Diff { .. } => &[("q / Esc", "Back to session"), ("?", "Help")],
+            HelpContext::Diff { .. } => &[
+                ("q / Esc", "Back to session"),
+                ("j / k", "Select file"),
+                ("Up / Down", "Scroll selected file"),
+                ("?", "Help"),
+            ],
         }
     }
 
@@ -1610,6 +1615,9 @@ mod tests {
 
         // Assert
         assert!(bindings.iter().any(|(key, _)| *key == "q / Esc"));
+        assert!(bindings.iter().any(|(key, _)| *key == "j / k"));
+        assert!(bindings.iter().any(|(key, _)| *key == "Up / Down"));
+        assert!(bindings.iter().any(|(key, _)| *key == "?"));
     }
 
     #[test]
