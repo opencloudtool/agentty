@@ -217,8 +217,8 @@ impl StatsPage<'_> {
         lines
     }
 
-    /// Builds summary lines for favorite model, longest session, and
-    /// per-model token totals.
+    /// Builds summary lines for favorite model, longest `agentty` session
+    /// duration, and all-time per-model combined token totals.
     fn build_summary_lines(&self) -> Vec<Line<'static>> {
         let model_summaries = self.model_summaries();
         let favorite_model =
@@ -227,10 +227,10 @@ impl StatsPage<'_> {
         let longest_label = longest_session.unwrap_or_else(|| "n/a".to_string());
         let mut lines = vec![
             Line::from(format!("Favorite model: {favorite_model}")),
-            Line::from(format!("Longest session: {longest_label}")),
+            Line::from(format!("Longest Agentty session: {longest_label}")),
             Line::from(""),
             Line::from(Span::styled(
-                "Tokens by model",
+                "Model stats (All time)",
                 Style::default().fg(Color::Gray),
             )),
         ];
@@ -242,15 +242,9 @@ impl StatsPage<'_> {
         }
 
         for (model_name, summary) in model_summaries {
-            let input_tokens = format_token_count(summary.input_tokens);
-            let output_tokens = format_token_count(summary.output_tokens);
-            lines.push(Line::from(format!(
-                "{model_name} ({})",
-                summary.session_count
-            )));
-            lines.push(Line::from(format!(
-                "  In {input_tokens} | Out {output_tokens}"
-            )));
+            let combined_tokens =
+                format_token_count(summary.input_tokens.saturating_add(summary.output_tokens));
+            lines.push(Line::from(format!("{model_name}: {combined_tokens}")));
         }
 
         lines
@@ -281,10 +275,9 @@ impl StatsPage<'_> {
         favorite.map(|(model_name, summary)| format!("{model_name} ({})", summary.session_count))
     }
 
-    /// Returns a display label for the longest session duration.
+    /// Returns a compact duration label for the longest `agentty` session.
     fn longest_session_summary(&self) -> Option<String> {
         let mut longest_duration = 0_i64;
-        let mut longest_title = String::new();
 
         for session in self.sessions {
             let duration_seconds = session.updated_at.saturating_sub(session.created_at).max(0);
@@ -293,18 +286,13 @@ impl StatsPage<'_> {
             }
 
             longest_duration = duration_seconds;
-            longest_title = session.display_title().to_string();
         }
 
         if longest_duration == 0 {
             return None;
         }
 
-        Some(format!(
-            "{} ({})",
-            longest_title,
-            format_duration_compact(longest_duration)
-        ))
+        Some(format_duration_compact(longest_duration))
     }
 
     /// Aggregates token totals and session counts grouped by model name.
@@ -474,10 +462,10 @@ mod tests {
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Session Stats"));
         assert!(text.contains("Favorite model: gpt-5.3-codex (2)"));
-        assert!(text.contains("Longest session: Longest Session (2h 0m)"));
-        assert!(text.contains("gpt-5.3-codex (2)"));
-        assert!(text.contains("In 3.0k | Out 1.2k"));
-        assert!(text.contains("claude-opus-4-6 (1)"));
+        assert!(text.contains("Longest Agentty session: 2h 0m"));
+        assert!(text.contains("Model stats (All time)"));
+        assert!(text.contains("gpt-5.3-codex: 4.2k"));
+        assert!(text.contains("claude-opus-4-6: 500"));
     }
 
     #[test]
