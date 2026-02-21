@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
-use crate::agent::{AgentKind, AgentModel};
+use crate::agent::AgentModel;
 use crate::db::Database;
 use crate::model::{
     AppMode, PermissionMode, PlanFollowupAction, Session, SessionHandles, Status, Tab,
@@ -22,12 +22,14 @@ mod merge_queue;
 mod project;
 mod service;
 pub(crate) mod session;
+pub(crate) mod settings;
 mod task;
 
 use merge_queue::{MergeQueue, MergeQueueProgress};
 pub use project::ProjectManager;
 pub use service::AppServices;
 pub use session::SessionManager;
+pub use settings::SettingsManager;
 
 /// Relative directory name used for session git worktrees under `~/.agentty`.
 pub const AGENTTY_WT_DIR: &str = "wt";
@@ -166,6 +168,7 @@ impl SessionState {
 pub struct App {
     pub current_tab: Tab,
     pub mode: AppMode,
+    pub settings: SettingsManager,
     pub(crate) projects: ProjectManager,
     pub(crate) services: AppServices,
     pub(crate) sessions: SessionManager,
@@ -203,10 +206,9 @@ impl App {
             SessionManager::load_sessions(&base_path, &db, &projects, &mut handles).await;
         let (sessions_row_count, sessions_updated_at_max) =
             db.load_sessions_metadata().await.unwrap_or((0, 0));
-        let (default_session_model, default_session_permission_mode) = sessions.first().map_or(
-            (AgentKind::Gemini.default_model(), PermissionMode::default()),
-            |session| (session.model, session.permission_mode),
-        );
+        let default_session_permission_mode = sessions
+            .first()
+            .map_or(PermissionMode::default(), |session| session.permission_mode);
         if sessions.is_empty() {
             table_state.select(None);
         } else {
@@ -223,8 +225,9 @@ impl App {
             projects,
             working_dir,
         );
+        let settings = SettingsManager::new(&services).await;
         let sessions = SessionManager::new(
-            default_session_model,
+            settings.default_model,
             default_session_permission_mode,
             SessionState::new(
                 handles,
@@ -250,6 +253,7 @@ impl App {
         Self {
             current_tab: Tab::Sessions,
             mode: AppMode::List,
+            settings,
             projects,
             services,
             sessions,

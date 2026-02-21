@@ -943,7 +943,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_session_uses_most_recent_loaded_session_defaults() {
+    async fn test_create_session_uses_default_model_setting_and_most_recent_permission_mode() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         setup_test_git_repo(dir.path());
@@ -975,6 +975,9 @@ mod tests {
         db.update_session_permission_mode("beta00002", PermissionMode::Autonomous.label())
             .await
             .expect("failed to update beta00002 permission mode");
+        db.upsert_setting("DefaultModel", AgentModel::ClaudeHaiku4520251001.as_str())
+            .await
+            .expect("failed to upsert default model setting");
         sqlx::query(
             r"
     UPDATE session
@@ -1768,6 +1771,8 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Sessions);
         app.next_tab();
         assert_eq!(app.current_tab, Tab::Stats);
+        app.next_tab();
+        assert_eq!(app.current_tab, Tab::Settings);
         app.next_tab();
         assert_eq!(app.current_tab, Tab::Sessions);
     }

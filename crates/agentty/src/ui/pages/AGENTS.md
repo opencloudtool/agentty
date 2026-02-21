@@ -9,3 +9,4 @@ Full-screen page implementations implementing the `Page` trait.
 - [stats.rs](stats.rs) - Stats view page.
 - [session_chat.rs](session_chat.rs) - Main chat interface page (handles both new sessions and replies).
 - [session_list.rs](session_list.rs) - List of active sessions page.
+- [settings.rs](settings.rs) - Settings management page.

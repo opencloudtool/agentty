@@ -916,6 +916,48 @@ WHERE status IN ('queued', 'running')
 
         Ok(())
     }
+
+    /// Inserts or updates a setting by name.
+    ///
+    /// # Errors
+    /// Returns an error if the setting row cannot be written.
+    pub async fn upsert_setting(&self, name: &str, value: &str) -> Result<(), String> {
+        sqlx::query(
+            r"
+INSERT INTO setting (name, value)
+VALUES (?, ?)
+ON CONFLICT(name) DO UPDATE
+SET value = excluded.value
+",
+        )
+        .bind(name)
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to upsert setting: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Looks up a setting value by name.
+    ///
+    /// # Errors
+    /// Returns an error if the setting lookup query fails.
+    pub async fn get_setting(&self, name: &str) -> Result<Option<String>, String> {
+        let row = sqlx::query(
+            r"
+SELECT value
+FROM setting
+WHERE name = ?
+",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to get setting: {err}"))?;
+
+        Ok(row.map(|row| row.get("value")))
+    }
 }
 
 fn unix_timestamp_now() -> i64 {

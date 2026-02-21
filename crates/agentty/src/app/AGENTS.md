@@ -37,4 +37,5 @@ Application-layer workflows and orchestration.
 - [project.rs](project.rs) - Project discovery and switching logic.
 - [session/](session/) - Session workflows and their local docs/index.
 - [service.rs](service.rs) - Shared app dependency container (`Database`, base path, app event sender).
+- [settings.rs](settings.rs) - Settings management and persistence.
 - [task.rs](task.rs) - Background task spawning and output handling.

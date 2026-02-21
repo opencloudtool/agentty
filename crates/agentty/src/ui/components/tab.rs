@@ -19,7 +19,7 @@ impl Tabs {
 
 impl Component for Tabs {
     fn render(&self, f: &mut Frame, area: Rect) {
-        let tabs = [Tab::Sessions, Tab::Stats];
+        let tabs = [Tab::Sessions, Tab::Stats, Tab::Settings];
         let max_width = tabs.iter().map(|t| t.title().len()).max().unwrap_or(0);
         let tab_titles: Vec<_> = tabs
             .iter()

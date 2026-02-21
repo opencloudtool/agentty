@@ -23,6 +23,7 @@ pub struct Project {
 pub enum Tab {
     Sessions,
     Stats,
+    Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -812,6 +813,7 @@ impl Tab {
         match self {
             Tab::Sessions => "Sessions",
             Tab::Stats => "Stats",
+            Tab::Settings => "Settings",
         }
     }
 
@@ -819,7 +821,8 @@ impl Tab {
     pub fn next(self) -> Self {
         match self {
             Tab::Sessions => Tab::Stats,
-            Tab::Stats => Tab::Sessions,
+            Tab::Stats => Tab::Settings,
+            Tab::Settings => Tab::Sessions,
         }
     }
 }
@@ -1157,13 +1160,15 @@ mod tests {
         // Arrange & Act & Assert
         assert_eq!(Tab::Sessions.title(), "Sessions");
         assert_eq!(Tab::Stats.title(), "Stats");
+        assert_eq!(Tab::Settings.title(), "Settings");
     }
 
     #[test]
     fn test_tab_next() {
         // Arrange & Act & Assert
         assert_eq!(Tab::Sessions.next(), Tab::Stats);
-        assert_eq!(Tab::Stats.next(), Tab::Sessions);
+        assert_eq!(Tab::Stats.next(), Tab::Settings);
+        assert_eq!(Tab::Settings.next(), Tab::Sessions);
     }
 
     #[test]

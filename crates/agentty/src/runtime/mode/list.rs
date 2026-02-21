@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::App;
 use crate::model::{
     AppMode, HelpContext, InputState, PaletteFocus, PromptHistoryState, PromptSlashState, Status,
+    Tab,
 };
 use crate::runtime::EventResult;
 
@@ -34,12 +35,16 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
                 scroll_offset: None,
             };
         }
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.next();
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.previous();
-        }
+        KeyCode::Char('j') | KeyCode::Down => match app.current_tab {
+            Tab::Sessions => app.next(),
+            Tab::Stats => {}
+            Tab::Settings => app.settings.next(),
+        },
+        KeyCode::Char('k') | KeyCode::Up => match app.current_tab {
+            Tab::Sessions => app.previous(),
+            Tab::Stats => {}
+            Tab::Settings => app.settings.previous(),
+        },
         KeyCode::Enter => {
             if app.should_show_onboarding() {
                 let session_id = app.create_session().await.map_err(io::Error::other)?;
@@ -56,15 +61,23 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
                 return Ok(EventResult::Continue);
             }
 
-            if let Some(session_index) = app.sessions.table_state.selected()
-                && let Some(session) = app.sessions.sessions.get(session_index)
-                && !matches!(session.status, Status::Canceled)
-                && let Some(session_id) = app.session_id_for_index(session_index)
-            {
-                app.mode = AppMode::View {
-                    session_id,
-                    scroll_offset: None,
-                };
+            match app.current_tab {
+                Tab::Sessions => {
+                    if let Some(session_index) = app.sessions.table_state.selected()
+                        && let Some(session) = app.sessions.sessions.get(session_index)
+                        && !matches!(session.status, Status::Canceled)
+                        && let Some(session_id) = app.session_id_for_index(session_index)
+                    {
+                        app.mode = AppMode::View {
+                            session_id,
+                            scroll_offset: None,
+                        };
+                    }
+                }
+                Tab::Settings => {
+                    app.settings.cycle_model(&app.services).await;
+                }
+                Tab::Stats => {}
             }
         }
         KeyCode::Char('d') => {
