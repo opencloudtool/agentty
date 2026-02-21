@@ -18,8 +18,44 @@
       </p>
       <div class="actions">
         <a class="button button-primary" href="{{ config.extra.github_repo }}">View on GitHub</a>
-        <a class="button" href="{{ config.extra.npm_package }}">Install from npm</a>
       </div>
+
+      <div class="install-widget">
+        <div class="install-tabs">
+          <button class="install-tab active" data-cmd="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/opencloudtool/agentty/releases/latest/download/agentty-installer.sh | sh">sh</button>
+          <button class="install-tab" data-cmd="cargo install agentty">cargo</button>
+          <button class="install-tab" data-cmd="npm install -g agentty">npm</button>
+          <button class="install-tab" data-cmd="npx agentty">npx</button>
+        </div>
+        <div class="install-command">
+          <span class="install-prompt">$</span>
+          <code class="install-cmd-text">curl --proto '=https' --tlsv1.2 -LsSf https://github.com/opencloudtool/agentty/releases/latest/download/agentty-installer.sh | sh</code>
+          <button class="copy-btn" title="Copy to clipboard" aria-label="Copy command">copy</button>
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var tabs = document.querySelectorAll('.install-tab');
+          var cmdText = document.querySelector('.install-cmd-text');
+          var copyBtn = document.querySelector('.copy-btn');
+
+          tabs.forEach(function (tab) {
+            tab.addEventListener('click', function () {
+              tabs.forEach(function (t) { t.classList.remove('active'); });
+              tab.classList.add('active');
+              cmdText.textContent = tab.dataset.cmd;
+            });
+          });
+
+          copyBtn.addEventListener('click', function () {
+            navigator.clipboard.writeText(cmdText.textContent).then(function () {
+              copyBtn.textContent = 'copied!';
+              setTimeout(function () { copyBtn.textContent = 'copy'; }, 2000);
+            });
+          });
+        })();
+      </script>
     </header>
 
     <section class="card-grid">

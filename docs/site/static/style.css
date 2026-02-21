@@ -94,6 +94,89 @@ h1 {
   border-color: var(--accent-hover);
 }
 
+.install-widget {
+  margin-top: 1.25rem;
+}
+
+.install-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: -1px;
+}
+
+.install-tab {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  padding: 0.35rem 0.75rem;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+
+.install-tab:hover {
+  color: var(--text);
+  background-color: #eef3f8;
+}
+
+.install-tab.active {
+  color: var(--accent);
+  background-color: var(--card);
+  border-color: var(--border);
+  border-bottom-color: var(--card);
+}
+
+.install-command {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0 6px 6px 6px;
+  padding: 0.6rem 0.85rem;
+  overflow-x: auto;
+}
+
+.install-prompt {
+  color: var(--accent);
+  font-weight: 700;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.install-cmd-text {
+  flex: 1;
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.copy-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.2rem 0.55rem;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+
+.copy-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background-color: #eef3f8;
+}
+
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
