@@ -10,6 +10,8 @@ use crate::ui::util::{first_table_column_width, truncate_with_ellipsis};
 
 const ROW_HIGHLIGHT_SYMBOL: &str = ">> ";
 const TABLE_COLUMN_SPACING: u16 = 1;
+/// Placeholder text rendered under group headers with no sessions.
+const GROUP_EMPTY_PLACEHOLDER: &str = "No sessions...";
 
 /// Session list page renderer.
 pub struct SessionListPage<'a> {
@@ -100,6 +102,8 @@ impl Page for SessionListPage<'_> {
 /// Render rows for grouped session list display.
 enum SessionTableRow<'a> {
     GroupLabel(SessionGroup),
+    /// Marker row shown when a group has zero sessions.
+    EmptyGroupPlaceholder,
     Session(&'a Session),
 }
 
@@ -137,24 +141,31 @@ pub(crate) fn grouped_session_indexes(sessions: &[Session]) -> Vec<usize> {
 /// Returns grouped display rows with merge queue, active, then archive
 /// sessions.
 fn grouped_session_rows(sessions: &[Session]) -> Vec<SessionTableRow<'_>> {
-    let mut rows = Vec::with_capacity(sessions.len() + 3);
-    rows.push(SessionTableRow::GroupLabel(SessionGroup::MergeQueue));
-    rows.extend(
-        sessions_for_group(sessions, SessionGroup::MergeQueue)
-            .map(|(_, session)| SessionTableRow::Session(session)),
-    );
-    rows.push(SessionTableRow::GroupLabel(SessionGroup::ActiveSessions));
-    rows.extend(
-        sessions_for_group(sessions, SessionGroup::ActiveSessions)
-            .map(|(_, session)| SessionTableRow::Session(session)),
-    );
-    rows.push(SessionTableRow::GroupLabel(SessionGroup::Archive));
-    rows.extend(
-        sessions_for_group(sessions, SessionGroup::Archive)
-            .map(|(_, session)| SessionTableRow::Session(session)),
-    );
+    let mut rows = Vec::with_capacity(sessions.len() + 6);
+    append_group_rows(&mut rows, sessions, SessionGroup::MergeQueue);
+    append_group_rows(&mut rows, sessions, SessionGroup::ActiveSessions);
+    append_group_rows(&mut rows, sessions, SessionGroup::Archive);
 
     rows
+}
+
+/// Adds one group label row and either its sessions or an empty placeholder.
+fn append_group_rows<'a>(
+    rows: &mut Vec<SessionTableRow<'a>>,
+    sessions: &'a [Session],
+    group: SessionGroup,
+) {
+    rows.push(SessionTableRow::GroupLabel(group));
+
+    let mut group_has_sessions = false;
+    for (_, session) in sessions_for_group(sessions, group) {
+        rows.push(SessionTableRow::Session(session));
+        group_has_sessions = true;
+    }
+
+    if !group_has_sessions {
+        rows.push(SessionTableRow::EmptyGroupPlaceholder);
+    }
 }
 
 /// Returns session indexes and snapshots for one grouped section.
@@ -192,7 +203,7 @@ fn selected_render_row(
     let selected_session_id = selected_session_id?;
 
     rows.iter().position(|row| match row {
-        SessionTableRow::GroupLabel(_) => false,
+        SessionTableRow::GroupLabel(_) | SessionTableRow::EmptyGroupPlaceholder => false,
         SessionTableRow::Session(session) => session.id == selected_session_id,
     })
 }
@@ -201,6 +212,7 @@ fn selected_render_row(
 fn render_table_row(row: &SessionTableRow<'_>, title_column_width: usize) -> Row<'static> {
     match row {
         SessionTableRow::GroupLabel(group) => render_group_label_row(*group),
+        SessionTableRow::EmptyGroupPlaceholder => render_empty_group_placeholder_row(),
         SessionTableRow::Session(session) => render_session_row(session, title_column_width),
     }
 }
@@ -209,6 +221,20 @@ fn render_table_row(row: &SessionTableRow<'_>, title_column_width: usize) -> Row
 fn render_group_label_row(group: SessionGroup) -> Row<'static> {
     let cells = vec![
         Cell::from(group.label()).style(Style::default().fg(Color::Cyan)),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(""),
+    ];
+
+    Row::new(cells).height(1)
+}
+
+/// Renders a non-selectable placeholder row for empty groups.
+fn render_empty_group_placeholder_row() -> Row<'static> {
+    let cells = vec![
+        Cell::from(GROUP_EMPTY_PLACEHOLDER).style(Style::default().fg(Color::DarkGray)),
         Cell::from(""),
         Cell::from(""),
         Cell::from(""),
@@ -388,6 +414,7 @@ mod tests {
             .iter()
             .map(|row| match row {
                 SessionTableRow::GroupLabel(group) => group.label().to_string(),
+                SessionTableRow::EmptyGroupPlaceholder => GROUP_EMPTY_PLACEHOLDER.to_string(),
                 SessionTableRow::Session(session) => session.id.clone(),
             })
             .collect::<Vec<_>>();
@@ -405,6 +432,40 @@ mod tests {
                 SessionGroup::Archive.label().to_string(),
                 "done-1".to_string(),
                 "canceled-1".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_grouped_session_rows_includes_placeholder_for_groups_without_sessions() {
+        // Arrange
+        let sessions = vec![
+            test_session("active-1", Status::Review),
+            test_session("active-2", Status::InProgress),
+        ];
+
+        // Act
+        let rows = grouped_session_rows(&sessions);
+        let labels_and_ids = rows
+            .iter()
+            .map(|row| match row {
+                SessionTableRow::GroupLabel(group) => group.label().to_string(),
+                SessionTableRow::EmptyGroupPlaceholder => GROUP_EMPTY_PLACEHOLDER.to_string(),
+                SessionTableRow::Session(session) => session.id.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        // Assert
+        assert_eq!(
+            labels_and_ids,
+            vec![
+                SessionGroup::MergeQueue.label().to_string(),
+                GROUP_EMPTY_PLACEHOLDER.to_string(),
+                SessionGroup::ActiveSessions.label().to_string(),
+                "active-1".to_string(),
+                "active-2".to_string(),
+                SessionGroup::Archive.label().to_string(),
+                GROUP_EMPTY_PLACEHOLDER.to_string(),
             ]
         );
     }
