@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ config.title }} | Terminal UI for Coding Agents</title>
+  <meta name="description" content="{{ config.description }}">
+  <link rel="canonical" href="{{ config.base_url }}">
+  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="kicker">agentty.xyz</p>
+      <h1>{{ config.title }}</h1>
+      <p class="lead">
+        Run coding agents from your terminal with isolated git worktrees,
+        live diffs, and session-level controls.
+      </p>
+      <div class="actions">
+        <a class="button button-primary" href="{{ config.extra.github_repo }}">View on GitHub</a>
+        <a class="button" href="{{ config.extra.npm_package }}">Install from npm</a>
+      </div>
+    </header>
+
+    <section class="card-grid">
+      <article class="card">
+        <h2>Isolated By Default</h2>
+        <p>Each session runs in its own worktree and branch, so experiments stay contained.</p>
+      </article>
+      <article class="card">
+        <h2>Built For Flow</h2>
+        <p>Review diffs, switch models, and iterate without leaving the TUI.</p>
+      </article>
+      <article class="card">
+        <h2>Fast Setup</h2>
+        <p>Install with npm, cargo, or shell script and start an agent session in minutes.</p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

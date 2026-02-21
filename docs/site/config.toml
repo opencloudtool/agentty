@@ -1,0 +1,17 @@
+base_url = "https://agentty.xyz"
+title = "Agentty"
+description = "A terminal UI tool for managing coding agents."
+default_language = "en"
+compile_sass = true
+minify_html = true
+build_search_index = false
+generate_feeds = false
+
+[markdown]
+highlight_code = true
+render_emoji = true
+external_links_target_blank = true
+
+[extra]
+github_repo = "https://github.com/opencloudtool/agentty"
+npm_package = "https://www.npmjs.com/package/agentty"

@@ -105,6 +105,18 @@ cd agentty
 cargo run # Builds and runs the 'agentty' binary
 ```
 
+## Website
+
+`agentty.xyz` is a Zola site stored in `docs/site/` and deployed through GitHub Pages.
+
+```sh
+# Preview locally
+zola serve --root docs/site
+
+# Build static output
+zola build --root docs/site
+```
+
 ## Development
 
 ```sh

@@ -1,0 +1,120 @@
+:root {
+  color-scheme: light;
+  --background: #f4f6f8;
+  --card: #ffffff;
+  --text: #1a1e23;
+  --muted: #4f5b66;
+  --accent: #0f766e;
+  --accent-hover: #115e59;
+  --border: #dbe2ea;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Share Tech Mono", monospace;
+  background:
+    radial-gradient(circle at top right, #d0ece8 0%, transparent 40%),
+    radial-gradient(circle at bottom left, #d9e7f8 0%, transparent 35%),
+    var(--background);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.page {
+  margin: 0 auto;
+  max-width: 980px;
+  padding: 3.5rem 1.25rem 4rem;
+}
+
+.hero {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 2.5rem 1.5rem;
+  box-shadow: 0 20px 40px rgba(26, 30, 35, 0.08);
+}
+
+.kicker {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+h1 {
+  margin: 0.5rem 0 0;
+  font-size: clamp(2rem, 5vw, 3.4rem);
+  line-height: 1.05;
+}
+
+.lead {
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1.6;
+  max-width: 44ch;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.button {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.7rem 1.1rem;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+
+.button:hover {
+  border-color: #b3c3d5;
+  background-color: #eef3f8;
+}
+
+.button-primary {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.button-primary:hover {
+  background-color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+}
+
+.card h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+.card p {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
