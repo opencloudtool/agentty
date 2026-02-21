@@ -84,7 +84,7 @@ impl Page for SessionListPage<'_> {
             .highlight_symbol(ROW_HIGHLIGHT_SYMBOL);
 
         let previous_selection = self.table_state.selected();
-        self.table_state.select(selected_row);
+        prepare_grouped_table_state(self.table_state, selected_row);
         f.render_stateful_widget(table, main_area, self.table_state);
         self.table_state.select(previous_selection);
 
@@ -97,6 +97,17 @@ impl Page for SessionListPage<'_> {
         let help_message = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, footer_area);
     }
+}
+
+/// Prepares list table state for grouped row rendering.
+///
+/// The app stores selection as an index in the raw session slice, while the
+/// table is rendered with extra group label and placeholder rows. Resetting
+/// the offset before selecting a grouped row avoids stale deep offsets hiding
+/// top group sections after scrolling back up.
+fn prepare_grouped_table_state(table_state: &mut TableState, selected_row: Option<usize>) {
+    *table_state.offset_mut() = 0;
+    table_state.select(selected_row);
 }
 
 /// Render rows for grouped session list display.
@@ -489,6 +500,21 @@ mod tests {
 
         // Assert
         assert_eq!(row_index, Some(5));
+    }
+
+    #[test]
+    fn test_prepare_grouped_table_state_resets_offset_and_sets_selected_group_row() {
+        // Arrange
+        let mut table_state = TableState::default();
+        *table_state.offset_mut() = 24;
+        table_state.select(Some(7));
+
+        // Act
+        prepare_grouped_table_state(&mut table_state, Some(3));
+
+        // Assert
+        assert_eq!(table_state.offset(), 0);
+        assert_eq!(table_state.selected(), Some(3));
     }
 
     #[test]
