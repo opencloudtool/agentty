@@ -1,10 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use tokio::task::spawn_blocking;
 
 const COMMIT_ALL_HOOK_RETRY_ATTEMPTS: usize = 5;
+const GIT_INDEX_LOCK_RETRY_ATTEMPTS: usize = 5;
+const GIT_INDEX_LOCK_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Result of attempting a rebase step.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -318,11 +321,8 @@ pub async fn rebase_start(
     target_branch: String,
 ) -> Result<RebaseStepResult, String> {
     spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["rebase", &target_branch])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let rebase_args = ["rebase", target_branch.as_str()];
+        let output = run_git_command_with_index_lock_retry(&repo_path, &rebase_args, &[])?;
 
         if output.status.success() {
             return Ok(RebaseStepResult::Completed);
@@ -352,13 +352,11 @@ pub async fn rebase_start(
 /// Returns an error for non-conflict git failures.
 pub async fn rebase_continue(repo_path: PathBuf) -> Result<RebaseStepResult, String> {
     spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["rebase", "--continue"])
-            .env("GIT_EDITOR", ":")
-            .env("GIT_SEQUENCE_EDITOR", ":")
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let output = run_git_command_with_index_lock_retry(
+            &repo_path,
+            &["rebase", "--continue"],
+            &[("GIT_EDITOR", ":"), ("GIT_SEQUENCE_EDITOR", ":")],
+        )?;
 
         if output.status.success() {
             return Ok(RebaseStepResult::Completed);
@@ -387,11 +385,8 @@ pub async fn rebase_continue(repo_path: PathBuf) -> Result<RebaseStepResult, Str
 /// Returns an error when `git rebase --abort` cannot be executed.
 pub async fn abort_rebase(repo_path: PathBuf) -> Result<(), String> {
     spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["rebase", "--abort"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let output =
+            run_git_command_with_index_lock_retry(&repo_path, &["rebase", "--abort"], &[])?;
 
         if !output.status.success() {
             let detail = command_output_detail(&output.stdout, &output.stderr);
@@ -855,6 +850,38 @@ fn resolve_git_dir(repo_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+fn run_git_command_with_index_lock_retry(
+    repo_path: &Path,
+    args: &[&str],
+    environment: &[(&str, &str)],
+) -> Result<std::process::Output, String> {
+    for attempt in 0..GIT_INDEX_LOCK_RETRY_ATTEMPTS {
+        let mut command = Command::new("git");
+        command.args(args).current_dir(repo_path);
+
+        for (key, value) in environment {
+            command.env(key, value);
+        }
+
+        let output = command
+            .output()
+            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        if output.status.success() {
+            return Ok(output);
+        }
+
+        let detail = command_output_detail(&output.stdout, &output.stderr);
+        let is_last_attempt = attempt + 1 == GIT_INDEX_LOCK_RETRY_ATTEMPTS;
+        if !is_git_index_lock_error(&detail) || is_last_attempt {
+            return Ok(output);
+        }
+
+        std::thread::sleep(GIT_INDEX_LOCK_RETRY_DELAY);
+    }
+
+    unreachable!("index lock retry loop should always return an output")
+}
+
 fn stage_all_sync(repo_path: &Path) -> Result<(), String> {
     let output = Command::new("git")
         .args(["add", "-A"])
@@ -919,6 +946,15 @@ fn command_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
     }
 
     "Unknown git error".to_string()
+}
+
+fn is_git_index_lock_error(detail: &str) -> bool {
+    let normalized_detail = detail.to_ascii_lowercase();
+
+    normalized_detail.contains("index.lock")
+        && (normalized_detail.contains("file exists")
+            || normalized_detail.contains("unable to create")
+            || normalized_detail.contains("another git process"))
 }
 
 /// Returns whether git output detail indicates a rebase conflict state.
@@ -2010,6 +2046,31 @@ mod tests {
         assert_eq!(is_rebase_in_progress_result, Ok(true));
         let abort_result = abort_rebase(dir.path().to_path_buf()).await;
         assert!(abort_result.is_ok(), "failed to abort test rebase");
+    }
+
+    #[test]
+    fn test_is_git_index_lock_error_detects_lock_conflict_output() {
+        // Arrange
+        let detail = "error: Unable to create '/repo/.git/worktrees/session/index.lock': File \
+                      exists.\nAnother git process seems to be running in this repository.";
+
+        // Act
+        let is_lock_error = is_git_index_lock_error(detail);
+
+        // Assert
+        assert!(is_lock_error);
+    }
+
+    #[test]
+    fn test_is_git_index_lock_error_ignores_non_lock_errors() {
+        // Arrange
+        let detail = "CONFLICT (content): Merge conflict in src/main.rs";
+
+        // Act
+        let is_lock_error = is_git_index_lock_error(detail);
+
+        // Assert
+        assert!(!is_lock_error);
     }
 
     #[tokio::test]

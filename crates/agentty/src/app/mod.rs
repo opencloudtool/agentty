@@ -733,8 +733,8 @@ impl App {
 
     /// Advances queue state after reducer-applied status changes.
     ///
-    /// The queue advances when the active merge session transitions from
-    /// `Merging` to `Done` or disappears from the refreshed session list.
+    /// The queue advances when the active merge session transitions away from
+    /// `Merging` or disappears from the refreshed session list.
     async fn handle_merge_queue_progress(
         &mut self,
         session_ids: &HashSet<String>,

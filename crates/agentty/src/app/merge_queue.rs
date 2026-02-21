@@ -55,9 +55,9 @@ impl MergeQueue {
     /// Resolves queue progression for one reduced app-event batch.
     ///
     /// This clears an active merge once it transitions away from `Merging`.
-    /// It returns `StartNext` only when the previous active merge either:
-    /// - Completed (`Merging -> Done`), or
-    /// - Disappeared from the session list after processing.
+    /// It returns `StartNext` when the active merge either:
+    /// - Transitions from `Merging` to any other state, or
+    /// - Disappears from the session list after processing.
     pub(crate) fn progress_from_status_updates(
         &mut self,
         current_active_status: Option<Status>,
@@ -68,6 +68,12 @@ impl MergeQueue {
             return MergeQueueProgress::NoAction;
         };
         if !session_ids.contains(&active_session_id) {
+            if current_active_status.is_none() {
+                self.active_session_id = None;
+
+                return MergeQueueProgress::StartNext;
+            }
+
             return MergeQueueProgress::NoAction;
         }
 
@@ -78,19 +84,13 @@ impl MergeQueue {
             return MergeQueueProgress::NoAction;
         }
 
-        match current_active_status {
-            Some(Status::Merging) => MergeQueueProgress::NoAction,
-            Some(Status::Done) | None => {
-                self.active_session_id = None;
-
-                MergeQueueProgress::StartNext
-            }
-            Some(_) => {
-                self.active_session_id = None;
-
-                MergeQueueProgress::NoAction
-            }
+        if current_active_status == Some(Status::Merging) {
+            return MergeQueueProgress::NoAction;
         }
+
+        self.active_session_id = None;
+
+        MergeQueueProgress::StartNext
     }
 
     /// Returns the currently active merge session id, if any.
@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn test_progress_from_status_updates_failure_clears_active_without_advance() {
+    fn test_progress_from_status_updates_failure_starts_next_and_clears_active() {
         // Arrange
         let session_id = "session-1";
         let mut queue = MergeQueue::default();
@@ -180,7 +180,7 @@ mod tests {
         );
 
         // Assert
-        assert_eq!(progress, MergeQueueProgress::NoAction);
+        assert_eq!(progress, MergeQueueProgress::StartNext);
         assert!(!queue.has_active());
     }
 
@@ -190,8 +190,8 @@ mod tests {
         let session_id = "session-1";
         let mut queue = MergeQueue::default();
         queue.set_active(session_id.to_string());
-        let touched_ids = touched_session_ids(session_id);
-        let previous_states = previous_states_for(session_id, Status::Merging);
+        let touched_ids = HashSet::new();
+        let previous_states = HashMap::new();
 
         // Act
         let progress = queue.progress_from_status_updates(None, &touched_ids, &previous_states);
@@ -199,5 +199,26 @@ mod tests {
         // Assert
         assert_eq!(progress, MergeQueueProgress::StartNext);
         assert!(!queue.has_active());
+    }
+
+    #[test]
+    fn test_progress_from_status_updates_ignores_unrelated_batches() {
+        // Arrange
+        let session_id = "session-1";
+        let mut queue = MergeQueue::default();
+        queue.set_active(session_id.to_string());
+        let touched_ids = HashSet::new();
+        let previous_states = HashMap::new();
+
+        // Act
+        let progress = queue.progress_from_status_updates(
+            Some(Status::Merging),
+            &touched_ids,
+            &previous_states,
+        );
+
+        // Assert
+        assert_eq!(progress, MergeQueueProgress::NoAction);
+        assert!(queue.has_active());
     }
 }
