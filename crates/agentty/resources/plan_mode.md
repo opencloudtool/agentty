@@ -25,14 +25,14 @@ Your response must follow this exact schema:
 
 **Files to Modify**
 
-1. `[path/to/file.rs]`: [Specific changes, e.g., "Add `field_name: Type` to `StructName`"]
-2. `[path/to/file.rs]`: [Specific changes, e.g., "Implement `From<T>` for `U`"]
+1. `[path/to/file.rs]`: \[Specific changes, e.g., "Add `field_name: Type` to `StructName`"\]
+1. `[path/to/file.rs]`: \[Specific changes, e.g., "Implement `From<T>` for `U`"\]
 
 **Verification & Quality Gates**
 
 1. Verify the `diff` contains only the intended logic changes.
-2. Ensure no breaking changes to the TUI event loop or terminal state.
-3. **Mandatory Quality Gates:**
+1. Ensure no breaking changes to the TUI event loop or terminal state.
+1. **Mandatory Quality Gates:**
    - `pre-commit run --all-files`
    - `cargo test -q`
    - `cargo clippy -- -D warnings`

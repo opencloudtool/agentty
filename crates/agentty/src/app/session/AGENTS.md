@@ -3,16 +3,19 @@
 Session domain workflows for app-level orchestration.
 
 ## Overview
+
 - Splits session responsibilities by concern to keep workflows focused and testable.
 - Keeps app-facing APIs on `App` while sharing internals through module-local helpers.
 
 ## Design
+
 - `mod.rs` exposes shared constants and module wiring.
 - `access.rs` centralizes session and handle lookups plus canonical lookup errors.
 - Lifecycle, refresh, loading, and merge/rebase logic are isolated into dedicated files.
 - Tests live alongside session module code (no standalone `test.rs` file).
 
 ## Directory Index
+
 - [mod.rs](mod.rs) - Session module root and shared constants.
 - [access.rs](access.rs) - Session lookup helpers and canonical lookup errors.
 - [lifecycle.rs](lifecycle.rs) - Session creation, prompt/reply, history, and deletion workflows.

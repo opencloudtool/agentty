@@ -3,6 +3,7 @@
 Static assets served directly by the Zola site.
 
 ## Directory Index
+
 - [CNAME](CNAME) - Custom domain configuration.
 - [style.css](style.css) - Site stylesheet.
 - [AGENTS.md](AGENTS.md) - Context and instructions for AI agents.

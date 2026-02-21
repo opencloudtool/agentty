@@ -3,6 +3,7 @@ The session ended with status: `{{status}}`.
 
 Return plain text only.
 Rules:
+
 - Keep it concise (4-8 lines).
 - Start with one short sentence describing the outcome.
 - Then include `-` bullet points for key code changes.

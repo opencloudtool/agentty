@@ -3,6 +3,7 @@ Return strict JSON with exactly two keys: `title` and `description`.
 Use repository default commit format unless explicit user instructions in the diff request a different format.
 
 Rules:
+
 - `title` must be one line, concise, and in present simple tense.
 - Do not use Conventional Commit prefixes like `feat:` or `fix:`.
 - `description` is commit body text and may be an empty string when no body is needed.

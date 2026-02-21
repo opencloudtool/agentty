@@ -14,6 +14,7 @@ TUI tool to manage agents.
 - **Context7 First:** If Context7 is connected as an MCP server, use it to retrieve the latest documentation and API details for the tools and libraries used in the task.
 
 ## Project Facts
+
 - Project is a Rust workspace.
 - The `crates/` directory contains all workspace members.
 - All workspace crates use the `ag-` prefix (e.g., `ag-xtask`).
@@ -23,6 +24,7 @@ TUI tool to manage agents.
 - **Output**: Agent `stdout` and `stderr` are captured in parallel using `tokio` tasks to ensure prompts and errors are visible.
 
 ## Rust Project Style Guide
+
 - **Dependency Management:** ALL dependencies (including `dev-dependencies` and `build-dependencies`) must be defined in the root `Cargo.toml` under `[workspace.dependencies]`.
 - All workspace crates must use `workspace = true` for shared package metadata and dependencies. Never define a version number inside a crate's `Cargo.toml`.
 - **Release Profile:** Maintain optimized release settings in `Cargo.toml` (`codegen-units=1`, `lto=true`, `opt-level="s"`, `strip=true`) to minimize binary size.
@@ -30,18 +32,18 @@ TUI tool to manage agents.
 - **Constructors:** Only add `new()` and `Default` when there is actual initialization logic or fields with meaningful defaults. For unit structs or zero-field structs, construct directly (e.g., `MyStruct`) — do not add boilerplate `new()` / `Default` impls.
 - **Constructors:** Prefer `Type::new(...)` associated constructors over standalone helper functions when constructing that type.
 - **Function Ordering:** Order functions to allow reading from top to bottom (caller before callee):
-    - Public functions first.
-    - Followed by less public functions (e.g., `pub(crate)`).
-    - Private functions last.
-    - If a function has multiple callees, they should appear in the order they are first called within that function.
+  - Public functions first.
+  - Followed by less public functions (e.g., `pub(crate)`).
+  - Private functions last.
+  - If a function has multiple callees, they should appear in the order they are first called within that function.
 - **File Naming:** Use **singular** names for Rust source files (e.g., `model.rs`, `icon.rs`, `agent.rs`). Do not use plural forms.
 - **Imports:** Always place imports at the top of the file. Do not use local `use` statements within functions or other blocks.
   - In test modules, prefer `use super::*;` where practical.
 - **Test-only code placement:** Do not add `#[cfg(test)]` to top-level imports/functions in production modules. Keep test-only helpers inside `#[cfg(test)] mod tests` (duplicate code there if needed). Exception: `#[cfg_attr(test, mockall::automock)]` on traits used for mocking.
 - **Struct Fields:** Order fields in structs as follows:
-    - Public fields first.
-    - Private fields second.
-    - Within each group, sort fields alphabetically.
+  - Public fields first.
+  - Private fields second.
+  - Within each group, sort fields alphabetically.
 - **Clippy Compliance:** Do not bypass clippy rules with `#[allow()]`. Adopt the solution that complies with the rule.
 - **Code Grouping:** Within functions, separate related code blocks with empty lines. Group lines that belong together logically and add blank lines between distinct groups.
 - **Return Spacing:** Always add an empty line before return statements, both explicit (`return`) and implicit (last expression). Exception: single-line blocks where the return is the only statement.
@@ -55,47 +57,52 @@ TUI tool to manage agents.
 ## Database Standards (SQLx + SQLite)
 
 ### 1. Stack & Pattern
-* **Driver:** `sqlx` (Feature: `sqlite`).
-* **Runtime:** `tokio`.
-* **Pattern:** Repository pattern or direct service-layer queries. **No ORM**.
-* **Safety:** Prefer compile-time checked macros (`query!`, `query_as!`).
-    * *Requirement:* `.sqlx` directory must be committed for offline compilation (CI/CD).
-* **Concurrency:** Must enable **WAL Mode** (Write-Ahead Logging) for concurrent readers/writers.
+
+- **Driver:** `sqlx` (Feature: `sqlite`).
+- **Runtime:** `tokio`.
+- **Pattern:** Repository pattern or direct service-layer queries. **No ORM**.
+- **Safety:** Prefer compile-time checked macros (`query!`, `query_as!`).
+  - *Requirement:* `.sqlx` directory must be committed for offline compilation (CI/CD).
+- **Concurrency:** Must enable **WAL Mode** (Write-Ahead Logging) for concurrent readers/writers.
 
 ### 2. Naming Conventions (Strict)
-* **Tables:** `snake_case`, **SINGULAR** (e.g., `user`, `order_item`).
-    * *Rationale:* Matches Rust struct names exactly (`User` -> `user`).
-* **Columns:** `snake_case`.
-    * **PK:** `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`).
-    * **FK:** `{table}_id` (e.g., `user_id`).
-    * **Booleans:** Prefix with `is_`, `has_` (Stored as `INTEGER`, mapped to `bool`).
-    * **Timestamps:** `{action}_at` (Stored as `INTEGER` (Unix) or `TEXT` (ISO8601)).
-* **Rust Structs:**
-    * Name: Singular, PascalCase (e.g., `User`).
-    * Fields: `snake_case` (Matches DB columns 1:1).
+
+- **Tables:** `snake_case`, **SINGULAR** (e.g., `user`, `order_item`).
+  - *Rationale:* Matches Rust struct names exactly (`User` -> `user`).
+- **Columns:** `snake_case`.
+  - **PK:** `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`).
+  - **FK:** `{table}_id` (e.g., `user_id`).
+  - **Booleans:** Prefix with `is_`, `has_` (Stored as `INTEGER`, mapped to `bool`).
+  - **Timestamps:** `{action}_at` (Stored as `INTEGER` (Unix) or `TEXT` (ISO8601)).
+- **Rust Structs:**
+  - Name: Singular, PascalCase (e.g., `User`).
+  - Fields: `snake_case` (Matches DB columns 1:1).
 
 ### 3. Implementation Guidelines
-1.  **Configuration:**
-    * Set `PRAGMA foreign_keys = ON;` (SQLite defaults to OFF).
-    * Set `PRAGMA journal_mode = WAL;` (Crucial for performance).
-2.  **Migrations:** Embedded at compile time via `sqlx::migrate!()`.
-    * Place SQL files in `crates/<crate>/migrations/` named `NNN_description.sql`.
-    * Migrations run automatically on database open; no external CLI required.
-    * Never modify existing migration files. Always add a new migration file for every schema change.
-    * If `SQLite` cannot alter a structure in place (for example, changing a primary key), use a new migration that drops and recreates the table.
-3.  **Dependency Injection:** Pass `&sqlx::SqlitePool` to functions.
-    * *Note:* SQLite handles cloning the pool cheaply.
-4.  **Error Handling:** Map `sqlx::Error` to domain-specific errors.
+
+1. **Configuration:**
+   - Set `PRAGMA foreign_keys = ON;` (SQLite defaults to OFF).
+   - Set `PRAGMA journal_mode = WAL;` (Crucial for performance).
+1. **Migrations:** Embedded at compile time via `sqlx::migrate!()`.
+   - Place SQL files in `crates/<crate>/migrations/` named `NNN_description.sql`.
+   - Migrations run automatically on database open; no external CLI required.
+   - Never modify existing migration files. Always add a new migration file for every schema change.
+   - If `SQLite` cannot alter a structure in place (for example, changing a primary key), use a new migration that drops and recreates the table.
+1. **Dependency Injection:** Pass `&sqlx::SqlitePool` to functions.
+   - *Note:* SQLite handles cloning the pool cheaply.
+1. **Error Handling:** Map `sqlx::Error` to domain-specific errors.
 
 ## Async Runtime (Tokio)
 
 The project uses `tokio` as its async runtime. The binary entry point uses `#[tokio::main]` and all I/O-bound operations are async.
 
 ### Feature Selection
+
 - **NEVER** use `features = ["full"]`. The project optimizes for binary size — only enable the specific features you need.
 - When adding a new tokio API, check which feature flag it requires and add only that flag.
 
 ### Mutex Selection: `std::sync::Mutex` vs `tokio::sync::Mutex`
+
 - **Default to `std::sync::Mutex`** unless you need to hold the lock across an `.await` point.
 - `tokio::sync::Mutex` is only needed when the critical section itself contains `.await` calls (e.g., async file I/O, async network calls).
 - If the critical section is purely synchronous (e.g., `writeln!` to a `std::fs::File`, pushing to a `String`), use `std::sync::Mutex` even inside async functions. It is cheaper and avoids unnecessary async overhead.
@@ -103,11 +110,13 @@ The project uses `tokio` as its async runtime. The binary entry point uses `#[to
 - **Right:** `Arc<std::sync::Mutex<std::fs::File>>` with `file.lock().ok()` followed by sync `writeln!`.
 
 ### Blocking Operations
+
 - Use `tokio::task::spawn_blocking` for operations that block the thread (e.g., shelling out to `git` via `std::process::Command`).
 - Do **not** call blocking functions directly in async contexts — it starves the tokio worker threads.
 - For subprocess management where you need async streaming of stdout/stderr, use `tokio::process::Command` instead.
 
 ### Variable Cloning for `move` Closures
+
 - When cloning variables for `spawn_blocking` or `tokio::spawn` closures, prefer **variable shadowing** or **scoped blocks** over `_clone` suffixes.
 - **Wrong:** `let folder_clone = folder.clone(); let root_clone = root.clone();`
 - **Right (shadowing):** `let folder = folder.clone();`
@@ -121,23 +130,28 @@ The project uses `tokio` as its async runtime. The binary entry point uses `#[to
   ```
 
 ### Tests
+
 - Use `#[tokio::test]` for async test functions, not `#[test]`.
 - All `sqlx` operations are async and require `.await`.
 - For sleep/delays in tests, use `tokio::time::sleep` instead of `std::thread::sleep`.
 
 ### Anti-Patterns to Avoid
+
 - **No sync wrappers:** Do not wrap async code in `Runtime::new()` + `block_on()`. The codebase is fully async — keep it that way.
 - **No `features = ["full"]`:** Always specify individual tokio features.
 - **No `tokio::sync::Mutex` for sync-only guards:** Only use it when the critical section contains `.await`.
 
 ## Quality Gates
+
 To ensure code quality, you must pass both automated and manual gates.
 
 ### Automated Checks
+
 Run these commands after making changes:
+
 1. **Autofix:** `pre-commit run rustfmt-fix --all-files --hook-stage manual && pre-commit run clippy-fix --all-files --hook-stage manual`
-2. **Validate:** `pre-commit run --all-files`
-3. **Test:** `cargo test -q`
+1. **Validate:** `pre-commit run --all-files`
+1. **Test:** `cargo test -q`
 
 The manual-stage autofix hooks apply formatting and fixable clippy lints. The
 validation command then runs non-mutating checks (including formatting and clippy
@@ -145,13 +159,15 @@ lint gates), dependency checks, compilation, and directory index checks with
 minimal output (errors only).
 
 ### Manual Verification
+
 - **Test Style:** Verify *every* test function uses explicit `// Arrange`, `// Act`, and `// Assert` comments.
   - Combining `Arrange`, `Act`, and `Assert` is allowed when it improves clarity (for very small tests).
 - **Test Ordering:** Verify tests follow the same order as the functions they test.
 - **Dependencies:** Verify all dependencies (including dev/build) are defined in the root `Cargo.toml` and referenced via `workspace = true`.
 
 ## Documentation Conventions
-- **Code Element Formatting:** Always wrap code elements in backticks (`) when referencing them in documentation, commit messages, PR descriptions, or bullet points:
+
+- **Code Element Formatting:** Always wrap code elements in backticks (\`) when referencing them in documentation, commit messages, PR descriptions, or bullet points:
   - Enum variants: `Sessions`, `Roadmap`
   - Struct/Type names: `RoadmapPage`, `Tab`, `AppMode`
   - Function names: `next_tab()`, `render()`
@@ -164,10 +180,12 @@ minimal output (errors only).
 - **Contextual Docs:** When touching a file for code changes and updating docs, also add or refresh missing/stale doc comments for related sibling and parent elements (for example `struct`, `enum`, `impl`, and closely related items) when needed for clarity.
 
 ## Git Conventions
+
 - For all commit preparation and commit message work, use `skills/git-commit/SKILL.md`.
 - **Tagging:** Always use the `v` prefix for version tags (e.g., `v0.1.0`).
 
 ## Git Worktree Integration
+
 Agentty automatically creates isolated git worktrees for sessions when launched from within a git repository:
 
 - **Automatic Behavior:** When `agentty` is launched from a git repository, each new session automatically gets its own git worktree with a dedicated branch.
@@ -179,7 +197,9 @@ Agentty automatically creates isolated git worktrees for sessions when launched 
 - **Non-Git Directories:** Sessions in non-git directories work normally without worktrees.
 
 ### Cleanup Commands
+
 To manually clean up all agentty branches (if needed):
+
 ```bash
 # List all agentty branches
 git branch | grep agentty/
@@ -192,6 +212,7 @@ git worktree prune
 ```
 
 ## Agent Instructions
+
 - **Pragmatic Abstractions:** Introduce new abstractions only when they provide clear payoff (reuse, reduced complexity, or materially better testability). For straightforward changes, prefer direct in-place edits with minimal diff.
 - **Test Coverage:** Try to maintain 100% test coverage when it makes sense. Ensure critical logic is always covered, but pragmatic exceptions are allowed for boilerplate or untestable I/O.
 - **Readability:** Use descriptive variable names. Do NOT use single-letter variables (e.g., `f`, `p`, `c`) or single-letter prefixes. Code should be self-documenting.
@@ -202,6 +223,7 @@ git worktree prune
 - **Changelog:** Update `CHANGELOG.md` when releasing a new version. Follow the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## Skills
+
 - Skills are available under `skills/`, with the canonical index in `skills/AGENTS.md`.
 - Read `skills/AGENTS.md` to discover available skills before selecting one.
 - Activate a skill when the user explicitly names it or the task intent matches the skill description.
@@ -209,6 +231,7 @@ git worktree prune
 - Do not carry a skill across turns unless it is explicitly requested again or clearly re-triggered by intent.
 
 ## Directory Index
+
 - [.claude/](.claude/) - Claude AI specific settings.
 - [.codex/](.codex/) - Codex AI specific settings.
 - [.gemini/](.gemini/) - Gemini AI specific settings.

@@ -3,10 +3,12 @@
 Application-layer workflows and orchestration.
 
 ## Overview
+
 - The app layer coordinates session lifecycle, prompt/reply submission, async worker execution, persistence, and UI state refresh.
 - Mode handlers prefer enqueue-first behavior for long-running work so the UI remains responsive.
 
 ## Design
+
 - Composition model:
   - `App` is a facade/orchestrator.
   - `SessionManager` owns session snapshots, runtime handles, and session worker queues.
@@ -31,6 +33,7 @@ Application-layer workflows and orchestration.
   - Operation state is persisted so interrupted work can be reconciled on startup.
 
 ## Directory Index
+
 - [assist.rs](assist.rs) - Shared assistance helpers for commit/rebase recovery loops.
 - [merge_queue.rs](merge_queue.rs) - Session merge queue orchestration and background workflow helpers.
 - [mod.rs](mod.rs) - Shared app state and module wiring.

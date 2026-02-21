@@ -1,6 +1,7 @@
 # Source Code
 
 ## Local Conventions
+
 - Avoid near-identical local variable names in the same function (for example, `gitdir` and `git_dir`). Use one clear naming style with distinct, descriptive names.
 - Session status flow:
   - Status state machine is: `New` -> `InProgress`, `Review` -> (`InProgress` | `Done` | `Canceled`), `InProgress` -> `Review`.
@@ -11,6 +12,7 @@
   - While agent is preparing a response, status is `InProgress`.
 
 ## Directory Index
+
 - [app/](app/) - Application state and workflows split by concern (`session`, `project`, `task`).
 - [domain/](domain/) - Domain layer entities and logic.
 - [infra/](infra/) - Infrastructure layer implementations.

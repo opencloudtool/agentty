@@ -14,19 +14,19 @@ When working within `crates/agentty/src/ui/`:
 ### Adding a New Page
 
 1. Create a new module in `pages/` (e.g., `pages/my_page.rs`)
-2. Define a struct (e.g., `MyPage`) that holds necessary references
-3. Implement the `Page` trait for your struct with a `render(&mut self, f: &mut Frame, area: Rect)` method
-4. Expose the module in `pages/mod.rs`
-5. Update the match expression in `mod.rs` to instantiate and render your page
+1. Define a struct (e.g., `MyPage`) that holds necessary references
+1. Implement the `Page` trait for your struct with a `render(&mut self, f: &mut Frame, area: Rect)` method
+1. Expose the module in `pages/mod.rs`
+1. Update the match expression in `mod.rs` to instantiate and render your page
 
 ### Adding a New Component
 
 1. Create a new module in `components/` (e.g., `components/my_widget.rs`)
-2. Define a struct that holds the rendering data needed
-3. Implement the `Component` trait with a `render(&self, f: &mut Frame, area: Rect)` method
-4. Add a `new()` constructor to initialize the struct
-5. Expose the module in `components/mod.rs`
-6. Usage pattern: `MyWidget::new(...).render(f, area)`
+1. Define a struct that holds the rendering data needed
+1. Implement the `Component` trait with a `render(&self, f: &mut Frame, area: Rect)` method
+1. Add a `new()` constructor to initialize the struct
+1. Expose the module in `components/mod.rs`
+1. Usage pattern: `MyWidget::new(...).render(f, area)`
 
 ### Modifying Layouts
 
@@ -40,6 +40,7 @@ When working within `crates/agentty/src/ui/`:
 - **Integration**: Verifying actual `render` output is difficult. Rely on visual verification for broad changes, but ensure the underlying logic in `util` is rock-solid with comprehensive tests.
 
 ## Directory Index
+
 - [components/](components/) - Reusable UI components.
 - [pages/](pages/) - Full-screen page implementations.
 - [AGENTS.md](AGENTS.md) - UI specific instructions.

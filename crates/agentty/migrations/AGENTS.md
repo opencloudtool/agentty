@@ -3,6 +3,7 @@
 SQLite migrations for the `agentty` crate.
 
 ## Directory Index
+
 - [001_create_session.sql](001_create_session.sql) - Creates the `session` table.
 - [002_add_status_to_session.sql](002_add_status_to_session.sql) - Adds `status` to `session`.
 - [003_create_project.sql](003_create_project.sql) - Creates the `project` table.

@@ -3,6 +3,7 @@
 Static resources embedded into the binary at compile time.
 
 ## Directory Index
+
 - [plan_mode.md](plan_mode.md) - Plan mode instructions written to session worktrees.
 - [plan_mode_prompt.md](plan_mode_prompt.md) - Prompt template that wraps user input for `Plan` permission mode.
 - [auto_commit_assist_prompt.md](auto_commit_assist_prompt.md) - Prompt template for agent-assisted auto-commit error recovery.

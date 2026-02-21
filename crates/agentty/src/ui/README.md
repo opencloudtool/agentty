@@ -18,11 +18,11 @@ The UI is built using [Ratatui](https://ratatui.rs/) and follows a **separation 
 
 - **`mod.rs`**: Main entry point containing the top-level `render` function that dispatches to pages based on `AppMode`. Defines the `Page` and `Component` traits.
 - **`pages/`**: Each page is a separate module implementing the `Page` trait.
-    - `session_list.rs` - Session list view (`AppMode::List`)
-    - `session_chat.rs` - Session chat interface (`AppMode::View`, `AppMode::Prompt`)
+  - `session_list.rs` - Session list view (`AppMode::List`)
+  - `session_chat.rs` - Session chat interface (`AppMode::View`, `AppMode::Prompt`)
 - **`components/`**: Reusable widgets implementing the `Component` trait.
-    - `status_bar.rs` - Top status bar with version and runtime scope hint
-    - `chat_input.rs` - Chat input box with cursor positioning
+  - `status_bar.rs` - Top status bar with version and runtime scope hint
+  - `chat_input.rs` - Chat input box with cursor positioning
 - **`util.rs`**: Pure helper functions for layout calculations, text wrapping, and input handling. All complex logic that can be unit-tested goes here.
 
 For maintenance procedures and development guidelines, see `AGENTS.md`.

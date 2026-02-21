@@ -4,6 +4,7 @@ Commit error:
 {commit_error}
 
 Requirements:
+
 - Fix only what is needed so a follow-up commit can succeed.
 - Do not run git commands.
 - Do not create commits.

@@ -3,6 +3,7 @@
 Terminal runtime loop and mode dispatch.
 
 ## Directory Index
+
 - [event.rs](event.rs) - Event reader and event processing loop.
 - [key_handler.rs](key_handler.rs) - App mode dispatch for key events.
 - [mod.rs](mod.rs) - Runtime entry point and render loop.

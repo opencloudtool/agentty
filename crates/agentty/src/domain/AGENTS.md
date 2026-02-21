@@ -1,9 +1,11 @@
 # Domain Layer
 
 ## Overview
+
 Pure business logic and domain entities, decoupled from UI and infrastructure.
 
 ## Directory Index
+
 - [agent.rs](agent.rs) - Agent backend traits and model definitions.
 - [file.rs](file.rs) - File system entities.
 - [input.rs](input.rs) - Input state management.

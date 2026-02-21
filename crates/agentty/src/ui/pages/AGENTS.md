@@ -3,6 +3,7 @@
 Full-screen page implementations implementing the `Page` trait.
 
 ## Directory Index
+
 - [diff.rs](diff.rs) - Diff view page.
 - [mod.rs](mod.rs) - Page module exports.
 - [onboarding.rs](onboarding.rs) - Onboarding page shown when there are no sessions.

@@ -9,6 +9,20 @@ repos:
 
   - repo: local
     hooks:
+      - id: mdformat
+        name: mdformat
+        description: Format Markdown files.
+        entry: mdformat
+        language: python
+        additional_dependencies: [mdformat==0.7.22]
+        files: \.(md|markdown)$
+      - id: djlint-reformat
+        name: djlint reformat
+        description: Format HTML files.
+        entry: djlint --reformat
+        language: python
+        additional_dependencies: [djlint==1.36.4]
+        files: \.html?$
       - id: rustfmt-fix
         name: rustfmt fix
         description: Format the code with rustfmt.

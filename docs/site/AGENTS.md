@@ -3,6 +3,7 @@
 Zola source for the `agentty.xyz` landing page.
 
 ## Directory Index
+
 - [content/](content/) - Zola content files.
 - [static/](static/) - Static assets served directly.
 - [templates/](templates/) - Zola HTML templates.
