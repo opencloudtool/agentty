@@ -31,6 +31,10 @@ pub trait AgentBackend: Send + Sync {
         permission_mode: PermissionMode,
     ) -> Command;
     /// Build a Command for resuming/replying.
+    ///
+    /// Implementations may intentionally start a fresh conversation when
+    /// `session_output` is provided (for example, to replay history after a
+    /// model switch).
     fn build_resume_command(
         &self,
         folder: &Path,
@@ -70,9 +74,15 @@ impl AgentBackend for GeminiBackend {
         permission_mode: PermissionMode,
         session_output: Option<String>,
     ) -> Command {
+        let has_history_replay = session_output
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
         let prompt = build_resume_prompt(prompt, session_output.as_deref());
         let mut cmd = self.build_start_command(folder, &prompt, model, permission_mode);
-        cmd.arg("--resume").arg("latest");
+
+        if !has_history_replay {
+            cmd.arg("--resume").arg("latest");
+        }
 
         cmd
     }
@@ -1076,6 +1086,7 @@ mod tests {
         assert!(debug.contains("assistant: completed task"));
         assert!(debug.contains("User prompt"));
         assert!(debug.contains("follow-up"));
+        assert!(!debug.contains("--resume"));
     }
 
     #[test]
