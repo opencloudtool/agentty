@@ -7,7 +7,8 @@ use crossterm::event::Event;
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
-use crate::runtime::{EventResult, TuiTerminal, key_handler};
+use crate::runtime::{EventResult, TuiTerminal, key_handler, mode};
+use crate::ui::state::app_mode::AppMode;
 
 /// Reads terminal events from an underlying event backend.
 #[cfg_attr(test, mockall::automock)]
@@ -121,13 +122,27 @@ pub(crate) async fn process_events(
     Ok(EventResult::Continue)
 }
 
+/// Routes a single terminal event to the active mode handler.
+///
+/// `Event::Paste` is handled only in prompt mode so multiline clipboard
+/// content is inserted as text instead of interpreted as navigation keys.
 async fn process_event(
     app: &mut App,
     terminal: &mut TuiTerminal,
     event: Option<Event>,
 ) -> io::Result<EventResult> {
-    if let Some(Event::Key(key)) = event {
-        return key_handler::handle_key_event(app, terminal, key).await;
+    if let Some(event) = event {
+        match event {
+            Event::Key(key) => {
+                return key_handler::handle_key_event(app, terminal, key).await;
+            }
+            Event::Paste(pasted_text) => {
+                if matches!(&app.mode, AppMode::Prompt { .. }) {
+                    mode::prompt::handle_paste(app, &pasted_text);
+                }
+            }
+            _ => {}
+        }
     }
 
     Ok(EventResult::Continue)

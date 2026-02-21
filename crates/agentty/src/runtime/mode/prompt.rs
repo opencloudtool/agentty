@@ -20,6 +20,7 @@ struct PromptContext {
     session_index: usize,
 }
 
+/// Handles key input while the app is in `AppMode::Prompt`.
 pub(crate) async fn handle(
     app: &mut App,
     terminal: &mut TuiTerminal,
@@ -105,6 +106,13 @@ pub(crate) async fn handle(
                 .toggle_session_permission_mode(&prompt_context.session_id)
                 .await;
         }
+        KeyCode::Char(character) if is_control_newline_key(key, character) => {
+            reset_prompt_history_navigation(app);
+
+            if let AppMode::Prompt { input, .. } = &mut app.mode {
+                input.insert_newline();
+            }
+        }
         KeyCode::Char(character) => {
             handle_prompt_char(app, character, &prompt_context).await;
         }
@@ -112,6 +120,34 @@ pub(crate) async fn handle(
     }
 
     Ok(EventResult::Continue)
+}
+
+/// Inserts pasted content into the prompt input while normalizing mixed
+/// line-endings to `\n`.
+pub(crate) fn handle_paste(app: &mut App, pasted_text: &str) {
+    let normalized_text = normalize_pasted_text(pasted_text);
+    if normalized_text.is_empty() {
+        return;
+    }
+
+    if let AppMode::Prompt {
+        at_mention_state,
+        history_state,
+        input,
+        slash_state,
+        ..
+    } = &mut app.mode
+    {
+        input.insert_text(&normalized_text);
+        history_state.reset_navigation();
+        slash_state.reset();
+
+        if at_mention_state.is_some() && input.at_mention_query().is_none() {
+            *at_mention_state = None;
+        } else if let Some(state) = at_mention_state.as_mut() {
+            state.selected_index = 0;
+        }
+    }
 }
 
 fn prompt_context(app: &mut App) -> Option<PromptContext> {
@@ -178,6 +214,34 @@ fn is_prompt_cancel_key(key: KeyEvent) -> bool {
 
 fn is_plain_char_key(key: KeyEvent, character: char) -> bool {
     key.code == KeyCode::Char(character) && key.modifiers == event::KeyModifiers::NONE
+}
+
+/// Returns true when the key event represents a control-key newline variant
+/// such as `Ctrl+j` or `Ctrl+m`.
+fn is_control_newline_key(key: KeyEvent, character: char) -> bool {
+    key.modifiers == event::KeyModifiers::CONTROL && matches!(character, 'j' | 'm' | '\n' | '\r')
+}
+
+/// Normalizes pasted text line-endings to `\n`.
+fn normalize_pasted_text(pasted_text: &str) -> String {
+    let mut normalized_text = String::with_capacity(pasted_text.len());
+    let mut characters = pasted_text.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        if character == '\r' {
+            if matches!(characters.peek(), Some(&'\n')) {
+                let _ = characters.next();
+            }
+
+            normalized_text.push('\n');
+
+            continue;
+        }
+
+        normalized_text.push(character);
+    }
+
+    normalized_text
 }
 
 fn handle_prompt_up_key(
@@ -1078,6 +1142,72 @@ mod tests {
 
         // Assert
         assert!(!result);
+    }
+
+    #[test]
+    fn test_is_control_newline_key_accepts_ctrl_j() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('j'), event::KeyModifiers::CONTROL);
+
+        // Act
+        let result = is_control_newline_key(key, 'j');
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_control_newline_key_accepts_ctrl_m() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('m'), event::KeyModifiers::CONTROL);
+
+        // Act
+        let result = is_control_newline_key(key, 'm');
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_control_newline_key_rejects_plain_j() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('j'), event::KeyModifiers::NONE);
+
+        // Act
+        let result = is_control_newline_key(key, 'j');
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_normalize_pasted_text_replaces_carriage_returns() {
+        // Arrange
+        let pasted_text = "line 1\r\nline 2\rline 3\nline 4";
+
+        // Act
+        let normalized = normalize_pasted_text(pasted_text);
+
+        // Assert
+        assert_eq!(normalized, "line 1\nline 2\nline 3\nline 4");
+    }
+
+    #[tokio::test]
+    async fn test_handle_paste_inserts_multiline_content_with_normalized_newlines() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("prefix ", None).await;
+
+        // Act
+        handle_paste(&mut app, "line 1\r\nline 2\rline 3");
+
+        // Assert
+        if let AppMode::Prompt { input, .. } = &app.mode {
+            assert_eq!(input.text(), "prefix line 1\nline 2\nline 3");
+            assert_eq!(
+                input.cursor,
+                "prefix line 1\nline 2\nline 3".chars().count()
+            );
+        }
     }
 
     #[test]

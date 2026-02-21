@@ -37,6 +37,18 @@ impl InputState {
         self.cursor += 1;
     }
 
+    /// Inserts `text` at the cursor and moves the cursor to the end of the
+    /// inserted content.
+    pub fn insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
+        let byte_offset = self.byte_offset();
+        self.text.insert_str(byte_offset, text);
+        self.cursor += text.chars().count();
+    }
+
     pub fn insert_newline(&mut self) {
         self.insert_char('\n');
     }
@@ -233,4 +245,36 @@ pub fn extract_at_mention_query(text: &str, cursor: usize) -> Option<(usize, Str
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_text_at_end_updates_text_and_cursor() {
+        // Arrange
+        let mut state = InputState::with_text("hello".to_string());
+
+        // Act
+        state.insert_text(" world");
+
+        // Assert
+        assert_eq!(state.text(), "hello world");
+        assert_eq!(state.cursor, "hello world".chars().count());
+    }
+
+    #[test]
+    fn test_insert_text_in_middle_preserves_surrounding_content() {
+        // Arrange
+        let mut state = InputState::with_text("hllo".to_string());
+        state.cursor = 1;
+
+        // Act
+        state.insert_text("e");
+
+        // Assert
+        assert_eq!(state.text(), "hello");
+        assert_eq!(state.cursor, 2);
+    }
 }
