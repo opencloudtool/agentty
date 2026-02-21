@@ -8,9 +8,11 @@ build_search_index = false
 generate_feeds = false
 
 [markdown]
-highlight_code = true
 render_emoji = true
 external_links_target_blank = true
+
+[markdown.highlighting]
+enabled = true
 
 [extra]
 github_repo = "https://github.com/opencloudtool/agentty"
