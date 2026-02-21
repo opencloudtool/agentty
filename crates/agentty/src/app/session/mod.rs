@@ -266,14 +266,26 @@ mod tests {
         .await
     }
 
+    /// Adds a manual review session snapshot for tests that do not require
+    /// status customization.
     fn add_manual_session(app: &mut App, base_path: &Path, id: &str, prompt: &str) {
+        add_manual_session_with_status(app, base_path, id, prompt, Status::Review);
+    }
+
+    /// Adds a manual session snapshot with an explicit status.
+    fn add_manual_session_with_status(
+        app: &mut App,
+        base_path: &Path,
+        id: &str,
+        prompt: &str,
+        status: Status,
+    ) {
         let folder = session_folder(base_path, id);
         let data_dir = folder.join(SESSION_DATA_DIR);
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-        app.sessions.handles.insert(
-            id.to_string(),
-            SessionHandles::new(String::new(), Status::Review),
-        );
+        app.sessions
+            .handles
+            .insert(id.to_string(), SessionHandles::new(String::new(), status));
         app.sessions.sessions.push(Session {
             base_branch: "main".to_string(),
             folder,
@@ -285,7 +297,7 @@ mod tests {
             prompt: prompt.to_string(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),
-            status: Status::Review,
+            status,
             summary: None,
             title: Some(prompt.to_string()),
         });
@@ -585,6 +597,87 @@ mod tests {
         assert_eq!(app.sessions.table_state.selected(), Some(1)); // Loop back
         app.previous();
         assert_eq!(app.sessions.table_state.selected(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_navigation_follows_grouped_order_and_skips_group_headers() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(dir.path().to_path_buf()).await;
+        add_manual_session_with_status(
+            &mut app,
+            dir.path(),
+            "archive-1",
+            "Archive 1",
+            Status::Done,
+        );
+        add_manual_session_with_status(
+            &mut app,
+            dir.path(),
+            "active-1",
+            "Active 1",
+            Status::Review,
+        );
+        add_manual_session_with_status(
+            &mut app,
+            dir.path(),
+            "queued-1",
+            "Queued 1",
+            Status::Queued,
+        );
+        add_manual_session_with_status(
+            &mut app,
+            dir.path(),
+            "archive-2",
+            "Archive 2",
+            Status::Canceled,
+        );
+        add_manual_session_with_status(&mut app, dir.path(), "merge-1", "Merge 1", Status::Merging);
+        add_manual_session_with_status(&mut app, dir.path(), "active-2", "Active 2", Status::New);
+        app.sessions.table_state.select(Some(3));
+
+        // Act & Assert
+        app.next();
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some("queued-1")
+        );
+
+        app.next();
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some("merge-1")
+        );
+
+        app.next();
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some("active-1")
+        );
+
+        app.next();
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some("active-2")
+        );
+
+        app.next();
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some("archive-1")
+        );
+
+        app.next();
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some("archive-2")
+        );
+
+        app.previous();
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some("archive-1")
+        );
     }
 
     #[tokio::test]

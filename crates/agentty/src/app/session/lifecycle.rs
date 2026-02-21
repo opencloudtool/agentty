@@ -17,46 +17,62 @@ use crate::domain::permission::PermissionMode;
 use crate::domain::session::{SESSION_DATA_DIR, Session, Status};
 use crate::infra::agent::AgentBackend;
 use crate::infra::git;
+use crate::ui::pages::session_list::grouped_session_indexes;
 
 impl SessionManager {
-    /// Moves selection to the next session in the list.
+    /// Moves selection to the next selectable session in grouped list order.
+    ///
+    /// Group header rows are non-selectable and are skipped by design.
     pub fn next(&mut self) {
-        if self.sessions.is_empty() {
+        let grouped_indexes = grouped_session_indexes(&self.sessions);
+        if grouped_indexes.is_empty() {
             return;
         }
 
-        let index = match self.table_state.selected() {
-            Some(index) => {
-                if index >= self.sessions.len() - 1 {
+        let index = match self.table_state.selected().and_then(|selected_index| {
+            grouped_indexes
+                .iter()
+                .position(|session_index| *session_index == selected_index)
+        }) {
+            Some(position) => {
+                if position >= grouped_indexes.len() - 1 {
                     0
                 } else {
-                    index + 1
+                    position + 1
                 }
             }
             None => 0,
         };
 
-        self.table_state.select(Some(index));
+        self.table_state.select(Some(grouped_indexes[index]));
     }
 
-    /// Moves selection to the previous session in the list.
+    /// Moves selection to the previous selectable session in grouped list
+    /// order.
+    ///
+    /// Group header rows are non-selectable and are skipped by design.
     pub fn previous(&mut self) {
-        if self.sessions.is_empty() {
+        let grouped_indexes = grouped_session_indexes(&self.sessions);
+        if grouped_indexes.is_empty() {
             return;
         }
 
-        let index = match self.table_state.selected() {
-            Some(index) => {
-                if index == 0 {
-                    self.sessions.len() - 1
+        let index = match self.table_state.selected().and_then(|selected_index| {
+            grouped_indexes
+                .iter()
+                .position(|session_index| *session_index == selected_index)
+        }) {
+            Some(position) => {
+                if position == 0 {
+                    grouped_indexes.len() - 1
                 } else {
-                    index - 1
+                    position - 1
                 }
             }
             None => 0,
         };
 
-        self.table_state.select(Some(index));
+        self.table_state.select(Some(grouped_indexes[index]));
     }
 
     /// Creates a blank session with an empty prompt and output.

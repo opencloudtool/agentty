@@ -104,7 +104,7 @@ enum SessionTableRow<'a> {
 }
 
 /// Session list groups shown in the table.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum SessionGroup {
     ActiveSessions,
     Archive,
@@ -122,43 +122,59 @@ impl SessionGroup {
     }
 }
 
+/// Returns session indexes in the same order as selectable rows in the grouped
+/// session table.
+pub(crate) fn grouped_session_indexes(sessions: &[Session]) -> Vec<usize> {
+    let mut indexes = Vec::with_capacity(sessions.len());
+    indexes.extend(sessions_for_group(sessions, SessionGroup::MergeQueue).map(|(index, _)| index));
+    indexes
+        .extend(sessions_for_group(sessions, SessionGroup::ActiveSessions).map(|(index, _)| index));
+    indexes.extend(sessions_for_group(sessions, SessionGroup::Archive).map(|(index, _)| index));
+
+    indexes
+}
+
 /// Returns grouped display rows with merge queue, active, then archive
 /// sessions.
 fn grouped_session_rows(sessions: &[Session]) -> Vec<SessionTableRow<'_>> {
     let mut rows = Vec::with_capacity(sessions.len() + 3);
     rows.push(SessionTableRow::GroupLabel(SessionGroup::MergeQueue));
     rows.extend(
-        sessions
-            .iter()
-            .filter(|session| is_merge_queue_session(session))
-            .map(SessionTableRow::Session),
+        sessions_for_group(sessions, SessionGroup::MergeQueue)
+            .map(|(_, session)| SessionTableRow::Session(session)),
     );
     rows.push(SessionTableRow::GroupLabel(SessionGroup::ActiveSessions));
     rows.extend(
-        sessions
-            .iter()
-            .filter(|session| !is_merge_queue_session(session) && !is_archive_session(session))
-            .map(SessionTableRow::Session),
+        sessions_for_group(sessions, SessionGroup::ActiveSessions)
+            .map(|(_, session)| SessionTableRow::Session(session)),
     );
     rows.push(SessionTableRow::GroupLabel(SessionGroup::Archive));
     rows.extend(
-        sessions
-            .iter()
-            .filter(|session| is_archive_session(session))
-            .map(SessionTableRow::Session),
+        sessions_for_group(sessions, SessionGroup::Archive)
+            .map(|(_, session)| SessionTableRow::Session(session)),
     );
 
     rows
 }
 
-/// Returns `true` when a session belongs to the merge queue group.
-fn is_merge_queue_session(session: &Session) -> bool {
-    matches!(session.status, Status::Queued | Status::Merging)
+/// Returns session indexes and snapshots for one grouped section.
+fn sessions_for_group(
+    sessions: &[Session],
+    group: SessionGroup,
+) -> impl Iterator<Item = (usize, &Session)> {
+    sessions
+        .iter()
+        .enumerate()
+        .filter(move |(_, session)| session_group(session) == group)
 }
 
-/// Returns `true` when a session belongs to the archive group.
-fn is_archive_session(session: &Session) -> bool {
-    matches!(session.status, Status::Done | Status::Canceled)
+/// Returns the grouped section where a session should be displayed.
+fn session_group(session: &Session) -> SessionGroup {
+    match session.status {
+        Status::Queued | Status::Merging => SessionGroup::MergeQueue,
+        Status::Done | Status::Canceled => SessionGroup::Archive,
+        _ => SessionGroup::ActiveSessions,
+    }
 }
 
 /// Resolves the selected session id from the original session ordering.
@@ -319,6 +335,39 @@ mod tests {
             summary: None,
             title: Some(id.to_string()),
         }
+    }
+
+    #[test]
+    fn test_grouped_session_indexes_orders_selectable_sessions_without_headers() {
+        // Arrange
+        let sessions = vec![
+            test_session("active-1", Status::Review),
+            test_session("queued-1", Status::Queued),
+            test_session("merge-1", Status::Merging),
+            test_session("done-1", Status::Done),
+            test_session("canceled-1", Status::Canceled),
+            test_session("active-2", Status::New),
+        ];
+
+        // Act
+        let indexes = grouped_session_indexes(&sessions);
+        let ordered_ids = indexes
+            .into_iter()
+            .map(|index| sessions[index].id.clone())
+            .collect::<Vec<_>>();
+
+        // Assert
+        assert_eq!(
+            ordered_ids,
+            vec![
+                "queued-1".to_string(),
+                "merge-1".to_string(),
+                "active-1".to_string(),
+                "active-2".to_string(),
+                "done-1".to_string(),
+                "canceled-1".to_string(),
+            ]
+        );
     }
 
     #[test]
