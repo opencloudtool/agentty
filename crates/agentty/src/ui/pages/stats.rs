@@ -11,8 +11,9 @@ use crate::domain::session::{CodexUsageLimitWindow, CodexUsageLimits, DailyActiv
 use crate::ui::Page;
 use crate::ui::pages::session_list::{model_column_width, project_column_width};
 use crate::ui::util::{
-    build_activity_heatmap_grid, build_heatmap_month_row, current_day_key_utc,
-    format_duration_compact, format_token_count, heatmap_intensity_level, heatmap_max_count,
+    activity_day_key_local, build_activity_heatmap_grid, build_heatmap_month_row,
+    current_day_key_local, format_duration_compact, format_token_count, heatmap_intensity_level,
+    heatmap_max_count,
 };
 
 const DAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -226,8 +227,9 @@ impl StatsPage<'_> {
     }
 
     fn build_heatmap_lines(&self) -> Vec<Line<'static>> {
-        let end_day_key = current_day_key_utc();
-        let grid = build_activity_heatmap_grid(self.stats_activity, end_day_key);
+        let end_day_key = current_day_key_local();
+        let activity = self.build_local_activity();
+        let grid = build_activity_heatmap_grid(&activity, end_day_key);
         let max_count = heatmap_max_count(&grid);
         let mut lines: Vec<Line<'static>> = Vec::new();
         let month_row =
@@ -267,6 +269,32 @@ impl StatsPage<'_> {
         lines.push(Line::from(legend));
 
         lines
+    }
+
+    /// Builds day-keyed activity counts projected to local time.
+    ///
+    /// Session timestamps remain in UTC storage and are converted only for
+    /// heatmap presentation.
+    fn build_local_activity(&self) -> Vec<DailyActivity> {
+        if self.sessions.is_empty() {
+            return self.stats_activity.to_vec();
+        }
+
+        let mut activity_by_day: BTreeMap<i64, u32> = BTreeMap::new();
+
+        for session in self.sessions {
+            let local_day_key = activity_day_key_local(session.created_at);
+            let day_count = activity_by_day.entry(local_day_key).or_insert(0);
+            *day_count = day_count.saturating_add(1);
+        }
+
+        activity_by_day
+            .into_iter()
+            .map(|(day_key, session_count)| DailyActivity {
+                day_key,
+                session_count,
+            })
+            .collect()
     }
 
     /// Builds summary lines for favorite model, longest `agentty` session
@@ -507,7 +535,7 @@ mod tests {
         // Arrange
         let sessions = vec![session_fixture()];
         let activity = vec![DailyActivity {
-            day_key: current_day_key_utc(),
+            day_key: current_day_key_local(),
             session_count: 3,
         }];
         let mut page = StatsPage::new(&sessions, &activity, None);
@@ -527,6 +555,37 @@ mod tests {
         assert!(text.contains("Activity Heatmap"));
         assert!(text.contains("Less"));
         assert!(text.contains("More"));
+    }
+
+    #[test]
+    fn test_build_heatmap_lines_uses_session_timestamps_for_activity() {
+        // Arrange
+        let now_seconds = StatsPage::current_unix_timestamp();
+        let sessions = vec![session_fixture_with(
+            "session-1",
+            "Active Session",
+            AgentModel::Gpt53Codex,
+            10,
+            10,
+            now_seconds,
+            now_seconds,
+        )];
+        let activity = vec![DailyActivity {
+            day_key: current_day_key_local(),
+            session_count: 50,
+        }];
+        let page = StatsPage::new(&sessions, &activity, None);
+
+        // Act
+        let heatmap_lines = page.build_heatmap_lines();
+        let rendered_text = heatmap_lines
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(rendered_text.contains("Max/day: 1"));
     }
 
     #[test]

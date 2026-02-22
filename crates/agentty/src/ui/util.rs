@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::domain::session::DailyActivity;
 
@@ -555,16 +556,38 @@ pub fn format_duration_compact(duration_seconds: i64) -> String {
 
 /// Returns the current UTC day key as days since Unix epoch.
 pub fn current_day_key_utc() -> i64 {
-    let now_seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(0));
+    let now_seconds = current_unix_timestamp_seconds();
 
     activity_day_key(now_seconds)
+}
+
+/// Returns the current local day key as days since Unix epoch.
+pub fn current_day_key_local() -> i64 {
+    let now_seconds = current_unix_timestamp_seconds();
+
+    activity_day_key_local(now_seconds)
 }
 
 /// Converts Unix timestamp seconds to a UTC day key.
 pub fn activity_day_key(timestamp_seconds: i64) -> i64 {
     timestamp_seconds.div_euclid(SECONDS_PER_DAY)
+}
+
+/// Converts Unix timestamp seconds to a local day key.
+///
+/// The local offset is resolved for the provided timestamp, so daylight-saving
+/// transitions are applied automatically.
+pub fn activity_day_key_local(timestamp_seconds: i64) -> i64 {
+    let utc_offset_seconds = local_utc_offset_seconds(timestamp_seconds);
+
+    activity_day_key_with_offset(timestamp_seconds, utc_offset_seconds)
+}
+
+/// Converts Unix timestamp seconds to a day key after applying a UTC offset.
+pub fn activity_day_key_with_offset(timestamp_seconds: i64, utc_offset_seconds: i64) -> i64 {
+    timestamp_seconds
+        .saturating_add(utc_offset_seconds)
+        .div_euclid(SECONDS_PER_DAY)
 }
 
 /// Builds a 53-week x 7-day heatmap grid from daily activity counts.
@@ -677,6 +700,23 @@ fn format_scaled_token_count(count: u64, divisor: u64, suffix: &str) -> String {
     let decimal = scaled_tenths % 10;
 
     format!("{whole}.{decimal}{suffix}")
+}
+
+fn current_unix_timestamp_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(0))
+}
+
+fn local_utc_offset_seconds(timestamp_seconds: i64) -> i64 {
+    let Ok(utc_timestamp) = OffsetDateTime::from_unix_timestamp(timestamp_seconds) else {
+        return 0;
+    };
+    let Ok(local_offset) = UtcOffset::local_offset_at(utc_timestamp) else {
+        return 0;
+    };
+
+    i64::from(local_offset.whole_seconds())
 }
 
 fn heatmap_start_week_day_key(end_day_key: i64) -> i64 {
@@ -1137,6 +1177,32 @@ mod tests {
         assert_eq!(one_minute, "1m");
         assert_eq!(one_hour, "1h 0m");
         assert_eq!(one_day, "1d 1h");
+    }
+
+    #[test]
+    fn test_activity_day_key_with_offset_applies_positive_offset() {
+        // Arrange
+        let timestamp_seconds = 86_399_i64;
+        let utc_offset_seconds = 3_600_i64;
+
+        // Act
+        let day_key = activity_day_key_with_offset(timestamp_seconds, utc_offset_seconds);
+
+        // Assert
+        assert_eq!(day_key, 1);
+    }
+
+    #[test]
+    fn test_activity_day_key_with_offset_applies_negative_offset() {
+        // Arrange
+        let timestamp_seconds = 86_400_i64;
+        let utc_offset_seconds = -3_600_i64;
+
+        // Act
+        let day_key = activity_day_key_with_offset(timestamp_seconds, utc_offset_seconds);
+
+        // Assert
+        assert_eq!(day_key, 0);
     }
 
     #[test]

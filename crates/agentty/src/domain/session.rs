@@ -202,9 +202,11 @@ pub struct CodexUsageLimits {
     pub secondary: Option<CodexUsageLimitWindow>,
 }
 
-/// Aggregated activity count for one UTC day.
+/// Aggregated activity count for one day key.
 ///
-/// `day_key` is the number of days since Unix epoch (`1970-01-01`) in UTC.
+/// `day_key` is the number of days since Unix epoch (`1970-01-01`).
+/// App/session loading stores UTC day keys, while UI rendering may project the
+/// same metric into local-day keys for presentation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DailyActivity {
     pub day_key: i64,
