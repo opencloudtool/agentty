@@ -2761,6 +2761,73 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies `sync_main_for_project` pushes local commits to `origin`.
+    async fn test_sync_main_pushes_local_commits_to_remote() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        Command::new("git")
+            .args(["init", "--bare"])
+            .arg(remote_dir.path())
+            .output()
+            .expect("failed to init bare remote");
+        let remote_url = remote_dir
+            .path()
+            .to_str()
+            .expect("remote path invalid")
+            .to_string();
+        Command::new("git")
+            .args(["remote", "add", "origin", &remote_url])
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to add remote");
+        Command::new("git")
+            .args(["push", "-u", "origin", "main"])
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to push initial commit");
+
+        std::fs::write(dir.path().join("README.md"), "local change")
+            .expect("failed to write local change");
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git add failed");
+        Command::new("git")
+            .args(["commit", "-m", "local work"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git commit failed");
+
+        let local_head_output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git rev-parse failed");
+        let local_head = String::from_utf8_lossy(&local_head_output.stdout)
+            .trim()
+            .to_string();
+        let remote_head_before = std::fs::read_to_string(remote_dir.path().join("refs/heads/main"))
+            .expect("failed to read remote head");
+        assert_ne!(remote_head_before.trim(), local_head);
+
+        // Act
+        let result = SessionManager::sync_main_for_project(
+            Some("main".to_string()),
+            dir.path().to_path_buf(),
+        )
+        .await;
+
+        // Assert
+        assert!(result.is_ok());
+        let remote_head_after = std::fs::read_to_string(remote_dir.path().join("refs/heads/main"))
+            .expect("failed to read remote head after sync");
+        assert_eq!(remote_head_after.trim(), local_head);
+    }
+
+    #[tokio::test]
     async fn test_cancel_session() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");

@@ -410,7 +410,7 @@ impl SessionManager {
     ///
     /// # Errors
     /// Returns a [`SyncSessionStartError`] when project context is invalid or
-    /// `git pull --rebase` fails.
+    /// updating the default branch fails (`git pull --rebase` or `git push`).
     pub(crate) async fn sync_main_for_project(
         default_branch: Option<String>,
         working_dir: PathBuf,
@@ -434,7 +434,7 @@ impl SessionManager {
             });
         }
 
-        let pull_result = git::pull_rebase(working_dir)
+        let pull_result = git::pull_rebase(working_dir.clone())
             .await
             .map_err(SyncSessionStartError::Other)?;
         if let git::PullRebaseResult::Conflict { detail } = pull_result {
@@ -442,6 +442,10 @@ impl SessionManager {
                 "Sync stopped on rebase conflicts while updating `{default_branch}`: {detail}"
             )));
         }
+
+        git::push_current_branch(working_dir)
+            .await
+            .map_err(SyncSessionStartError::Other)?;
 
         Ok(())
     }

@@ -49,8 +49,8 @@ pub(crate) async fn handle(
     let is_done = session.status == Status::Done;
     let is_in_progress = session.status == Status::InProgress;
     let is_action_allowed = is_view_action_allowed(session.status);
-    let can_open_worktree = is_view_worktree_open_allowed(session.status)
-        && can_open_session_worktree(session.status);
+    let can_open_worktree =
+        is_view_worktree_open_allowed(session.status) && can_open_session_worktree(session.status);
     let session_output = session.output.clone();
 
     if handle_plan_followup_action_key(app, key, &view_context).await {
