@@ -40,6 +40,13 @@ pub(super) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Default commit message used for automatic worktree commits.
 pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
 
+/// Defaults used when creating new sessions from the UI.
+#[derive(Clone, Copy)]
+pub(crate) struct SessionDefaults {
+    pub(crate) model: AgentModel,
+    pub(crate) permission_mode: PermissionMode,
+}
+
 /// Session domain state and worker orchestration state.
 pub struct SessionManager {
     all_time_model_usage: Vec<AllTimeModelUsage>,
@@ -56,11 +63,10 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Creates a session manager from persisted snapshot state and defaults.
-    pub fn new(
+    pub(crate) fn new(
         all_time_model_usage: Vec<AllTimeModelUsage>,
         codex_usage_limits: Option<CodexUsageLimits>,
-        default_session_model: AgentModel,
-        default_session_permission_mode: PermissionMode,
+        defaults: SessionDefaults,
         git_client: Arc<dyn crate::infra::git::GitClient>,
         longest_session_duration_seconds: u64,
         state: SessionState,
@@ -69,8 +75,8 @@ impl SessionManager {
         Self {
             all_time_model_usage,
             codex_usage_limits,
-            default_session_model,
-            default_session_permission_mode,
+            default_session_model: defaults.model,
+            default_session_permission_mode: defaults.permission_mode,
             git_client,
             longest_session_duration_seconds,
             pending_history_replay: HashSet::new(),

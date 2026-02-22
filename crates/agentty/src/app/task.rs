@@ -159,7 +159,8 @@ impl TaskService {
             refresh_tick.tick().await;
 
             loop {
-                let codex_usage_limits = SessionManager::load_codex_usage_limits().await;
+                let codex_usage_limits =
+                    crate::app::SessionManager::load_codex_usage_limits().await;
                 let _ = app_event_tx.send(AppEvent::CodexUsageLimitsUpdated { codex_usage_limits });
 
                 refresh_tick.tick().await;
@@ -393,7 +394,11 @@ impl TaskService {
         let folder = context.folder.clone();
         context
             .git_client
-            .commit_all_preserving_single_commit(folder.clone(), COMMIT_MESSAGE.to_string(), no_verify)
+            .commit_all_preserving_single_commit(
+                folder.clone(),
+                COMMIT_MESSAGE.to_string(),
+                no_verify,
+            )
             .await?;
 
         context.git_client.head_short_hash(folder).await

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
@@ -591,7 +592,8 @@ mod tests {
             day_key: current_day_key_local(),
             session_count: 50,
         }];
-        let page = StatsPage::new(&sessions, &activity, None);
+        let all_time_usage: Vec<AllTimeModelUsage> = Vec::new();
+        let page = StatsPage::new(&sessions, &activity, &all_time_usage, 0, None);
 
         // Act
         let heatmap_lines = page.build_heatmap_lines();

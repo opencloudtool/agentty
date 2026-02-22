@@ -204,8 +204,10 @@ impl App {
         let sessions = SessionManager::new(
             all_time_model_usage,
             codex_usage_limits,
-            default_session_model,
-            default_session_permission_mode,
+            session::SessionDefaults {
+                model: default_session_model,
+                permission_mode: default_session_permission_mode,
+            },
             services.git_client(),
             longest_session_duration_seconds,
             SessionState::new(
