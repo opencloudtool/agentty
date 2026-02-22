@@ -251,13 +251,14 @@ impl SessionManager {
         .await;
 
         let is_initial_plan_prompt = permission_mode == PermissionMode::Plan;
-        let command = crate::infra::agent::create_backend(session_model.kind()).build_start_command(
-            &folder,
-            &prompt,
-            session_model.as_str(),
-            permission_mode,
-            is_initial_plan_prompt,
-        );
+        let command = crate::infra::agent::create_backend(session_model.kind())
+            .build_start_command(
+                &folder,
+                &prompt,
+                session_model.as_str(),
+                permission_mode,
+                is_initial_plan_prompt,
+            );
         let operation_id = Uuid::new_v4().to_string();
         self.enqueue_session_command(
             services,

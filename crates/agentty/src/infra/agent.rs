@@ -363,11 +363,7 @@ pub fn create_backend(kind: AgentKind) -> Box<dyn AgentBackend> {
 /// Each agent CLI produces a different JSON schema. This method
 /// dispatches to the appropriate parser and falls back to raw text
 /// when JSON parsing fails.
-pub fn parse_response(
-    kind: AgentKind,
-    stdout: &str,
-    stderr: &str,
-) -> ParsedResponse {
+pub fn parse_response(kind: AgentKind, stdout: &str, stderr: &str) -> ParsedResponse {
     match kind {
         AgentKind::Claude => parse_claude_response(stdout),
         AgentKind::Gemini => parse_gemini_response(stdout),
@@ -817,7 +813,8 @@ mod tests {
     #[test]
     fn test_claude_parse_response_reads_result_payload() {
         // Arrange
-        let stdout = r#"{"result":"Planned response","usage":{"input_tokens":11,"output_tokens":7}}"#;
+        let stdout =
+            r#"{"result":"Planned response","usage":{"input_tokens":11,"output_tokens":7}}"#;
 
         // Act
         let parsed = parse_response(AgentKind::Claude, stdout, "");

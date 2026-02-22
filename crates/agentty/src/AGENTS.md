@@ -18,6 +18,7 @@
 - [infra/](infra/) - Infrastructure layer implementations.
 - [runtime/](runtime/) - Runtime event loop, terminal integration, and mode key handling.
 - [ui/](ui/) - User Interface module.
+- [agent.rs](agent.rs) - Agent runtime integration types and process helpers.
 - [db.rs](db.rs) - `Database` struct wrapping SQLx for session metadata persistence.
 - [file_list.rs](file_list.rs) - Gitignore-aware file listing for `@` mention dropdown.
 - [git.rs](git.rs) - Git integration and worktree management.

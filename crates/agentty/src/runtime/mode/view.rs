@@ -840,7 +840,9 @@ mod tests {
             .cloned();
         assert_eq!(
             selected_option,
-            Some(PlanFollowupOption::AnswerQuestion("Keep sqlite?".to_string()))
+            Some(PlanFollowupOption::AnswerQuestion(
+                "Keep sqlite?".to_string()
+            ))
         );
     }
 

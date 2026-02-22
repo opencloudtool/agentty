@@ -49,7 +49,13 @@ impl<'a> SessionOutput<'a> {
         active_progress: Option<&str>,
     ) -> u16 {
         let output_area = Rect::new(0, 0, output_width, 0);
-        let lines = Self::output_lines(session, output_area, session.status, plan_followup, active_progress);
+        let lines = Self::output_lines(
+            session,
+            output_area,
+            session.status,
+            plan_followup,
+            active_progress,
+        );
 
         u16::try_from(lines.len()).unwrap_or(u16::MAX)
     }
@@ -506,13 +512,8 @@ mod tests {
         };
 
         // Act
-        let lines = SessionOutput::output_lines(
-            &session,
-            area,
-            Status::Review,
-            Some(&followup),
-            None,
-        );
+        let lines =
+            SessionOutput::output_lines(&session, area, Status::Review, Some(&followup), None);
         let rendered = lines
             .iter()
             .map(std::string::ToString::to_string)

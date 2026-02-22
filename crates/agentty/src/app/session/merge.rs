@@ -915,11 +915,7 @@ impl SessionManager {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let parsed = crate::infra::agent::parse_response(
-            session_model.kind(),
-            &stdout,
-            &stderr,
-        );
+        let parsed = crate::infra::agent::parse_response(session_model.kind(), &stdout, &stderr);
         let content = parsed.content.trim().to_string();
 
         if content.is_empty() {

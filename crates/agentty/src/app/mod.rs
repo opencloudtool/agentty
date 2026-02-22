@@ -412,10 +412,7 @@ impl App {
 
     /// Clears and returns the pending selected post-plan option for a
     /// session.
-    pub fn consume_plan_followup_action(
-        &mut self,
-        session_id: &str,
-    ) -> Option<PlanFollowupOption> {
+    pub fn consume_plan_followup_action(&mut self, session_id: &str) -> Option<PlanFollowupOption> {
         let followup = self.plan_followups.remove(session_id)?;
 
         followup.selected_option().cloned()

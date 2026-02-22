@@ -10,8 +10,8 @@ pub(crate) enum ConfirmationDecision {
     Continue,
 }
 
-/// Handles shared confirmation keys (`y/n/q`, arrows, `Esc`, `Enter`) for a
-/// yes/no confirmation selector.
+/// Handles shared confirmation keys (`y/n/q`, arrows, `h/l`, `Esc`, `Enter`)
+/// for a yes/no confirmation selector.
 pub(crate) fn handle(
     selected_confirmation_index: &mut usize,
     key: KeyEvent,
@@ -25,7 +25,17 @@ pub(crate) fn handle(
 
             ConfirmationDecision::Continue
         }
+        KeyCode::Char(character) if is_left_shortcut(character) => {
+            *selected_confirmation_index = selected_confirmation_index.saturating_sub(1);
+
+            ConfirmationDecision::Continue
+        }
         KeyCode::Right => {
+            *selected_confirmation_index = (*selected_confirmation_index + 1).min(NO_OPTION_INDEX);
+
+            ConfirmationDecision::Continue
+        }
+        KeyCode::Char(character) if is_right_shortcut(character) => {
             *selected_confirmation_index = (*selected_confirmation_index + 1).min(NO_OPTION_INDEX);
 
             ConfirmationDecision::Continue
@@ -49,6 +59,16 @@ fn is_yes_shortcut(character: char) -> bool {
 /// Returns whether the pressed key should cancel the action.
 fn is_no_shortcut(character: char) -> bool {
     character.eq_ignore_ascii_case(&'n') || character.eq_ignore_ascii_case(&'q')
+}
+
+/// Returns whether the pressed key should move selection to the left option.
+fn is_left_shortcut(character: char) -> bool {
+    character.eq_ignore_ascii_case(&'h')
+}
+
+/// Returns whether the pressed key should move selection to the right option.
+fn is_right_shortcut(character: char) -> bool {
+    character.eq_ignore_ascii_case(&'l')
 }
 
 #[cfg(test)]
@@ -115,6 +135,30 @@ mod tests {
         let move_left_decision = handle(
             &mut selected_confirmation_index,
             KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(
+            move_right_decision,
+            ConfirmationDecision::Continue
+        ));
+        assert!(matches!(move_left_decision, ConfirmationDecision::Continue));
+        assert_eq!(selected_confirmation_index, YES_OPTION_INDEX);
+    }
+
+    #[test]
+    fn test_handle_updates_selection_with_h_and_l_shortcuts() {
+        // Arrange
+        let mut selected_confirmation_index = YES_OPTION_INDEX;
+
+        // Act
+        let move_right_decision = handle(
+            &mut selected_confirmation_index,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        );
+        let move_left_decision = handle(
+            &mut selected_confirmation_index,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
         );
 
         // Assert
