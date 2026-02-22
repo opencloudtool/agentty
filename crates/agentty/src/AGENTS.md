@@ -14,17 +14,10 @@
 ## Directory Index
 
 - [app/](app/) - Application state and workflows split by concern (`session`, `project`, `task`).
-- [agent.rs](agent.rs) - Agent backend abstraction, CLI command builders for Gemini/Claude/Codex, and process-backed implementation.
 - [domain/](domain/) - Domain layer entities and logic.
 - [infra/](infra/) - Infrastructure layer implementations.
 - [runtime/](runtime/) - Runtime event loop, terminal integration, and mode key handling.
 - [ui/](ui/) - User Interface module.
-- [db.rs](db.rs) - `Database` struct wrapping SQLx for session metadata persistence.
 - [file_list.rs](file_list.rs) - Gitignore-aware file listing for `@` mention dropdown.
-- [git.rs](git.rs) - Git integration and worktree management.
-- [icon.rs](icon.rs) - Centralized `Icon` enum for consistent Unicode symbols.
 - [lib.rs](lib.rs) - Library entry point, exports modules.
-- [lock.rs](lock.rs) - Single-instance session lock using POSIX `flock`.
 - [main.rs](main.rs) - Binary composition root for lock, DB bootstrap, and runtime launch.
-- [model.rs](model.rs) - Core domain models (`Session`, `Status`, `AppMode`).
-- [version.rs](version.rs) - Version discovery and comparison helpers for update notices.
