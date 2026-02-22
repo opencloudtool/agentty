@@ -16,7 +16,7 @@ The UI is built using [Ratatui](https://ratatui.rs/) and follows a **separation 
 
 ### Module Structure
 
-- **`mod.rs`**: Main entry point containing the top-level `render` function that dispatches to pages based on `AppMode`. Defines the `Page` and `Component` traits.
+- **`../ui.rs`**: Main entry point containing the top-level `render` function that dispatches to pages based on `AppMode`. Defines the `Page` and `Component` traits.
 - **`pages/`**: Each page is a separate module implementing the `Page` trait.
   - `session_list.rs` - Session list view (`AppMode::List`)
   - `session_chat.rs` - Session chat interface (`AppMode::View`, `AppMode::Prompt`)

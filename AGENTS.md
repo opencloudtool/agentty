@@ -10,6 +10,7 @@ TUI tool to manage agents.
 - **Document Code:** Document all added or updated code using docstrings. When touching existing code, add or refresh docstrings so the changed behavior is clearly described.
 - **Update AGENTS.md:** Update the relevant `AGENTS.md` file only when a user instruction establishes a critical, persistent preference, convention, or workflow rule. Do not update it for one-off tasks.
 - **Directory Indexing:** Maintain the "Directory Index" section in the local `AGENTS.md`. If you create, rename, or delete a file/directory, update the index immediately.
+- **Local Paths Only:** In `AGENTS.md`, do not use parent-directory relative paths. Each file should document only files and folders in its own directory.
 - **Context First:** Before listing a directory or reading source code, ALWAYS read the local `AGENTS.md` first. This provides immediate context on the folder structure and file purposes, reducing the need for broad discovery actions.
 - **Context7 First:** If Context7 is connected as an MCP server, use it to retrieve the latest documentation and API details for the tools and libraries used in the task.
 - **Test Isolation for External Commands:** Keep isolated single-command tests real when they validate one external command call, but for higher-level flows that involve multiple external command calls, always extract trait boundaries and mock them with `mockall` (`#[cfg_attr(test, mockall::automock)]`) to reduce runtime and flakiness.

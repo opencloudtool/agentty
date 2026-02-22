@@ -36,9 +36,9 @@ Application-layer workflows and orchestration.
 
 - [assist.rs](assist.rs) - Shared assistance helpers for commit/rebase recovery loops.
 - [merge_queue.rs](merge_queue.rs) - Session merge queue orchestration and background workflow helpers.
-- [mod.rs](mod.rs) - Shared app state and module wiring.
 - [project.rs](project.rs) - Project discovery and switching logic.
 - [session/](session/) - Session workflows and their local docs/index.
+- [session.rs](session.rs) - Session module root with orchestration types and tests.
 - [service.rs](service.rs) - Shared app dependency container (`Database`, base path, app event sender).
 - [settings.rs](settings.rs) - Settings management and persistence.
 - [state.rs](state.rs) - Session state management.

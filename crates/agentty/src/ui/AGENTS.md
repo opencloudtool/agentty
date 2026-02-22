@@ -4,7 +4,7 @@ When working within `crates/agentty/src/ui/`:
 
 ## Core Rules
 
-- **Modularization**: Always respect the module boundaries. Do not put page-specific rendering logic in `mod.rs`. Use the dedicated files in `pages/` (`session_list.rs`, `session_chat.rs`, etc.).
+- **Modularization**: Always respect the module boundaries. Do not put page-specific rendering logic in the UI module root file. Use the dedicated files in `pages/` (`session_list.rs`, `session_chat.rs`, etc.).
 - **Helper Functions**: If you write a helper function that calculates layout or processes text, **IMMEDIATELY** move it to `util.rs` and write a unit test for it. Do not leave complex logic inline within render functions.
 - **Component Reuse**: Check the `components/` directory before building a new common widget. All components must implement the `Component` trait.
 - **Symlinks**: Ensure `CLAUDE.md` and `GEMINI.md` are symlinked to this file.
@@ -17,7 +17,7 @@ When working within `crates/agentty/src/ui/`:
 1. Define a struct (e.g., `MyPage`) that holds necessary references
 1. Implement the `Page` trait for your struct with a `render(&mut self, f: &mut Frame, area: Rect)` method
 1. Expose the module in `pages/mod.rs`
-1. Update the match expression in `mod.rs` to instantiate and render your page
+1. Update the match expression in the UI module root file to instantiate and render your page
 
 ### Adding a New Component
 
@@ -48,7 +48,6 @@ When working within `crates/agentty/src/ui/`:
 - [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
 - [icon.rs](icon.rs) - UI icons.
 - [markdown.rs](markdown.rs) - Styled markdown renderer for session output.
-- [mod.rs](mod.rs) - UI module definition and main render loop.
 - [README.md](README.md) - Additional documentation.
 - [state/](state/) - UI state definitions.
 - [style.rs](style.rs) - UI styling constants.
