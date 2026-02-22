@@ -260,35 +260,26 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
         table_state,
     } = context;
 
-    match mode {
-        AppMode::List => {
-            render_list_background(
-                f,
-                area,
-                ListBackgroundRenderContext {
-                    codex_usage_limits,
-                    current_tab,
-                    sessions,
-                    settings,
-                    stats_activity,
-                    table_state,
-                },
-            );
-        }
-        AppMode::Confirmation { .. } => {
-            render_list_background(
-                f,
-                area,
-                ListBackgroundRenderContext {
-                    codex_usage_limits,
-                    current_tab,
-                    sessions,
-                    settings,
-                    stats_activity,
-                    table_state,
-                },
-            );
+    if matches!(
+        mode,
+        AppMode::List | AppMode::Confirmation { .. } | AppMode::SyncBlockedPopup { .. }
+    ) {
+        render_list_background(
+            f,
+            area,
+            ListBackgroundRenderContext {
+                codex_usage_limits,
+                current_tab,
+                sessions,
+                settings,
+                stats_activity,
+                table_state,
+            },
+        );
+    }
 
+    match mode {
+        AppMode::Confirmation { .. } => {
             let AppMode::Confirmation {
                 confirmation_message,
                 confirmation_title,
@@ -345,16 +336,6 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
             },
         ),
         AppMode::SyncBlockedPopup { message, title } => {
-            render_list_background(
-                f,
-                area,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-                current_tab,
-            );
-
             components::info_overlay::InfoOverlay::new(title, message).render(f, area);
         }
         _ => {}
