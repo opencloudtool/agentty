@@ -34,7 +34,7 @@ repos:
       - id: clippy-fix
         name: clippy fix
         description: Auto-fix clippy lints where possible.
-        entry: cargo clippy --fix --allow-dirty --allow-staged -q --all-targets --all-features -- -D warnings
+        entry: cargo clippy --fix --allow-dirty --allow-staged -q --all-targets --all-features -- -D warnings -D dead_code
         language: system
         types: [rust]
         pass_filenames: false
@@ -56,7 +56,7 @@ repos:
       - id: clippy
         name: clippy
         description: Lint the code and fail on any warnings.
-        entry: cargo clippy -q --all-targets --all-features -- -D warnings
+        entry: cargo clippy -q --all-targets --all-features -- -D warnings -D dead_code
         language: system
         types: [rust]
         pass_filenames: false
