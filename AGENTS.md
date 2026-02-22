@@ -253,7 +253,6 @@ git worktree prune
 - [dist-workspace.toml](dist-workspace.toml) - Release configuration for cargo-dist.
 - [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
 - [LICENSE](LICENSE) - Project license file.
-- [pr-testing/](pr-testing/) - Files for pull request testing workflows.
 - [README.md](README.md) - Main project documentation.
 - [rust-toolchain.toml](rust-toolchain.toml) - Rust toolchain version pinning.
 - [skills/](skills/) - Shared agent skills.

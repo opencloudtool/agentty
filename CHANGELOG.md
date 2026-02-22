@@ -303,7 +303,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diff View:** Show all file changes in diff view.
 - **Status:** Show status as text in session list and chat title.
 - **Health:** Added version normalization for agent checks.
-- **Testing:** Added `pr-testing` directory to root index.
 
 ### Changed
 
