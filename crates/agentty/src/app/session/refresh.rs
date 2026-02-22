@@ -50,6 +50,18 @@ impl SessionManager {
         self.refresh_deadline = Instant::now() + SESSION_REFRESH_INTERVAL;
     }
 
+    /// Applies a newly loaded Codex usage-limit snapshot.
+    ///
+    /// When refresh data is unavailable (`None`), the previous snapshot is
+    /// preserved so usage bars do not disappear on transient failures.
+    pub(crate) fn apply_codex_usage_limits_update(
+        &mut self,
+        codex_usage_limits: Option<CodexUsageLimits>,
+    ) {
+        self.codex_usage_limits =
+            merged_codex_usage_limits(self.codex_usage_limits, codex_usage_limits);
+    }
+
     async fn reload_sessions(
         &mut self,
         mode: &mut AppMode,
@@ -72,8 +84,7 @@ impl SessionManager {
         .await;
         let codex_usage_limits = Self::load_codex_usage_limits().await;
         self.sessions = sessions;
-        self.codex_usage_limits =
-            merged_codex_usage_limits(self.codex_usage_limits, codex_usage_limits);
+        self.apply_codex_usage_limits_update(codex_usage_limits);
         self.stats_activity = stats_activity;
         self.restore_table_selection(selected_session_id.as_deref(), selected_index);
         self.ensure_mode_session_exists(mode);

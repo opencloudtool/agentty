@@ -33,6 +33,9 @@ const AUTO_COMMIT_ASSIST_POLICY: AssistPolicy = AssistPolicy {
 const OUTPUT_BATCH_INTERVAL: Duration = Duration::from_millis(50);
 /// Maximum buffered output size before a flush is triggered.
 const OUTPUT_BATCH_SIZE: usize = 1024; // 1KB
+/// Poll interval for account-level Codex usage limits snapshots.
+#[cfg(not(test))]
+const CODEX_USAGE_LIMITS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Stateless helpers for background tasks and session process output handling.
 pub(super) struct TaskService;
@@ -128,6 +131,38 @@ impl TaskService {
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
+            }
+        });
+    }
+
+    /// Spawns a background loop that periodically refreshes Codex usage
+    /// limits.
+    ///
+    /// The task emits [`AppEvent::CodexUsageLimitsUpdated`] snapshots instead
+    /// of mutating app state directly.
+    ///
+    /// In tests, this function is a no-op so test runs stay deterministic and
+    /// offline.
+    pub(super) fn spawn_codex_usage_limits_task(app_event_tx: &mpsc::UnboundedSender<AppEvent>) {
+        #[cfg(test)]
+        {
+            let _ = app_event_tx;
+        }
+
+        #[cfg(not(test))]
+        let app_event_tx = app_event_tx.clone();
+
+        #[cfg(not(test))]
+        tokio::spawn(async move {
+            let mut refresh_tick = tokio::time::interval(CODEX_USAGE_LIMITS_REFRESH_INTERVAL);
+            refresh_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            refresh_tick.tick().await;
+
+            loop {
+                let codex_usage_limits = SessionManager::load_codex_usage_limits().await;
+                let _ = app_event_tx.send(AppEvent::CodexUsageLimitsUpdated { codex_usage_limits });
+
+                refresh_tick.tick().await;
             }
         });
     }
@@ -1486,5 +1521,17 @@ mod tests {
         let error_text = result.expect_err("expected non-zero exit to fail");
         assert!(error_text.contains("exit code 7"));
         assert!(error_text.contains("assist failed"));
+    }
+
+    #[test]
+    fn test_spawn_codex_usage_limits_task_is_noop_in_tests() {
+        // Arrange
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+
+        // Act
+        TaskService::spawn_codex_usage_limits_task(&app_event_tx);
+
+        // Assert
+        assert!(app_event_rx.try_recv().is_err());
     }
 }

@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::permission::{PermissionMode, PlanFollowup, PlanFollowupOption};
 use crate::domain::plan::extract_plan_questions;
-use crate::domain::session::{Session, Status};
+use crate::domain::session::{CodexUsageLimits, Session, Status};
 use crate::infra::db::Database;
 use crate::infra::git::{GitClient, RealGitClient};
 use crate::ui::state::app_mode::AppMode;
@@ -60,6 +60,10 @@ pub fn agentty_home() -> PathBuf {
 pub(crate) enum AppEvent {
     /// Indicates latest ahead/behind information from the git status worker.
     GitStatusUpdated { status: Option<(u32, u32)> },
+    /// Indicates latest account-level Codex usage limits from the poller.
+    CodexUsageLimitsUpdated {
+        codex_usage_limits: Option<CodexUsageLimits>,
+    },
     /// Indicates whether a newer stable `agentty` release is available.
     VersionAvailabilityUpdated {
         latest_available_version: Option<String>,
@@ -93,6 +97,7 @@ pub(crate) enum AppEvent {
 
 #[derive(Default)]
 struct AppEventBatch {
+    codex_usage_limits_update: CodexUsageLimitsBatchUpdate,
     cleared_session_history_ids: HashSet<String>,
     git_status_update: Option<(u32, u32)>,
     has_git_status_update: bool,
@@ -104,6 +109,14 @@ struct AppEventBatch {
     session_permission_mode_updates: HashMap<String, PermissionMode>,
     should_force_reload: bool,
     sync_main_result: Option<Result<(), SyncSessionStartError>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CodexUsageLimitsBatchUpdate {
+    #[default]
+    NotSet,
+    PreservePrevious,
+    Replace(CodexUsageLimits),
 }
 
 // SessionState definition moved to state.rs
@@ -200,6 +213,7 @@ impl App {
             stats_activity,
         );
 
+        task::TaskService::spawn_codex_usage_limits_task(&event_tx);
         task::TaskService::spawn_version_check_task(&event_tx);
         if projects.has_git_branch() {
             task::TaskService::spawn_git_status_task(
@@ -565,9 +579,9 @@ impl App {
 
     /// Applies one or more queued app events through a single reducer path.
     ///
-    /// This method drains currently queued app events, coalesces refresh and
-    /// git-status updates, then applies session-handle sync for touched
-    /// sessions.
+    /// This method drains currently queued app events, coalesces refresh,
+    /// git-status, and Codex usage updates, then applies session-handle sync
+    /// for touched sessions.
     pub(crate) async fn apply_app_events(&mut self, first_event: AppEvent) {
         let drained_events = self.drain_app_events(first_event);
         let event_batch = Self::reduce_app_events(drained_events);
@@ -635,6 +649,17 @@ impl App {
 
         if event_batch.has_latest_available_version_update {
             self.latest_available_version = event_batch.latest_available_version_update;
+        }
+
+        match event_batch.codex_usage_limits_update {
+            CodexUsageLimitsBatchUpdate::NotSet => {}
+            CodexUsageLimitsBatchUpdate::PreservePrevious => {
+                self.sessions.apply_codex_usage_limits_update(None);
+            }
+            CodexUsageLimitsBatchUpdate::Replace(codex_usage_limits) => {
+                self.sessions
+                    .apply_codex_usage_limits_update(Some(codex_usage_limits));
+            }
         }
 
         for session_id in &event_batch.cleared_session_history_ids {
@@ -973,6 +998,17 @@ impl AppEventBatch {
                 self.has_git_status_update = true;
                 self.git_status_update = status;
             }
+            AppEvent::CodexUsageLimitsUpdated { codex_usage_limits } => {
+                if let Some(codex_usage_limits) = codex_usage_limits {
+                    self.codex_usage_limits_update =
+                        CodexUsageLimitsBatchUpdate::Replace(codex_usage_limits);
+                } else if matches!(
+                    self.codex_usage_limits_update,
+                    CodexUsageLimitsBatchUpdate::NotSet
+                ) {
+                    self.codex_usage_limits_update = CodexUsageLimitsBatchUpdate::PreservePrevious;
+                }
+            }
             AppEvent::VersionAvailabilityUpdated {
                 latest_available_version,
             } => {
@@ -1018,6 +1054,7 @@ impl AppEventBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::session::{CodexUsageLimitWindow, CodexUsageLimits};
 
     #[test]
     fn dev_server_command_to_run_returns_none_for_empty_input() {
@@ -1065,5 +1102,42 @@ mod tests {
 
         // Assert
         assert_eq!(window_id, Some("@42".to_string()));
+    }
+
+    #[test]
+    fn app_event_batch_collect_event_keeps_latest_successful_codex_usage_limits_update() {
+        // Arrange
+        let mut event_batch = AppEventBatch::default();
+        let initial_limits = limits_fixture(24, 33);
+
+        // Act
+        event_batch.collect_event(AppEvent::CodexUsageLimitsUpdated {
+            codex_usage_limits: Some(initial_limits),
+        });
+        event_batch.collect_event(AppEvent::CodexUsageLimitsUpdated {
+            codex_usage_limits: None,
+        });
+
+        // Assert
+        assert_eq!(
+            event_batch.codex_usage_limits_update,
+            CodexUsageLimitsBatchUpdate::Replace(initial_limits)
+        );
+    }
+
+    /// Builds deterministic Codex usage-limit snapshots for tests.
+    fn limits_fixture(primary_used_percent: u8, secondary_used_percent: u8) -> CodexUsageLimits {
+        CodexUsageLimits {
+            primary: Some(CodexUsageLimitWindow {
+                resets_at: Some(1),
+                used_percent: primary_used_percent,
+                window_minutes: Some(300),
+            }),
+            secondary: Some(CodexUsageLimitWindow {
+                resets_at: Some(2),
+                used_percent: secondary_used_percent,
+                window_minutes: Some(10_080),
+            }),
+        }
     }
 }
