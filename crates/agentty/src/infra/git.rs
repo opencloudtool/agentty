@@ -584,12 +584,56 @@ pub async fn commit_all(
     commit_message: String,
     no_verify: bool,
 ) -> Result<(), String> {
+    commit_all_with_retry(repo_path, commit_message, no_verify, false).await
+}
+
+/// Stages all changes and keeps a single commit for the provided message.
+///
+/// Creates a new commit when `HEAD` does not already use `commit_message`.
+/// Otherwise, amends `HEAD` with `--amend --no-edit` so the branch keeps one
+/// evolving session commit.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository or worktree
+/// * `commit_message` - Message that identifies the session commit
+/// * `no_verify` - When `true`, skips pre-commit and commit-msg hooks
+///   (`--no-verify`)
+///
+/// # Returns
+/// Ok(()) on success, Err(msg) with detailed error message on failure
+///
+/// # Errors
+/// Returns an error if staging, commit lookup, or committing changes fails.
+pub async fn commit_all_preserving_single_commit(
+    repo_path: PathBuf,
+    commit_message: String,
+    no_verify: bool,
+) -> Result<(), String> {
+    let amend_existing_commit =
+        should_amend_existing_commit(repo_path.clone(), commit_message.clone()).await?;
+
+    commit_all_with_retry(repo_path, commit_message, no_verify, amend_existing_commit).await
+}
+
+/// Stages all changes and commits or amends with retry behavior for hook
+/// rewrites.
+async fn commit_all_with_retry(
+    repo_path: PathBuf,
+    commit_message: String,
+    no_verify: bool,
+    amend_existing_commit: bool,
+) -> Result<(), String> {
     spawn_blocking(move || {
         // Stage all changes
         stage_all_sync(&repo_path)?;
 
         for _ in 0..COMMIT_ALL_HOOK_RETRY_ATTEMPTS {
-            let output = run_commit_command(&repo_path, &commit_message, no_verify)?;
+            let output = run_commit_command(
+                &repo_path,
+                &commit_message,
+                no_verify,
+                amend_existing_commit,
+            )?;
 
             if output.status.success() {
                 return Ok(());
@@ -618,6 +662,25 @@ pub async fn commit_all(
     })
     .await
     .map_err(|e| format!("Join error: {e}"))?
+}
+
+/// Returns whether `HEAD` should be amended for the incoming commit message.
+///
+/// When `HEAD` already has `commit_message`, new staged changes should be
+/// folded into the same commit.
+async fn should_amend_existing_commit(
+    repo_path: PathBuf,
+    commit_message: String,
+) -> Result<bool, String> {
+    spawn_blocking(move || {
+        let Some(head_commit_message) = head_commit_message_sync(&repo_path)? else {
+            return Ok(false);
+        };
+
+        Ok(head_commit_message.trim() == commit_message)
+    })
+    .await
+    .map_err(|error| format!("Join error: {error}"))?
 }
 
 /// Stages all changes in the repository or worktree.
@@ -1099,12 +1162,68 @@ fn stage_all_sync(repo_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Returns the full `HEAD` commit message, or `None` when no commits exist.
+fn head_commit_message_sync(repo_path: &Path) -> Result<Option<String>, String> {
+    if !has_head_commit_sync(repo_path)? {
+        return Ok(None);
+    }
+
+    let output = Command::new("git")
+        .args(["log", "-1", "--pretty=%B"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|error| format!("Failed to execute git: {error}"))?;
+
+    if !output.status.success() {
+        let detail = command_output_detail(&output.stdout, &output.stderr);
+
+        return Err(format!("Failed to read HEAD commit message: {detail}"));
+    }
+
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+/// Returns whether `HEAD` resolves to an existing commit.
+fn has_head_commit_sync(repo_path: &Path) -> Result<bool, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|error| format!("Failed to execute git: {error}"))?;
+
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    let detail = command_output_detail(&output.stdout, &output.stderr);
+    let normalized_detail = detail.to_ascii_lowercase();
+    if normalized_detail.contains("needed a single revision")
+        || normalized_detail.contains("unknown revision")
+        || normalized_detail.contains("does not have any commits yet")
+    {
+        return Ok(false);
+    }
+
+    Err(format!("Failed to resolve HEAD: {detail}"))
+}
+
 fn run_commit_command(
     repo_path: &Path,
     commit_message: &str,
     no_verify: bool,
+    amend_existing_commit: bool,
 ) -> Result<std::process::Output, String> {
-    let mut args = vec!["commit", "-m", commit_message];
+    let mut args = vec!["commit"];
+    if amend_existing_commit {
+        args.push("--amend");
+        args.push("--no-edit");
+    } else {
+        args.push("-m");
+        args.push(commit_message);
+    }
+
     if no_verify {
         args.push("--no-verify");
     }
@@ -1208,6 +1327,23 @@ mod tests {
         );
     }
 
+    fn run_git_command_stdout(repo_path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to run git command");
+
+        assert!(
+            output.status.success(),
+            "git command {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
     fn setup_test_git_repo(repo_path: &Path) {
         run_git_command(repo_path, &["init", "-b", "main"]);
         run_git_command(repo_path, &["config", "user.name", "Test User"]);
@@ -1267,6 +1403,64 @@ mod tests {
 
         // Assert
         assert_eq!(result, Ok(SquashMergeOutcome::AlreadyPresentInTarget));
+    }
+
+    #[tokio::test]
+    async fn test_commit_all_preserving_single_commit_creates_first_commit() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let commit_message = "Session commit".to_string();
+        fs::write(dir.path().join("work.txt"), "first change").expect("failed to write file");
+
+        // Act
+        let result = commit_all_preserving_single_commit(
+            dir.path().to_path_buf(),
+            commit_message.clone(),
+            false,
+        )
+        .await;
+        let commit_count = run_git_command_stdout(dir.path(), &["rev-list", "--count", "HEAD"]);
+        let head_message = run_git_command_stdout(dir.path(), &["log", "-1", "--pretty=%B"]);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        assert_eq!(commit_count, "2");
+        assert_eq!(head_message, commit_message);
+    }
+
+    #[tokio::test]
+    async fn test_commit_all_preserving_single_commit_amends_existing_session_commit() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let commit_message = "Session commit".to_string();
+        fs::write(dir.path().join("work.txt"), "first change").expect("failed to write file");
+        commit_all_preserving_single_commit(
+            dir.path().to_path_buf(),
+            commit_message.clone(),
+            false,
+        )
+        .await
+        .expect("failed to create first session commit");
+        let first_hash = run_git_command_stdout(dir.path(), &["rev-parse", "HEAD"]);
+        let first_count = run_git_command_stdout(dir.path(), &["rev-list", "--count", "HEAD"]);
+
+        // Act
+        fs::write(dir.path().join("work.txt"), "second change").expect("failed to write file");
+        let result = commit_all_preserving_single_commit(
+            dir.path().to_path_buf(),
+            commit_message.clone(),
+            false,
+        )
+        .await;
+        let second_hash = run_git_command_stdout(dir.path(), &["rev-parse", "HEAD"]);
+        let second_count = run_git_command_stdout(dir.path(), &["rev-list", "--count", "HEAD"]);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        assert_ne!(first_hash, second_hash);
+        assert_eq!(first_count, second_count);
     }
 
     #[tokio::test]

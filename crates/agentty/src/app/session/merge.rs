@@ -1005,13 +1005,22 @@ impl SessionManager {
 
     /// Commits all changes in a session worktree using a fixed message.
     ///
-    /// When `no_verify` is `true`, pre-commit and commit-msg hooks are skipped.
-    /// Use this for defensive commits (e.g., before rebase) where the session
-    /// code was already validated by hooks during the normal auto-commit
-    /// flow.
+    /// The first commit in a session worktree is created normally. Subsequent
+    /// commits with the same fixed message amend `HEAD` so the worktree keeps
+    /// a single evolving session commit.
+    ///
+    /// When `no_verify` is `true`, pre-commit and commit-msg hooks are
+    /// skipped. Use this for defensive commits (e.g., before rebase) where the
+    /// session code was already validated by hooks during the normal
+    /// auto-commit flow.
     pub(crate) async fn commit_changes(folder: &Path, no_verify: bool) -> Result<String, String> {
         let folder = folder.to_path_buf();
-        git::commit_all(folder.clone(), COMMIT_MESSAGE.to_string(), no_verify).await?;
+        git::commit_all_preserving_single_commit(
+            folder.clone(),
+            COMMIT_MESSAGE.to_string(),
+            no_verify,
+        )
+        .await?;
 
         git::head_short_hash(folder).await
     }

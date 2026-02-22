@@ -1935,6 +1935,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_commit_changes_amends_existing_session_commit() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        app.create_session()
+            .await
+            .expect("failed to create session worktree");
+        let session_folder = app.sessions.sessions[0].folder.clone();
+
+        // Act
+        std::fs::write(session_folder.join("session-amend.txt"), "first change")
+            .expect("failed to write first change");
+        let first_hash = SessionManager::commit_changes(&session_folder, false)
+            .await
+            .expect("failed to create first session commit");
+
+        let first_count_output = Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(&session_folder)
+            .output()
+            .expect("failed to read first commit count");
+        assert!(
+            first_count_output.status.success(),
+            "failed to read first commit count: {}",
+            String::from_utf8_lossy(&first_count_output.stderr)
+        );
+        let first_count = String::from_utf8_lossy(&first_count_output.stdout)
+            .trim()
+            .parse::<usize>()
+            .expect("failed to parse first commit count");
+
+        std::fs::write(session_folder.join("session-amend.txt"), "second change")
+            .expect("failed to write second change");
+        let second_hash = SessionManager::commit_changes(&session_folder, false)
+            .await
+            .expect("failed to amend session commit");
+
+        let second_count_output = Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(&session_folder)
+            .output()
+            .expect("failed to read second commit count");
+        assert!(
+            second_count_output.status.success(),
+            "failed to read second commit count: {}",
+            String::from_utf8_lossy(&second_count_output.stderr)
+        );
+        let second_count = String::from_utf8_lossy(&second_count_output.stdout)
+            .trim()
+            .parse::<usize>()
+            .expect("failed to parse second commit count");
+
+        let head_message_output = Command::new("git")
+            .args(["log", "-1", "--pretty=%B"])
+            .current_dir(&session_folder)
+            .output()
+            .expect("failed to read session commit message");
+        assert!(
+            head_message_output.status.success(),
+            "failed to read session commit message: {}",
+            String::from_utf8_lossy(&head_message_output.stderr)
+        );
+        let head_message = String::from_utf8_lossy(&head_message_output.stdout)
+            .trim()
+            .to_string();
+
+        // Assert
+        assert_ne!(
+            first_hash, second_hash,
+            "amending should rewrite the session commit hash"
+        );
+        assert_eq!(
+            first_count, second_count,
+            "session worktree should keep one evolving session commit"
+        );
+        assert_eq!(head_message, COMMIT_MESSAGE);
+    }
+
+    #[tokio::test]
     async fn test_spawn_session_task_skips_commit_when_nothing_to_commit() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
