@@ -82,7 +82,14 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
     let show_onboarding = app.should_show_onboarding();
     let mode = &app.mode;
     let projects = &app.projects;
-    let (sessions, stats_activity, codex_usage_limits, table_state) = app.sessions.render_parts();
+    let (
+        sessions,
+        stats_activity,
+        all_time_model_usage,
+        longest_session_duration_seconds,
+        codex_usage_limits,
+        table_state,
+    ) = app.sessions.render_parts();
     let settings = &mut app.settings;
 
     terminal.draw(|frame| {
@@ -94,9 +101,11 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
                 git_branch: current_git_branch.as_deref(),
                 git_status: current_git_status,
                 latest_available_version: latest_available_version.as_deref(),
+                longest_session_duration_seconds,
                 mode,
                 plan_followups: &plan_followups,
                 projects,
+                all_time_model_usage,
                 session_progress_messages: &session_progress_messages,
                 settings,
                 show_onboarding,

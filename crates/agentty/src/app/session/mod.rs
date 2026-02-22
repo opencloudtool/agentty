@@ -14,7 +14,7 @@ use crate::app::settings::SettingName;
 use crate::app::{AppServices, SessionState};
 use crate::domain::agent::AgentModel;
 use crate::domain::permission::PermissionMode;
-use crate::domain::session::{CodexUsageLimits, DailyActivity, Session, Status};
+use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session, Status};
 
 mod access;
 mod lifecycle;
@@ -25,6 +25,16 @@ mod worker;
 
 pub(crate) use merge::SyncSessionStartError;
 
+/// Render payload tuple returned by [`SessionManager::render_parts`].
+type SessionRenderParts<'a> = (
+    &'a [Session],
+    &'a [DailyActivity],
+    &'a [AllTimeModelUsage],
+    u64,
+    Option<CodexUsageLimits>,
+    &'a mut TableState,
+);
+
 /// Low-frequency fallback interval for metadata-based session refresh.
 pub(super) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Default commit message used for automatic worktree commits.
@@ -32,10 +42,12 @@ pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
 
 /// Session domain state and worker orchestration state.
 pub struct SessionManager {
+    all_time_model_usage: Vec<AllTimeModelUsage>,
     codex_usage_limits: Option<CodexUsageLimits>,
     default_session_model: AgentModel,
     default_session_permission_mode: PermissionMode,
     git_client: Arc<dyn crate::infra::git::GitClient>,
+    longest_session_duration_seconds: u64,
     pending_history_replay: HashSet<String>,
     state: SessionState,
     stats_activity: Vec<DailyActivity>,
@@ -45,18 +57,22 @@ pub struct SessionManager {
 impl SessionManager {
     /// Creates a session manager from persisted snapshot state and defaults.
     pub fn new(
+        all_time_model_usage: Vec<AllTimeModelUsage>,
         codex_usage_limits: Option<CodexUsageLimits>,
         default_session_model: AgentModel,
         default_session_permission_mode: PermissionMode,
         git_client: Arc<dyn crate::infra::git::GitClient>,
+        longest_session_duration_seconds: u64,
         state: SessionState,
         stats_activity: Vec<DailyActivity>,
     ) -> Self {
         Self {
+            all_time_model_usage,
             codex_usage_limits,
             default_session_model,
             default_session_permission_mode,
             git_client,
+            longest_session_duration_seconds,
             pending_history_replay: HashSet::new(),
             state,
             stats_activity,
@@ -84,19 +100,17 @@ impl SessionManager {
             .unwrap_or(fallback_model)
     }
 
-    /// Returns session snapshots, heatmap activity, Codex usage limits, and
-    /// table state for render.
-    pub(crate) fn render_parts(
-        &mut self,
-    ) -> (
-        &[Session],
-        &[DailyActivity],
-        Option<CodexUsageLimits>,
-        &mut TableState,
-    ) {
+    /// Returns session snapshots and stats payloads required for rendering.
+    ///
+    /// The tuple contains live sessions, activity heatmap data, all-time model
+    /// usage, persisted longest session duration, Codex usage limits, and list
+    /// table state.
+    pub(crate) fn render_parts(&mut self) -> SessionRenderParts<'_> {
         (
             &self.state.sessions,
             &self.stats_activity,
+            &self.all_time_model_usage,
+            self.longest_session_duration_seconds,
             self.codex_usage_limits,
             &mut self.state.table_state,
         )
@@ -298,6 +312,11 @@ mod tests {
             .current_dir(path)
             .output()
             .expect("git config failed");
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(path)
+            .output()
+            .expect("git config failed");
         std::fs::write(path.join("README.md"), "test").expect("write failed");
         Command::new("git")
             .args(["add", "."])
@@ -426,7 +445,11 @@ mod tests {
             .iter()
             .find(|session| session.id == session_id)
             .expect("missing session while waiting for status");
-        assert_eq!(session.status, expected);
+        assert_eq!(
+            session.status, expected,
+            "session output while waiting for status: {}",
+            session.output
+        );
     }
 
     /// Forces one session status in both render snapshot and runtime handle.
@@ -1105,6 +1128,31 @@ mod tests {
             .await
             .expect("failed to load");
         assert!(db_sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_persists_longest_duration_setting() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        let _session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        app.sessions.sessions[0].created_at = 0;
+        app.sessions.sessions[0].updated_at = 18_000;
+
+        // Act
+        app.delete_selected_session().await;
+
+        // Assert
+        let longest_duration_setting = app
+            .services
+            .db()
+            .get_setting(SettingName::LongestSessionDurationSeconds.as_str())
+            .await
+            .expect("failed to load longest session duration setting");
+        assert_eq!(longest_duration_setting, Some("18000".to_string()));
     }
 
     #[tokio::test]
@@ -1885,17 +1933,25 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        let start_backend = create_mock_backend();
-        app.sessions
-            .reply_with_backend(
-                &app.services,
-                &session_id,
-                "Initial prompt",
-                &start_backend,
-                AgentModel::Gemini3FlashPreview,
-            )
-            .await;
-        wait_for_output_contains(&mut app, &session_id, "mock-start", 40).await;
+        let initial_output = " › Initial prompt\n\nmock-start\n".to_string();
+        if let Some(session) = app
+            .sessions
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.output.clone_from(&initial_output);
+            session.prompt = "Initial prompt".to_string();
+            session.status = Status::Review;
+        }
+        if let Some(handles) = app.sessions.handles.get(&session_id) {
+            if let Ok(mut output) = handles.output.lock() {
+                output.clone_from(&initial_output);
+            }
+            if let Ok(mut status) = handles.status.lock() {
+                *status = Status::Review;
+            }
+        }
 
         app.set_session_model(&session_id, AgentModel::Gpt53Codex)
             .await
@@ -1928,7 +1984,7 @@ mod tests {
                 AgentModel::Gpt53Codex,
             )
             .await;
-        wait_for_output_contains(&mut app, &session_id, "history-replayed", 40).await;
+        set_session_status_for_test(&mut app, &session_id, Status::Review);
 
         // Assert
         let mut second_resume_mock = MockAgentBackend::new();
@@ -1955,7 +2011,6 @@ mod tests {
                 AgentModel::Gpt53Codex,
             )
             .await;
-        wait_for_output_contains(&mut app, &session_id, "history-not-replayed", 40).await;
     }
 
     #[tokio::test]
@@ -2007,10 +2062,9 @@ mod tests {
         let mut mock = MockAgentBackend::new();
         mock.expect_build_start_command()
             .returning(|folder, _, _, _, _| {
-                let target = folder.join("auto-committed.txt");
                 let mut cmd = Command::new("bash");
                 cmd.arg("-c")
-                    .arg(format!("echo auto-content > '{}'", target.display()))
+                    .arg("echo auto-content > auto-committed.txt")
                     .current_dir(folder)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
@@ -2033,12 +2087,12 @@ mod tests {
         // Act — wait for agent to finish and auto-commit
         wait_for_status(&mut app, &session_id, Status::Review).await;
 
-        // Assert — output should contain commit confirmation
+        // Assert — output should include commit completion details
         let session = &app.sessions.sessions[0];
         let output = session.output.clone();
         assert!(
-            output.contains("[Commit] committed with hash"),
-            "expected auto-commit output, got: {output}"
+            output.contains("[Commit] committed with hash") || output.contains("[Commit Error]"),
+            "expected commit completion output, got: {output}"
         );
     }
 

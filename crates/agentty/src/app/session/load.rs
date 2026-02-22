@@ -11,11 +11,12 @@ use tokio::io::AsyncWriteExt;
 
 use super::session_folder;
 use crate::app::SessionManager;
+use crate::app::settings::SettingName;
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::project::Project;
 use crate::domain::session::{
-    CodexUsageLimitWindow, CodexUsageLimits, DailyActivity, Session, SessionHandles, SessionSize,
-    SessionStats, Status,
+    AllTimeModelUsage, CodexUsageLimitWindow, CodexUsageLimits, DailyActivity, Session,
+    SessionHandles, SessionSize, SessionStats, Status,
 };
 use crate::infra::db::Database;
 use crate::infra::git::GitClient;
@@ -171,6 +172,31 @@ impl SessionManager {
         stats_activity.sort_by_key(|activity| activity.day_key);
 
         (sessions, stats_activity)
+    }
+
+    /// Loads all-time model usage aggregates from persisted token usage rows.
+    pub(crate) async fn load_all_time_model_usage(db: &Database) -> Vec<AllTimeModelUsage> {
+        db.load_all_time_model_usage()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| AllTimeModelUsage {
+                input_tokens: row.input_tokens.cast_unsigned(),
+                model: row.model,
+                output_tokens: row.output_tokens.cast_unsigned(),
+                session_count: row.session_count.cast_unsigned(),
+            })
+            .collect()
+    }
+
+    /// Loads the persisted longest session duration in seconds.
+    pub(crate) async fn load_longest_session_duration_seconds(db: &Database) -> u64 {
+        db.get_setting(SettingName::LongestSessionDurationSeconds.as_str())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default()
     }
 
     /// Loads account-level Codex usage limits via `codex app-server`.

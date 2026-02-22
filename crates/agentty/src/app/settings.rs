@@ -8,6 +8,7 @@ use crate::app::AppServices;
 pub(crate) enum SettingName {
     DefaultModel,
     DevServer,
+    LongestSessionDurationSeconds,
 }
 
 impl SettingName {
@@ -16,6 +17,7 @@ impl SettingName {
         match self {
             Self::DefaultModel => "DefaultModel",
             Self::DevServer => "DevServer",
+            Self::LongestSessionDurationSeconds => "LongestSessionDurationSeconds",
         }
     }
 }
@@ -269,7 +271,7 @@ impl SettingsManager {
             SettingName::DefaultModel => {
                 self.cycle_model(services).await;
             }
-            SettingName::DevServer => {}
+            SettingName::DevServer | SettingName::LongestSessionDurationSeconds => {}
         }
     }
 
@@ -286,7 +288,7 @@ impl SettingsManager {
                     .upsert_setting(SettingName::DevServer.as_str(), &self.dev_server)
                     .await;
             }
-            SettingName::DefaultModel => {}
+            SettingName::DefaultModel | SettingName::LongestSessionDurationSeconds => {}
         }
     }
 

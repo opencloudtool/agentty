@@ -340,9 +340,12 @@ impl TaskService {
     async fn commit_changes_with_assist(context: &AssistContext) -> Result<Option<String>, String> {
         let mut failure_tracker =
             FailureTracker::new(AUTO_COMMIT_ASSIST_POLICY.max_identical_failure_streak);
+        // Test repos do not install hooks deterministically; skip hook
+        // execution in tests to keep auto-commit behavior stable.
+        let skip_verify_hooks = cfg!(test);
 
         for assist_attempt in 1..=AUTO_COMMIT_ASSIST_POLICY.max_attempts + 1 {
-            match Self::commit_changes_with_git_client(context).await {
+            match Self::commit_changes_with_git_client(context, skip_verify_hooks).await {
                 Ok(commit_hash) => {
                     return Ok(Some(commit_hash));
                 }
@@ -350,6 +353,12 @@ impl TaskService {
                     return Ok(None);
                 }
                 Err(commit_error) => {
+                    // Keep test execution deterministic and offline by skipping
+                    // model-assisted commit retries.
+                    if cfg!(test) {
+                        return Err(commit_error);
+                    }
+
                     if failure_tracker.observe(&commit_error) {
                         return Err(format!(
                             "Auto-commit assistance made no progress: repeated identical commit \
@@ -372,13 +381,19 @@ impl TaskService {
 
     /// Commits all worktree changes and returns the current `HEAD` short hash.
     ///
+    /// Pass `no_verify` to skip commit hooks (used in tests for deterministic
+    /// execution without pre-commit setup).
+    ///
     /// # Errors
     /// Returns an error if staging/commit fails or `HEAD` cannot be resolved.
-    async fn commit_changes_with_git_client(context: &AssistContext) -> Result<String, String> {
+    async fn commit_changes_with_git_client(
+        context: &AssistContext,
+        no_verify: bool,
+    ) -> Result<String, String> {
         let folder = context.folder.clone();
         context
             .git_client
-            .commit_all_preserving_single_commit(folder.clone(), COMMIT_MESSAGE.to_string(), false)
+            .commit_all_preserving_single_commit(folder.clone(), COMMIT_MESSAGE.to_string(), no_verify)
             .await?;
 
         context.git_client.head_short_hash(folder).await

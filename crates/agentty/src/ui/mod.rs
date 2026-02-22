@@ -16,7 +16,7 @@ use crate::app::session::session_branch;
 use crate::app::{SettingsManager, Tab};
 use crate::domain::permission::PlanFollowup;
 use crate::domain::project::Project;
-use crate::domain::session::{CodexUsageLimits, DailyActivity, Session};
+use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session};
 use crate::ui::state::app_mode::{AppMode, HelpContext};
 use crate::ui::state::palette::{PaletteCommand, PaletteFocus};
 
@@ -33,11 +33,13 @@ pub trait Component {
 /// Immutable data required to draw a single UI frame.
 pub struct RenderContext<'a> {
     pub active_project_id: i64,
+    pub all_time_model_usage: &'a [AllTimeModelUsage],
     pub codex_usage_limits: Option<CodexUsageLimits>,
     pub current_tab: Tab,
     pub git_branch: Option<&'a str>,
     pub git_status: Option<(u32, u32)>,
     pub latest_available_version: Option<&'a str>,
+    pub longest_session_duration_seconds: u64,
     pub mode: &'a AppMode,
     pub plan_followups: &'a HashMap<String, PlanFollowup>,
     pub projects: &'a [Project],
@@ -59,9 +61,11 @@ struct SessionChatRenderContext<'a> {
 }
 
 struct HelpBackgroundRenderContext<'a> {
+    all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     context: &'a HelpContext,
     current_tab: Tab,
+    longest_session_duration_seconds: u64,
     plan_followups: &'a HashMap<String, PlanFollowup>,
     session_progress_messages: &'a HashMap<String, String>,
     sessions: &'a [Session],
@@ -71,10 +75,12 @@ struct HelpBackgroundRenderContext<'a> {
 }
 
 struct CommandPaletteRenderContext<'a> {
+    all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     current_tab: Tab,
     focus: PaletteFocus,
     input: &'a str,
+    longest_session_duration_seconds: u64,
     selected_index: usize,
     sessions: &'a [Session],
     settings: &'a mut SettingsManager,
@@ -84,9 +90,11 @@ struct CommandPaletteRenderContext<'a> {
 
 struct CommandOptionRenderContext<'a> {
     active_project_id: i64,
+    all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     command: PaletteCommand,
     current_tab: Tab,
+    longest_session_duration_seconds: u64,
     projects: &'a [Project],
     selected_index: usize,
     sessions: &'a [Session],
@@ -97,8 +105,10 @@ struct CommandOptionRenderContext<'a> {
 
 /// Shared borrowed data required to render list-page backgrounds.
 struct ListBackgroundRenderContext<'a> {
+    all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     current_tab: Tab,
+    longest_session_duration_seconds: u64,
     sessions: &'a [Session],
     settings: &'a mut SettingsManager,
     stats_activity: &'a [DailyActivity],
@@ -107,8 +117,10 @@ struct ListBackgroundRenderContext<'a> {
 
 struct ListModeRenderContext<'a> {
     active_project_id: i64,
+    all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     current_tab: Tab,
+    longest_session_duration_seconds: u64,
     mode: &'a AppMode,
     projects: &'a [Project],
     sessions: &'a [Session],
@@ -119,9 +131,11 @@ struct ListModeRenderContext<'a> {
 
 /// Shared borrowed data required to render the sync popup overlay.
 struct SyncPopupRenderContext<'a> {
+    all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     current_tab: Tab,
     is_loading: bool,
+    longest_session_duration_seconds: u64,
     message: &'a str,
     sessions: &'a [Session],
     settings: &'a mut SettingsManager,
@@ -131,8 +145,10 @@ struct SyncPopupRenderContext<'a> {
 }
 
 struct SessionModeRenderContext<'a> {
+    all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     current_tab: Tab,
+    longest_session_duration_seconds: u64,
     mode: &'a AppMode,
     plan_followups: &'a HashMap<String, PlanFollowup>,
     session_progress_messages: &'a HashMap<String, String>,
@@ -140,6 +156,88 @@ struct SessionModeRenderContext<'a> {
     settings: &'a mut SettingsManager,
     stats_activity: &'a [DailyActivity],
     table_state: &'a mut TableState,
+}
+
+impl<'a> ListModeRenderContext<'a> {
+    /// Converts list mode context into the shared list-background context.
+    fn into_list_background(self) -> ListBackgroundRenderContext<'a> {
+        ListBackgroundRenderContext {
+            all_time_model_usage: self.all_time_model_usage,
+            codex_usage_limits: self.codex_usage_limits,
+            current_tab: self.current_tab,
+            longest_session_duration_seconds: self.longest_session_duration_seconds,
+            sessions: self.sessions,
+            settings: self.settings,
+            stats_activity: self.stats_activity,
+            table_state: self.table_state,
+        }
+    }
+
+    /// Converts list mode context into command-palette rendering context.
+    fn into_command_palette(
+        self,
+        focus: PaletteFocus,
+        input: &'a str,
+        selected_index: usize,
+    ) -> CommandPaletteRenderContext<'a> {
+        CommandPaletteRenderContext {
+            all_time_model_usage: self.all_time_model_usage,
+            codex_usage_limits: self.codex_usage_limits,
+            current_tab: self.current_tab,
+            focus,
+            input,
+            longest_session_duration_seconds: self.longest_session_duration_seconds,
+            selected_index,
+            sessions: self.sessions,
+            settings: self.settings,
+            stats_activity: self.stats_activity,
+            table_state: self.table_state,
+        }
+    }
+
+    /// Converts list mode context into command-option rendering context.
+    fn into_command_option(
+        self,
+        command: PaletteCommand,
+        selected_index: usize,
+    ) -> CommandOptionRenderContext<'a> {
+        CommandOptionRenderContext {
+            active_project_id: self.active_project_id,
+            all_time_model_usage: self.all_time_model_usage,
+            codex_usage_limits: self.codex_usage_limits,
+            command,
+            current_tab: self.current_tab,
+            longest_session_duration_seconds: self.longest_session_duration_seconds,
+            projects: self.projects,
+            selected_index,
+            sessions: self.sessions,
+            settings: self.settings,
+            stats_activity: self.stats_activity,
+            table_state: self.table_state,
+        }
+    }
+
+    /// Converts list mode context into sync-popup rendering context.
+    fn into_sync_popup(
+        self,
+        is_loading: bool,
+        message: &'a str,
+        title: &'a str,
+    ) -> SyncPopupRenderContext<'a> {
+        SyncPopupRenderContext {
+            all_time_model_usage: self.all_time_model_usage,
+            codex_usage_limits: self.codex_usage_limits,
+            current_tab: self.current_tab,
+            is_loading,
+            longest_session_duration_seconds: self.longest_session_duration_seconds,
+            message,
+            sessions: self.sessions,
+            settings: self.settings,
+            stats_activity: self.stats_activity,
+            table_state: self.table_state,
+            title,
+        }
+    }
 }
 
 pub fn render(f: &mut Frame, context: RenderContext<'_>) {
@@ -206,8 +304,10 @@ pub fn render(f: &mut Frame, context: RenderContext<'_>) {
 fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
     let RenderContext {
         active_project_id,
+        all_time_model_usage,
         codex_usage_limits,
         current_tab,
+        longest_session_duration_seconds,
         mode,
         plan_followups,
         projects,
@@ -229,8 +329,10 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
             area,
             ListModeRenderContext {
                 active_project_id,
+                all_time_model_usage,
                 codex_usage_limits,
                 current_tab,
+                longest_session_duration_seconds,
                 mode,
                 projects,
                 sessions,
@@ -246,8 +348,10 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
             f,
             area,
             SessionModeRenderContext {
+                all_time_model_usage,
                 codex_usage_limits,
                 current_tab,
+                longest_session_duration_seconds,
                 mode,
                 plan_followups,
                 session_progress_messages,
@@ -262,44 +366,11 @@ fn render_content(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
 
 /// Renders all list-oriented content, including overlays and command menus.
 fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderContext<'_>) {
-    let ListModeRenderContext {
-        active_project_id,
-        codex_usage_limits,
-        current_tab,
-        mode,
-        projects,
-        sessions,
-        settings,
-        stats_activity,
-        table_state,
-    } = context;
-
-    match mode {
-        AppMode::List => render_list_background(
-            f,
-            area,
-            ListBackgroundRenderContext {
-                codex_usage_limits,
-                current_tab,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-            },
-        ),
-        AppMode::Confirmation { .. } => render_confirmation_overlay(
-            f,
-            area,
-            mode,
-            ListBackgroundRenderContext {
-                codex_usage_limits,
-                current_tab,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-            },
-        ),
+    match context.mode {
+        AppMode::List => render_list_background(f, area, context.into_list_background()),
+        AppMode::Confirmation { .. } => {
+            render_confirmation_overlay(f, area, context.mode, context.into_list_background());
+        }
         AppMode::CommandPalette {
             input,
             selected_index,
@@ -307,17 +378,7 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
         } => render_command_palette(
             f,
             area,
-            CommandPaletteRenderContext {
-                current_tab,
-                codex_usage_limits,
-                focus: *focus,
-                input,
-                selected_index: *selected_index,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-            },
+            context.into_command_palette(*focus, input, *selected_index),
         ),
         AppMode::CommandOption {
             command,
@@ -325,18 +386,7 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
         } => render_command_options(
             f,
             area,
-            CommandOptionRenderContext {
-                active_project_id,
-                codex_usage_limits,
-                command: *command,
-                current_tab,
-                projects,
-                selected_index: *selected_index,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-            },
+            context.into_command_option(*command, *selected_index),
         ),
         AppMode::SyncBlockedPopup {
             is_loading,
@@ -345,17 +395,7 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
         } => render_sync_blocked_popup(
             f,
             area,
-            SyncPopupRenderContext {
-                codex_usage_limits,
-                current_tab,
-                is_loading: *is_loading,
-                message,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-                title,
-            },
+            context.into_sync_popup(*is_loading, message, title),
         ),
         _ => {}
     }
@@ -369,8 +409,10 @@ fn render_confirmation_overlay(
     context: ListBackgroundRenderContext<'_>,
 ) {
     let ListBackgroundRenderContext {
+        all_time_model_usage,
         codex_usage_limits,
         current_tab,
+        longest_session_duration_seconds,
         sessions,
         settings,
         stats_activity,
@@ -381,8 +423,10 @@ fn render_confirmation_overlay(
         f,
         area,
         ListBackgroundRenderContext {
+            all_time_model_usage,
             codex_usage_limits,
             current_tab,
+            longest_session_duration_seconds,
             sessions,
             settings,
             stats_activity,
@@ -411,9 +455,11 @@ fn render_confirmation_overlay(
 /// Renders the list background and sync informational popup overlay.
 fn render_sync_blocked_popup(f: &mut Frame, area: Rect, context: SyncPopupRenderContext<'_>) {
     let SyncPopupRenderContext {
+        all_time_model_usage,
         codex_usage_limits,
         current_tab,
         is_loading,
+        longest_session_duration_seconds,
         message,
         sessions,
         settings,
@@ -426,8 +472,10 @@ fn render_sync_blocked_popup(f: &mut Frame, area: Rect, context: SyncPopupRender
         f,
         area,
         ListBackgroundRenderContext {
+            all_time_model_usage,
             codex_usage_limits,
             current_tab,
+            longest_session_duration_seconds,
             sessions,
             settings,
             stats_activity,
@@ -441,8 +489,10 @@ fn render_sync_blocked_popup(f: &mut Frame, area: Rect, context: SyncPopupRender
 
 fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRenderContext<'_>) {
     let SessionModeRenderContext {
+        all_time_model_usage,
         codex_usage_limits,
         current_tab,
+        longest_session_duration_seconds,
         mode,
         plan_followups,
         session_progress_messages,
@@ -506,9 +556,11 @@ fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRe
             context,
             *scroll_offset,
             HelpBackgroundRenderContext {
+                all_time_model_usage,
                 codex_usage_limits,
                 context,
                 current_tab,
+                longest_session_duration_seconds,
                 plan_followups,
                 session_progress_messages,
                 sessions,
@@ -604,9 +656,11 @@ fn render_session_chat_mode(
 /// Renders the background page behind the help overlay based on `HelpContext`.
 fn render_help_background(f: &mut Frame, area: Rect, context: HelpBackgroundRenderContext<'_>) {
     let HelpBackgroundRenderContext {
+        all_time_model_usage,
         codex_usage_limits,
         context,
         current_tab,
+        longest_session_duration_seconds,
         plan_followups,
         session_progress_messages,
         sessions,
@@ -620,8 +674,10 @@ fn render_help_background(f: &mut Frame, area: Rect, context: HelpBackgroundRend
                 f,
                 area,
                 ListBackgroundRenderContext {
+                    all_time_model_usage,
                     codex_usage_limits,
                     current_tab,
+                    longest_session_duration_seconds,
                     sessions,
                     settings,
                     stats_activity,
@@ -678,10 +734,12 @@ fn render_help_background(f: &mut Frame, area: Rect, context: HelpBackgroundRend
 
 fn render_command_palette(f: &mut Frame, area: Rect, context: CommandPaletteRenderContext<'_>) {
     let CommandPaletteRenderContext {
+        all_time_model_usage,
         codex_usage_limits,
         current_tab,
         focus,
         input,
+        longest_session_duration_seconds,
         selected_index,
         sessions,
         settings,
@@ -692,8 +750,10 @@ fn render_command_palette(f: &mut Frame, area: Rect, context: CommandPaletteRend
         f,
         area,
         ListBackgroundRenderContext {
+            all_time_model_usage,
             codex_usage_limits,
             current_tab,
+            longest_session_duration_seconds,
             sessions,
             settings,
             stats_activity,
@@ -707,9 +767,11 @@ fn render_command_palette(f: &mut Frame, area: Rect, context: CommandPaletteRend
 fn render_command_options(f: &mut Frame, area: Rect, context: CommandOptionRenderContext<'_>) {
     let CommandOptionRenderContext {
         active_project_id,
+        all_time_model_usage,
         codex_usage_limits,
         command,
         current_tab,
+        longest_session_duration_seconds,
         projects,
         selected_index,
         sessions,
@@ -721,8 +783,10 @@ fn render_command_options(f: &mut Frame, area: Rect, context: CommandOptionRende
         f,
         area,
         ListBackgroundRenderContext {
+            all_time_model_usage,
             codex_usage_limits,
             current_tab,
+            longest_session_duration_seconds,
             sessions,
             settings,
             stats_activity,
@@ -808,8 +872,10 @@ fn render_list_background(
     context: ListBackgroundRenderContext<'_>,
 ) {
     let ListBackgroundRenderContext {
+        all_time_model_usage,
         codex_usage_limits,
         current_tab,
+        longest_session_duration_seconds,
         sessions,
         settings,
         stats_activity,
@@ -827,8 +893,14 @@ fn render_list_background(
             pages::session_list::SessionListPage::new(sessions, table_state).render(f, chunks[1]);
         }
         Tab::Stats => {
-            pages::stats::StatsPage::new(sessions, stats_activity, codex_usage_limits)
-                .render(f, chunks[1]);
+            pages::stats::StatsPage::new(
+                sessions,
+                stats_activity,
+                all_time_model_usage,
+                longest_session_duration_seconds,
+                codex_usage_limits,
+            )
+            .render(f, chunks[1]);
         }
         Tab::Settings => {
             pages::settings::SettingsPage::new(settings).render(f, chunks[1]);

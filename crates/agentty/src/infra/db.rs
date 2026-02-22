@@ -71,6 +71,14 @@ pub struct SessionUsageRow {
     pub session_id: Option<String>,
 }
 
+/// Row returned when loading all-time token totals grouped by model.
+pub struct AllTimeModelUsageRow {
+    pub input_tokens: i64,
+    pub model: String,
+    pub output_tokens: i64,
+    pub session_count: i64,
+}
+
 impl Database {
     /// Opens the `SQLite` database and runs embedded migrations.
     ///
@@ -950,6 +958,37 @@ ON CONFLICT(session_id, model) DO UPDATE SET
         Ok(())
     }
 
+    /// Loads all-time token usage rows aggregated by model name.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub async fn load_all_time_model_usage(&self) -> Result<Vec<AllTimeModelUsageRow>, String> {
+        let rows = sqlx::query(
+            r"
+SELECT model,
+       COUNT(*) AS session_count,
+       COALESCE(SUM(input_tokens), 0) AS input_tokens,
+       COALESCE(SUM(output_tokens), 0) AS output_tokens
+FROM session_usage
+GROUP BY model
+ORDER BY model
+",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to load all-time model usage: {err}"))?;
+
+        Ok(rows
+            .iter()
+            .map(|row| AllTimeModelUsageRow {
+                input_tokens: row.get("input_tokens"),
+                model: row.get("model"),
+                output_tokens: row.get("output_tokens"),
+                session_count: row.get("session_count"),
+            })
+            .collect())
+    }
+
     /// Loads per-model token usage rows for a session, ordered by model name.
     ///
     /// # Errors
@@ -1040,5 +1079,69 @@ impl Database {
             .map_err(|err| format!("Failed to run migrations: {err}"))?;
 
         Ok(Self { pool })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_load_all_time_model_usage_keeps_rows_for_deleted_sessions() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert first session");
+        database
+            .insert_session("session-b", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert second session");
+        database
+            .upsert_session_usage(
+                "session-a",
+                "gpt-5.3-codex",
+                &SessionStats {
+                    input_tokens: 10,
+                    output_tokens: 4,
+                },
+            )
+            .await
+            .expect("failed to upsert first session usage");
+        database
+            .upsert_session_usage(
+                "session-b",
+                "gpt-5.3-codex",
+                &SessionStats {
+                    input_tokens: 20,
+                    output_tokens: 6,
+                },
+            )
+            .await
+            .expect("failed to upsert second session usage");
+        database
+            .delete_session("session-a")
+            .await
+            .expect("failed to delete first session");
+
+        // Act
+        let all_time_usage = database
+            .load_all_time_model_usage()
+            .await
+            .expect("failed to load all-time model usage");
+
+        // Assert
+        assert_eq!(all_time_usage.len(), 1);
+        assert_eq!(all_time_usage[0].model, "gpt-5.3-codex");
+        assert_eq!(all_time_usage[0].session_count, 2);
+        assert_eq!(all_time_usage[0].input_tokens, 30);
+        assert_eq!(all_time_usage[0].output_tokens, 10);
     }
 }

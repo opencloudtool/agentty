@@ -460,7 +460,8 @@ impl SessionManager {
     /// Deletes the currently selected session and cleans related resources.
     ///
     /// After persistence and filesystem cleanup, this triggers a full list
-    /// reload through [`AppEvent::RefreshSessions`].
+    /// reload through [`AppEvent::RefreshSessions`]. When deleting a session,
+    /// the all-time longest duration setting is updated if needed.
     pub async fn delete_selected_session(
         &mut self,
         projects: &ProjectManager,
@@ -476,6 +477,8 @@ impl SessionManager {
         let session = self.sessions.remove(index);
         self.handles.remove(&session.id);
         self.pending_history_replay.remove(&session.id);
+        self.persist_deleted_session_duration(services, &session)
+            .await;
 
         let _ = services
             .db()
@@ -501,6 +504,33 @@ impl SessionManager {
 
         let _ = tokio::fs::remove_dir_all(&session.folder).await;
         services.emit_app_event(AppEvent::RefreshSessions);
+    }
+
+    /// Persists the deleted session duration when it exceeds the current
+    /// all-time maximum.
+    async fn persist_deleted_session_duration(
+        &mut self,
+        services: &AppServices,
+        session: &Session,
+    ) {
+        let duration_seconds = session.updated_at.saturating_sub(session.created_at).max(0);
+        let duration_seconds = u64::try_from(duration_seconds).unwrap_or_default();
+        if duration_seconds <= self.longest_session_duration_seconds {
+            return;
+        }
+
+        let updated = services
+            .db()
+            .upsert_setting(
+                SettingName::LongestSessionDurationSeconds.as_str(),
+                &duration_seconds.to_string(),
+            )
+            .await;
+        if updated.is_err() {
+            return;
+        }
+
+        self.longest_session_duration_seconds = duration_seconds;
     }
 
     /// Queues a prompt using the provided backend for a session.

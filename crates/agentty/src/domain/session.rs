@@ -182,6 +182,15 @@ pub struct SessionStats {
     pub output_tokens: u64,
 }
 
+/// All-time token usage and session count grouped by model name.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AllTimeModelUsage {
+    pub input_tokens: u64,
+    pub model: String,
+    pub output_tokens: u64,
+    pub session_count: u64,
+}
+
 /// One Codex usage-limit window (for example, 5-hour or weekly).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CodexUsageLimitWindow {

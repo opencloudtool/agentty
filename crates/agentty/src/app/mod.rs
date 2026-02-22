@@ -170,7 +170,10 @@ impl App {
             Arc::clone(&git_client),
         )
         .await;
+        let all_time_model_usage = SessionManager::load_all_time_model_usage(&db).await;
         let codex_usage_limits = SessionManager::load_codex_usage_limits().await;
+        let longest_session_duration_seconds =
+            SessionManager::load_longest_session_duration_seconds(&db).await;
         let (sessions_row_count, sessions_updated_at_max) =
             db.load_sessions_metadata().await.unwrap_or((0, 0));
         let default_session_permission_mode = sessions
@@ -199,10 +202,12 @@ impl App {
         )
         .await;
         let sessions = SessionManager::new(
+            all_time_model_usage,
             codex_usage_limits,
             default_session_model,
             default_session_permission_mode,
             services.git_client(),
+            longest_session_duration_seconds,
             SessionState::new(
                 handles,
                 sessions,
