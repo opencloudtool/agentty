@@ -289,13 +289,8 @@ impl<'a> SessionChatPage<'a> {
             return "q: back | j/k: scroll | ?: help";
         }
 
-        if let Some(plan_followup) = plan_followup {
-            if plan_followup.options.len() >= 4 {
-                return "q: back | \u{2191}/\u{2193}: choose action | enter: confirm | d: diff | \
-                        m: queue merge | r: rebase | S-Tab: mode | j/k: scroll | ?: help";
-            }
-
-            return "q: back | \u{2190}/\u{2192}: choose action | enter: confirm | d: diff | m: \
+        if plan_followup.is_some() {
+            return "q: back | \u{2191}/\u{2193}: choose action | enter: confirm | d: diff | m: \
                     queue merge | r: rebase | S-Tab: mode | j/k: scroll | ?: help";
         }
 
@@ -314,6 +309,7 @@ impl Page for SessionChatPage<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::path::PathBuf;
 
     use super::*;
@@ -650,7 +646,7 @@ mod tests {
     fn test_view_help_text_plan_followup_includes_git_actions() {
         // Arrange
         let session = session_fixture();
-        let followup = PlanFollowup::new(Vec::new());
+        let followup = PlanFollowup::new(VecDeque::new());
 
         // Act
         let help_text = SessionChatPage::view_help_text(&session, Some(&followup));
@@ -661,13 +657,10 @@ mod tests {
     }
 
     #[test]
-    fn test_view_help_text_question_followup_uses_up_down_hints() {
+    fn test_view_help_text_plan_followup_always_uses_up_down_hints() {
         // Arrange
         let session = session_fixture();
-        let followup = PlanFollowup::new(vec![
-            "Question one?".to_string(),
-            "Question two?".to_string(),
-        ]);
+        let followup = PlanFollowup::new(VecDeque::new());
 
         // Act
         let help_text = SessionChatPage::view_help_text(&session, Some(&followup));

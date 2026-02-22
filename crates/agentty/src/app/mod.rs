@@ -12,7 +12,7 @@ use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
 use crate::domain::agent::{AgentKind, AgentModel};
-use crate::domain::permission::{PermissionMode, PlanFollowup, PlanFollowupOption};
+use crate::domain::permission::{PermissionMode, PlanFollowup};
 use crate::domain::plan::extract_plan_questions;
 use crate::domain::session::{CodexUsageLimits, Session, Status};
 use crate::infra::db::Database;
@@ -449,12 +449,14 @@ impl App {
         }
     }
 
-    /// Clears and returns the pending selected post-plan option for a
-    /// session.
-    pub fn consume_plan_followup_action(&mut self, session_id: &str) -> Option<PlanFollowupOption> {
-        let followup = self.plan_followups.remove(session_id)?;
+    /// Removes and returns the full plan followup state for a session.
+    pub fn take_plan_followup(&mut self, session_id: &str) -> Option<PlanFollowup> {
+        self.plan_followups.remove(session_id)
+    }
 
-        followup.selected_option().cloned()
+    /// Re-inserts an updated plan followup state for a session.
+    pub fn put_plan_followup(&mut self, session_id: &str, followup: PlanFollowup) {
+        self.plan_followups.insert(session_id.to_string(), followup);
     }
 
     /// Deletes the selected session and schedules list refresh.

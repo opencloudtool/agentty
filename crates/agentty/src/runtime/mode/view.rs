@@ -175,6 +175,12 @@ fn can_open_session_worktree(status: Status) -> bool {
     status != Status::Done
 }
 
+/// Handles key events for the plan followup menu.
+///
+/// Uses vertical Up/Down navigation and Enter to confirm selection.
+/// When an answer is selected, it advances the iterative question flow.
+/// After all questions are answered, a consolidated prompt is sent to the
+/// agent.
 async fn handle_plan_followup_action_key(
     app: &mut App,
     key: KeyEvent,
@@ -184,41 +190,39 @@ async fn handle_plan_followup_action_key(
         return false;
     }
 
-    let uses_vertical_navigation = app
-        .plan_followup(&view_context.session_id)
-        .is_some_and(|plan_followup| plan_followup.options.len() >= 4);
-
     match key.code {
-        KeyCode::Left => {
+        KeyCode::Up => {
             app.select_previous_plan_followup_action(&view_context.session_id);
 
             true
         }
-        KeyCode::Right => {
-            app.select_next_plan_followup_action(&view_context.session_id);
-
-            true
-        }
-        KeyCode::Up if uses_vertical_navigation => {
-            app.select_previous_plan_followup_action(&view_context.session_id);
-
-            true
-        }
-        KeyCode::Down if uses_vertical_navigation => {
+        KeyCode::Down => {
             app.select_next_plan_followup_action(&view_context.session_id);
 
             true
         }
         KeyCode::Enter => {
-            let selected_action = app
-                .consume_plan_followup_action(&view_context.session_id)
+            let Some(mut followup) = app.take_plan_followup(&view_context.session_id) else {
+                return true;
+            };
+
+            let selected_action = followup
+                .selected_option()
+                .cloned()
                 .unwrap_or(PlanFollowupOption::ImplementPlan);
+
             match selected_action {
                 PlanFollowupOption::ImplementPlan => {
                     implement_plan_followup_action(app, &view_context.session_id).await;
                 }
-                PlanFollowupOption::AnswerQuestion(question) => {
-                    app.reply(&view_context.session_id, &question).await;
+                PlanFollowupOption::AnswerQuestion { question, answer } => {
+                    let has_more = followup.advance_to_next_question(question, answer);
+                    if has_more {
+                        app.put_plan_followup(&view_context.session_id, followup);
+                    } else if followup.has_collected_answers() {
+                        let prompt = followup.build_consolidated_answer_prompt();
+                        app.reply(&view_context.session_id, &prompt).await;
+                    }
                 }
                 PlanFollowupOption::TypeFeedback => {
                     let history_state = app
@@ -430,6 +434,7 @@ async fn stop_view_session(app: &mut App, session_id: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::path::Path;
     use std::process::Command;
 
@@ -439,7 +444,8 @@ mod tests {
     use super::*;
     use crate::app::AppEvent;
     use crate::db::Database;
-    use crate::domain::permission::{PermissionMode, PlanFollowupOption};
+    use crate::domain::permission::{PermissionMode, PlanFollowup, PlanFollowupOption};
+    use crate::domain::plan::PlanQuestion;
 
     async fn new_test_app() -> (App, tempfile::TempDir) {
         let base_dir = tempdir().expect("failed to create temp dir");
@@ -777,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_plan_followup_action_key_right_selects_type_feedback() {
+    async fn test_handle_plan_followup_action_key_down_selects_type_feedback() {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         app.mode = AppMode::View {
@@ -800,7 +806,7 @@ mod tests {
             session_id: session_id.clone(),
             session_index: 0,
         };
-        let key = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
 
         // Act
         let handled = handle_plan_followup_action_key(&mut app, key, &context).await;
@@ -860,14 +866,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_plan_followup_action_key_down_selects_question_option() {
+    async fn test_handle_plan_followup_action_key_down_selects_question_answer() {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         app.mode = AppMode::View {
             session_id: session_id.clone(),
             scroll_offset: Some(0),
         };
-        let plan_output = "### Questions\n1. Keep sqlite?\n2. Add telemetry?\n".to_string();
+        let plan_output = "### Questions\n1. Keep sqlite?\n   1. Yes\n   2. No\n2. Add \
+                           telemetry?\n   1. Yes\n   2. No\n"
+            .to_string();
         app.sessions.sessions[0].permission_mode = PermissionMode::Plan;
         app.sessions.sessions[0].output = plan_output.clone();
         app.sessions.sessions[0].status = Status::InProgress;
@@ -903,10 +911,49 @@ mod tests {
             .cloned();
         assert_eq!(
             selected_option,
-            Some(PlanFollowupOption::AnswerQuestion(
-                "Keep sqlite?".to_string()
-            ))
+            Some(PlanFollowupOption::AnswerQuestion {
+                answer: "No".to_string(),
+                question: "Keep sqlite?".to_string(),
+            })
         );
+    }
+
+    #[tokio::test]
+    async fn test_handle_plan_followup_answer_advances_to_next_question() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.mode = AppMode::View {
+            session_id: session_id.clone(),
+            scroll_offset: Some(0),
+        };
+        let questions = VecDeque::from(vec![
+            PlanQuestion {
+                answers: vec!["Yes".to_string(), "No".to_string()],
+                text: "First?".to_string(),
+            },
+            PlanQuestion {
+                answers: vec!["A".to_string(), "B".to_string()],
+                text: "Second?".to_string(),
+            },
+        ]);
+        app.put_plan_followup(&session_id, PlanFollowup::new(questions));
+        let context = ViewContext {
+            scroll_offset: Some(0),
+            session_id: session_id.clone(),
+            session_index: 0,
+        };
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+        // Act — select first answer "Yes" for "First?"
+        let handled = handle_plan_followup_action_key(&mut app, key, &context).await;
+
+        // Assert — should still have followup (advanced to next question)
+        assert!(handled);
+        assert!(app.has_plan_followup_action(&session_id));
+        let followup = app
+            .plan_followup(&session_id)
+            .expect("should have followup");
+        assert_eq!(followup.current_question_text(), Some("Second?"));
     }
 
     #[tokio::test]

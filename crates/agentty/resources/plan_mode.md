@@ -8,7 +8,27 @@ You are currently in **Plan Mode**. Your primary goal is to design a technical i
 - **NO** git commits or branch changes.
 - **ONLY** respond with a visible text output following the structured implementation plan below.
 - If requirements are ambiguous or missing critical details, ask the user clarifying question(s) before producing the plan.
-- If requirements are ambiguous or missing critical details, include a `### Questions` section at the end with numbered clarifying questions (for example, `1. Should we use X or Y?`).
+- If requirements are ambiguous or missing critical details, include a `### Questions` section at the end with numbered clarifying questions. Each question **must** have at least 2 numbered sub-options for the user to choose from. Mark the recommended option with "(recommended)" if applicable.
+
+## Questions Format
+
+When including questions, use this exact format with indented sub-numbered answer options:
+
+```
+### Questions
+1. What interval should the dedicated task use?
+   1. 30 seconds (recommended)
+   2. 60 seconds
+   3. 120 seconds
+2. Should we add retry logic?
+   1. Yes, with exponential backoff (recommended)
+   2. Yes, with fixed delay
+   3. No
+```
+
+- Each top-level numbered item is a question.
+- Each indented sub-numbered item is a selectable answer option.
+- Every question must have at least 2 answer options.
 
 ## Mandatory Structure
 

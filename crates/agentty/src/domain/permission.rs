@@ -1,6 +1,10 @@
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::fmt;
+use std::fmt::Write;
 use std::str::FromStr;
+
+use crate::domain::plan::PlanQuestion;
 
 pub const PLAN_MODE_INSTRUCTIONS: &str = include_str!("../../resources/plan_mode.md");
 const PLAN_MODE_PROMPT_TEMPLATE: &str = include_str!("../../resources/plan_mode_prompt.md");
@@ -88,8 +92,13 @@ impl FromStr for PermissionMode {
 pub enum PlanFollowupOption {
     /// Switches to `AutoEdit` and submits implementation prompt.
     ImplementPlan,
-    /// Sends a clarifying question back to the agent in `Plan` mode.
-    AnswerQuestion(String),
+    /// Stores the selected answer for the current question.
+    AnswerQuestion {
+        /// The answer text selected by the user.
+        answer: String,
+        /// The question text this answer belongs to.
+        question: String,
+    },
     /// Opens prompt mode so the user can type custom feedback.
     TypeFeedback,
 }
@@ -99,35 +108,45 @@ impl PlanFollowupOption {
     pub fn label(&self) -> String {
         match self {
             PlanFollowupOption::ImplementPlan => "Implement the plan".to_string(),
-            PlanFollowupOption::AnswerQuestion(question) => question.clone(),
+            PlanFollowupOption::AnswerQuestion { answer, .. } => answer.clone(),
             PlanFollowupOption::TypeFeedback => "Type feedback".to_string(),
         }
     }
 }
 
 /// Post-plan follow-up state shown after a plan response finishes.
+///
+/// Operates as a two-phase state machine:
+/// 1. **Question phase**: presents one question at a time with its answer
+///    options and `TypeFeedback`. Selecting an answer stores it and advances to
+///    the next question.
+/// 2. **Final phase**: shows `ImplementPlan` and `TypeFeedback` when no
+///    questions exist or all have been answered.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PlanFollowup {
     pub options: Vec<PlanFollowupOption>,
+    collected_answers: Vec<(String, String)>,
+    current_question: Option<PlanQuestion>,
+    pending_questions: VecDeque<PlanQuestion>,
     selected_index: usize,
 }
 
 impl PlanFollowup {
     /// Creates follow-up state with optional clarifying questions.
     ///
-    /// Option order is always:
-    /// `ImplementPlan`, extracted question answers, then `TypeFeedback`.
-    pub fn new(questions: Vec<String>) -> Self {
-        let mut options = vec![PlanFollowupOption::ImplementPlan];
-        options.extend(
-            questions
-                .into_iter()
-                .map(PlanFollowupOption::AnswerQuestion),
-        );
-        options.push(PlanFollowupOption::TypeFeedback);
+    /// When questions with answers exist, the first question is presented
+    /// immediately. Questions without answer options are treated as
+    /// free-text-only (just `TypeFeedback`). When no questions exist,
+    /// shows `ImplementPlan` and `TypeFeedback`.
+    pub fn new(mut questions: VecDeque<PlanQuestion>) -> Self {
+        let current_question = questions.pop_front();
+        let options = Self::build_options_for_question(current_question.as_ref());
 
         Self {
             options,
+            collected_answers: Vec::new(),
+            current_question,
+            pending_questions: questions,
             selected_index: 0,
         }
     }
@@ -142,6 +161,54 @@ impl PlanFollowup {
     #[must_use]
     pub fn selected_index(&self) -> usize {
         self.selected_index
+    }
+
+    /// Returns the current question text for display above the answer
+    /// options, if in the question phase.
+    #[must_use]
+    pub fn current_question_text(&self) -> Option<&str> {
+        self.current_question
+            .as_ref()
+            .filter(|question| !question.answers.is_empty())
+            .map(|question| question.text.as_str())
+    }
+
+    /// Returns whether any answers have been collected during question
+    /// iteration.
+    #[must_use]
+    pub fn has_collected_answers(&self) -> bool {
+        !self.collected_answers.is_empty()
+    }
+
+    /// Stores the selected answer and advances to the next question.
+    ///
+    /// Returns `true` if more questions remain (the menu refreshes for
+    /// the next question). Returns `false` if all questions are done
+    /// (switches to `ImplementPlan` / `TypeFeedback`).
+    pub fn advance_to_next_question(&mut self, question: String, answer: String) -> bool {
+        self.collected_answers.push((question, answer));
+        self.current_question = self.pending_questions.pop_front();
+        self.options = Self::build_options_for_question(self.current_question.as_ref());
+        self.selected_index = 0;
+
+        self.current_question.is_some()
+    }
+
+    /// Builds a consolidated prompt containing all collected Q&A pairs.
+    ///
+    /// The prompt asks the agent to update the plan reflecting the user's
+    /// answers.
+    #[must_use]
+    pub fn build_consolidated_answer_prompt(&self) -> String {
+        let mut prompt = String::from("User answers to plan questions:\n");
+
+        for (index, (question, answer)) in self.collected_answers.iter().enumerate() {
+            let _ = writeln!(prompt, "{}. {} \u{2192} {}", index + 1, question, answer);
+        }
+
+        prompt.push_str("\nPlease update the plan to reflect these answers.");
+
+        prompt
     }
 
     /// Selects the previous option, wrapping to the end.
@@ -164,6 +231,40 @@ impl PlanFollowup {
         }
 
         self.selected_index = (self.selected_index + 1) % self.options.len();
+    }
+
+    /// Builds the option list for the given question phase.
+    ///
+    /// If a question with answers is active, options are its answers plus
+    /// `TypeFeedback`. If the question has no answers (free-text only),
+    /// or there is no question, options are `ImplementPlan` plus
+    /// `TypeFeedback`.
+    fn build_options_for_question(question: Option<&PlanQuestion>) -> Vec<PlanFollowupOption> {
+        let Some(question) = question else {
+            return vec![
+                PlanFollowupOption::ImplementPlan,
+                PlanFollowupOption::TypeFeedback,
+            ];
+        };
+
+        if question.answers.is_empty() {
+            return vec![
+                PlanFollowupOption::ImplementPlan,
+                PlanFollowupOption::TypeFeedback,
+            ];
+        }
+
+        let mut options: Vec<PlanFollowupOption> = question
+            .answers
+            .iter()
+            .map(|answer| PlanFollowupOption::AnswerQuestion {
+                answer: answer.clone(),
+                question: question.text.clone(),
+            })
+            .collect();
+        options.push(PlanFollowupOption::TypeFeedback);
+
+        options
     }
 }
 
@@ -198,28 +299,144 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_followup_new_adds_question_options_between_defaults() {
+    fn test_plan_followup_new_without_questions_shows_implement_and_feedback() {
+        // Arrange & Act
+        let followup = PlanFollowup::new(VecDeque::new());
+
+        // Assert
+        assert_eq!(followup.selected_index(), 0);
+        assert_eq!(followup.options.len(), 2);
+        assert_eq!(followup.options[0], PlanFollowupOption::ImplementPlan);
+        assert_eq!(followup.options[1], PlanFollowupOption::TypeFeedback);
+        assert!(followup.current_question_text().is_none());
+    }
+
+    #[test]
+    fn test_plan_followup_new_with_question_answers_shows_answers_and_feedback() {
         // Arrange
-        let questions = vec!["Should we support Windows?".to_string()];
+        let questions = VecDeque::from(vec![PlanQuestion {
+            answers: vec!["30 seconds".to_string(), "60 seconds".to_string()],
+            text: "What interval?".to_string(),
+        }]);
 
         // Act
         let followup = PlanFollowup::new(questions);
 
         // Assert
-        assert_eq!(followup.selected_index(), 0);
         assert_eq!(followup.options.len(), 3);
-        assert_eq!(followup.options[0], PlanFollowupOption::ImplementPlan);
+        assert_eq!(
+            followup.options[0],
+            PlanFollowupOption::AnswerQuestion {
+                answer: "30 seconds".to_string(),
+                question: "What interval?".to_string(),
+            }
+        );
         assert_eq!(
             followup.options[1],
-            PlanFollowupOption::AnswerQuestion("Should we support Windows?".to_string())
+            PlanFollowupOption::AnswerQuestion {
+                answer: "60 seconds".to_string(),
+                question: "What interval?".to_string(),
+            }
         );
         assert_eq!(followup.options[2], PlanFollowupOption::TypeFeedback);
+        assert_eq!(followup.current_question_text(), Some("What interval?"));
+    }
+
+    #[test]
+    fn test_plan_followup_new_with_no_answer_question_shows_implement_and_feedback() {
+        // Arrange
+        let questions = VecDeque::from(vec![PlanQuestion {
+            answers: Vec::new(),
+            text: "Use sqlite?".to_string(),
+        }]);
+
+        // Act
+        let followup = PlanFollowup::new(questions);
+
+        // Assert
+        assert_eq!(followup.options.len(), 2);
+        assert_eq!(followup.options[0], PlanFollowupOption::ImplementPlan);
+        assert_eq!(followup.options[1], PlanFollowupOption::TypeFeedback);
+        assert!(followup.current_question_text().is_none());
+    }
+
+    #[test]
+    fn test_plan_followup_advance_stores_answer_and_moves_to_next_question() {
+        // Arrange
+        let questions = VecDeque::from(vec![
+            PlanQuestion {
+                answers: vec!["Yes".to_string(), "No".to_string()],
+                text: "Add cache?".to_string(),
+            },
+            PlanQuestion {
+                answers: vec!["Redis".to_string(), "Memcached".to_string()],
+                text: "Which cache?".to_string(),
+            },
+        ]);
+        let mut followup = PlanFollowup::new(questions);
+
+        // Act
+        let has_more =
+            followup.advance_to_next_question("Add cache?".to_string(), "Yes".to_string());
+
+        // Assert
+        assert!(has_more);
+        assert_eq!(followup.current_question_text(), Some("Which cache?"));
+        assert!(followup.has_collected_answers());
+        assert_eq!(followup.options.len(), 3);
+    }
+
+    #[test]
+    fn test_plan_followup_advance_after_last_question_switches_to_final_phase() {
+        // Arrange
+        let questions = VecDeque::from(vec![PlanQuestion {
+            answers: vec!["Yes".to_string(), "No".to_string()],
+            text: "Add cache?".to_string(),
+        }]);
+        let mut followup = PlanFollowup::new(questions);
+
+        // Act
+        let has_more =
+            followup.advance_to_next_question("Add cache?".to_string(), "Yes".to_string());
+
+        // Assert
+        assert!(!has_more);
+        assert!(followup.current_question_text().is_none());
+        assert_eq!(followup.options.len(), 2);
+        assert_eq!(followup.options[0], PlanFollowupOption::ImplementPlan);
+        assert_eq!(followup.options[1], PlanFollowupOption::TypeFeedback);
+    }
+
+    #[test]
+    fn test_plan_followup_build_consolidated_answer_prompt() {
+        // Arrange
+        let questions = VecDeque::from(vec![
+            PlanQuestion {
+                answers: vec!["30s".to_string()],
+                text: "Interval?".to_string(),
+            },
+            PlanQuestion {
+                answers: vec!["Yes".to_string()],
+                text: "Retry?".to_string(),
+            },
+        ]);
+        let mut followup = PlanFollowup::new(questions);
+        followup.advance_to_next_question("Interval?".to_string(), "30s".to_string());
+        followup.advance_to_next_question("Retry?".to_string(), "Yes".to_string());
+
+        // Act
+        let prompt = followup.build_consolidated_answer_prompt();
+
+        // Assert
+        assert!(prompt.contains("1. Interval? \u{2192} 30s"));
+        assert!(prompt.contains("2. Retry? \u{2192} Yes"));
+        assert!(prompt.contains("update the plan"));
     }
 
     #[test]
     fn test_plan_followup_selection_wraps_in_both_directions() {
         // Arrange
-        let mut followup = PlanFollowup::new(Vec::new());
+        let mut followup = PlanFollowup::new(VecDeque::new());
 
         // Act
         followup.select_previous();
@@ -230,5 +447,20 @@ mod tests {
         // Assert
         assert_eq!(first_selected, Some(PlanFollowupOption::TypeFeedback));
         assert_eq!(second_selected, Some(PlanFollowupOption::ImplementPlan));
+    }
+
+    #[test]
+    fn test_plan_followup_option_label_for_answer_shows_answer_text() {
+        // Arrange
+        let option = PlanFollowupOption::AnswerQuestion {
+            answer: "60 seconds".to_string(),
+            question: "What interval?".to_string(),
+        };
+
+        // Act
+        let label = option.label();
+
+        // Assert
+        assert_eq!(label, "60 seconds");
     }
 }

@@ -223,45 +223,21 @@ impl<'a> SessionOutput<'a> {
         }
     }
 
+    /// Renders plan followup options as a vertical list with optional
+    /// question text header.
     fn plan_followup_lines(plan_followup: &PlanFollowup) -> Vec<Line<'static>> {
-        if plan_followup.options.len() >= 4 {
-            return Self::plan_followup_vertical_lines(plan_followup);
-        }
-
-        vec![
-            Self::plan_followup_horizontal_line(plan_followup),
-            Line::from(vec![Span::styled(
-                "Use \u{2190}/\u{2192} to select and Enter to confirm.",
-                Style::default().fg(Color::DarkGray),
-            )]),
-        ]
-    }
-
-    fn plan_followup_horizontal_line(plan_followup: &PlanFollowup) -> Line<'static> {
-        let mut spans = Vec::new();
-        for (option_index, option) in plan_followup.options.iter().enumerate() {
-            let is_selected = plan_followup.selected_index() == option_index;
-            let option_style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-            let option_label = option.label();
-
-            spans.push(Span::styled(format!("[ {option_label} ]"), option_style));
-
-            if option_index < plan_followup.options.len() - 1 {
-                spans.push(Span::styled("  ", Style::default().fg(Color::Gray)));
-            }
-        }
-
-        Line::from(spans)
-    }
-
-    fn plan_followup_vertical_lines(plan_followup: &PlanFollowup) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
+
+        if let Some(question_text) = plan_followup.current_question_text() {
+            lines.push(Line::from(vec![Span::styled(
+                question_text.to_string(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            lines.push(Line::from(""));
+        }
+
         for (option_index, option) in plan_followup.options.iter().enumerate() {
             let is_selected = plan_followup.selected_index() == option_index;
             let option_style = if is_selected {
@@ -333,6 +309,7 @@ impl Component for SessionOutput<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::path::PathBuf;
 
     use super::*;
@@ -503,7 +480,7 @@ mod tests {
     fn test_output_lines_include_plan_followup_actions_when_present() {
         // Arrange
         let session = session_fixture();
-        let followup = PlanFollowup::new(Vec::new());
+        let followup = PlanFollowup::new(VecDeque::new());
         let area = Rect {
             x: 0,
             y: 0,
@@ -569,29 +546,12 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_followup_horizontal_line_contains_both_actions() {
+    fn test_plan_followup_lines_always_uses_vertical_layout() {
         // Arrange
-        let followup = PlanFollowup::new(Vec::new());
+        let followup = PlanFollowup::new(VecDeque::new());
 
         // Act
-        let line = SessionOutput::plan_followup_horizontal_line(&followup);
-        let rendered = line.to_string();
-
-        // Assert
-        assert!(rendered.contains("Implement the plan"));
-        assert!(rendered.contains("Type feedback"));
-    }
-
-    #[test]
-    fn test_plan_followup_vertical_lines_include_up_down_hint() {
-        // Arrange
-        let followup = PlanFollowup::new(vec![
-            "Question one?".to_string(),
-            "Question two?".to_string(),
-        ]);
-
-        // Act
-        let lines = SessionOutput::plan_followup_vertical_lines(&followup);
+        let lines = SessionOutput::plan_followup_lines(&followup);
         let rendered = lines
             .iter()
             .map(std::string::ToString::to_string)
@@ -599,7 +559,33 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(rendered.contains("Use \u{2191}/\u{2193}"));
+        assert!(rendered.contains("Implement the plan"));
+        assert!(rendered.contains("Type feedback"));
+        assert!(rendered.contains("\u{2191}/\u{2193}"));
+    }
+
+    #[test]
+    fn test_plan_followup_lines_shows_question_text_above_answers() {
+        // Arrange
+        use crate::domain::plan::PlanQuestion;
+        let followup = PlanFollowup::new(VecDeque::from(vec![PlanQuestion {
+            answers: vec!["30 seconds".to_string(), "60 seconds".to_string()],
+            text: "What interval?".to_string(),
+        }]));
+
+        // Act
+        let lines = SessionOutput::plan_followup_lines(&followup);
+        let rendered = lines
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(rendered.contains("What interval?"));
+        assert!(rendered.contains("30 seconds"));
+        assert!(rendered.contains("60 seconds"));
+        assert!(rendered.contains("Type feedback"));
     }
 
     #[test]
