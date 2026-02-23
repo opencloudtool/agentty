@@ -109,7 +109,7 @@ pub(crate) async fn handle(
             }
         }
         KeyCode::Char(character) => {
-            handle_prompt_char(app, character, &prompt_context).await;
+            handle_prompt_char(app, character, &prompt_context);
         }
         _ => {}
     }
@@ -721,7 +721,8 @@ fn handle_prompt_delete(app: &mut App) {
     }
 }
 
-async fn handle_prompt_char(app: &mut App, character: char, prompt_context: &PromptContext) {
+/// Handles character input in prompt mode and updates at-mention activation.
+fn handle_prompt_char(app: &mut App, character: char, prompt_context: &PromptContext) {
     let mut should_activate = false;
 
     if let AppMode::Prompt {
@@ -1459,7 +1460,7 @@ mod tests {
         let prompt_context = prompt_context(&mut app).expect("expected prompt context");
 
         // Act
-        handle_prompt_char(&mut app, '@', &prompt_context).await;
+        handle_prompt_char(&mut app, '@', &prompt_context);
 
         // Assert
         assert!(matches!(app.mode, AppMode::Prompt { .. }));
@@ -1471,7 +1472,7 @@ mod tests {
         }
 
         // Act
-        handle_prompt_char(&mut app, ' ', &prompt_context).await;
+        handle_prompt_char(&mut app, ' ', &prompt_context);
 
         // Assert
         assert!(matches!(app.mode, AppMode::Prompt { .. }));

@@ -741,9 +741,13 @@ fn extract_agent_message(response_value: &Value) -> Option<String> {
 
 /// Parses `turn/completed` notifications and maps failures to user errors.
 ///
-/// When `expected_turn_id` is present, completion notifications for other
-/// turns are ignored so delegated sub-turns do not end the active user turn
-/// prematurely.
+/// Completion notifications are only considered when `expected_turn_id` is
+/// `Some`, ensuring that the worker ignores early or delegated completions
+/// that arrive before the main thread id has been observed.
+///
+/// Completion payloads without a turn id are ignored even when the expected
+/// turn id is known so that nested turns are never mistaken for the active
+/// user turn.
 fn parse_turn_completed(
     response_value: &Value,
     expected_turn_id: Option<&str>,
@@ -751,15 +755,11 @@ fn parse_turn_completed(
     if response_value.get("method").and_then(Value::as_str) != Some("turn/completed") {
         return None;
     }
-    if let Some(expected_turn_id) = expected_turn_id {
-        let turn_id = response_value
-            .get("params")
-            .and_then(|params| params.get("turn"))
-            .and_then(|turn| turn.get("id"))
-            .and_then(Value::as_str);
-        if turn_id.is_some_and(|completed_turn_id| completed_turn_id != expected_turn_id) {
-            return None;
-        }
+    let expected_turn_id = expected_turn_id?;
+
+    let turn_id = extract_turn_id_from_turn_completed_notification(response_value)?;
+    if turn_id != expected_turn_id {
+        return None;
     }
 
     let status = response_value
@@ -782,6 +782,21 @@ fn parse_turn_completed(
     }
 
     Some(Ok(()))
+}
+
+/// Extracts one turn id from a `turn/completed` notification payload.
+///
+/// Supports nested `params.turn.id` and legacy flat `params.turnId` /
+/// `params.turn_id` shapes.
+fn extract_turn_id_from_turn_completed_notification(response_value: &Value) -> Option<&str> {
+    let params = response_value.get("params")?;
+
+    params
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| params.get("turnId").and_then(Value::as_str))
+        .or_else(|| params.get("turn_id").and_then(Value::as_str))
 }
 
 /// Extracts a progress description from an `item/started` notification.
@@ -908,6 +923,7 @@ mod tests {
             "method": "turn/completed",
             "params": {
                 "turn": {
+                    "id": "active-turn",
                     "status": "failed",
                     "error": {"message": "boom"}
                 }
@@ -915,7 +931,7 @@ mod tests {
         });
 
         // Act
-        let turn_result = parse_turn_completed(&response_value, None);
+        let turn_result = parse_turn_completed(&response_value, Some("active-turn"));
 
         // Assert
         assert_eq!(turn_result, Some(Err("boom".to_string())));
@@ -928,13 +944,14 @@ mod tests {
             "method": "turn/completed",
             "params": {
                 "turn": {
+                    "id": "active-turn",
                     "status": "completed"
                 }
             }
         });
 
         // Act
-        let turn_result = parse_turn_completed(&response_value, None);
+        let turn_result = parse_turn_completed(&response_value, Some("active-turn"));
 
         // Assert
         assert_eq!(turn_result, Some(Ok(())));
@@ -981,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_turn_completed_accepts_missing_turn_id_for_expected_turn_id() {
+    fn parse_turn_completed_ignores_missing_turn_id_for_expected_turn_id() {
         // Arrange
         let response_value = serde_json::json!({
             "method": "turn/completed",
@@ -996,7 +1013,58 @@ mod tests {
         let turn_result = parse_turn_completed(&response_value, Some("active-turn"));
 
         // Assert
-        assert_eq!(turn_result, Some(Ok(())));
+        assert_eq!(turn_result, None);
+    }
+
+    #[test]
+    fn parse_turn_completed_accepts_matching_flat_turn_id_fields() {
+        // Arrange
+        let camel_case_response = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turnId": "active-turn",
+                "turn": {
+                    "status": "completed"
+                }
+            }
+        });
+        let snake_case_response = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn_id": "active-turn",
+                "turn": {
+                    "status": "completed"
+                }
+            }
+        });
+
+        // Act
+        let camel_case_result = parse_turn_completed(&camel_case_response, Some("active-turn"));
+        let snake_case_result = parse_turn_completed(&snake_case_response, Some("active-turn"));
+
+        // Assert
+        assert_eq!(camel_case_result, Some(Ok(())));
+        assert_eq!(snake_case_result, Some(Ok(())));
+    }
+
+    #[test]
+    fn parse_turn_completed_ignores_notifications_before_turn_id_is_known() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "active-turn",
+                    "status": "completed"
+                }
+            }
+        });
+
+        // Act
+        let turn_result = parse_turn_completed(&response_value, None);
+
+        // Assert
+        assert_eq!(turn_result, None);
     }
 
     #[test]
