@@ -13,6 +13,11 @@ This skill guides you through the process of releasing a new version of the proj
    - Ensure the git working directory is clean: `git status`.
    - Pull the latest changes: `git pull origin main`.
 
+1. **Version Selection**
+
+   - Always ask the user which version bump to apply: `major`, `minor`, or `patch`.
+   - Do not update versions until the user confirms one of these options.
+
 1. **Version Bump**
 
    - Update the `version` field in the root `Cargo.toml`.
