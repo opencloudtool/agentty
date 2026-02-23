@@ -748,9 +748,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_sync_key_uses_selected_project_branch_in_popup_message() {
+    async fn test_handle_sync_key_uses_project_name_and_branch_in_popup_message() {
         // Arrange
         let (mut app, base_dir) = new_test_app_with_git().await;
+        let expected_project_name = base_dir
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("expected temp dir file name")
+            .to_string();
         app.projects.replace_context(
             app.active_project_id(),
             Some("develop".to_string()),
@@ -785,10 +791,15 @@ mod tests {
         assert!(matches!(
             app.mode,
             AppMode::SyncBlockedPopup {
+                ref default_branch,
                 is_loading: false,
                 ref title,
                 ref message,
-            } if title == "Sync blocked" && message.contains("`develop`")
+                ref project_name,
+            } if title == "Sync blocked"
+                && default_branch.as_deref() == Some("develop")
+                && message.contains("cannot run while `develop` has uncommitted changes")
+                && project_name.as_deref() == Some(expected_project_name.as_str())
         ));
     }
 
@@ -824,10 +835,14 @@ mod tests {
         assert!(matches!(
             app.mode,
             AppMode::SyncBlockedPopup {
+                ref default_branch,
                 is_loading: false,
                 ref title,
                 ref message,
+                ref project_name,
             } if title == "Sync blocked" && message.contains("cannot run while `main` has uncommitted changes")
+                && default_branch.as_deref() == Some("main")
+                && project_name.is_some()
         ));
     }
 }

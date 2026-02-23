@@ -138,9 +138,11 @@ struct SyncPopupRenderContext<'a> {
     all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     current_tab: Tab,
+    default_branch: Option<&'a str>,
     is_loading: bool,
     longest_session_duration_seconds: u64,
     message: &'a str,
+    project_name: Option<&'a str>,
     sessions: &'a [Session],
     settings: &'a mut SettingsManager,
     stats_activity: &'a [DailyActivity],
@@ -224,17 +226,21 @@ impl<'a> ListModeRenderContext<'a> {
     /// Converts list mode context into sync-popup rendering context.
     fn into_sync_popup(
         self,
+        default_branch: Option<&'a str>,
         is_loading: bool,
         message: &'a str,
+        project_name: Option<&'a str>,
         title: &'a str,
     ) -> SyncPopupRenderContext<'a> {
         SyncPopupRenderContext {
             all_time_model_usage: self.all_time_model_usage,
             codex_usage_limits: self.codex_usage_limits,
             current_tab: self.current_tab,
+            default_branch,
             is_loading,
             longest_session_duration_seconds: self.longest_session_duration_seconds,
             message,
+            project_name,
             sessions: self.sessions,
             settings: self.settings,
             stats_activity: self.stats_activity,
@@ -393,13 +399,21 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
             context.into_command_option(*command, *selected_index),
         ),
         AppMode::SyncBlockedPopup {
+            default_branch,
             is_loading,
             message,
+            project_name,
             title,
         } => render_sync_blocked_popup(
             f,
             area,
-            context.into_sync_popup(*is_loading, message, title),
+            context.into_sync_popup(
+                default_branch.as_deref(),
+                *is_loading,
+                message,
+                project_name.as_deref(),
+                title,
+            ),
         ),
         _ => {}
     }
@@ -462,9 +476,11 @@ fn render_sync_blocked_popup(f: &mut Frame, area: Rect, context: SyncPopupRender
         all_time_model_usage,
         codex_usage_limits,
         current_tab,
+        default_branch,
         is_loading,
         longest_session_duration_seconds,
         message,
+        project_name,
         sessions,
         settings,
         stats_activity,
@@ -487,8 +503,28 @@ fn render_sync_blocked_popup(f: &mut Frame, area: Rect, context: SyncPopupRender
         },
     );
 
-    components::info_overlay::InfoOverlay::with_loading_state(title, message, is_loading)
+    let popup_message = sync_popup_message(default_branch, message, project_name);
+
+    components::info_overlay::InfoOverlay::with_loading_state(title, &popup_message, is_loading)
         .render(f, area);
+}
+
+/// Composes sync popup body with optional project/branch context.
+fn sync_popup_message(
+    default_branch: Option<&str>,
+    detail_message: &str,
+    project_name: Option<&str>,
+) -> String {
+    match (project_name, default_branch) {
+        (Some(project_name), Some(default_branch)) => format!(
+            "Project `{project_name}` on main branch `{default_branch}`.\n\n{detail_message}"
+        ),
+        (Some(project_name), None) => format!("Project `{project_name}`.\n\n{detail_message}"),
+        (None, Some(default_branch)) => {
+            format!("Main branch `{default_branch}`.\n\n{detail_message}")
+        }
+        (None, None) => detail_message.to_string(),
+    }
 }
 
 fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRenderContext<'_>) {
@@ -960,5 +996,22 @@ mod tests {
 
         // Assert
         assert!(!should_render);
+    }
+
+    #[test]
+    fn test_sync_popup_message_includes_project_and_branch_context() {
+        // Arrange
+        let default_branch = Some("develop");
+        let detail_message = "Synchronizing with its upstream.";
+        let project_name = Some("agentty");
+
+        // Act
+        let message = sync_popup_message(default_branch, detail_message, project_name);
+
+        // Assert
+        assert_eq!(
+            message,
+            "Project `agentty` on main branch `develop`.\n\nSynchronizing with its upstream."
+        );
     }
 }

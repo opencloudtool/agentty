@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use crate::domain::permission::PermissionMode;
 
 const CODEX_APP_SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-const CODEX_APP_SERVER_TURN_TIMEOUT: Duration = Duration::from_secs(300);
+const CODEX_APP_SERVER_TURN_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Canonical wire-level policy mapping for one [`PermissionMode`].
 ///

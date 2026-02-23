@@ -18,6 +18,10 @@ pub enum AppMode {
     /// Informational popup displayed for sync outcomes, including success and
     /// blocked/failed states.
     SyncBlockedPopup {
+        /// Selected project name for which sync was requested.
+        project_name: Option<String>,
+        /// Repository default branch used as sync target.
+        default_branch: Option<String>,
         /// Whether sync is still running in the background.
         is_loading: bool,
         /// Body text describing current sync state or final outcome.

@@ -54,8 +54,10 @@ mod tests {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::SyncBlockedPopup {
+            default_branch: None,
             is_loading: false,
             message: "Main is dirty".to_string(),
+            project_name: None,
             title: "Sync blocked".to_string(),
         };
 
@@ -72,8 +74,10 @@ mod tests {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::SyncBlockedPopup {
+            default_branch: None,
             is_loading: false,
             message: "Main is dirty".to_string(),
+            project_name: None,
             title: "Sync blocked".to_string(),
         };
 
@@ -90,8 +94,10 @@ mod tests {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::SyncBlockedPopup {
+            default_branch: None,
             is_loading: false,
             message: "Main is dirty".to_string(),
+            project_name: None,
             title: "Sync blocked".to_string(),
         };
 
@@ -111,8 +117,10 @@ mod tests {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::SyncBlockedPopup {
+            default_branch: None,
             is_loading: true,
             message: "Synchronizing...".to_string(),
+            project_name: None,
             title: "Sync in progress".to_string(),
         };
 

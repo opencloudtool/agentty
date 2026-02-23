@@ -119,6 +119,13 @@ enum CodexUsageLimitsBatchUpdate {
     Replace(CodexUsageLimits),
 }
 
+/// Immutable context displayed in sync-main popup content.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SyncPopupContext {
+    default_branch: String,
+    project_name: String,
+}
+
 // SessionState definition moved to session_state.rs
 
 /// Stores application state and coordinates session/project workflows.
@@ -551,11 +558,14 @@ impl App {
     }
 
     /// Starts selected-project branch sync in the background and immediately
-    /// opens a loading popup.
+    /// opens a loading popup with project and branch context.
     pub(crate) fn start_sync_main(&mut self) {
+        let sync_popup_context = self.sync_popup_context();
         self.mode = AppMode::SyncBlockedPopup {
+            project_name: Some(sync_popup_context.project_name.clone()),
+            default_branch: Some(sync_popup_context.default_branch),
             is_loading: true,
-            message: "Synchronizing the selected project branch with its upstream.".to_string(),
+            message: Self::sync_loading_message(),
             title: "Sync in progress".to_string(),
         };
 
@@ -706,7 +716,9 @@ impl App {
         }
 
         if let Some(sync_main_result) = event_batch.sync_main_result {
-            self.mode = Self::sync_main_popup_mode(sync_main_result);
+            let sync_popup_context = self.sync_popup_context();
+
+            self.mode = Self::sync_main_popup_mode(sync_main_result, &sync_popup_context);
         }
 
         self.handle_merge_queue_progress(&event_batch.session_ids, &previous_session_states)
@@ -995,27 +1007,62 @@ impl App {
     }
 
     /// Builds final sync popup mode from background sync completion result.
-    fn sync_main_popup_mode(sync_main_result: Result<(), SyncSessionStartError>) -> AppMode {
+    fn sync_main_popup_mode(
+        sync_main_result: Result<(), SyncSessionStartError>,
+        sync_popup_context: &SyncPopupContext,
+    ) -> AppMode {
         match sync_main_result {
             Ok(()) => AppMode::SyncBlockedPopup {
+                project_name: Some(sync_popup_context.project_name.clone()),
+                default_branch: Some(sync_popup_context.default_branch.clone()),
                 is_loading: false,
-                message: "Successfully synchronized the selected project branch with its upstream."
-                    .to_string(),
+                message: "Successfully synchronized with its upstream.".to_string(),
                 title: "Sync complete".to_string(),
             },
             Err(sync_error @ SyncSessionStartError::MainHasUncommittedChanges { .. }) => {
                 AppMode::SyncBlockedPopup {
+                    project_name: Some(sync_popup_context.project_name.clone()),
+                    default_branch: Some(sync_popup_context.default_branch.clone()),
                     is_loading: false,
                     message: sync_error.detail_message(),
                     title: "Sync blocked".to_string(),
                 }
             }
             Err(sync_error @ SyncSessionStartError::Other(_)) => AppMode::SyncBlockedPopup {
+                project_name: Some(sync_popup_context.project_name.clone()),
+                default_branch: Some(sync_popup_context.default_branch.clone()),
                 is_loading: false,
                 message: sync_error.detail_message(),
                 title: "Sync failed".to_string(),
             },
         }
+    }
+
+    /// Returns popup context for the currently active project sync target.
+    fn sync_popup_context(&self) -> SyncPopupContext {
+        let default_branch = self
+            .projects
+            .git_branch()
+            .map_or_else(|| "not detected".to_string(), str::to_string);
+        let project_name = self
+            .projects
+            .working_dir()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map_or_else(
+                || self.projects.working_dir().display().to_string(),
+                str::to_string,
+            );
+
+        SyncPopupContext {
+            default_branch,
+            project_name,
+        }
+    }
+
+    /// Returns loading-state popup copy for sync-main operation.
+    fn sync_loading_message() -> String {
+        "Synchronizing with its upstream.".to_string()
     }
 }
 
@@ -1130,6 +1177,65 @@ mod tests {
 
         // Assert
         assert_eq!(window_id, Some("@42".to_string()));
+    }
+
+    #[test]
+    fn sync_main_popup_mode_success_message_tracks_project_and_branch() {
+        // Arrange
+        let sync_popup_context = SyncPopupContext {
+            default_branch: "develop".to_string(),
+            project_name: "agentty".to_string(),
+        };
+
+        // Act
+        let mode = App::sync_main_popup_mode(Ok(()), &sync_popup_context);
+
+        // Assert
+        assert!(matches!(
+            mode,
+            AppMode::SyncBlockedPopup {
+                ref default_branch,
+                is_loading: false,
+                ref title,
+                ref message,
+                ref project_name,
+            } if title == "Sync complete"
+                && default_branch.as_deref() == Some("develop")
+                && message.contains("Successfully synchronized")
+                && project_name.as_deref() == Some("agentty")
+        ));
+    }
+
+    #[test]
+    fn sync_main_popup_mode_blocked_message_tracks_project_and_branch() {
+        // Arrange
+        let sync_popup_context = SyncPopupContext {
+            default_branch: "develop".to_string(),
+            project_name: "agentty".to_string(),
+        };
+
+        // Act
+        let mode = App::sync_main_popup_mode(
+            Err(SyncSessionStartError::MainHasUncommittedChanges {
+                default_branch: "develop".to_string(),
+            }),
+            &sync_popup_context,
+        );
+
+        // Assert
+        assert!(matches!(
+            mode,
+            AppMode::SyncBlockedPopup {
+                ref default_branch,
+                is_loading: false,
+                ref title,
+                ref message,
+                ref project_name,
+            } if title == "Sync blocked"
+                && default_branch.as_deref() == Some("develop")
+                && message.contains("uncommitted changes")
+                && project_name.as_deref() == Some("agentty")
+        ));
     }
 
     #[test]
