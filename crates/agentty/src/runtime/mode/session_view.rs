@@ -15,6 +15,7 @@ use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
 const IMPLEMENT_PLAN_PROMPT: &str = "Implement the approved plan from your previous response \
                                      end-to-end. Make the required code changes, run all relevant \
                                      checks/tests, and report what changed plus results.";
+const IMPLEMENT_PLAN_CONTEXT_MAX_CHARS: usize = 12_000;
 
 #[derive(Clone)]
 struct ViewContext {
@@ -279,6 +280,25 @@ async fn handle_plan_followup_action_key(
 }
 
 async fn implement_plan_followup_action(app: &mut App, session_id: &str) {
+    let (implement_plan_prompt, is_new_session) = app
+        .sessions
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .map_or_else(
+            || (IMPLEMENT_PLAN_PROMPT.to_string(), false),
+            |session| {
+                let prompt = latest_assistant_response_from_output(&session.output)
+                    .as_deref()
+                    .map_or_else(
+                        || IMPLEMENT_PLAN_PROMPT.to_string(),
+                        implement_plan_prompt_with_context,
+                    );
+
+                (prompt, session.prompt.is_empty())
+            },
+        );
+
     if let Err(error) = app
         .set_session_permission_mode(session_id, PermissionMode::AutoEdit)
         .await
@@ -289,18 +309,8 @@ async fn implement_plan_followup_action(app: &mut App, session_id: &str) {
         return;
     }
 
-    let is_new_session = app
-        .sessions
-        .sessions
-        .iter()
-        .find(|session| session.id == session_id)
-        .is_some_and(|session| session.prompt.is_empty());
-
     if is_new_session {
-        if let Err(error) = app
-            .start_session(session_id, IMPLEMENT_PLAN_PROMPT.to_string())
-            .await
-        {
+        if let Err(error) = app.start_session(session_id, implement_plan_prompt).await {
             app.append_output_for_session(session_id, &format!("\n[Error] {error}\n"))
                 .await;
         }
@@ -308,7 +318,62 @@ async fn implement_plan_followup_action(app: &mut App, session_id: &str) {
         return;
     }
 
-    app.reply(session_id, IMPLEMENT_PLAN_PROMPT).await;
+    app.reply(session_id, &implement_plan_prompt).await;
+}
+
+/// Builds an implementation prompt that embeds the latest approved plan text.
+fn implement_plan_prompt_with_context(plan_context: &str) -> String {
+    let plan_context = plan_context.trim();
+    let plan_context = if plan_context.chars().count() > IMPLEMENT_PLAN_CONTEXT_MAX_CHARS {
+        let truncated_context: String = plan_context
+            .chars()
+            .take(IMPLEMENT_PLAN_CONTEXT_MAX_CHARS)
+            .collect();
+
+        format!("{truncated_context}\n\n[Truncated by Agentty]")
+    } else {
+        plan_context.to_string()
+    };
+
+    format!(
+        "{IMPLEMENT_PLAN_PROMPT}\n\nUse this approved plan/context from the current session as \
+         source of truth:\n\n{plan_context}"
+    )
+}
+
+/// Returns the latest assistant response block captured in session output.
+///
+/// Session output alternates user prompt markers (` › ...`) and assistant
+/// output. This helper extracts the most recent assistant block so follow-up
+/// implementation can survive app-server context resets.
+fn latest_assistant_response_from_output(output: &str) -> Option<String> {
+    let mut last_assistant_response: Option<String> = None;
+    let mut current_assistant_response = String::new();
+    let mut has_prompt_marker = false;
+
+    for line in output.lines() {
+        if line.starts_with(" › ") {
+            if !current_assistant_response.trim().is_empty() {
+                last_assistant_response = Some(current_assistant_response.trim().to_string());
+            }
+
+            current_assistant_response.clear();
+            has_prompt_marker = true;
+
+            continue;
+        }
+
+        if has_prompt_marker {
+            current_assistant_response.push_str(line);
+            current_assistant_response.push('\n');
+        }
+    }
+
+    if !current_assistant_response.trim().is_empty() {
+        return Some(current_assistant_response.trim().to_string());
+    }
+
+    last_assistant_response
 }
 
 fn view_context(app: &mut App) -> Option<ViewContext> {
@@ -678,6 +743,56 @@ mod tests {
 
         // Assert
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_latest_assistant_response_from_output_returns_last_response_block() {
+        // Arrange
+        let output = "\
+ › First user prompt
+
+First assistant response
+
+ › Second user prompt
+
+Second assistant response
+More details
+";
+
+        // Act
+        let latest_response = latest_assistant_response_from_output(output);
+
+        // Assert
+        assert_eq!(
+            latest_response,
+            Some("Second assistant response\nMore details".to_string())
+        );
+    }
+
+    #[test]
+    fn test_implement_plan_prompt_with_context_embeds_context_text() {
+        // Arrange
+        let plan_context = "### Plan\n1. Create test.txt";
+
+        // Act
+        let prompt = implement_plan_prompt_with_context(plan_context);
+
+        // Assert
+        assert!(prompt.contains(IMPLEMENT_PLAN_PROMPT));
+        assert!(prompt.contains(plan_context));
+        assert!(prompt.contains("source of truth"));
+    }
+
+    #[test]
+    fn test_implement_plan_prompt_with_context_truncates_long_context() {
+        // Arrange
+        let oversized_context = "a".repeat(IMPLEMENT_PLAN_CONTEXT_MAX_CHARS + 25);
+
+        // Act
+        let prompt = implement_plan_prompt_with_context(&oversized_context);
+
+        // Assert
+        assert!(prompt.contains("[Truncated by Agentty]"));
     }
 
     #[tokio::test]

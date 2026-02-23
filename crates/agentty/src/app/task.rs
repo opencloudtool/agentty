@@ -20,6 +20,7 @@ use crate::app::session::COMMIT_MESSAGE;
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::permission::PermissionMode;
 use crate::domain::session::Status;
+use crate::infra::codex_app_server::{CodexAppServerClient, CodexTurnRequest};
 use crate::infra::db::Database;
 use crate::infra::git::GitClient;
 
@@ -51,6 +52,23 @@ pub(super) struct RunSessionTaskInput {
     pub(super) id: String,
     pub(super) output: Arc<Mutex<String>>,
     pub(super) permission_mode: PermissionMode,
+    pub(super) session_model: AgentModel,
+    pub(super) status: Arc<Mutex<Status>>,
+}
+
+/// Inputs needed to execute one Codex app-server turn.
+pub(super) struct RunCodexAppServerTaskInput {
+    pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    pub(super) child_pid: Arc<Mutex<Option<u32>>>,
+    pub(super) db: Database,
+    pub(super) folder: PathBuf,
+    pub(super) git_client: Arc<dyn GitClient>,
+    pub(super) id: String,
+    pub(super) is_initial_plan_prompt: bool,
+    pub(super) output: Arc<Mutex<String>>,
+    pub(super) permission_mode: PermissionMode,
+    pub(super) prompt: String,
+    pub(super) session_output: Option<String>,
     pub(super) session_model: AgentModel,
     pub(super) status: Arc<Mutex<Status>>,
 }
@@ -306,6 +324,98 @@ impl TaskService {
         if let Some(error) = error {
             return Err(error);
         }
+
+        Ok(())
+    }
+
+    /// Executes one Codex app-server turn for a session.
+    ///
+    /// # Errors
+    /// Returns an error when app-server turn execution fails.
+    pub(super) async fn run_codex_app_server_task(
+        codex_app_server_client: Arc<dyn CodexAppServerClient>,
+        input: RunCodexAppServerTaskInput,
+    ) -> Result<(), String> {
+        let RunCodexAppServerTaskInput {
+            app_event_tx,
+            child_pid,
+            db,
+            folder,
+            git_client,
+            id,
+            is_initial_plan_prompt,
+            output,
+            permission_mode,
+            prompt,
+            session_output,
+            session_model,
+            status,
+        } = input;
+        let prompt = permission_mode.apply_to_prompt(&prompt, is_initial_plan_prompt);
+        let model = session_model.as_str().to_string();
+        let request = CodexTurnRequest {
+            folder: folder.clone(),
+            model,
+            permission_mode,
+            prompt: prompt.into_owned(),
+            session_output,
+            session_id: id.clone(),
+        };
+
+        Self::set_session_progress(&app_event_tx, &id, Some("Thinking".to_string()));
+
+        let turn_result = codex_app_server_client.run_turn(request).await;
+        Self::clear_session_progress(&app_event_tx, &id);
+
+        let response = match turn_result {
+            Ok(response) => response,
+            Err(error) => {
+                let () = codex_app_server_client.shutdown_session(id.clone()).await;
+                if let Ok(mut guard) = child_pid.lock() {
+                    *guard = None;
+                }
+
+                return Err(error);
+            }
+        };
+
+        if let Ok(mut guard) = child_pid.lock() {
+            *guard = response.pid;
+        }
+
+        if response.context_reset {
+            let context_reset_message = "\n[Codex app-server] Reconnected with a new thread; \
+                                         previous model context was reset.\n";
+            Self::append_session_output(&output, &db, &app_event_tx, &id, context_reset_message)
+                .await;
+        }
+
+        if !response.assistant_message.trim().is_empty() {
+            let message = format!("{}\n\n", response.assistant_message.trim_end());
+            Self::append_session_output(&output, &db, &app_event_tx, &id, &message).await;
+        }
+
+        let stats = crate::domain::session::SessionStats {
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+        };
+        let _ = db.update_session_stats(&id, &stats).await;
+        let _ = db
+            .upsert_session_usage(&id, session_model.as_str(), &stats)
+            .await;
+        Self::handle_auto_commit(AssistContext {
+            app_event_tx: app_event_tx.clone(),
+            db: db.clone(),
+            folder,
+            git_client: Arc::clone(&git_client),
+            id: id.clone(),
+            output: Arc::clone(&output),
+            permission_mode,
+            session_model,
+        })
+        .await;
+
+        let _ = Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
 
         Ok(())
     }

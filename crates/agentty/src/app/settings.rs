@@ -247,9 +247,9 @@ impl SettingsManager {
 
     /// Returns the text displayed for a row value.
     fn display_value_for_row(&self, row: SettingRow) -> String {
-        match row.control() {
-            SettingControl::Selector => self.default_model.as_str().to_string(),
-            SettingControl::TextInput => {
+        match row {
+            SettingRow::DefaultModel => self.default_model.as_str().to_string(),
+            SettingRow::DevServer => {
                 if self.is_editing_text_input_for(row) {
                     format!("{}|", self.dev_server)
                 } else if self.dev_server.is_empty() {

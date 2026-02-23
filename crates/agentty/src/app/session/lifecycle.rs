@@ -1,6 +1,6 @@
 //! Session lifecycle workflows and direct user actions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -12,11 +12,21 @@ use crate::app::session::worker::SessionCommand;
 use crate::app::settings::SettingName;
 use crate::app::task::TaskService;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
-use crate::domain::agent::AgentModel;
+use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::permission::PermissionMode;
 use crate::domain::session::{SESSION_DATA_DIR, Session, Status};
 use crate::infra::agent::AgentBackend;
 use crate::ui::pages::session_list::grouped_session_indexes;
+
+/// Input bag for constructing a queued session command.
+struct BuildSessionCommandInput {
+    folder: PathBuf,
+    is_first_message: bool,
+    permission_mode: PermissionMode,
+    prompt: String,
+    session_model: AgentModel,
+    session_output: Option<String>,
+}
 
 impl SessionManager {
     /// Moves selection to the next selectable session in grouped list order.
@@ -252,27 +262,33 @@ impl SessionManager {
         )
         .await;
 
-        let is_initial_plan_prompt = permission_mode == PermissionMode::Plan;
-        let command = crate::infra::agent::create_backend(session_model.kind())
-            .build_start_command(
+        let operation_id = Uuid::new_v4().to_string();
+        let command = if session_model.kind() == AgentKind::Codex {
+            SessionCommand::StartPromptCodexAppServer {
+                operation_id,
+                permission_mode,
+                prompt: prompt.clone(),
+                session_model,
+            }
+        } else {
+            let backend = crate::infra::agent::create_backend(session_model.kind());
+            let is_initial_plan_prompt = permission_mode == PermissionMode::Plan;
+            let command = backend.build_start_command(
                 &folder,
                 &prompt,
                 session_model.as_str(),
                 permission_mode,
                 is_initial_plan_prompt,
             );
-        let operation_id = Uuid::new_v4().to_string();
-        self.enqueue_session_command(
-            services,
-            &persisted_session_id,
             SessionCommand::StartPrompt {
                 command,
                 operation_id,
                 permission_mode,
                 session_model,
-            },
-        )
-        .await?;
+            }
+        };
+        self.enqueue_session_command(services, &persisted_session_id, command)
+            .await?;
 
         Ok(())
     }
@@ -570,7 +586,9 @@ impl SessionManager {
 
                 Some((
                     session.folder.clone(),
-                    if should_replay_history && !is_first_message {
+                    if !is_first_message
+                        && (should_replay_history || session_model.kind() == AgentKind::Codex)
+                    {
                         Some(session.output.clone())
                     } else {
                         None
@@ -618,24 +636,25 @@ impl SessionManager {
             .await;
         }
 
-        let reply_line = format!("\n › {prompt}\n\n");
-        TaskService::append_session_output(
+        self.append_reply_prompt_line(
+            services,
             &output,
-            services.db(),
             &app_event_tx,
             &persisted_session_id,
-            &reply_line,
+            prompt,
         )
         .await;
 
         let command = Self::build_session_command(
             backend,
-            &folder,
-            prompt,
-            session_model,
-            permission_mode,
-            is_first_message,
-            session_output,
+            BuildSessionCommandInput {
+                folder,
+                is_first_message,
+                permission_mode,
+                prompt: prompt.to_string(),
+                session_model,
+                session_output,
+            },
         );
         self.enqueue_reply_command(
             services,
@@ -671,44 +690,92 @@ impl SessionManager {
         .await;
     }
 
+    /// Appends the user reply marker line to session output.
+    async fn append_reply_prompt_line(
+        &self,
+        services: &AppServices,
+        output: &Arc<Mutex<String>>,
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
+        session_id: &str,
+        prompt: &str,
+    ) {
+        let reply_line = format!("\n › {prompt}\n\n");
+        TaskService::append_session_output(
+            output,
+            services.db(),
+            app_event_tx,
+            session_id,
+            &reply_line,
+        )
+        .await;
+    }
+
     fn build_session_command(
         backend: &dyn AgentBackend,
-        folder: &Path,
-        prompt: &str,
-        session_model: AgentModel,
-        permission_mode: PermissionMode,
-        is_first_message: bool,
-        session_output: Option<String>,
+        input: BuildSessionCommandInput,
     ) -> SessionCommand {
+        let BuildSessionCommandInput {
+            folder,
+            is_first_message,
+            permission_mode,
+            prompt,
+            session_model,
+            session_output,
+        } = input;
         let operation_id = Uuid::new_v4().to_string();
         let is_initial_plan_prompt = is_first_message && permission_mode == PermissionMode::Plan;
 
-        if is_first_message {
-            SessionCommand::StartPrompt {
-                command: backend.build_start_command(
-                    folder,
+        if session_model.kind() == AgentKind::Codex {
+            if is_first_message {
+                SessionCommand::StartPromptCodexAppServer {
+                    operation_id,
+                    permission_mode,
                     prompt,
+                    session_model,
+                }
+            } else {
+                SessionCommand::ReplyCodexAppServer {
+                    operation_id,
+                    permission_mode,
+                    prompt,
+                    session_output,
+                    session_model,
+                }
+            }
+        } else {
+            let command = if is_first_message {
+                backend.build_start_command(
+                    &folder,
+                    &prompt,
                     session_model.as_str(),
                     permission_mode,
                     is_initial_plan_prompt,
-                ),
-                operation_id,
-                permission_mode,
-                session_model,
-            }
-        } else {
-            SessionCommand::Reply {
-                command: backend.build_resume_command(
-                    folder,
-                    prompt,
+                )
+            } else {
+                backend.build_resume_command(
+                    &folder,
+                    &prompt,
                     session_model.as_str(),
                     permission_mode,
                     is_initial_plan_prompt,
                     session_output,
-                ),
-                operation_id,
-                permission_mode,
-                session_model,
+                )
+            };
+
+            if is_first_message {
+                SessionCommand::StartPrompt {
+                    command,
+                    operation_id,
+                    permission_mode,
+                    session_model,
+                }
+            } else {
+                SessionCommand::Reply {
+                    command,
+                    operation_id,
+                    permission_mode,
+                    session_model,
+                }
             }
         }
     }

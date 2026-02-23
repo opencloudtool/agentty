@@ -61,9 +61,20 @@ selection becomes the default for newly created sessions.
 - After a plan response in chat view, an inline action bar appears:
   - `Implement the plan`: switches that session to `auto_edit` and sends an implementation prompt.
   - `Type feedback`: opens prompt input so you can send feedback while keeping `plan` mode.
-  - Use `Left` / `Right` arrows to choose and `Enter` to confirm.
+  - Use `Up` / `Down` arrows to choose and `Enter` to confirm.
 - The active mode is shown in the session chat title.
 - Changes are persisted for that session and used as defaults for future sessions.
+
+## Codex Sessions
+
+- Codex sessions run through a persistent per-session `codex app-server` connection.
+- Each Agentty session keeps one Codex thread open across replies.
+- If the app-server connection fails, Agentty retries by restarting Codex app-server with a new thread.
+- When a Codex thread is reset, Agentty replays the session transcript in the next turn prompt so implementation can continue with prior context.
+- Codex session modes map to app-server permissions:
+  - `plan`: `approvalPolicy=on-request` and read-only sandbox. Pre-action file/command requests are declined.
+  - `auto_edit`: `approvalPolicy=on-request` and workspace-write sandbox. Pre-action file/command requests are accepted.
+  - `autonomous`: `approvalPolicy=never` and danger-full-access sandbox. If a pre-action request still appears, it is accepted for the session.
 
 ## Features
 

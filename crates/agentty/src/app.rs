@@ -878,12 +878,24 @@ impl App {
                 continue;
             };
 
-            if *previous_status == Status::InProgress {
+            let has_existing_followup = self.plan_followups.contains_key(session_id);
+            if Self::should_refresh_plan_followup(*previous_status, has_existing_followup) {
                 let questions = extract_plan_questions(&session.output);
                 self.plan_followups
                     .insert(session_id.clone(), PlanFollowup::new(questions));
             }
         }
+    }
+
+    /// Returns whether plan follow-up actions should be rebuilt for one
+    /// refreshed session snapshot.
+    ///
+    /// Follow-up actions are refreshed after the usual `InProgress -> Review`
+    /// transition and also when a follow-up is unexpectedly missing (for
+    /// example due to batched fast replies where only final `Review` is
+    /// observed by the reducer).
+    fn should_refresh_plan_followup(previous_status: Status, has_existing_followup: bool) -> bool {
+        previous_status == Status::InProgress || !has_existing_followup
     }
 
     fn retain_valid_plan_followup_actions(&mut self) {
@@ -1139,6 +1151,45 @@ mod tests {
             event_batch.codex_usage_limits_update,
             CodexUsageLimitsBatchUpdate::Replace(initial_limits)
         );
+    }
+
+    #[test]
+    fn should_refresh_plan_followup_returns_true_for_in_progress_transition() {
+        // Arrange
+        let previous_status = Status::InProgress;
+
+        // Act
+        let should_refresh_without_existing =
+            App::should_refresh_plan_followup(previous_status, false);
+        let should_refresh_with_existing = App::should_refresh_plan_followup(previous_status, true);
+
+        // Assert
+        assert!(should_refresh_without_existing);
+        assert!(should_refresh_with_existing);
+    }
+
+    #[test]
+    fn should_refresh_plan_followup_returns_true_when_followup_is_missing() {
+        // Arrange
+        let previous_status = Status::Review;
+
+        // Act
+        let should_refresh = App::should_refresh_plan_followup(previous_status, false);
+
+        // Assert
+        assert!(should_refresh);
+    }
+
+    #[test]
+    fn should_refresh_plan_followup_returns_false_when_existing_followup_is_still_valid() {
+        // Arrange
+        let previous_status = Status::Review;
+
+        // Act
+        let should_refresh = App::should_refresh_plan_followup(previous_status, true);
+
+        // Assert
+        assert!(!should_refresh);
     }
 
     /// Builds deterministic Codex usage-limit snapshots for tests.

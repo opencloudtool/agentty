@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// A single plan question with its text and selectable answer options.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10,11 +10,12 @@ pub struct PlanQuestion {
 }
 
 /// Extracts numbered questions (with optional sub-numbered answer options)
-/// from a `Questions` heading in plan output.
+/// from the most recent `Questions` heading in plan output.
 ///
-/// The parser looks for either `## Questions` or `### Questions`, then reads
+/// The parser scans for either `## Questions` or `### Questions`, then parses
 /// top-level numbered items as questions. Indented sub-numbered items beneath
-/// each question are parsed as answer options.
+/// each question are parsed as answer options. When multiple `Questions`
+/// sections exist in one transcript, only the latest section is used.
 ///
 /// Example input:
 /// ```text
@@ -27,43 +28,14 @@ pub struct PlanQuestion {
 ///    2. No
 /// ```
 pub fn extract_plan_questions(plan_output: &str) -> VecDeque<PlanQuestion> {
-    let mut questions: Vec<PlanQuestion> = Vec::new();
-    let mut is_in_questions_section = false;
+    let all_lines: Vec<&str> = plan_output.lines().collect();
+    let latest_questions = latest_questions_section(&all_lines)
+        .map(parse_questions_section)
+        .unwrap_or_default();
 
-    for raw_line in plan_output.lines() {
-        let trimmed = raw_line.trim();
-
-        if !is_in_questions_section {
-            if is_questions_heading(trimmed) {
-                is_in_questions_section = true;
-            }
-
-            continue;
-        }
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            break;
-        }
-
-        let is_indented = raw_line.starts_with("   ") || raw_line.starts_with('\t');
-
-        if is_indented {
-            if let Some(answer_text) = numbered_item(trimmed)
-                && let Some(current_question) = questions.last_mut()
-            {
-                current_question.answers.push(answer_text.to_string());
-            }
-
-            continue;
-        }
-
-        if let Some(question_text) = numbered_item(trimmed) {
-            questions.push(PlanQuestion {
-                answers: Vec::new(),
-                text: question_text.to_string(),
-            });
-        }
-    }
+    let answered_questions = extract_answered_question_texts(plan_output);
+    let mut questions = latest_questions;
+    questions.retain(|question| !answered_questions.contains(&question.text));
 
     VecDeque::from(questions)
 }
@@ -72,6 +44,111 @@ fn is_questions_heading(line: &str) -> bool {
     let normalized_heading = line.trim_end_matches(':').trim().to_ascii_lowercase();
 
     normalized_heading == "## questions" || normalized_heading == "### questions"
+}
+
+/// Returns the line slice for the most recent `Questions` section body.
+fn latest_questions_section<'a>(all_lines: &'a [&'a str]) -> Option<&'a [&'a str]> {
+    let latest_heading_index = all_lines
+        .iter()
+        .rposition(|line| is_questions_heading(line.trim()))?;
+
+    Some(&all_lines[(latest_heading_index + 1)..])
+}
+
+/// Parses one `Questions` section body into structured questions and answers.
+fn parse_questions_section(section_lines: &[&str]) -> Vec<PlanQuestion> {
+    let mut questions: Vec<PlanQuestion> = Vec::new();
+
+    for raw_line in section_lines {
+        let trimmed_line = raw_line.trim();
+        if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
+            break;
+        }
+
+        let is_indented = raw_line.starts_with("   ") || raw_line.starts_with('\t');
+        if is_indented {
+            if let Some(answer_text) = numbered_item(trimmed_line)
+                && let Some(current_question) = questions.last_mut()
+            {
+                current_question.answers.push(answer_text.to_string());
+            }
+
+            continue;
+        }
+
+        if let Some(question_text) = numbered_item(trimmed_line) {
+            questions.push(PlanQuestion {
+                answers: Vec::new(),
+                text: question_text.to_string(),
+            });
+        }
+    }
+
+    questions
+}
+
+/// Extracts question texts that were already answered by the user in prior
+/// consolidated plan-feedback prompts.
+///
+/// Only numbered lines inside explicit `User answers to plan questions:`
+/// blocks are considered, preventing unrelated `1. ... -> ...` lines from
+/// being treated as answered questions.
+fn extract_answered_question_texts(plan_output: &str) -> HashSet<String> {
+    let mut answered_questions = HashSet::new();
+    let mut is_in_answers_block = false;
+
+    for raw_line in plan_output.lines() {
+        let trimmed_line = raw_line.trim_start();
+
+        if is_user_answers_heading(trimmed_line) {
+            is_in_answers_block = true;
+            continue;
+        }
+
+        if !is_in_answers_block {
+            continue;
+        }
+
+        let normalized_line = trimmed_line.trim();
+        if normalized_line.is_empty() {
+            continue;
+        }
+        if normalized_line.starts_with('#') || normalized_line.starts_with('›') {
+            is_in_answers_block = false;
+
+            continue;
+        }
+
+        let Some(numbered_text) = numbered_item(normalized_line) else {
+            is_in_answers_block = false;
+
+            continue;
+        };
+
+        let answered_question = numbered_text
+            .split_once('\u{2192}')
+            .or_else(|| numbered_text.split_once("->"))
+            .map(|(question, _)| question.trim().to_string());
+
+        if let Some(answered_question) = answered_question
+            && !answered_question.is_empty()
+        {
+            answered_questions.insert(answered_question);
+        }
+    }
+
+    answered_questions
+}
+
+/// Returns whether a line starts a consolidated answered-questions block.
+fn is_user_answers_heading(line: &str) -> bool {
+    let normalized_line = line
+        .trim_start_matches('›')
+        .trim()
+        .trim_end_matches(':')
+        .to_ascii_lowercase();
+
+    normalized_line == "user answers to plan questions"
 }
 
 /// Extracts the text after a numbered prefix like `1.` or `2.`.
@@ -216,5 +293,80 @@ mod tests {
         assert_eq!(questions.len(), 1);
         assert_eq!(questions[0].text, "Question?");
         assert_eq!(questions[0].answers, vec!["Answer A"]);
+    }
+
+    #[test]
+    fn test_extract_plan_questions_prefers_latest_questions_section() {
+        // Arrange
+        let output = "\
+### Questions
+1. First question?
+   1. Old answer
+
+### Plan
+- Updated plan
+
+### Questions
+1. Latest question?
+   1. New answer A
+   2. New answer B
+";
+
+        // Act
+        let questions = extract_plan_questions(output);
+
+        // Assert
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].text, "Latest question?");
+        assert_eq!(questions[0].answers, vec!["New answer A", "New answer B"]);
+    }
+
+    #[test]
+    fn test_extract_plan_questions_skips_latest_questions_already_answered() {
+        // Arrange
+        let output = "\
+### Questions
+1. Where should `Dre` be added in `README.md`?
+   1. Add under Contributors
+2. How should `Dre` be represented?
+   1. Plain text
+
+ › User answers to plan questions:
+1. Where should `Dre` be added in `README.md`? → Add under Contributors
+2. How should `Dre` be represented? → Plain text
+
+### Questions
+1. Where should `Dre` be added in `README.md`?
+   1. Add under Contributors
+2. How should `Dre` be represented?
+   1. Plain text
+";
+
+        // Act
+        let questions = extract_plan_questions(output);
+
+        // Assert
+        assert!(questions.is_empty());
+    }
+
+    #[test]
+    fn test_extract_plan_questions_ignores_answer_arrow_lines_outside_answers_block() {
+        // Arrange
+        let output = "\
+### Questions
+1. Use sqlite?
+2. Add cache?
+
+### Notes
+1. This is not an answered question -> just a random note
+";
+
+        // Act
+        let questions = extract_plan_questions(output);
+
+        // Assert
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[0].text, "Use sqlite?");
+        assert_eq!(questions[1].text, "Add cache?");
     }
 }

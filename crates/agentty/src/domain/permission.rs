@@ -118,8 +118,8 @@ impl PlanFollowupOption {
 ///
 /// Operates as a two-phase state machine:
 /// 1. **Question phase**: presents one question at a time with its answer
-///    options and `TypeFeedback`. Selecting an answer stores it and advances to
-///    the next question.
+///    options, while still allowing `ImplementPlan` and `TypeFeedback`.
+///    Selecting an answer stores it and advances to the next question.
 /// 2. **Final phase**: shows `ImplementPlan` and `TypeFeedback` when no
 ///    questions exist or all have been answered.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -135,9 +135,10 @@ impl PlanFollowup {
     /// Creates follow-up state with optional clarifying questions.
     ///
     /// When questions with answers exist, the first question is presented
-    /// immediately. Questions without answer options are treated as
-    /// free-text-only (just `TypeFeedback`). When no questions exist,
-    /// shows `ImplementPlan` and `TypeFeedback`.
+    /// immediately and options include all answers plus `ImplementPlan` and
+    /// `TypeFeedback`. Questions without answer options are treated as
+    /// free-text-only and show `ImplementPlan` plus `TypeFeedback`.
+    /// When no questions exist, shows `ImplementPlan` and `TypeFeedback`.
     pub fn new(mut questions: VecDeque<PlanQuestion>) -> Self {
         let current_question = questions.pop_front();
         let options = Self::build_options_for_question(current_question.as_ref());
@@ -206,7 +207,11 @@ impl PlanFollowup {
             let _ = writeln!(prompt, "{}. {} \u{2192} {}", index + 1, question, answer);
         }
 
-        prompt.push_str("\nPlease update the plan to reflect these answers.");
+        prompt.push_str(
+            "\nTreat these answers as final decisions. Do not repeat already answered questions. \
+             Please update the plan to reflect these answers. Ask new clarifying questions only \
+             if a new blocking ambiguity remains.",
+        );
 
         prompt
     }
@@ -236,9 +241,9 @@ impl PlanFollowup {
     /// Builds the option list for the given question phase.
     ///
     /// If a question with answers is active, options are its answers plus
-    /// `TypeFeedback`. If the question has no answers (free-text only),
-    /// or there is no question, options are `ImplementPlan` plus
-    /// `TypeFeedback`.
+    /// `ImplementPlan` and `TypeFeedback`. If the question has no answers
+    /// (free-text only), or there is no question, options are
+    /// `ImplementPlan` plus `TypeFeedback`.
     fn build_options_for_question(question: Option<&PlanQuestion>) -> Vec<PlanFollowupOption> {
         let Some(question) = question else {
             return vec![
@@ -262,6 +267,7 @@ impl PlanFollowup {
                 question: question.text.clone(),
             })
             .collect();
+        options.push(PlanFollowupOption::ImplementPlan);
         options.push(PlanFollowupOption::TypeFeedback);
 
         options
@@ -312,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_followup_new_with_question_answers_shows_answers_and_feedback() {
+    fn test_plan_followup_new_with_question_answers_shows_answers_implement_and_feedback() {
         // Arrange
         let questions = VecDeque::from(vec![PlanQuestion {
             answers: vec!["30 seconds".to_string(), "60 seconds".to_string()],
@@ -323,7 +329,7 @@ mod tests {
         let followup = PlanFollowup::new(questions);
 
         // Assert
-        assert_eq!(followup.options.len(), 3);
+        assert_eq!(followup.options.len(), 4);
         assert_eq!(
             followup.options[0],
             PlanFollowupOption::AnswerQuestion {
@@ -338,7 +344,8 @@ mod tests {
                 question: "What interval?".to_string(),
             }
         );
-        assert_eq!(followup.options[2], PlanFollowupOption::TypeFeedback);
+        assert_eq!(followup.options[2], PlanFollowupOption::ImplementPlan);
+        assert_eq!(followup.options[3], PlanFollowupOption::TypeFeedback);
         assert_eq!(followup.current_question_text(), Some("What interval?"));
     }
 
@@ -383,7 +390,9 @@ mod tests {
         assert!(has_more);
         assert_eq!(followup.current_question_text(), Some("Which cache?"));
         assert!(followup.has_collected_answers());
-        assert_eq!(followup.options.len(), 3);
+        assert_eq!(followup.options.len(), 4);
+        assert_eq!(followup.options[2], PlanFollowupOption::ImplementPlan);
+        assert_eq!(followup.options[3], PlanFollowupOption::TypeFeedback);
     }
 
     #[test]

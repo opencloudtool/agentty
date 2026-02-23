@@ -49,7 +49,7 @@ pub fn create_backend(kind: AgentKind) -> Box<dyn AgentBackend> {
 }
 
 /// Builds a resume prompt that optionally prepends previous session output.
-pub(super) fn build_resume_prompt(prompt: &str, session_output: Option<&str>) -> String {
+pub(crate) fn build_resume_prompt(prompt: &str, session_output: Option<&str>) -> String {
     let Some(session_output) = session_output
         .map(str::trim)
         .filter(|value| !value.is_empty())
