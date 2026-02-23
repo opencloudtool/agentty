@@ -8,6 +8,7 @@ use crate::app::AppServices;
 pub(crate) enum SettingName {
     DefaultModel,
     DevServer,
+    LastUsedModelAsDefault,
     LongestSessionDurationSeconds,
 }
 
@@ -17,6 +18,7 @@ impl SettingName {
         match self {
             Self::DefaultModel => "DefaultModel",
             Self::DevServer => "DevServer",
+            Self::LastUsedModelAsDefault => "LastUsedModelAsDefault",
             Self::LongestSessionDurationSeconds => "LongestSessionDurationSeconds",
         }
     }
@@ -76,6 +78,7 @@ pub struct SettingsManager {
     pub dev_server: String,
     pub table_state: TableState,
     editing_text_row: Option<SettingRow>,
+    use_last_used_model_as_default: bool,
 }
 
 impl SettingsManager {
@@ -96,6 +99,14 @@ impl SettingsManager {
             .unwrap_or(None)
             .unwrap_or_default();
 
+        let use_last_used_model_as_default = services
+            .db()
+            .get_setting(SettingName::LastUsedModelAsDefault.as_str())
+            .await
+            .unwrap_or(None)
+            .and_then(|setting| setting.parse::<bool>().ok())
+            .unwrap_or(false);
+
         let mut table_state = TableState::default();
         table_state.select(Some(0));
 
@@ -104,6 +115,7 @@ impl SettingsManager {
             dev_server,
             table_state,
             editing_text_row: None,
+            use_last_used_model_as_default,
         }
     }
 
@@ -248,7 +260,13 @@ impl SettingsManager {
     /// Returns the text displayed for a row value.
     fn display_value_for_row(&self, row: SettingRow) -> String {
         match row {
-            SettingRow::DefaultModel => self.default_model.as_str().to_string(),
+            SettingRow::DefaultModel => {
+                if self.use_last_used_model_as_default {
+                    "Last used model as default".to_string()
+                } else {
+                    self.default_model.as_str().to_string()
+                }
+            }
             SettingRow::DevServer => {
                 if self.is_editing_text_input_for(row) {
                     format!("{}|", self.dev_server)
@@ -269,9 +287,11 @@ impl SettingsManager {
 
         match row.setting_name() {
             SettingName::DefaultModel => {
-                self.cycle_model(services).await;
+                self.cycle_default_model_selector(services).await;
             }
-            SettingName::DevServer | SettingName::LongestSessionDurationSeconds => {}
+            SettingName::DevServer
+            | SettingName::LastUsedModelAsDefault
+            | SettingName::LongestSessionDurationSeconds => {}
         }
     }
 
@@ -288,31 +308,59 @@ impl SettingsManager {
                     .upsert_setting(SettingName::DevServer.as_str(), &self.dev_server)
                     .await;
             }
-            SettingName::DefaultModel | SettingName::LongestSessionDurationSeconds => {}
+            SettingName::DefaultModel
+            | SettingName::LastUsedModelAsDefault
+            | SettingName::LongestSessionDurationSeconds => {}
         }
     }
 
-    /// Cycles the currently selected model and persists it.
-    async fn cycle_model(&mut self, services: &AppServices) {
+    /// Cycles the default-model selector through all explicit models and the
+    /// `Last used model as default` option.
+    async fn cycle_default_model_selector(&mut self, services: &AppServices) {
         let all_models: Vec<AgentModel> = AgentKind::ALL
             .iter()
             .flat_map(|kind| kind.models())
             .copied()
             .collect();
 
-        let current_index = all_models
-            .iter()
-            .position(|model| *model == self.default_model)
-            .unwrap_or(0);
+        let last_used_option_index = all_models.len();
+        let current_index = if self.use_last_used_model_as_default {
+            last_used_option_index
+        } else {
+            all_models
+                .iter()
+                .position(|model| *model == self.default_model)
+                .unwrap_or(0)
+        };
+        let next_index = (current_index + 1) % (last_used_option_index + 1);
 
-        let next_index = (current_index + 1) % all_models.len();
-        self.default_model = all_models[next_index];
+        if next_index == last_used_option_index {
+            self.use_last_used_model_as_default = true;
+        } else {
+            self.default_model = all_models[next_index];
+            self.use_last_used_model_as_default = false;
+        }
+
+        self.persist_default_model_settings(services).await;
+    }
+
+    /// Persists default-model selector values (`DefaultModel` and
+    /// `LastUsedModelAsDefault`).
+    async fn persist_default_model_settings(&self, services: &AppServices) {
+        let last_used_model_as_default_value = self.use_last_used_model_as_default.to_string();
 
         let _ = services
             .db()
             .upsert_setting(
                 SettingName::DefaultModel.as_str(),
                 self.default_model.as_str(),
+            )
+            .await;
+        let _ = services
+            .db()
+            .upsert_setting(
+                SettingName::LastUsedModelAsDefault.as_str(),
+                &last_used_model_as_default_value,
             )
             .await;
     }
@@ -333,6 +381,7 @@ mod tests {
             dev_server: String::new(),
             table_state,
             editing_text_row: None,
+            use_last_used_model_as_default: false,
         }
     }
 
@@ -352,6 +401,15 @@ mod tests {
 
         // Assert
         assert_eq!(setting_name, "DevServer");
+    }
+
+    #[test]
+    fn setting_name_as_str_returns_last_used_model_as_default() {
+        // Arrange & Act
+        let setting_name = SettingName::LastUsedModelAsDefault.as_str();
+
+        // Assert
+        assert_eq!(setting_name, "LastUsedModelAsDefault");
     }
 
     #[test]
@@ -444,5 +502,18 @@ mod tests {
 
         // Assert
         assert_eq!(rows[1].1, "http://localhost:5173|");
+    }
+
+    #[test]
+    fn settings_rows_show_last_used_model_as_default_value_when_enabled() {
+        // Arrange
+        let mut manager = new_settings_manager();
+        manager.use_last_used_model_as_default = true;
+
+        // Act
+        let rows = manager.settings_rows();
+
+        // Assert
+        assert_eq!(rows[0].1, "Last used model as default");
     }
 }

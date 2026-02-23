@@ -155,6 +155,10 @@ impl SessionManager {
 
     /// Applies reducer updates after session agent/model changes are
     /// persisted.
+    ///
+    /// This updates only the target session snapshot. Global default-model
+    /// selection is managed by settings persistence and loaded when creating
+    /// new sessions.
     pub(crate) fn apply_session_model_updated(
         &mut self,
         session_id: &str,
@@ -168,8 +172,6 @@ impl SessionManager {
         {
             session.model = session_model;
         }
-
-        self.default_session_model = session_model;
     }
 }
 
@@ -885,7 +887,7 @@ mod tests {
             .iter()
             .find(|session| session.id == second_session_id)
             .expect("missing second session");
-        assert_eq!(second_session.model, AgentModel::Gpt52Codex);
+        assert_eq!(second_session.model, AgentKind::Gemini.default_model());
         assert_eq!(default_model_setting, None);
 
         let db_sessions = app
@@ -898,7 +900,72 @@ mod tests {
             .iter()
             .find(|session| session.id == second_session_id)
             .expect("missing second session in db");
-        assert_eq!(db_second_session.model, "gpt-5.2-codex");
+        assert_eq!(
+            db_second_session.model,
+            AgentKind::Gemini.default_model().as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_session_persists_default_model_setting_when_last_used_model_is_enabled() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let mut app = App::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            Some("main".to_string()),
+            db.clone(),
+        )
+        .await;
+        app.services
+            .db()
+            .upsert_setting(SettingName::LastUsedModelAsDefault.as_str(), "true")
+            .await
+            .expect("failed to upsert last-used-model setting");
+        let first_session_id = app
+            .create_session()
+            .await
+            .expect("failed to create first session");
+
+        // Act
+        app.set_session_model(&first_session_id, AgentModel::Gpt52Codex)
+            .await
+            .expect("failed to set session model");
+        let default_model_setting = app
+            .services
+            .db()
+            .get_setting(SettingName::DefaultModel.as_str())
+            .await
+            .expect("failed to load setting");
+        drop(app);
+        let mut restarted_app = App::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            Some("main".to_string()),
+            db,
+        )
+        .await;
+        let second_session_id = restarted_app
+            .create_session()
+            .await
+            .expect("failed to create second session");
+
+        // Assert
+        assert_eq!(
+            default_model_setting,
+            Some(AgentModel::Gpt52Codex.as_str().to_string())
+        );
+        let second_session = restarted_app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == second_session_id)
+            .expect("missing second session");
+        assert_eq!(second_session.model, AgentModel::Gpt52Codex);
     }
 
     #[tokio::test]

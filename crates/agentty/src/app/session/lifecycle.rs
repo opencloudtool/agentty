@@ -323,6 +323,9 @@ impl SessionManager {
 
     /// Updates and persists the model for a single session.
     ///
+    /// When `LastUsedModelAsDefault` is enabled, this also persists the chosen
+    /// session model as `DefaultModel`.
+    ///
     /// # Errors
     /// Returns an error if the session is missing or persistence fails.
     pub async fn set_session_model(
@@ -341,6 +344,14 @@ impl SessionManager {
             .db()
             .update_session_model(session_id, session_model.as_str())
             .await?;
+
+        if Self::should_persist_last_used_model_as_default(services).await? {
+            services
+                .db()
+                .upsert_setting(SettingName::DefaultModel.as_str(), session_model.as_str())
+                .await?;
+        }
+
         services.emit_app_event(AppEvent::SessionModelUpdated {
             session_id: session_id.to_string(),
             session_model,
@@ -351,6 +362,21 @@ impl SessionManager {
         }
 
         Ok(())
+    }
+
+    /// Returns whether session model switches should also persist
+    /// `DefaultModel`.
+    async fn should_persist_last_used_model_as_default(
+        services: &AppServices,
+    ) -> Result<bool, String> {
+        let should_persist = services
+            .db()
+            .get_setting(SettingName::LastUsedModelAsDefault.as_str())
+            .await?
+            .and_then(|setting_value| setting_value.parse::<bool>().ok())
+            .unwrap_or(false);
+
+        Ok(should_persist)
     }
 
     /// Clears a session's chat history and resets it to a fresh state.

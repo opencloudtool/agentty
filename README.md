@@ -42,16 +42,17 @@ npx agentty
 
 ## Session Agent, Model, and Permission Mode
 
-Agent, model, and permission mode are configured per session, and the latest
-selection becomes the default for newly created sessions.
+Agent, model, and permission mode are configured per session.
 
-- New sessions start with the most recently used `agent` + `model` +
-  `permission_mode`.
+- New sessions start with the configured `Default Model` value from `Settings`
+  plus the most recently used `permission_mode`.
 - On a fresh setup (no previous session changes), defaults are `gemini` +
   `gemini-3-flash-preview` + `auto_edit`.
 - In prompt mode, type `/model` as the first input token to open the multistep picker:
   - choose agent (`gemini`, `codex`, `claude`)
   - choose model from that agent's curated model list
+- In `Settings` -> `Default Model`, select `Last used model as default` to
+  persist model switches as the next-session default across app restarts.
 - In prompt mode, press `Up` / `Down` to iterate previously sent messages for the active session and quickly resend/edit them.
 - Permission modes:
   - `auto_edit` (default): runs with standard edit permissions.
