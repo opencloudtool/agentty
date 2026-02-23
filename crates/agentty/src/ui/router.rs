@@ -8,8 +8,8 @@ use crate::app::{SettingsManager, Tab};
 use crate::domain::permission::PlanFollowup;
 use crate::domain::project::Project;
 use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session};
+use crate::ui::overlays::SyncBlockedPopupRenderContext;
 use crate::ui::state::app_mode::AppMode;
-use crate::ui::state::palette::{PaletteCommand, PaletteFocus};
 use crate::ui::{Component, Page, RenderContext, components, overlays, pages};
 
 /// Shared borrowed data required to render list-page backgrounds.
@@ -24,24 +24,22 @@ pub(crate) struct ListBackgroundRenderContext<'a> {
     pub(crate) table_state: &'a mut TableState,
 }
 
-/// Context passed while rendering list-family modes and overlays.
-struct ListModeRenderContext<'a> {
-    active_project_id: i64,
+/// Shared mutable routing data reused across app modes in `route_frame`.
+struct RouteSharedContext<'a> {
     all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     current_tab: Tab,
     longest_session_duration_seconds: u64,
-    mode: &'a AppMode,
-    projects: &'a [Project],
     sessions: &'a [Session],
     settings: &'a mut SettingsManager,
     stats_activity: &'a [DailyActivity],
     table_state: &'a mut TableState,
 }
 
-impl<'a> ListModeRenderContext<'a> {
-    /// Converts list mode context into the shared list-background context.
-    fn into_list_background(self) -> ListBackgroundRenderContext<'a> {
+impl RouteSharedContext<'_> {
+    /// Creates a list-background context for overlays/pages that render on top
+    /// of the tabbed list content.
+    fn list_background(&mut self) -> ListBackgroundRenderContext<'_> {
         ListBackgroundRenderContext {
             all_time_model_usage: self.all_time_model_usage,
             codex_usage_limits: self.codex_usage_limits,
@@ -53,147 +51,25 @@ impl<'a> ListModeRenderContext<'a> {
             table_state: self.table_state,
         }
     }
-
-    /// Converts list mode context into command-palette rendering context.
-    fn into_command_palette(
-        self,
-        focus: PaletteFocus,
-        input: &'a str,
-        selected_index: usize,
-    ) -> CommandPaletteRenderContext<'a> {
-        CommandPaletteRenderContext {
-            all_time_model_usage: self.all_time_model_usage,
-            codex_usage_limits: self.codex_usage_limits,
-            current_tab: self.current_tab,
-            focus,
-            input,
-            longest_session_duration_seconds: self.longest_session_duration_seconds,
-            selected_index,
-            sessions: self.sessions,
-            settings: self.settings,
-            stats_activity: self.stats_activity,
-            table_state: self.table_state,
-        }
-    }
-
-    /// Converts list mode context into command-option rendering context.
-    fn into_command_option(
-        self,
-        command: PaletteCommand,
-        selected_index: usize,
-    ) -> CommandOptionRenderContext<'a> {
-        CommandOptionRenderContext {
-            active_project_id: self.active_project_id,
-            all_time_model_usage: self.all_time_model_usage,
-            codex_usage_limits: self.codex_usage_limits,
-            command,
-            current_tab: self.current_tab,
-            longest_session_duration_seconds: self.longest_session_duration_seconds,
-            projects: self.projects,
-            selected_index,
-            sessions: self.sessions,
-            settings: self.settings,
-            stats_activity: self.stats_activity,
-            table_state: self.table_state,
-        }
-    }
-
-    /// Converts list mode context into sync-popup rendering context.
-    fn into_sync_popup(
-        self,
-        default_branch: Option<&'a str>,
-        is_loading: bool,
-        message: &'a str,
-        project_name: Option<&'a str>,
-        title: &'a str,
-    ) -> SyncPopupRenderContext<'a> {
-        SyncPopupRenderContext {
-            all_time_model_usage: self.all_time_model_usage,
-            codex_usage_limits: self.codex_usage_limits,
-            current_tab: self.current_tab,
-            default_branch,
-            is_loading,
-            longest_session_duration_seconds: self.longest_session_duration_seconds,
-            message,
-            project_name,
-            sessions: self.sessions,
-            settings: self.settings,
-            stats_activity: self.stats_activity,
-            table_state: self.table_state,
-            title,
-        }
-    }
 }
 
-/// Shared borrowed data required to render command palette overlays.
-pub(crate) struct CommandPaletteRenderContext<'a> {
-    pub(crate) all_time_model_usage: &'a [AllTimeModelUsage],
-    pub(crate) codex_usage_limits: Option<CodexUsageLimits>,
-    pub(crate) current_tab: Tab,
-    pub(crate) focus: PaletteFocus,
-    pub(crate) input: &'a str,
-    pub(crate) longest_session_duration_seconds: u64,
-    pub(crate) selected_index: usize,
-    pub(crate) sessions: &'a [Session],
-    pub(crate) settings: &'a mut SettingsManager,
-    pub(crate) stats_activity: &'a [DailyActivity],
-    pub(crate) table_state: &'a mut TableState,
-}
-
-/// Shared borrowed data required to render command option overlays.
-pub(crate) struct CommandOptionRenderContext<'a> {
-    pub(crate) active_project_id: i64,
-    pub(crate) all_time_model_usage: &'a [AllTimeModelUsage],
-    pub(crate) codex_usage_limits: Option<CodexUsageLimits>,
-    pub(crate) command: PaletteCommand,
-    pub(crate) current_tab: Tab,
-    pub(crate) longest_session_duration_seconds: u64,
-    pub(crate) projects: &'a [Project],
-    pub(crate) selected_index: usize,
-    pub(crate) sessions: &'a [Session],
-    pub(crate) settings: &'a mut SettingsManager,
-    pub(crate) stats_activity: &'a [DailyActivity],
-    pub(crate) table_state: &'a mut TableState,
-}
-
-/// Shared borrowed data required to render the sync popup overlay.
-pub(crate) struct SyncPopupRenderContext<'a> {
-    pub(crate) all_time_model_usage: &'a [AllTimeModelUsage],
-    pub(crate) codex_usage_limits: Option<CodexUsageLimits>,
-    pub(crate) current_tab: Tab,
-    pub(crate) default_branch: Option<&'a str>,
-    pub(crate) is_loading: bool,
-    pub(crate) longest_session_duration_seconds: u64,
-    pub(crate) message: &'a str,
-    pub(crate) project_name: Option<&'a str>,
-    pub(crate) sessions: &'a [Session],
-    pub(crate) settings: &'a mut SettingsManager,
-    pub(crate) stats_activity: &'a [DailyActivity],
-    pub(crate) table_state: &'a mut TableState,
-    pub(crate) title: &'a str,
-}
-
-/// Context passed while rendering view/prompt/diff/help modes.
-struct SessionModeRenderContext<'a> {
-    all_time_model_usage: &'a [AllTimeModelUsage],
-    codex_usage_limits: Option<CodexUsageLimits>,
-    current_tab: Tab,
-    longest_session_duration_seconds: u64,
-    mode: &'a AppMode,
-    plan_followups: &'a HashMap<String, PlanFollowup>,
-    session_progress_messages: &'a HashMap<String, String>,
-    sessions: &'a [Session],
-    settings: &'a mut SettingsManager,
-    stats_activity: &'a [DailyActivity],
-    table_state: &'a mut TableState,
-}
-
-/// Borrowed data for rendering `SessionChatPage` in view/prompt modes.
+/// Borrowed inputs for rendering a session chat page.
+#[derive(Clone, Copy)]
 struct SessionChatRenderContext<'a> {
     mode: &'a AppMode,
     plan_followups: Option<&'a HashMap<String, PlanFollowup>>,
-    scroll_offset: Option<u16>,
     session_id: &'a str,
+    session_progress_messages: &'a HashMap<String, String>,
+    sessions: &'a [Session],
+    scroll_offset: Option<u16>,
+}
+
+/// Shared immutable routing inputs that are not part of list-background state.
+#[derive(Clone, Copy)]
+struct RouteAuxContext<'a> {
+    active_project_id: i64,
+    plan_followups: &'a HashMap<String, PlanFollowup>,
+    projects: &'a [Project],
     session_progress_messages: &'a HashMap<String, String>,
 }
 
@@ -216,62 +92,43 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
         ..
     } = context;
 
-    match mode {
-        AppMode::List
-        | AppMode::SyncBlockedPopup { .. }
-        | AppMode::Confirmation { .. }
-        | AppMode::CommandPalette { .. }
-        | AppMode::CommandOption { .. } => render_list_mode_content(
-            f,
-            area,
-            ListModeRenderContext {
-                active_project_id,
-                all_time_model_usage,
-                codex_usage_limits,
-                current_tab,
-                longest_session_duration_seconds,
-                mode,
-                projects,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-            },
-        ),
-        AppMode::View { .. }
-        | AppMode::Prompt { .. }
-        | AppMode::Diff { .. }
-        | AppMode::Help { .. } => render_session_mode_content(
-            f,
-            area,
-            SessionModeRenderContext {
-                all_time_model_usage,
-                codex_usage_limits,
-                current_tab,
-                longest_session_duration_seconds,
-                mode,
-                plan_followups,
-                session_progress_messages,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-            },
-        ),
+    let mut shared = RouteSharedContext {
+        all_time_model_usage,
+        codex_usage_limits,
+        current_tab,
+        longest_session_duration_seconds,
+        sessions,
+        settings,
+        stats_activity,
+        table_state,
+    };
+
+    let aux = RouteAuxContext {
+        active_project_id,
+        plan_followups,
+        projects,
+        session_progress_messages,
+    };
+
+    if render_list_or_overlay_mode(f, area, mode, &mut shared, aux) {
+        return;
     }
+
+    render_session_or_diff_mode(f, area, mode, shared.sessions, aux);
 }
 
-/// Renders list modes and list-bound overlays.
-fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderContext<'_>) {
-    match context.mode {
-        AppMode::List => render_list_background(f, area, context.into_list_background()),
+/// Renders all list/overlay-driven modes and returns whether it handled `mode`.
+fn render_list_or_overlay_mode(
+    f: &mut Frame,
+    area: Rect,
+    mode: &AppMode,
+    shared: &mut RouteSharedContext<'_>,
+    aux: RouteAuxContext<'_>,
+) -> bool {
+    match mode {
+        AppMode::List => render_list_background(f, area, shared.list_background()),
         AppMode::Confirmation { .. } => {
-            overlays::render_confirmation_overlay(
-                f,
-                area,
-                context.mode,
-                context.into_list_background(),
-            );
+            overlays::render_confirmation_overlay(f, area, mode, shared.list_background());
         }
         AppMode::CommandPalette {
             input,
@@ -280,7 +137,10 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
         } => overlays::render_command_palette(
             f,
             area,
-            context.into_command_palette(*focus, input, *selected_index),
+            shared.list_background(),
+            *focus,
+            input,
+            *selected_index,
         ),
         AppMode::CommandOption {
             command,
@@ -288,7 +148,11 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
         } => overlays::render_command_options(
             f,
             area,
-            context.into_command_option(*command, *selected_index),
+            shared.list_background(),
+            *command,
+            *selected_index,
+            aux.projects,
+            aux.active_project_id,
         ),
         AppMode::SyncBlockedPopup {
             default_branch,
@@ -299,64 +163,74 @@ fn render_list_mode_content(f: &mut Frame, area: Rect, context: ListModeRenderCo
         } => overlays::render_sync_blocked_popup(
             f,
             area,
-            context.into_sync_popup(
-                default_branch.as_deref(),
-                *is_loading,
+            shared.list_background(),
+            SyncBlockedPopupRenderContext {
+                default_branch: default_branch.as_deref(),
+                is_loading: *is_loading,
                 message,
-                project_name.as_deref(),
+                project_name: project_name.as_deref(),
                 title,
-            ),
+            },
         ),
-        _ => {}
+        AppMode::Help {
+            context: help_context,
+            scroll_offset,
+        } => overlays::render_help(
+            f,
+            area,
+            help_context,
+            *scroll_offset,
+            shared.list_background(),
+            aux.plan_followups,
+            aux.session_progress_messages,
+        ),
+        AppMode::View { .. } | AppMode::Prompt { .. } | AppMode::Diff { .. } => {
+            return false;
+        }
     }
+
+    true
 }
 
-/// Renders session modes and help overlays.
-fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRenderContext<'_>) {
-    let SessionModeRenderContext {
-        all_time_model_usage,
-        codex_usage_limits,
-        current_tab,
-        longest_session_duration_seconds,
-        mode,
-        plan_followups,
-        session_progress_messages,
-        sessions,
-        settings,
-        stats_activity,
-        table_state,
-    } = context;
-
+/// Renders view, prompt, and diff modes that are tied to a selected session.
+fn render_session_or_diff_mode(
+    f: &mut Frame,
+    area: Rect,
+    mode: &AppMode,
+    sessions: &[Session],
+    aux: RouteAuxContext<'_>,
+) {
     match mode {
         AppMode::View {
             session_id,
             scroll_offset,
-        } => render_session_chat_mode(
+        } => render_session_chat(
             f,
             area,
-            sessions,
-            &view_session_chat_context(
+            SessionChatRenderContext {
                 mode,
-                plan_followups,
-                *scroll_offset,
+                plan_followups: Some(aux.plan_followups),
                 session_id,
-                session_progress_messages,
-            ),
+                session_progress_messages: aux.session_progress_messages,
+                sessions,
+                scroll_offset: *scroll_offset,
+            },
         ),
         AppMode::Prompt {
             session_id,
             scroll_offset,
             ..
-        } => render_session_chat_mode(
+        } => render_session_chat(
             f,
             area,
-            sessions,
-            &prompt_session_chat_context(
+            SessionChatRenderContext {
                 mode,
-                *scroll_offset,
+                plan_followups: None,
                 session_id,
-                session_progress_messages,
-            ),
+                session_progress_messages: aux.session_progress_messages,
+                sessions,
+                scroll_offset: *scroll_offset,
+            },
         ),
         AppMode::Diff {
             diff,
@@ -372,66 +246,47 @@ fn render_session_mode_content(f: &mut Frame, area: Rect, context: SessionModeRe
             *scroll_offset,
             *file_explorer_selected_index,
         ),
-        AppMode::Help {
-            context: help_context,
-            scroll_offset,
-        } => overlays::render_help(
-            f,
-            area,
-            help_context,
-            *scroll_offset,
-            overlays::HelpBackgroundRenderContext {
-                all_time_model_usage,
-                codex_usage_limits,
-                context: help_context,
-                current_tab,
-                longest_session_duration_seconds,
-                plan_followups,
-                session_progress_messages,
-                sessions,
-                settings,
-                stats_activity,
-                table_state,
-            },
-        ),
-        _ => {}
+        AppMode::List
+        | AppMode::Confirmation { .. }
+        | AppMode::CommandPalette { .. }
+        | AppMode::CommandOption { .. }
+        | AppMode::SyncBlockedPopup { .. }
+        | AppMode::Help { .. } => {}
     }
 }
 
-/// Builds chat render context for `AppMode::View`.
-fn view_session_chat_context<'a>(
-    mode: &'a AppMode,
-    plan_followups: &'a HashMap<String, PlanFollowup>,
-    scroll_offset: Option<u16>,
-    session_id: &'a str,
-    session_progress_messages: &'a HashMap<String, String>,
-) -> SessionChatRenderContext<'a> {
-    SessionChatRenderContext {
+/// Renders the session chat page for view and prompt modes.
+fn render_session_chat(f: &mut Frame, area: Rect, context: SessionChatRenderContext<'_>) {
+    let SessionChatRenderContext {
         mode,
-        plan_followups: Some(plan_followups),
-        scroll_offset,
+        plan_followups,
         session_id,
         session_progress_messages,
-    }
-}
-
-/// Builds chat render context for `AppMode::Prompt`.
-fn prompt_session_chat_context<'a>(
-    mode: &'a AppMode,
-    scroll_offset: Option<u16>,
-    session_id: &'a str,
-    session_progress_messages: &'a HashMap<String, String>,
-) -> SessionChatRenderContext<'a> {
-    SessionChatRenderContext {
-        mode,
-        plan_followups: None,
+        sessions,
         scroll_offset,
-        session_id,
-        session_progress_messages,
-    }
+    } = context;
+
+    let Some(session_index) = sessions.iter().position(|session| session.id == session_id) else {
+        return;
+    };
+
+    let plan_followup = plan_followups.and_then(|followups| followups.get(session_id));
+    let active_progress = session_progress_messages
+        .get(session_id)
+        .map(std::string::String::as_str);
+
+    pages::session_chat::SessionChatPage::new(
+        sessions,
+        session_index,
+        scroll_offset,
+        mode,
+        plan_followup,
+        active_progress,
+    )
+    .render(f, area);
 }
 
-/// Renders the diff page for a specific session id when present.
+/// Renders the diff page for a specific session when present.
 fn render_diff_mode(
     f: &mut Frame,
     area: Rect,
@@ -447,36 +302,6 @@ fn render_diff_mode(
             diff.to_string(),
             scroll_offset,
             file_explorer_selected_index,
-        )
-        .render(f, area);
-    }
-}
-
-/// Renders the chat page for prompt/view modes when session exists.
-fn render_session_chat_mode(
-    f: &mut Frame,
-    area: Rect,
-    sessions: &[Session],
-    context: &SessionChatRenderContext<'_>,
-) {
-    let mode = context.mode;
-    let plan_followups = context.plan_followups;
-    let scroll_offset = context.scroll_offset;
-    let session_id = context.session_id;
-    let session_progress_messages = context.session_progress_messages;
-
-    if let Some(session_index) = sessions.iter().position(|session| session.id == session_id) {
-        let plan_followup = plan_followups.and_then(|followups| followups.get(session_id));
-        let active_progress = session_progress_messages
-            .get(session_id)
-            .map(std::string::String::as_str);
-        pages::session_chat::SessionChatPage::new(
-            sessions,
-            session_index,
-            scroll_offset,
-            mode,
-            plan_followup,
-            active_progress,
         )
         .render(f, area);
     }

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use ratatui::Frame;
 use ratatui::widgets::TableState;
 use tokio::sync::mpsc;
 
@@ -17,6 +18,7 @@ use crate::domain::plan::extract_plan_questions;
 use crate::domain::session::{CodexUsageLimits, Session, Status};
 use crate::infra::db::Database;
 use crate::infra::git::{GitClient, RealGitClient};
+use crate::ui;
 use crate::ui::state::app_mode::AppMode;
 
 mod assist;
@@ -281,6 +283,55 @@ impl App {
     /// Returns whether the onboarding screen should be shown.
     pub fn should_show_onboarding(&self) -> bool {
         self.sessions.sessions.is_empty()
+    }
+
+    /// Renders a complete UI frame by assembling a [`ui::RenderContext`] from
+    /// current app state and dispatching to the UI render pipeline.
+    pub fn draw(&mut self, frame: &mut Frame) {
+        let current_tab = self.tabs.current();
+        let working_dir = self.projects.working_dir().to_path_buf();
+        let git_branch = self.projects.git_branch().map(str::to_string);
+        let git_status = self.projects.git_status();
+        let latest_available_version = self.latest_available_version.as_deref().map(str::to_string);
+        let active_project_id = self.projects.active_project_id();
+        let plan_followups = self.plan_followups.clone();
+        let session_progress_messages = self.session_progress_messages.clone();
+        let show_onboarding = self.sessions.sessions.is_empty();
+        let mode = &self.mode;
+        let projects = &self.projects;
+        let (
+            sessions,
+            stats_activity,
+            all_time_model_usage,
+            longest_session_duration_seconds,
+            codex_usage_limits,
+            table_state,
+        ) = self.sessions.render_parts();
+        let settings = &mut self.settings;
+
+        ui::render(
+            frame,
+            ui::RenderContext {
+                active_project_id,
+                all_time_model_usage,
+                codex_usage_limits,
+                current_tab,
+                git_branch: git_branch.as_deref(),
+                git_status,
+                latest_available_version: latest_available_version.as_deref(),
+                longest_session_duration_seconds,
+                mode,
+                plan_followups: &plan_followups,
+                projects,
+                session_progress_messages: &session_progress_messages,
+                settings,
+                show_onboarding,
+                stats_activity,
+                sessions,
+                table_state,
+                working_dir: &working_dir,
+            },
+        );
     }
 
     /// Moves selection to the next session in the list.

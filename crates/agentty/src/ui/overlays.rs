@@ -2,32 +2,22 @@ use std::collections::HashMap;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::widgets::TableState;
 
-use crate::app::{SettingsManager, Tab};
 use crate::domain::permission::PlanFollowup;
-use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session};
-use crate::ui::router::{
-    CommandOptionRenderContext, CommandPaletteRenderContext, ListBackgroundRenderContext,
-    SyncPopupRenderContext, render_list_background,
-};
+use crate::domain::project::Project;
+use crate::ui::router::{ListBackgroundRenderContext, render_list_background};
 use crate::ui::state::app_mode::{AppMode, HelpContext};
+use crate::ui::state::palette::{PaletteCommand, PaletteFocus};
 use crate::ui::{Component, Page, components, pages};
 
-/// Shared borrowed data needed to render background content under help
-/// overlays.
-pub(crate) struct HelpBackgroundRenderContext<'a> {
-    pub(crate) all_time_model_usage: &'a [AllTimeModelUsage],
-    pub(crate) codex_usage_limits: Option<CodexUsageLimits>,
-    pub(crate) context: &'a HelpContext,
-    pub(crate) current_tab: Tab,
-    pub(crate) longest_session_duration_seconds: u64,
-    pub(crate) plan_followups: &'a HashMap<String, PlanFollowup>,
-    pub(crate) session_progress_messages: &'a HashMap<String, String>,
-    pub(crate) sessions: &'a [Session],
-    pub(crate) settings: &'a mut SettingsManager,
-    pub(crate) stats_activity: &'a [DailyActivity],
-    pub(crate) table_state: &'a mut TableState,
+/// Borrowed parameters for rendering the sync-blocked popup overlay.
+#[derive(Clone, Copy)]
+pub(crate) struct SyncBlockedPopupRenderContext<'a> {
+    pub(crate) default_branch: Option<&'a str>,
+    pub(crate) is_loading: bool,
+    pub(crate) message: &'a str,
+    pub(crate) project_name: Option<&'a str>,
+    pub(crate) title: &'a str,
 }
 
 /// Renders the list background and generic confirmation overlay.
@@ -35,9 +25,9 @@ pub(crate) fn render_confirmation_overlay(
     f: &mut Frame,
     area: Rect,
     mode: &AppMode,
-    context: ListBackgroundRenderContext<'_>,
+    list_background: ListBackgroundRenderContext<'_>,
 ) {
-    render_list_background(f, area, context);
+    render_list_background(f, area, list_background);
 
     let AppMode::Confirmation {
         confirmation_message,
@@ -61,38 +51,18 @@ pub(crate) fn render_confirmation_overlay(
 pub(crate) fn render_sync_blocked_popup(
     f: &mut Frame,
     area: Rect,
-    context: SyncPopupRenderContext<'_>,
+    list_background: ListBackgroundRenderContext<'_>,
+    context: SyncBlockedPopupRenderContext<'_>,
 ) {
-    let SyncPopupRenderContext {
-        all_time_model_usage,
-        codex_usage_limits,
-        current_tab,
+    let SyncBlockedPopupRenderContext {
         default_branch,
         is_loading,
-        longest_session_duration_seconds,
         message,
         project_name,
-        sessions,
-        settings,
-        stats_activity,
-        table_state,
         title,
     } = context;
 
-    render_list_background(
-        f,
-        area,
-        ListBackgroundRenderContext {
-            all_time_model_usage,
-            codex_usage_limits,
-            current_tab,
-            longest_session_duration_seconds,
-            sessions,
-            settings,
-            stats_activity,
-            table_state,
-        },
-    );
+    render_list_background(f, area, list_background);
 
     let popup_message = sync_popup_message(default_branch, message, project_name);
 
@@ -122,36 +92,12 @@ pub(crate) fn sync_popup_message(
 pub(crate) fn render_command_palette(
     f: &mut Frame,
     area: Rect,
-    context: CommandPaletteRenderContext<'_>,
+    list_background: ListBackgroundRenderContext<'_>,
+    focus: PaletteFocus,
+    input: &str,
+    selected_index: usize,
 ) {
-    let CommandPaletteRenderContext {
-        all_time_model_usage,
-        codex_usage_limits,
-        current_tab,
-        focus,
-        input,
-        longest_session_duration_seconds,
-        selected_index,
-        sessions,
-        settings,
-        stats_activity,
-        table_state,
-    } = context;
-
-    render_list_background(
-        f,
-        area,
-        ListBackgroundRenderContext {
-            all_time_model_usage,
-            codex_usage_limits,
-            current_tab,
-            longest_session_duration_seconds,
-            sessions,
-            settings,
-            stats_activity,
-            table_state,
-        },
-    );
+    render_list_background(f, area, list_background);
 
     components::command_palette::CommandPaletteInput::new(input, selected_index, focus)
         .render(f, area);
@@ -161,37 +107,13 @@ pub(crate) fn render_command_palette(
 pub(crate) fn render_command_options(
     f: &mut Frame,
     area: Rect,
-    context: CommandOptionRenderContext<'_>,
+    list_background: ListBackgroundRenderContext<'_>,
+    command: PaletteCommand,
+    selected_index: usize,
+    projects: &[Project],
+    active_project_id: i64,
 ) {
-    let CommandOptionRenderContext {
-        active_project_id,
-        all_time_model_usage,
-        codex_usage_limits,
-        command,
-        current_tab,
-        longest_session_duration_seconds,
-        projects,
-        selected_index,
-        sessions,
-        settings,
-        stats_activity,
-        table_state,
-    } = context;
-
-    render_list_background(
-        f,
-        area,
-        ListBackgroundRenderContext {
-            all_time_model_usage,
-            codex_usage_limits,
-            current_tab,
-            longest_session_duration_seconds,
-            sessions,
-            settings,
-            stats_activity,
-            table_state,
-        },
-    );
+    render_list_background(f, area, list_background);
 
     components::command_palette::CommandOptionList::new(
         command,
@@ -206,47 +128,38 @@ pub(crate) fn render_command_options(
 pub(crate) fn render_help(
     f: &mut Frame,
     area: Rect,
-    context: &HelpContext,
+    help_context: &HelpContext,
     scroll_offset: u16,
-    background_context: HelpBackgroundRenderContext<'_>,
+    list_background: ListBackgroundRenderContext<'_>,
+    plan_followups: &HashMap<String, PlanFollowup>,
+    session_progress_messages: &HashMap<String, String>,
 ) {
-    render_help_background(f, area, background_context);
+    render_help_background(
+        f,
+        area,
+        help_context,
+        list_background,
+        plan_followups,
+        session_progress_messages,
+    );
 
-    components::help_overlay::HelpOverlay::new(context, scroll_offset).render(f, area);
+    components::help_overlay::HelpOverlay::new(help_context, scroll_offset).render(f, area);
 }
 
 /// Renders background content behind help based on the source `HelpContext`.
-fn render_help_background(f: &mut Frame, area: Rect, context: HelpBackgroundRenderContext<'_>) {
-    let HelpBackgroundRenderContext {
-        all_time_model_usage,
-        codex_usage_limits,
-        context,
-        current_tab,
-        longest_session_duration_seconds,
-        plan_followups,
-        session_progress_messages,
-        sessions,
-        settings,
-        stats_activity,
-        table_state,
-    } = context;
+fn render_help_background(
+    f: &mut Frame,
+    area: Rect,
+    help_context: &HelpContext,
+    list_background: ListBackgroundRenderContext<'_>,
+    plan_followups: &HashMap<String, PlanFollowup>,
+    session_progress_messages: &HashMap<String, String>,
+) {
+    let sessions = list_background.sessions;
 
-    match context {
+    match help_context {
         HelpContext::List { .. } => {
-            render_list_background(
-                f,
-                area,
-                ListBackgroundRenderContext {
-                    all_time_model_usage,
-                    codex_usage_limits,
-                    current_tab,
-                    longest_session_duration_seconds,
-                    sessions,
-                    settings,
-                    stats_activity,
-                    table_state,
-                },
-            );
+            render_list_background(f, area, list_background);
         }
         HelpContext::View {
             session_id,

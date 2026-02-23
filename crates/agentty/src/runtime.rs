@@ -8,7 +8,6 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
 use crate::app::App;
-use crate::ui;
 
 mod event;
 mod key_handler;
@@ -69,54 +68,7 @@ async fn run_main_loop(
 }
 
 fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
-    let current_tab = app.tabs.current();
-    let current_working_dir = app.working_dir().to_path_buf();
-    let current_git_branch = app.git_branch().map(std::string::ToString::to_string);
-    let current_git_status = app.git_status_info();
-    let latest_available_version = app
-        .latest_available_version()
-        .map(std::string::ToString::to_string);
-    let current_active_project_id = app.active_project_id();
-    let plan_followups = app.plan_followup_snapshot();
-    let session_progress_messages = app.session_progress_snapshot();
-    let show_onboarding = app.should_show_onboarding();
-    let mode = &app.mode;
-    let projects = &app.projects;
-    let (
-        sessions,
-        stats_activity,
-        all_time_model_usage,
-        longest_session_duration_seconds,
-        codex_usage_limits,
-        table_state,
-    ) = app.sessions.render_parts();
-    let settings = &mut app.settings;
-
-    terminal.draw(|frame| {
-        ui::render(
-            frame,
-            ui::RenderContext {
-                active_project_id: current_active_project_id,
-                current_tab,
-                git_branch: current_git_branch.as_deref(),
-                git_status: current_git_status,
-                latest_available_version: latest_available_version.as_deref(),
-                longest_session_duration_seconds,
-                mode,
-                plan_followups: &plan_followups,
-                projects,
-                all_time_model_usage,
-                session_progress_messages: &session_progress_messages,
-                settings,
-                show_onboarding,
-                stats_activity,
-                codex_usage_limits,
-                sessions,
-                table_state,
-                working_dir: &current_working_dir,
-            },
-        );
-    })?;
+    terminal.draw(|frame| app.draw(frame))?;
 
     Ok(())
 }
