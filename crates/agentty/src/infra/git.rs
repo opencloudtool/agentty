@@ -310,9 +310,10 @@ impl GitClient for RealGitClient {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::path::Path;
     use std::process::Command;
+    use std::time::Duration;
+    use std::{fs, thread};
 
     use tempfile::tempdir;
 
@@ -467,6 +468,37 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_ne!(first_hash, second_hash);
         assert_eq!(first_count, second_count);
+    }
+
+    #[tokio::test]
+    async fn test_commit_all_preserving_single_commit_retries_index_lock_and_succeeds() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let commit_message = "Session commit".to_string();
+        fs::write(dir.path().join("work.txt"), "locked change").expect("failed to write file");
+        let index_lock_path = dir.path().join(".git").join("index.lock");
+        fs::write(&index_lock_path, "stale lock").expect("failed to write lock file");
+        let lock_cleanup = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(250));
+            let _ = fs::remove_file(index_lock_path);
+        });
+
+        // Act
+        let result = commit_all_preserving_single_commit(
+            dir.path().to_path_buf(),
+            commit_message.clone(),
+            false,
+        )
+        .await;
+        lock_cleanup
+            .join()
+            .expect("failed to join lock cleanup thread");
+        let head_message = run_git_command_stdout(dir.path(), &["log", "-1", "--pretty=%B"]);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        assert_eq!(head_message, commit_message);
     }
 
     #[tokio::test]

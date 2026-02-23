@@ -470,12 +470,10 @@ async fn should_amend_existing_commit(
 }
 
 /// Stages all changed files in the repository.
+///
+/// Uses shared git retry behavior for transient `index.lock` contention.
 fn stage_all_sync(repo_path: &Path) -> Result<(), String> {
-    let output = Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git: {error}"))?;
+    let output = run_git_command_with_index_lock_retry(repo_path, &["add", "-A"], &[])?;
 
     if !output.status.success() {
         let detail = command_output_detail(&output.stdout, &output.stderr);
@@ -534,6 +532,8 @@ fn has_head_commit_sync(repo_path: &Path) -> Result<bool, String> {
 }
 
 /// Runs `git commit` with optional amend and hook settings.
+///
+/// Uses shared git retry behavior for transient `index.lock` contention.
 fn run_commit_command(
     repo_path: &Path,
     commit_message: &str,
@@ -553,11 +553,7 @@ fn run_commit_command(
         args.push("--no-verify");
     }
 
-    Command::new("git")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git: {error}"))
+    run_git_command_with_index_lock_retry(repo_path, &args, &[])
 }
 
 /// Returns whether commit output indicates hooks rewrote files.

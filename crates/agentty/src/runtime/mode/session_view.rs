@@ -25,6 +25,16 @@ struct ViewMetrics {
     view_height: u16,
 }
 
+/// Snapshot of session-derived state used by view-mode key handling.
+struct ViewSessionSnapshot {
+    can_open_worktree: bool,
+    is_action_allowed: bool,
+    is_in_progress: bool,
+    session_output: String,
+    session_state: ViewSessionState,
+    session_status: Status,
+}
+
 /// Processes view-mode key presses and keeps the open-worktree shortcut
 /// disabled while a session is `Status::InProgress` or `Status::Done`.
 pub(crate) async fn handle(
@@ -40,32 +50,24 @@ pub(crate) async fn handle(
     let mut next_scroll_offset = view_context.scroll_offset;
     let mut next_done_session_output_mode = view_context.done_session_output_mode;
 
-    let Some((session_status, session_output)) = app
-        .sessions
-        .sessions
-        .get(view_context.session_index)
-        .map(|session| (session.status, session.output.clone()))
-    else {
+    let Some(view_session_snapshot) = view_session_snapshot(app, &view_context) else {
         return Ok(EventResult::Continue);
     };
-    let is_in_progress = session_status == Status::InProgress;
-    let is_action_allowed = is_view_action_allowed(session_status);
-    let session_state = view_session_state(session_status);
-    let can_open_worktree =
-        is_view_worktree_open_allowed(session_status) && can_open_session_worktree(session_status);
 
     match key.code {
         KeyCode::Char('q') => {
             app.mode = AppMode::List;
         }
-        KeyCode::Char('o') if can_open_worktree => {
+        KeyCode::Char('o') if view_session_snapshot.can_open_worktree => {
             app.open_session_worktree_in_tmux().await;
         }
-        KeyCode::Enter if is_action_allowed => {
+        KeyCode::Enter if view_session_snapshot.is_action_allowed => {
             switch_view_to_prompt(
                 app,
                 &view_context,
-                PromptHistoryState::new(prompt_history_entries(&session_output)),
+                PromptHistoryState::new(prompt_history_entries(
+                    &view_session_snapshot.session_output,
+                )),
                 next_scroll_offset,
             );
         }
@@ -82,7 +84,7 @@ pub(crate) async fn handle(
             next_scroll_offset = None;
         }
         KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-            if is_in_progress {
+            if view_session_snapshot.is_in_progress {
                 stop_view_session(app, &view_context.session_id).await;
             }
         }
@@ -101,39 +103,67 @@ pub(crate) async fn handle(
             ));
         }
         KeyCode::Char('d')
-            if !key.modifiers.contains(event::KeyModifiers::CONTROL) && is_action_allowed =>
+            if !key.modifiers.contains(event::KeyModifiers::CONTROL)
+                && view_session_snapshot.is_action_allowed =>
         {
             show_diff_for_view_session(app, &view_context).await;
         }
-        KeyCode::Char('m') if is_action_allowed => {
+        KeyCode::Char('m') if view_session_snapshot.is_action_allowed => {
             merge_view_session(app, &view_context.session_id).await;
         }
-        KeyCode::Char('r') if is_action_allowed => {
+        KeyCode::Char('r') if view_session_snapshot.is_action_allowed => {
             rebase_view_session(app, &view_context.session_id).await;
         }
-        _ if is_done_output_toggle_key(session_status, key) => {
+        _ if is_done_output_toggle_key(view_session_snapshot.session_status, key) => {
             next_done_session_output_mode = next_done_session_output_mode.toggled();
             next_scroll_offset = None;
         }
         KeyCode::Char('?') => {
-            open_view_help_overlay(app, &view_context, session_state);
+            open_view_help_overlay(app, &view_context, view_session_snapshot.session_state);
 
             return Ok(EventResult::Continue);
         }
         _ => {}
     }
 
+    apply_view_scroll_and_output_mode(app, next_done_session_output_mode, next_scroll_offset);
+
+    Ok(EventResult::Continue)
+}
+
+/// Collects session-specific values used by `handle()` from the active view
+/// row.
+fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSessionSnapshot> {
+    let session = app.sessions.sessions.get(view_context.session_index)?;
+    let session_status = session.status;
+
+    Some(ViewSessionSnapshot {
+        can_open_worktree: is_view_worktree_open_allowed(session_status)
+            && can_open_session_worktree(session_status),
+        is_action_allowed: is_view_action_allowed(session_status),
+        is_in_progress: session_status == Status::InProgress,
+        session_output: session.output.clone(),
+        session_state: view_session_state(session_status),
+        session_status,
+    })
+}
+
+/// Applies in-place updates for the active view scroll position and output
+/// mode.
+fn apply_view_scroll_and_output_mode(
+    app: &mut App,
+    done_session_output_mode: DoneSessionOutputMode,
+    scroll_offset: Option<u16>,
+) {
     if let AppMode::View {
-        done_session_output_mode,
-        scroll_offset,
+        done_session_output_mode: view_done_session_output_mode,
+        scroll_offset: view_scroll_offset,
         ..
     } = &mut app.mode
     {
-        *done_session_output_mode = next_done_session_output_mode;
-        *scroll_offset = next_scroll_offset;
+        *view_done_session_output_mode = done_session_output_mode;
+        *view_scroll_offset = scroll_offset;
     }
-
-    Ok(EventResult::Continue)
 }
 
 /// Returns whether the key event toggles done-session output mode.
