@@ -232,6 +232,7 @@ pub(crate) fn session_branch(session_id: &str) -> String {
 mod tests {
     //! Session module tests.
 
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::sync::{Arc, Mutex};
@@ -872,6 +873,12 @@ mod tests {
             .load_sessions()
             .await
             .expect("failed to load");
+        let activity_timestamps = app
+            .services
+            .db()
+            .load_session_activity_timestamps()
+            .await
+            .expect("failed to load session activity timestamps");
         assert_eq!(db_sessions.len(), 1);
         assert_eq!(db_sessions[0].base_branch, "main");
         assert_eq!(
@@ -883,6 +890,7 @@ mod tests {
             PermissionMode::AutoEdit.label()
         );
         assert_eq!(db_sessions[0].status, "New");
+        assert_eq!(activity_timestamps.len(), 1);
     }
 
     #[tokio::test]
@@ -998,8 +1006,15 @@ mod tests {
             .load_sessions()
             .await
             .expect("failed to load");
+        let activity_timestamps = app
+            .services
+            .db()
+            .load_session_activity_timestamps()
+            .await
+            .expect("failed to load session activity timestamps");
         assert_eq!(db_sessions[0].prompt, "Hello");
         assert_eq!(db_sessions[0].output, " › Hello\n\n");
+        assert_eq!(activity_timestamps.len(), 1);
     }
 
     #[tokio::test]
@@ -1100,6 +1115,7 @@ mod tests {
         let mut app = new_test_app_with_git(dir.path()).await;
         create_and_start_session(&mut app, "Initial").await;
         let session_id = app.sessions.sessions[0].id.clone();
+        wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Act
         app.reply(&session_id, "Reply").await;
@@ -1108,7 +1124,14 @@ mod tests {
         app.sessions.sync_from_handles();
         let session = &app.sessions.sessions[0];
         let output = &session.output;
+        let activity_timestamps = app
+            .services
+            .db()
+            .load_session_activity_timestamps()
+            .await
+            .expect("failed to load session activity timestamps");
         assert!(output.contains("Reply"));
+        assert_eq!(activity_timestamps.len(), 1);
     }
 
     #[tokio::test]
@@ -1466,6 +1489,81 @@ mod tests {
             .execute(db.pool())
             .await
             .expect("failed to update gamma000 created_at");
+        sqlx::query("DELETE FROM session_activity")
+            .execute(db.pool())
+            .await
+            .expect("failed to clear session activity");
+        sqlx::query(
+            r"
+INSERT INTO session_activity (session_id, created_at)
+SELECT id, created_at
+FROM session
+",
+        )
+        .execute(db.pool())
+        .await
+        .expect("failed to backfill session activity from session rows");
+        let projects: Vec<Project> = Vec::new();
+        let mut handles: HashMap<String, SessionHandles> = HashMap::new();
+        let mut expected_activity_by_day: BTreeMap<i64, u32> = BTreeMap::new();
+        for timestamp_seconds in [
+            day_key_one * seconds_per_day + 10,
+            day_key_one * seconds_per_day + 600,
+            day_key_two * seconds_per_day + 50,
+        ] {
+            let day_key = crate::ui::util::activity_day_key_local(timestamp_seconds);
+            let day_count = expected_activity_by_day.entry(day_key).or_insert(0);
+            *day_count = day_count.saturating_add(1);
+        }
+        let expected_activity: Vec<DailyActivity> = expected_activity_by_day
+            .into_iter()
+            .map(|(day_key, session_count)| DailyActivity {
+                day_key,
+                session_count,
+            })
+            .collect();
+
+        // Act
+        let (sessions, stats_activity) = SessionManager::load_sessions(
+            dir.path(),
+            &db,
+            &projects,
+            &mut handles,
+            Arc::new(git::RealGitClient),
+        )
+        .await;
+
+        // Assert
+        assert_eq!(sessions.len(), 3);
+        assert_eq!(stats_activity, expected_activity);
+    }
+
+    #[tokio::test]
+    async fn test_load_sessions_keeps_daily_activity_after_session_deletion() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/test", None)
+            .await
+            .expect("failed to upsert project");
+        db.insert_session("alpha000", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert alpha000");
+        db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
+            .await
+            .expect("failed to insert beta0000");
+        db.insert_session_creation_activity_at("alpha000", 10)
+            .await
+            .expect("failed to persist first activity event");
+        db.insert_session_creation_activity_at("beta0000", 20)
+            .await
+            .expect("failed to persist second activity event");
+        db.delete_session("alpha000")
+            .await
+            .expect("failed to delete alpha000");
         let projects: Vec<Project> = Vec::new();
         let mut handles: HashMap<String, SessionHandles> = HashMap::new();
 
@@ -1480,20 +1578,12 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(sessions.len(), 3);
-        assert_eq!(
-            stats_activity,
-            vec![
-                DailyActivity {
-                    day_key: day_key_one,
-                    session_count: 2,
-                },
-                DailyActivity {
-                    day_key: day_key_two,
-                    session_count: 1,
-                },
-            ]
-        );
+        assert_eq!(sessions.len(), 1);
+        let total_activity_count: u32 = stats_activity
+            .iter()
+            .map(|daily_activity| daily_activity.session_count)
+            .sum();
+        assert_eq!(total_activity_count, 2);
     }
 
     #[tokio::test]

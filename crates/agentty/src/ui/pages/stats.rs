@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
@@ -14,9 +13,8 @@ use crate::ui::Page;
 use crate::ui::pages::session_list::{model_column_width, project_column_width};
 use crate::ui::state::help_action;
 use crate::ui::util::{
-    activity_day_key_local, build_activity_heatmap_grid, build_heatmap_month_row,
-    current_day_key_local, format_duration_compact, format_token_count, heatmap_intensity_level,
-    heatmap_max_count,
+    build_activity_heatmap_grid, build_heatmap_month_row, current_day_key_local,
+    format_duration_compact, format_token_count, heatmap_intensity_level, heatmap_max_count,
 };
 
 const DAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -275,30 +273,9 @@ impl StatsPage<'_> {
         lines
     }
 
-    /// Builds day-keyed activity counts projected to local time.
-    ///
-    /// Session timestamps remain in UTC storage and are converted only for
-    /// heatmap presentation.
+    /// Returns persisted local-day activity aggregates for heatmap rendering.
     fn build_local_activity(&self) -> Vec<DailyActivity> {
-        if self.sessions.is_empty() {
-            return self.stats_activity.to_vec();
-        }
-
-        let mut activity_by_day: BTreeMap<i64, u32> = BTreeMap::new();
-
-        for session in self.sessions {
-            let local_day_key = activity_day_key_local(session.created_at);
-            let day_count = activity_by_day.entry(local_day_key).or_insert(0);
-            *day_count = day_count.saturating_add(1);
-        }
-
-        activity_by_day
-            .into_iter()
-            .map(|(day_key, session_count)| DailyActivity {
-                day_key,
-                session_count,
-            })
-            .collect()
+        self.stats_activity.to_vec()
     }
 
     /// Builds summary lines for favorite model, longest `agentty` session
@@ -578,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_heatmap_lines_uses_session_timestamps_for_activity() {
+    fn test_build_heatmap_lines_uses_persisted_activity_for_max_count() {
         // Arrange
         let now_seconds = StatsPage::current_unix_timestamp();
         let sessions = vec![session_fixture_with(
@@ -606,7 +583,7 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(rendered_text.contains("Max/day: 1"));
+        assert!(rendered_text.contains("Max/day: 50"));
     }
 
     #[test]

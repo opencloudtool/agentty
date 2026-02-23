@@ -236,6 +236,49 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
         Ok(())
     }
 
+    /// Persists one session-creation activity event at the current Unix
+    /// timestamp.
+    ///
+    /// Duplicate events for the same session are ignored.
+    ///
+    /// # Errors
+    /// Returns an error if the activity event cannot be inserted.
+    pub async fn insert_session_creation_activity_now(
+        &self,
+        session_id: &str,
+    ) -> Result<(), String> {
+        self.insert_session_creation_activity_at(session_id, unix_timestamp_now())
+            .await
+    }
+
+    /// Persists one session-creation activity event at a specific Unix
+    /// timestamp.
+    ///
+    /// Duplicate events for the same session are ignored.
+    ///
+    /// # Errors
+    /// Returns an error if the activity event cannot be inserted.
+    pub async fn insert_session_creation_activity_at(
+        &self,
+        session_id: &str,
+        timestamp_seconds: i64,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r"
+INSERT INTO session_activity (session_id, created_at)
+VALUES (?, ?)
+ON CONFLICT(session_id) DO NOTHING
+",
+        )
+        .bind(session_id)
+        .bind(timestamp_seconds)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to persist session activity: {err}"))?;
+
+        Ok(())
+    }
+
     /// Loads all sessions ordered by most recent update.
     ///
     /// # Errors
@@ -273,6 +316,29 @@ ORDER BY updated_at DESC, id
                 updated_at: row.get("updated_at"),
             })
             .collect())
+    }
+
+    /// Loads persisted activity event timestamps used for activity stats.
+    ///
+    /// # Errors
+    /// Returns an error if activity timestamps cannot be read from the
+    /// database.
+    pub async fn load_session_activity_timestamps(&self) -> Result<Vec<i64>, String> {
+        let rows = sqlx::query(
+            r"
+SELECT created_at
+FROM session_activity
+ORDER BY id
+",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to load session activity timestamps: {err}"))?;
+
+        Ok(rows
+            .iter()
+            .map(|row| row.get("created_at"))
+            .collect::<Vec<i64>>())
     }
 
     /// Loads lightweight session metadata used for cheap change detection.
@@ -1143,5 +1209,108 @@ mod tests {
         assert_eq!(all_time_usage[0].session_count, 2);
         assert_eq!(all_time_usage[0].input_tokens, 30);
         assert_eq!(all_time_usage[0].output_tokens, 10);
+    }
+
+    #[tokio::test]
+    async fn test_insert_session_creation_activity_at_persists_timestamp() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert session");
+
+        // Act
+        database
+            .insert_session_creation_activity_at("session-a", 123)
+            .await
+            .expect("failed to persist activity event");
+        let activity_timestamps = database
+            .load_session_activity_timestamps()
+            .await
+            .expect("failed to load activity timestamps");
+
+        // Assert
+        assert_eq!(activity_timestamps, vec![123]);
+    }
+
+    #[tokio::test]
+    async fn test_insert_session_creation_activity_at_ignores_duplicates_per_session() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert session");
+
+        // Act
+        database
+            .insert_session_creation_activity_at("session-a", 100)
+            .await
+            .expect("failed to persist first activity event");
+        database
+            .insert_session_creation_activity_at("session-a", 200)
+            .await
+            .expect("failed to persist duplicate activity event");
+        let activity_timestamps = database
+            .load_session_activity_timestamps()
+            .await
+            .expect("failed to load activity timestamps");
+
+        // Assert
+        assert_eq!(activity_timestamps, vec![100]);
+    }
+
+    #[tokio::test]
+    async fn test_load_session_activity_timestamps_keeps_deleted_session_history() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert first session");
+        database
+            .insert_session_creation_activity_at("session-a", 100)
+            .await
+            .expect("failed to persist first activity event");
+        database
+            .insert_session("session-b", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert second session");
+        database
+            .insert_session_creation_activity_at("session-b", 200)
+            .await
+            .expect("failed to persist second activity event");
+        database
+            .delete_session("session-a")
+            .await
+            .expect("failed to delete first session");
+
+        // Act
+        let activity_timestamps = database
+            .load_session_activity_timestamps()
+            .await
+            .expect("failed to load activity timestamps");
+
+        // Assert
+        assert_eq!(activity_timestamps, vec![100, 200]);
     }
 }

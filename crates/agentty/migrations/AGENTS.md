@@ -26,3 +26,4 @@ SQLite migrations for the `agentty` crate.
 - [020_make_token_columns_non_nullable.sql](020_make_token_columns_non_nullable.sql) - Backfills token stats and swaps token columns to non-null defaults.
 - [021_create_settings.sql](021_create_settings.sql) - Creates the `settings` table.
 - [022_create_session_usage.sql](022_create_session_usage.sql) - Creates per-model token usage tracking table with `ON DELETE SET NULL` for data retention.
+- [023_create_session_activity.sql](023_create_session_activity.sql) - Creates immutable session-creation activity history for stats retention.

@@ -101,7 +101,8 @@ This allows agents to work on code changes without affecting your main working d
 
 ### Stats Activity Heatmap
 
-- The `Stats` tab now includes a GitHub-style activity heatmap for session creation activity over the last 53 weeks.
+- The `Stats` tab now includes a GitHub-style activity heatmap for persisted session-creation activity over the last 53 weeks.
+- Heatmap history is retained even after deleting old sessions.
 - Heatmap intensity scales with daily session counts and now includes month labels for easier timeline scanning.
 - A right-side summary panel highlights favorite model usage, the longest session duration, and per-model input/output token totals.
 - The per-session token table and overall totals remain available below the heatmap.

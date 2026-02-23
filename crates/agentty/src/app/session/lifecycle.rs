@@ -190,6 +190,11 @@ impl SessionManager {
             return Err(format!("Failed to save session permission mode: {error}"));
         }
 
+        let _ = services
+            .db()
+            .insert_session_creation_activity_now(&session_id)
+            .await;
+
         crate::infra::agent::create_backend(session_model.kind()).setup(&folder);
         services.emit_app_event(AppEvent::RefreshSessions);
 

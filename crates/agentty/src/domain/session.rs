@@ -214,8 +214,9 @@ pub struct CodexUsageLimits {
 /// Aggregated activity count for one day key.
 ///
 /// `day_key` is the number of days since Unix epoch (`1970-01-01`).
-/// App/session loading stores UTC day keys, while UI rendering may project the
-/// same metric into local-day keys for presentation.
+/// App/session loading stores local day keys derived from immutable
+/// session-creation activity history so heatmap remains visible after session
+/// deletion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DailyActivity {
     pub day_key: i64,
