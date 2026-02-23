@@ -16,7 +16,7 @@ use crate::app::assist::{
 use crate::app::session::COMMIT_MESSAGE;
 use crate::domain::agent::AgentModel;
 use crate::domain::session::Status;
-use crate::infra::codex_app_server::{CodexAppServerClient, CodexTurnRequest};
+use crate::infra::codex_app_server::{CodexAppServerClient, CodexStreamEvent, CodexTurnRequest};
 use crate::infra::db::Database;
 use crate::infra::git::GitClient;
 
@@ -198,9 +198,20 @@ impl TaskService {
             session_id: id.clone(),
         };
 
+        let (stream_tx, stream_rx) = mpsc::unbounded_channel::<CodexStreamEvent>();
+        let consumer_handle = Self::spawn_stream_consumer(
+            stream_rx,
+            Arc::clone(&output),
+            db.clone(),
+            app_event_tx.clone(),
+            id.clone(),
+        );
+
         Self::set_session_progress(&app_event_tx, &id, Some("Thinking".to_string()));
 
-        let turn_result = codex_app_server_client.run_turn(request).await;
+        let turn_result = codex_app_server_client.run_turn(request, stream_tx).await;
+
+        let streamed_any_content = consumer_handle.await.unwrap_or(false);
         Self::clear_session_progress(&app_event_tx, &id);
 
         let response = match turn_result {
@@ -228,7 +239,7 @@ impl TaskService {
                 .await;
         }
 
-        if !response.assistant_message.trim().is_empty() {
+        if !streamed_any_content && !response.assistant_message.trim().is_empty() {
             let message = format!("{}\n\n", response.assistant_message.trim_end());
             Self::append_session_output(&output, &db, &app_event_tx, &id, &message).await;
         }
@@ -448,6 +459,119 @@ impl TaskService {
         format_detail_lines(commit_error)
     }
 
+    /// Spawns a background task that consumes [`CodexStreamEvent`]s and
+    /// forwards them to the session output buffer and progress indicator.
+    ///
+    /// Returns a join handle that resolves to `true` when at least one
+    /// assistant message was streamed, or `false` otherwise.
+    fn spawn_stream_consumer(
+        mut stream_rx: mpsc::UnboundedReceiver<CodexStreamEvent>,
+        output: Arc<Mutex<String>>,
+        db: Database,
+        app_event_tx: mpsc::UnboundedSender<AppEvent>,
+        session_id: String,
+    ) -> tokio::task::JoinHandle<bool> {
+        tokio::spawn(async move {
+            let mut streamed_any_content = false;
+            let mut active_progress: Option<String> = None;
+
+            while let Some(event) = stream_rx.recv().await {
+                match event {
+                    CodexStreamEvent::AssistantMessage(message) => {
+                        if let Some(previous_progress) = active_progress.take() {
+                            Self::append_progress_completion(
+                                &output,
+                                &db,
+                                &app_event_tx,
+                                &session_id,
+                                &previous_progress,
+                            )
+                            .await;
+                            Self::set_session_progress(&app_event_tx, &session_id, None);
+                        }
+
+                        let formatted = format!("{}\n\n", message.trim_end());
+                        Self::append_session_output(
+                            &output,
+                            &db,
+                            &app_event_tx,
+                            &session_id,
+                            &formatted,
+                        )
+                        .await;
+                        streamed_any_content = true;
+                    }
+                    CodexStreamEvent::ProgressUpdate(progress) => {
+                        if active_progress.as_deref() != Some(&progress) {
+                            if let Some(previous_progress) = active_progress.take() {
+                                Self::append_progress_completion(
+                                    &output,
+                                    &db,
+                                    &app_event_tx,
+                                    &session_id,
+                                    &previous_progress,
+                                )
+                                .await;
+                            }
+
+                            Self::set_session_progress(
+                                &app_event_tx,
+                                &session_id,
+                                Some(progress.clone()),
+                            );
+                            active_progress = Some(progress);
+                        }
+                    }
+                }
+            }
+
+            if let Some(previous_progress) = active_progress.take() {
+                Self::append_progress_completion(
+                    &output,
+                    &db,
+                    &app_event_tx,
+                    &session_id,
+                    &previous_progress,
+                )
+                .await;
+            }
+
+            streamed_any_content
+        })
+    }
+
+    /// Appends a progress completion line to session output when a progress
+    /// phase ends.
+    async fn append_progress_completion(
+        output: &Arc<Mutex<String>>,
+        db: &Database,
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
+        session_id: &str,
+        progress_message: &str,
+    ) {
+        if let Some(completion_text) = Self::progress_completion_message(progress_message) {
+            let formatted = format!("{completion_text}\n");
+            Self::append_session_output(output, db, app_event_tx, session_id, &formatted).await;
+        }
+    }
+
+    /// Maps an active progress message to its completion text.
+    fn progress_completion_message(progress_message: &str) -> Option<String> {
+        let normalized = progress_message.trim().trim_end_matches('.').trim();
+        if normalized.is_empty() {
+            return None;
+        }
+
+        let completion_message = match normalized {
+            "Searching the web" => "Web search completed".to_string(),
+            "Thinking" => "Thinking completed".to_string(),
+            "Running a command" => "Command completed".to_string(),
+            other => format!("{other} completed"),
+        };
+
+        Some(completion_message)
+    }
+
     fn clear_session_progress(app_event_tx: &mpsc::UnboundedSender<AppEvent>, id: &str) {
         Self::set_session_progress(app_event_tx, id, None);
     }
@@ -510,7 +634,7 @@ mod tests {
         mock_codex_client
             .expect_run_turn()
             .times(1)
-            .returning(|_| Box::pin(async { Err("turn failed".to_string()) }));
+            .returning(|_, _| Box::pin(async { Err("turn failed".to_string()) }));
         mock_codex_client
             .expect_shutdown_session()
             .times(1)
@@ -580,7 +704,7 @@ mod tests {
         mock_codex_client
             .expect_run_turn()
             .times(1)
-            .returning(|_| Box::pin(async { Err("turn failed".to_string()) }));
+            .returning(|_, _| Box::pin(async { Err("turn failed".to_string()) }));
         mock_codex_client
             .expect_shutdown_session()
             .times(1)
@@ -623,6 +747,260 @@ mod tests {
         let sessions = db.load_sessions().await.expect("failed to load sessions");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].status, Status::Review.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_stream_consumer_forwards_assistant_messages_to_output() {
+        // Arrange
+        let output = Arc::new(Mutex::new(String::new()));
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "stream-test",
+            AgentModel::Gpt53Codex.as_str(),
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+        let (stream_tx, stream_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let handle = TaskService::spawn_stream_consumer(
+            stream_rx,
+            Arc::clone(&output),
+            db,
+            app_event_tx,
+            "stream-test".to_string(),
+        );
+        stream_tx
+            .send(CodexStreamEvent::AssistantMessage(
+                "Hello world".to_string(),
+            ))
+            .expect("send should succeed");
+        stream_tx
+            .send(CodexStreamEvent::AssistantMessage(
+                "Second message".to_string(),
+            ))
+            .expect("send should succeed");
+        drop(stream_tx);
+        let streamed_any = handle.await.expect("consumer task should complete");
+
+        // Assert
+        assert!(streamed_any);
+        let buffer = output.lock().expect("lock output").clone();
+        assert!(
+            buffer.contains("Hello world"),
+            "output should contain first message"
+        );
+        assert!(
+            buffer.contains("Second message"),
+            "output should contain second message"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_consumer_updates_progress_and_appends_completion() {
+        // Arrange
+        let output = Arc::new(Mutex::new(String::new()));
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "progress-test",
+            AgentModel::Gpt53Codex.as_str(),
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let (stream_tx, stream_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let handle = TaskService::spawn_stream_consumer(
+            stream_rx,
+            Arc::clone(&output),
+            db,
+            app_event_tx,
+            "progress-test".to_string(),
+        );
+        stream_tx
+            .send(CodexStreamEvent::ProgressUpdate(
+                "Running a command".to_string(),
+            ))
+            .expect("send should succeed");
+        stream_tx
+            .send(CodexStreamEvent::AssistantMessage("Done".to_string()))
+            .expect("send should succeed");
+        drop(stream_tx);
+        handle.await.expect("consumer task should complete");
+
+        // Assert
+        let buffer = output.lock().expect("lock output").clone();
+        assert!(
+            buffer.contains("Command completed"),
+            "output should contain progress completion: {buffer}"
+        );
+        assert!(
+            buffer.contains("Done"),
+            "output should contain assistant message: {buffer}"
+        );
+        let mut progress_events = Vec::new();
+        while let Ok(event) = app_event_rx.try_recv() {
+            if let AppEvent::SessionProgressUpdated {
+                progress_message, ..
+            } = event
+            {
+                progress_events.push(progress_message);
+            }
+        }
+        assert!(
+            progress_events.contains(&Some("Running a command".to_string())),
+            "should emit progress update event"
+        );
+        assert!(
+            progress_events.contains(&None),
+            "should clear progress when assistant message arrives"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_consumer_deduplicates_repeated_progress() {
+        // Arrange
+        let output = Arc::new(Mutex::new(String::new()));
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "dedup-test",
+            AgentModel::Gpt53Codex.as_str(),
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let (stream_tx, stream_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let handle = TaskService::spawn_stream_consumer(
+            stream_rx,
+            Arc::clone(&output),
+            db,
+            app_event_tx,
+            "dedup-test".to_string(),
+        );
+        stream_tx
+            .send(CodexStreamEvent::ProgressUpdate("Thinking".to_string()))
+            .expect("send should succeed");
+        stream_tx
+            .send(CodexStreamEvent::ProgressUpdate("Thinking".to_string()))
+            .expect("send should succeed");
+        stream_tx
+            .send(CodexStreamEvent::ProgressUpdate("Thinking".to_string()))
+            .expect("send should succeed");
+        drop(stream_tx);
+        handle.await.expect("consumer task should complete");
+
+        // Assert
+        let mut progress_set_count = 0;
+        while let Ok(event) = app_event_rx.try_recv() {
+            if let AppEvent::SessionProgressUpdated {
+                progress_message: Some(_),
+                ..
+            } = event
+            {
+                progress_set_count += 1;
+            }
+        }
+        assert_eq!(
+            progress_set_count, 1,
+            "repeated identical progress should emit only one set event"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_consumer_returns_false_when_no_content_streamed() {
+        // Arrange
+        let output = Arc::new(Mutex::new(String::new()));
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "empty-test",
+            AgentModel::Gpt53Codex.as_str(),
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+        let (stream_tx, stream_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let handle = TaskService::spawn_stream_consumer(
+            stream_rx,
+            Arc::clone(&output),
+            db,
+            app_event_tx,
+            "empty-test".to_string(),
+        );
+        drop(stream_tx);
+        let streamed_any = handle.await.expect("consumer task should complete");
+
+        // Assert
+        assert!(!streamed_any);
+    }
+
+    #[test]
+    fn test_progress_completion_message_maps_known_messages() {
+        // Act / Assert
+        assert_eq!(
+            TaskService::progress_completion_message("Searching the web"),
+            Some("Web search completed".to_string())
+        );
+        assert_eq!(
+            TaskService::progress_completion_message("Thinking"),
+            Some("Thinking completed".to_string())
+        );
+        assert_eq!(
+            TaskService::progress_completion_message("Running a command"),
+            Some("Command completed".to_string())
+        );
+        assert_eq!(
+            TaskService::progress_completion_message("Working: custom"),
+            Some("Working: custom completed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_progress_completion_message_returns_none_for_empty() {
+        // Act / Assert
+        assert_eq!(TaskService::progress_completion_message(""), None);
+        assert_eq!(TaskService::progress_completion_message("  "), None);
     }
 
     #[test]

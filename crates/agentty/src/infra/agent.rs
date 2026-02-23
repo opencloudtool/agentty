@@ -18,5 +18,5 @@ mod response_parser;
 pub use backend::MockAgentBackend;
 pub(crate) use backend::build_resume_prompt;
 pub use backend::{AgentBackend, create_backend};
-pub(crate) use response_parser::parse_stream_output_line;
 pub use response_parser::{ParsedResponse, parse_response};
+pub(crate) use response_parser::{compact_codex_progress_message, parse_stream_output_line};

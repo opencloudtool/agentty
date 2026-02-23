@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::sync::mpsc;
 
 use crate::domain::permission::PermissionMode;
 
@@ -37,6 +38,19 @@ const AUTO_EDIT_POLICY: PermissionModePolicy = PermissionModePolicy {
 /// Boxed async result used by [`CodexAppServerClient`] trait methods.
 pub type CodexAppServerFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// Incremental event emitted during a Codex app-server turn.
+///
+/// The caller receives these events through an [`mpsc::UnboundedSender`]
+/// channel while the turn is in progress, enabling real-time streaming of
+/// agent output and progress updates to the UI.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CodexStreamEvent {
+    /// An `item/completed` agent message was received.
+    AssistantMessage(String),
+    /// An `item/started` event produced a progress description.
+    ProgressUpdate(String),
+}
+
 /// Input payload for one Codex app-server turn execution.
 #[derive(Clone)]
 pub struct CodexTurnRequest {
@@ -60,9 +74,14 @@ pub struct CodexTurnResponse {
 #[cfg_attr(test, mockall::automock)]
 pub trait CodexAppServerClient: Send + Sync {
     /// Executes one prompt turn for a session and returns normalized output.
+    ///
+    /// Intermediate events (agent messages, progress updates) are sent through
+    /// `stream_tx` as they arrive, enabling the caller to display streaming
+    /// output before the turn completes.
     fn run_turn(
         &self,
         request: CodexTurnRequest,
+        stream_tx: mpsc::UnboundedSender<CodexStreamEvent>,
     ) -> CodexAppServerFuture<Result<CodexTurnResponse, String>>;
 
     /// Stops and forgets a session runtime, if one exists.
@@ -87,6 +106,7 @@ impl RealCodexAppServerClient {
     async fn run_turn_internal(
         sessions: &Mutex<HashMap<String, CodexSessionRuntime>>,
         request: CodexTurnRequest,
+        stream_tx: &mpsc::UnboundedSender<CodexStreamEvent>,
     ) -> Result<CodexTurnResponse, String> {
         let mut context_reset = false;
         let mut session_runtime = Self::take_session(sessions, &request.session_id)?;
@@ -114,7 +134,8 @@ impl RealCodexAppServerClient {
         );
 
         let first_attempt =
-            Self::run_turn_with_runtime(&mut session_runtime, &first_attempt_prompt).await;
+            Self::run_turn_with_runtime(&mut session_runtime, &first_attempt_prompt, stream_tx)
+                .await;
         if let Ok((assistant_message, input_tokens, output_tokens)) = first_attempt {
             let pid = session_runtime.child.id();
             Self::store_session(sessions, request.session_id, session_runtime)?;
@@ -140,7 +161,8 @@ impl RealCodexAppServerClient {
             true,
         );
         let retry_attempt =
-            Self::run_turn_with_runtime(&mut restarted_runtime, &retry_attempt_prompt).await;
+            Self::run_turn_with_runtime(&mut restarted_runtime, &retry_attempt_prompt, stream_tx)
+                .await;
         match retry_attempt {
             Ok((assistant_message, input_tokens, output_tokens)) => {
                 let pid = restarted_runtime.child.id();
@@ -304,9 +326,13 @@ impl RealCodexAppServerClient {
     }
 
     /// Sends one turn prompt and waits for terminal completion notification.
+    ///
+    /// Intermediate agent messages and progress updates are emitted through
+    /// `stream_tx` as they arrive from the app-server event stream.
     async fn run_turn_with_runtime(
         session: &mut CodexSessionRuntime,
         prompt: &str,
+        stream_tx: &mpsc::UnboundedSender<CodexStreamEvent>,
     ) -> Result<(String, u64, u64), String> {
         let turn_start_id = format!("turn-start-{}", uuid::Uuid::new_v4());
         let turn_start_payload = serde_json::json!({
@@ -382,7 +408,12 @@ impl RealCodexAppServerClient {
                             extract_turn_id_from_turn_started_notification(&response_value);
                     }
 
+                    if let Some(progress) = extract_item_started_progress(&response_value) {
+                        let _ = stream_tx.send(CodexStreamEvent::ProgressUpdate(progress));
+                    }
+
                     if let Some(message) = extract_agent_message(&response_value) {
+                        let _ = stream_tx.send(CodexStreamEvent::AssistantMessage(message.clone()));
                         assistant_messages.push(message);
                     }
 
@@ -566,10 +597,13 @@ impl CodexAppServerClient for RealCodexAppServerClient {
     fn run_turn(
         &self,
         request: CodexTurnRequest,
+        stream_tx: mpsc::UnboundedSender<CodexStreamEvent>,
     ) -> CodexAppServerFuture<Result<CodexTurnResponse, String>> {
         let sessions = Arc::clone(&self.sessions);
 
-        Box::pin(async move { Self::run_turn_internal(sessions.as_ref(), request).await })
+        Box::pin(
+            async move { Self::run_turn_internal(sessions.as_ref(), request, &stream_tx).await },
+        )
     }
 
     fn shutdown_session(&self, session_id: String) -> CodexAppServerFuture<()> {
@@ -736,6 +770,49 @@ fn parse_turn_completed(
     }
 
     Some(Ok(()))
+}
+
+/// Extracts a progress description from an `item/started` notification.
+///
+/// The app-server sends `item/started` with a `params.item.type` field that
+/// indicates what kind of work the agent is beginning (e.g., command execution,
+/// reasoning). Item types may arrive in camelCase (`commandExecution`) or
+/// `snake_case` (`command_execution`); both are normalized before mapping.
+///
+/// Returns `None` when the event is not `item/started` or when the item type
+/// does not produce a user-visible progress message (e.g., `agentMessage`).
+fn extract_item_started_progress(response_value: &Value) -> Option<String> {
+    if response_value.get("method").and_then(Value::as_str) != Some("item/started") {
+        return None;
+    }
+
+    let raw_item_type = response_value
+        .get("params")?
+        .get("item")?
+        .get("type")?
+        .as_str()?;
+
+    let normalized_item_type = camel_to_snake(raw_item_type);
+
+    crate::infra::agent::compact_codex_progress_message(&normalized_item_type)
+}
+
+/// Converts a camelCase string to `snake_case`.
+fn camel_to_snake(input: &str) -> String {
+    let mut result = String::with_capacity(input.len() + 4);
+
+    for (index, character) in input.chars().enumerate() {
+        if character.is_uppercase() {
+            if index > 0 {
+                result.push('_');
+            }
+            result.push(character.to_ascii_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+
+    result
 }
 
 /// Extracts input/output token usage from `turn.usage` payloads.
@@ -1095,5 +1172,110 @@ mod tests {
         assert!(turn_prompt.contains("Continue this session using the full transcript below."));
         assert!(turn_prompt.contains("assistant: proposed plan"));
         assert!(turn_prompt.contains(prompt));
+    }
+
+    #[test]
+    fn extract_item_started_progress_returns_progress_for_command_execution() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "command_execution"
+                }
+            }
+        });
+
+        // Act
+        let progress = extract_item_started_progress(&response_value);
+
+        // Assert
+        assert_eq!(progress, Some("Running a command".to_string()));
+    }
+
+    #[test]
+    fn extract_item_started_progress_normalizes_camel_case_item_type() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "commandExecution"
+                }
+            }
+        });
+
+        // Act
+        let progress = extract_item_started_progress(&response_value);
+
+        // Assert
+        assert_eq!(progress, Some("Running a command".to_string()));
+    }
+
+    #[test]
+    fn extract_item_started_progress_returns_none_for_agent_message() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "agent_message"
+                }
+            }
+        });
+
+        // Act
+        let progress = extract_item_started_progress(&response_value);
+
+        // Assert
+        assert_eq!(progress, None);
+    }
+
+    #[test]
+    fn extract_item_started_progress_returns_none_for_non_item_started_method() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "command_execution"
+                }
+            }
+        });
+
+        // Act
+        let progress = extract_item_started_progress(&response_value);
+
+        // Assert
+        assert_eq!(progress, None);
+    }
+
+    #[test]
+    fn extract_item_started_progress_returns_thinking_for_reasoning() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "reasoning"
+                }
+            }
+        });
+
+        // Act
+        let progress = extract_item_started_progress(&response_value);
+
+        // Assert
+        assert_eq!(progress, Some("Thinking".to_string()));
+    }
+
+    #[test]
+    fn camel_to_snake_converts_camel_case_strings() {
+        // Act / Assert
+        assert_eq!(camel_to_snake("commandExecution"), "command_execution");
+        assert_eq!(camel_to_snake("agentMessage"), "agent_message");
+        assert_eq!(camel_to_snake("webSearch"), "web_search");
+        assert_eq!(camel_to_snake("reasoning"), "reasoning");
+        assert_eq!(camel_to_snake("already_snake"), "already_snake");
     }
 }

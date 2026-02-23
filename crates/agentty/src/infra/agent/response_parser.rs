@@ -459,7 +459,11 @@ fn compact_progress_message_from_stream_label(label: &str) -> Option<String> {
     None
 }
 
-fn compact_codex_progress_message(item_type: &str) -> Option<String> {
+/// Maps a Codex item type to a compact progress message for the UI.
+///
+/// Returns `None` for `agent_message` since it carries response content, not
+/// progress.
+pub(crate) fn compact_codex_progress_message(item_type: &str) -> Option<String> {
     match item_type {
         "agent_message" => None,
         "command_execution" => Some("Running a command".to_string()),
