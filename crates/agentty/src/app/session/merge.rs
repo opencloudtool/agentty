@@ -957,6 +957,14 @@ impl SessionManager {
         Self::finalize_rebase_task(rebase_result, &output, &db, &app_event_tx, &id, &status).await;
     }
 
+    /// Executes one assisted rebase workflow for a session worktree.
+    ///
+    /// Aborts any in-progress rebase when the assist loop fails so stale
+    /// rebase metadata does not leak into later merge/rebase operations.
+    ///
+    /// # Errors
+    /// Returns an error when pre-rebase auto-commit fails or assisted rebase
+    /// cannot be completed.
     async fn execute_rebase_workflow(input: RebaseAssistInput) -> Result<String, String> {
         // Auto-commit any pending changes before rebasing to avoid
         // "cannot rebase: You have unstaged changes".
@@ -971,6 +979,8 @@ impl SessionManager {
         }
 
         if let Err(error) = Self::run_rebase_assist_loop(input.clone()).await {
+            Self::abort_rebase_after_assist_failure(&input).await;
+
             return Err(format!("Failed to rebase: {error}"));
         }
 
@@ -1077,24 +1087,70 @@ impl SessionManager {
     ///
     /// # Errors
     /// Returns an error when assistance fails to make progress, rebase remains
-    /// conflicted after all attempts, or git operations fail.
+    /// conflicted after all attempts, or git operations fail. On every error
+    /// path (including early `?` failures), the in-progress rebase is aborted
+    /// before returning.
     async fn run_rebase_assist_loop_core(
         assist_input: RebaseAssistLoopInput,
         initial_conflict_detail: Option<String>,
     ) -> Result<(), String> {
-        let mut failure_tracker =
-            FailureTracker::new(REBASE_ASSIST_POLICY.max_identical_failure_streak);
-        if let Some(initial_conflict_detail) = initial_conflict_detail {
-            let _ = failure_tracker.observe(&initial_conflict_detail);
-        }
+        let assist_result: Result<(), String> = async {
+            let mut failure_tracker =
+                FailureTracker::new(REBASE_ASSIST_POLICY.max_identical_failure_streak);
+            if let Some(initial_conflict_detail) = initial_conflict_detail {
+                let _ = failure_tracker.observe(&initial_conflict_detail);
+            }
 
-        let mut previous_conflict_files: Vec<String> = vec![];
+            let mut previous_conflict_files: Vec<String> = vec![];
 
-        for assist_attempt in 1..=REBASE_ASSIST_POLICY.max_attempts {
-            let conflicted_files = assist_input
-                .load_conflicted_files(&previous_conflict_files)
-                .await?;
-            if conflicted_files.is_empty() {
+            for assist_attempt in 1..=REBASE_ASSIST_POLICY.max_attempts {
+                let conflicted_files = assist_input
+                    .load_conflicted_files(&previous_conflict_files)
+                    .await?;
+                if conflicted_files.is_empty() {
+                    let continue_step = assist_input.run_rebase_continue().await?;
+                    match continue_step {
+                        git::RebaseStepResult::Completed => {
+                            return Ok(());
+                        }
+                        git::RebaseStepResult::Conflict { detail } => {
+                            if failure_tracker.observe(&detail) {
+                                return Err(assist_input.repeated_conflict_state_error(&detail));
+                            }
+
+                            if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
+                                return Err(assist_input.still_conflicted_error(&detail));
+                            }
+                        }
+                    }
+
+                    continue;
+                }
+
+                let conflict_fingerprint =
+                    Self::conflicted_file_fingerprint(assist_input.folder(), &conflicted_files);
+                if failure_tracker.observe(&conflict_fingerprint) {
+                    return Err(assist_input.unchanged_conflict_files_error());
+                }
+
+                assist_input
+                    .run_assist_attempt(assist_attempt, &conflicted_files)
+                    .await?;
+
+                let still_has_conflicts = assist_input
+                    .stage_and_check_for_conflicts(&conflicted_files)
+                    .await?;
+                previous_conflict_files = conflicted_files;
+                if still_has_conflicts {
+                    if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
+                        return Err("Conflicts remain unresolved after maximum assistance \
+                                    attempts"
+                            .to_string());
+                    }
+
+                    continue;
+                }
+
                 let continue_step = assist_input.run_rebase_continue().await?;
                 match continue_step {
                     git::RebaseStepResult::Completed => {
@@ -1102,74 +1158,27 @@ impl SessionManager {
                     }
                     git::RebaseStepResult::Conflict { detail } => {
                         if failure_tracker.observe(&detail) {
-                            assist_input.abort_rebase_after_assist_failure().await;
-
                             return Err(assist_input.repeated_conflict_state_error(&detail));
                         }
 
                         if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
-                            assist_input.abort_rebase_after_assist_failure().await;
-
                             return Err(assist_input.still_conflicted_error(&detail));
                         }
                     }
                 }
-
-                continue;
             }
 
-            let conflict_fingerprint =
-                Self::conflicted_file_fingerprint(assist_input.folder(), &conflicted_files);
-            if failure_tracker.observe(&conflict_fingerprint) {
-                assist_input.abort_rebase_after_assist_failure().await;
+            Err(assist_input.exhausted_error())
+        }
+        .await;
 
-                return Err(assist_input.unchanged_conflict_files_error());
-            }
+        if let Err(error) = assist_result {
+            assist_input.abort_rebase_after_assist_failure().await;
 
-            assist_input
-                .run_assist_attempt(assist_attempt, &conflicted_files)
-                .await?;
-
-            let still_has_conflicts = assist_input
-                .stage_and_check_for_conflicts(&conflicted_files)
-                .await?;
-            previous_conflict_files = conflicted_files;
-            if still_has_conflicts {
-                if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
-                    assist_input.abort_rebase_after_assist_failure().await;
-
-                    return Err(
-                        "Conflicts remain unresolved after maximum assistance attempts".to_string(),
-                    );
-                }
-
-                continue;
-            }
-
-            let continue_step = assist_input.run_rebase_continue().await?;
-            match continue_step {
-                git::RebaseStepResult::Completed => {
-                    return Ok(());
-                }
-                git::RebaseStepResult::Conflict { detail } => {
-                    if failure_tracker.observe(&detail) {
-                        assist_input.abort_rebase_after_assist_failure().await;
-
-                        return Err(assist_input.repeated_conflict_state_error(&detail));
-                    }
-
-                    if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
-                        assist_input.abort_rebase_after_assist_failure().await;
-
-                        return Err(assist_input.still_conflicted_error(&detail));
-                    }
-                }
-            }
+            return Err(error);
         }
 
-        assist_input.abort_rebase_after_assist_failure().await;
-
-        Err(assist_input.exhausted_error())
+        Ok(())
     }
 
     /// Returns whether the session worktree has an in-progress rebase.
@@ -1185,15 +1194,64 @@ impl SessionManager {
 
     /// Starts the rebase step for an assisted rebase flow.
     ///
+    /// When git reports stale rebase metadata (`rebase-merge`/`rebase-apply`)
+    /// this helper attempts one cleanup pass via `git rebase --abort` and then
+    /// retries the start command once.
+    ///
     /// # Errors
     /// Returns an error if spawning the git process fails or git returns a
-    /// non-conflict failure.
+    /// non-conflict failure that cannot be recovered.
     async fn run_rebase_start(input: &RebaseAssistInput) -> Result<git::RebaseStepResult, String> {
         let folder = input.folder.clone();
         let base_branch = input.base_branch.clone();
-        let result = input.git_client.rebase_start(folder, base_branch).await?;
+        match input
+            .git_client
+            .rebase_start(folder.clone(), base_branch.clone())
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if !Self::is_stale_rebase_state_error(&error) {
+                    return Err(error);
+                }
 
-        Ok(result)
+                Self::recover_from_stale_rebase_start_error(input, &error).await?;
+
+                input.git_client.rebase_start(folder, base_branch).await
+            }
+        }
+    }
+
+    /// Returns whether a rebase start error indicates stale rebase metadata.
+    fn is_stale_rebase_state_error(error: &str) -> bool {
+        let normalized_error = error.to_ascii_lowercase();
+
+        normalized_error.contains("already a rebase-merge directory")
+            || normalized_error.contains("already a rebase-apply directory")
+            || normalized_error.contains("middle of another rebase")
+    }
+
+    /// Tries to clean stale rebase metadata before retrying rebase start.
+    ///
+    /// # Errors
+    /// Returns an error when `git rebase --abort` cannot clean up stale state.
+    async fn recover_from_stale_rebase_start_error(
+        input: &RebaseAssistInput,
+        start_error: &str,
+    ) -> Result<(), String> {
+        let folder = input.folder.clone();
+        input
+            .git_client
+            .abort_rebase(folder)
+            .await
+            .map_err(|abort_error| {
+                format!(
+                    "Detected stale rebase metadata after failed rebase start: {start_error}. \
+                     Cleanup with `git rebase --abort` failed: {abort_error}"
+                )
+            })?;
+
+        Ok(())
     }
 
     /// Loads all conflicted files from the worktree.
@@ -1547,7 +1605,30 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
+    use mockall::Sequence;
+
     use super::*;
+
+    /// Builds rebase assistance input with the provided git client for unit
+    /// tests.
+    async fn build_rebase_assist_input_for_test(
+        git_client: Arc<dyn GitClient>,
+    ) -> RebaseAssistInput {
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+        let db = Database::open_in_memory().await.expect("failed to open db");
+
+        RebaseAssistInput {
+            app_event_tx,
+            base_branch: "main".to_string(),
+            db,
+            folder: PathBuf::from("/tmp/rebase-start-test"),
+            git_client,
+            id: "session-123".to_string(),
+            output: Arc::new(Mutex::new(String::new())),
+            permission_mode: PermissionMode::AutoEdit,
+            session_model: AgentModel::Gemini3FlashPreview,
+        }
+    }
 
     #[test]
     fn test_rebase_assist_permission_mode_plan_uses_auto_edit() {
@@ -1657,6 +1738,144 @@ mod tests {
         assert_eq!(input.folder, cloned_input.folder);
         assert_eq!(input.permission_mode, cloned_input.permission_mode);
         assert_eq!(input.session_model, cloned_input.session_model);
+    }
+
+    #[tokio::test]
+    async fn test_execute_rebase_workflow_aborts_when_assist_loop_fails() {
+        // Arrange
+        let mut mock_git_client = git::MockGitClient::new();
+        let mut sequence = Sequence::new();
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+        mock_git_client
+            .expect_head_short_hash()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok("abc1234".to_string()) }));
+        mock_git_client
+            .expect_is_rebase_in_progress()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Err("state query failed".to_string()) }));
+        mock_git_client
+            .expect_abort_rebase()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        let input = build_rebase_assist_input_for_test(Arc::new(mock_git_client)).await;
+
+        // Act
+        let result = SessionManager::execute_rebase_workflow(input).await;
+
+        // Assert
+        let error = result.expect_err("rebase workflow should fail");
+        assert!(
+            error.contains("Failed to rebase: state query failed"),
+            "workflow error should include assist-loop failure reason"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_rebase_assist_loop_core_aborts_on_early_error() {
+        // Arrange
+        let mut mock_git_client = git::MockGitClient::new();
+        let mut sequence = Sequence::new();
+        mock_git_client
+            .expect_list_conflicted_files()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Err("failed to list conflicts".to_string()) }));
+        mock_git_client
+            .expect_abort_rebase()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        let input = build_rebase_assist_input_for_test(Arc::new(mock_git_client)).await;
+
+        // Act
+        let result = SessionManager::run_rebase_assist_loop_core(
+            RebaseAssistLoopInput::Session(input),
+            None,
+        )
+        .await;
+
+        // Assert
+        let error = result.expect_err("assist loop should fail");
+        assert_eq!(error, "failed to list conflicts");
+    }
+
+    #[tokio::test]
+    async fn test_run_rebase_start_recovers_stale_rebase_state_and_retries() {
+        // Arrange
+        let mut mock_git_client = git::MockGitClient::new();
+        let mut sequence = Sequence::new();
+        mock_git_client
+            .expect_rebase_start()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Box::pin(async {
+                    Err(
+                        "fatal: It seems that there is already a rebase-merge directory"
+                            .to_string(),
+                    )
+                })
+            });
+        mock_git_client
+            .expect_abort_rebase()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock_git_client
+            .expect_rebase_start()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Box::pin(async { Ok(git::RebaseStepResult::Completed) }));
+        let input = build_rebase_assist_input_for_test(Arc::new(mock_git_client)).await;
+
+        // Act
+        let result = SessionManager::run_rebase_start(&input).await;
+
+        // Assert
+        assert_eq!(result, Ok(git::RebaseStepResult::Completed));
+    }
+
+    #[tokio::test]
+    async fn test_run_rebase_start_reports_cleanup_failure_for_stale_rebase_state() {
+        // Arrange
+        let mut mock_git_client = git::MockGitClient::new();
+        let mut sequence = Sequence::new();
+        mock_git_client
+            .expect_rebase_start()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Box::pin(async {
+                    Err(
+                        "fatal: It seems that there is already a rebase-merge directory"
+                            .to_string(),
+                    )
+                })
+            });
+        mock_git_client
+            .expect_abort_rebase()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Err("abort failed".to_string()) }));
+        let input = build_rebase_assist_input_for_test(Arc::new(mock_git_client)).await;
+
+        // Act
+        let result = SessionManager::run_rebase_start(&input).await;
+
+        // Assert
+        let error = result.expect_err("cleanup failure should stop retry flow");
+        assert!(
+            error.contains("Cleanup with `git rebase --abort` failed: abort failed"),
+            "error should include abort failure detail"
+        );
     }
 
     #[tokio::test]

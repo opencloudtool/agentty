@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -122,6 +123,10 @@ pub async fn rebase_continue(repo_path: PathBuf) -> Result<RebaseStepResult, Str
 
 /// Aborts an in-progress rebase.
 ///
+/// When git reports stale or inconsistent rebase metadata and abort cannot
+/// complete normally, this helper removes stale `rebase-merge`/`rebase-apply`
+/// paths as a recovery fallback.
+///
 /// # Arguments
 /// * `repo_path` - Path to the git repository or worktree
 ///
@@ -137,6 +142,14 @@ pub async fn abort_rebase(repo_path: PathBuf) -> Result<(), String> {
 
         if !output.status.success() {
             let detail = command_output_detail(&output.stdout, &output.stderr);
+            if !is_stale_or_inactive_rebase_error(&detail) {
+                return Err(format!("Failed to abort rebase: {detail}."));
+            }
+
+            let cleaned_stale_metadata = clean_stale_rebase_metadata(&repo_path)?;
+            if cleaned_stale_metadata {
+                return Ok(());
+            }
 
             return Err(format!("Failed to abort rebase: {detail}."));
         }
@@ -334,6 +347,58 @@ pub(super) fn is_rebase_conflict(detail: &str) -> bool {
         || detail.contains("mark them as resolved")
         || detail.contains("unresolved conflict")
         || detail.contains("Committing is not possible")
+}
+
+/// Returns whether abort output indicates stale or inactive rebase metadata.
+fn is_stale_or_inactive_rebase_error(detail: &str) -> bool {
+    let normalized_detail = detail.to_ascii_lowercase();
+
+    normalized_detail.contains("already a rebase-merge directory")
+        || normalized_detail.contains("already a rebase-apply directory")
+        || normalized_detail.contains("middle of another rebase")
+        || normalized_detail.contains("no rebase in progress")
+        || normalized_detail.contains("rebase-merge")
+        || normalized_detail.contains("rebase-apply")
+}
+
+/// Removes stale rebase metadata directories/files from the git directory.
+///
+/// Returns `true` when at least one stale metadata path was removed.
+///
+/// # Errors
+/// Returns an error when the git directory cannot be resolved or metadata
+/// cleanup fails.
+fn clean_stale_rebase_metadata(repo_path: &Path) -> Result<bool, String> {
+    let git_dir =
+        resolve_git_dir(repo_path).ok_or_else(|| "Failed to resolve git directory".to_string())?;
+    let rebase_merge = git_dir.join("rebase-merge");
+    let rebase_apply = git_dir.join("rebase-apply");
+    let removed_rebase_merge = remove_stale_rebase_metadata_path(&rebase_merge)?;
+    let removed_rebase_apply = remove_stale_rebase_metadata_path(&rebase_apply)?;
+
+    Ok(removed_rebase_merge || removed_rebase_apply)
+}
+
+/// Removes one stale rebase metadata path and returns whether anything changed.
+///
+/// # Errors
+/// Returns an error when a stale metadata path exists but cannot be removed.
+fn remove_stale_rebase_metadata_path(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("Failed to remove stale rebase metadata: {error}"))?;
+
+        return Ok(true);
+    }
+
+    fs::remove_file(path)
+        .map_err(|error| format!("Failed to remove stale rebase metadata: {error}"))?;
+
+    Ok(true)
 }
 
 /// Returns whether git output indicates transient index lock contention.

@@ -501,6 +501,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_abort_rebase_cleans_stale_rebase_merge_metadata() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let stale_rebase_dir = dir.path().join(".git/rebase-merge");
+        fs::create_dir_all(&stale_rebase_dir).expect("failed to create stale rebase metadata");
+        fs::write(stale_rebase_dir.join("head-name"), "refs/heads/main")
+            .expect("failed to write stale rebase metadata");
+
+        // Act
+        let result = abort_rebase(dir.path().to_path_buf()).await;
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        assert!(!stale_rebase_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn test_abort_rebase_returns_error_without_rebase_state_or_stale_metadata() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+
+        // Act
+        let result = abort_rebase(dir.path().to_path_buf()).await;
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn test_pull_rebase_returns_error_without_upstream() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
