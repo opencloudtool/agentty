@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
-use crate::app::task::{RunAgentAssistTaskInput, TaskService};
+use crate::app::session::{RunAgentAssistTaskInput, SessionTaskService};
 use crate::domain::agent::AgentModel;
 use crate::domain::permission::PermissionMode;
 use crate::infra::db::Database;
@@ -105,7 +105,7 @@ pub(super) async fn append_assist_header(
         "\n[{assist_label} Assist] Attempt {assist_attempt}/{max_assist_attempts}. \
          {assist_action}\n{detail}\n"
     );
-    TaskService::append_session_output(
+    SessionTaskService::append_session_output(
         &context.output,
         &context.db,
         &context.app_event_tx,
@@ -132,7 +132,7 @@ pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> R
         None,
     );
 
-    TaskService::run_agent_assist_task(RunAgentAssistTaskInput {
+    SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
         agent: context.session_model.kind(),
         app_event_tx: context.app_event_tx.clone(),
         cmd: command,

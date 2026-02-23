@@ -7,10 +7,9 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::access::SESSION_NOT_FOUND_ERROR;
-use super::{session_branch, session_folder};
+use super::{SessionTaskService, session_branch, session_folder};
 use crate::app::session::worker::SessionCommand;
 use crate::app::settings::SettingName;
-use crate::app::task::TaskService;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::permission::PermissionMode;
@@ -244,7 +243,7 @@ impl SessionManager {
             .await;
 
         let initial_output = format!(" › {prompt}\n\n");
-        TaskService::append_session_output(
+        SessionTaskService::append_session_output(
             &output,
             services.db(),
             &app_event_tx,
@@ -253,7 +252,7 @@ impl SessionManager {
         )
         .await;
 
-        let _ = TaskService::update_status(
+        let _ = SessionTaskService::update_status(
             &status,
             services.db(),
             &app_event_tx,
@@ -680,7 +679,7 @@ impl SessionManager {
             .db()
             .update_session_prompt(session_id, prompt)
             .await;
-        let _ = TaskService::update_status(
+        let _ = SessionTaskService::update_status(
             status,
             services.db(),
             app_event_tx,
@@ -700,7 +699,7 @@ impl SessionManager {
         prompt: &str,
     ) {
         let reply_line = format!("\n › {prompt}\n\n");
-        TaskService::append_session_output(
+        SessionTaskService::append_session_output(
             output,
             services.db(),
             app_event_tx,
@@ -787,7 +786,7 @@ impl SessionManager {
         };
         let app_event_tx = services.event_sender();
 
-        TaskService::append_session_output(
+        SessionTaskService::append_session_output(
             &handles.output,
             services.db(),
             &app_event_tx,
@@ -810,7 +809,7 @@ impl SessionManager {
             .await
         {
             let error_line = format!("\n[Reply Error] {error}\n");
-            TaskService::append_session_output(
+            SessionTaskService::append_session_output(
                 output,
                 services.db(),
                 app_event_tx,
@@ -870,7 +869,7 @@ impl SessionManager {
         };
         let app_event_tx = services.event_sender();
 
-        TaskService::append_session_output(
+        SessionTaskService::append_session_output(
             &handles.output,
             services.db(),
             &app_event_tx,
@@ -898,7 +897,7 @@ impl SessionManager {
         let status = Arc::clone(&handles.status);
         let app_event_tx = services.event_sender();
 
-        let _ = TaskService::update_status(
+        let _ = SessionTaskService::update_status(
             &status,
             services.db(),
             &app_event_tx,

@@ -21,4 +21,5 @@ Session domain workflows for app-level orchestration.
 - [load.rs](load.rs) - Session snapshot loading and derived size persistence.
 - [merge.rs](merge.rs) - Merge/rebase workflows and worktree cleanup helpers.
 - [refresh.rs](refresh.rs) - Periodic refresh scheduling and list-state restoration.
+- [task.rs](task.rs) - Session process execution, streaming output capture, and status persistence helpers.
 - [worker.rs](worker.rs) - Per-session command queue and worker execution orchestration.

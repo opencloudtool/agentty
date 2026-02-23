@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::app::task::{RunSessionTaskInput, TaskService};
+use super::SessionTaskService;
+use super::task::RunSessionTaskInput;
+use crate::app::task::TaskService;
 use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::permission::PermissionMode;
@@ -294,7 +296,7 @@ impl SessionManager {
         update_in_progress_status: bool,
     ) -> Result<(), String> {
         if update_in_progress_status {
-            let _ = TaskService::update_status(
+            let _ = SessionTaskService::update_status(
                 &context.status,
                 &context.db,
                 &context.app_event_tx,
@@ -304,7 +306,7 @@ impl SessionManager {
             .await;
         }
 
-        TaskService::run_session_task(RunSessionTaskInput {
+        SessionTaskService::run_session_task(RunSessionTaskInput {
             app_event_tx: context.app_event_tx.clone(),
             child_pid: Arc::clone(&context.child_pid),
             cmd: command,
@@ -330,7 +332,7 @@ impl SessionManager {
         update_in_progress_status: bool,
     ) -> Result<(), String> {
         if update_in_progress_status {
-            let _ = TaskService::update_status(
+            let _ = SessionTaskService::update_status(
                 &context.status,
                 &context.db,
                 &context.app_event_tx,

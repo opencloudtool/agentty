@@ -34,11 +34,11 @@ use merge_queue::{MergeQueue, MergeQueueProgress};
 pub use project::ProjectManager;
 pub use service::AppServices;
 pub use session::SessionManager;
+use session::SessionTaskService;
 pub(crate) use session::SyncSessionStartError;
 pub use session_state::SessionState;
 pub use settings::SettingsManager;
 pub use tab::{Tab, TabManager};
-use task::TaskService;
 
 /// Relative directory name used for session git worktrees under `~/.agentty`.
 pub const AGENTTY_WT_DIR: &str = "wt";
@@ -740,7 +740,7 @@ impl App {
     async fn mark_session_as_queued_for_merge(&self, session_id: &str) -> Result<(), String> {
         let handles = self.sessions.session_handles_or_err(session_id)?;
         let app_event_tx = self.services.event_sender();
-        let status_updated = TaskService::update_status(
+        let status_updated = SessionTaskService::update_status(
             handles.status.as_ref(),
             self.services.db(),
             &app_event_tx,
@@ -770,7 +770,7 @@ impl App {
             return;
         };
         let app_event_tx = self.services.event_sender();
-        let _ = TaskService::update_status(
+        let _ = SessionTaskService::update_status(
             handles.status.as_ref(),
             self.services.db(),
             &app_event_tx,

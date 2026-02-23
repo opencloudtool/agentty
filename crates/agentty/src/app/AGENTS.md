@@ -43,4 +43,4 @@ Application-layer workflows and orchestration.
 - [settings.rs](settings.rs) - Settings management and persistence.
 - [session_state.rs](session_state.rs) - Session state management.
 - [tab.rs](tab.rs) - Top-level tab definitions and tab selection state management.
-- [task.rs](task.rs) - Background task spawning and output handling.
+- [task.rs](task.rs) - App-wide background pollers (git status, Codex usage, and version checks).

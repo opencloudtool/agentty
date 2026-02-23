@@ -18,7 +18,7 @@ use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, effective_permission_mode,
     format_detail_lines, run_agent_assist,
 };
-use crate::app::task::TaskService;
+use crate::app::session::SessionTaskService;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::permission::PermissionMode;
@@ -403,23 +403,35 @@ impl SessionManager {
         let output = Arc::clone(&handles.output);
         let status = Arc::clone(&handles.status);
 
-        if !TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Merging).await {
+        if !SessionTaskService::update_status(&status, &db, &app_event_tx, &id, Status::Merging)
+            .await
+        {
             return Err("Invalid status transition to Merging".to_string());
         }
 
         let base_branch = match db.get_session_base_branch(&id).await {
             Ok(Some(base_branch)) => base_branch,
             Ok(None) => {
-                let _ =
-                    TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Review)
-                        .await;
+                let _ = SessionTaskService::update_status(
+                    &status,
+                    &db,
+                    &app_event_tx,
+                    &id,
+                    Status::Review,
+                )
+                .await;
 
                 return Err("No git worktree for this session".to_string());
             }
             Err(error) => {
-                let _ =
-                    TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Review)
-                        .await;
+                let _ = SessionTaskService::update_status(
+                    &status,
+                    &db,
+                    &app_event_tx,
+                    &id,
+                    Status::Review,
+                )
+                .await;
 
                 return Err(error);
             }
@@ -428,7 +440,8 @@ impl SessionManager {
         let working_dir = projects.working_dir().to_path_buf();
         let Some(repo_root) = git_client.find_git_repo_root(working_dir).await else {
             let _ =
-                TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
+                SessionTaskService::update_status(&status, &db, &app_event_tx, &id, Status::Review)
+                    .await;
 
             return Err("Failed to find git repository root".to_string());
         };
@@ -553,7 +566,8 @@ impl SessionManager {
             (merge_outcome, Some(commit_message))
         };
 
-        if !TaskService::update_status(&status, &db, &app_event_tx, &id, Status::Done).await {
+        if !SessionTaskService::update_status(&status, &db, &app_event_tx, &id, Status::Done).await
+        {
             return Err("Invalid status transition to Done".to_string());
         }
 
@@ -594,15 +608,28 @@ impl SessionManager {
         match merge_result {
             Ok(message) => {
                 let merge_message = format!("\n[Merge] {message}\n");
-                TaskService::append_session_output(output, db, app_event_tx, id, &merge_message)
-                    .await;
+                SessionTaskService::append_session_output(
+                    output,
+                    db,
+                    app_event_tx,
+                    id,
+                    &merge_message,
+                )
+                .await;
             }
             Err(error) => {
                 let merge_error = format!("\n[Merge Error] {error}\n");
-                TaskService::append_session_output(output, db, app_event_tx, id, &merge_error)
-                    .await;
+                SessionTaskService::append_session_output(
+                    output,
+                    db,
+                    app_event_tx,
+                    id,
+                    &merge_error,
+                )
+                .await;
                 let _ =
-                    TaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
+                    SessionTaskService::update_status(status, db, app_event_tx, id, Status::Review)
+                        .await;
             }
         }
     }
@@ -656,8 +683,14 @@ impl SessionManager {
         let app_event_tx = services.event_sender();
         let git_client = self.git_client();
 
-        if !TaskService::update_status(&status, &db, &app_event_tx, &session.id, Status::Rebasing)
-            .await
+        if !SessionTaskService::update_status(
+            &status,
+            &db,
+            &app_event_tx,
+            &session.id,
+            Status::Rebasing,
+        )
+        .await
         {
             return Err("Invalid status transition to Rebasing".to_string());
         }
@@ -960,17 +993,30 @@ impl SessionManager {
         match rebase_result {
             Ok(message) => {
                 let rebase_message = format!("\n[Rebase] {message}\n");
-                TaskService::append_session_output(output, db, app_event_tx, id, &rebase_message)
-                    .await;
+                SessionTaskService::append_session_output(
+                    output,
+                    db,
+                    app_event_tx,
+                    id,
+                    &rebase_message,
+                )
+                .await;
             }
             Err(error) => {
                 let rebase_error = format!("\n[Rebase Error] {error}\n");
-                TaskService::append_session_output(output, db, app_event_tx, id, &rebase_error)
-                    .await;
+                SessionTaskService::append_session_output(
+                    output,
+                    db,
+                    app_event_tx,
+                    id,
+                    &rebase_error,
+                )
+                .await;
             }
         }
 
-        let _ = TaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
+        let _ =
+            SessionTaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
     }
 
     /// Updates persisted session title and summary from the final squash commit

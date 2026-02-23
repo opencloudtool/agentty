@@ -21,9 +21,11 @@ mod lifecycle;
 mod load;
 mod merge;
 mod refresh;
+mod task;
 mod worker;
 
 pub(crate) use merge::SyncSessionStartError;
+pub(crate) use task::{RunAgentAssistTaskInput, SessionTaskService};
 
 /// Render payload tuple returned by [`SessionManager::render_parts`].
 type SessionRenderParts<'a> = (
@@ -2256,7 +2258,7 @@ mod tests {
         let source = "Line 1\nLine 2".as_bytes();
 
         // Act
-        crate::app::task::TaskService::capture_raw_output(source, &buffer, None).await;
+        crate::app::session::SessionTaskService::capture_raw_output(source, &buffer, None).await;
 
         // Assert
         let out = buffer.lock().expect("failed to lock buffer").clone();
