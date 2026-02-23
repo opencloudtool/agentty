@@ -4,7 +4,10 @@ members = ["crates/*"]
 
 [workspace.package]
 version = "0.2.1"
-authors = ["Vladimir Minev"]
+authors = [
+  "Vladimir Minev <minev.dev@gmail.com>",
+  "Andrei Agaev <andagaev@gmail.com>",
+]
 edition = "2024"
 license = "Apache-2.0"
 readme = "README.md"
