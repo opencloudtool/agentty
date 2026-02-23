@@ -169,6 +169,10 @@ impl TaskService {
 
     /// Executes one Codex app-server turn for a session.
     ///
+    /// On failure, this clears runtime process tracking, transitions the
+    /// session back to `Review`, and then returns the original error so session
+    /// workers do not leave sessions stuck in `InProgress`.
+    ///
     /// # Errors
     /// Returns an error when app-server turn execution fails.
     pub(super) async fn run_codex_app_server_task(
@@ -213,6 +217,8 @@ impl TaskService {
                 if let Ok(mut guard) = child_pid.lock() {
                     *guard = None;
                 }
+
+                let _ = Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
 
                 return Err(error);
             }
@@ -482,7 +488,162 @@ impl TaskService {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+
     use super::*;
+    use crate::domain::agent::AgentModel;
+    use crate::domain::permission::PermissionMode;
+    use crate::domain::session::Status;
+    use crate::infra::codex_app_server::MockCodexAppServerClient;
+    use crate::infra::db::Database;
+    use crate::infra::git;
+
+    #[tokio::test]
+    async fn test_run_codex_app_server_task_error_restores_review_status() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        let session_id = "session-id";
+        db.insert_session(
+            session_id,
+            AgentModel::Gpt53Codex.as_str(),
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let mut mock_codex_client = MockCodexAppServerClient::new();
+        mock_codex_client
+            .expect_run_turn()
+            .times(1)
+            .returning(|_| Box::pin(async { Err("turn failed".to_string()) }));
+        mock_codex_client
+            .expect_shutdown_session()
+            .times(1)
+            .returning(|_| Box::pin(async {}));
+        let child_pid = Arc::new(Mutex::new(Some(4242)));
+        let status = Arc::new(Mutex::new(Status::InProgress));
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = TaskService::run_codex_app_server_task(
+            Arc::new(mock_codex_client),
+            RunCodexAppServerTaskInput {
+                app_event_tx,
+                child_pid: Arc::clone(&child_pid),
+                db: db.clone(),
+                folder: dir.path().to_path_buf(),
+                git_client: Arc::new(git::RealGitClient),
+                id: session_id.to_string(),
+                is_initial_plan_prompt: false,
+                output: Arc::new(Mutex::new(String::new())),
+                permission_mode: PermissionMode::AutoEdit,
+                prompt: "hello".to_string(),
+                session_output: Some("history".to_string()),
+                session_model: AgentModel::Gpt53Codex,
+                status: Arc::clone(&status),
+            },
+        )
+        .await;
+
+        // Assert
+        assert_eq!(result, Err("turn failed".to_string()));
+        assert_eq!(
+            child_pid.lock().ok().and_then(|guard| *guard),
+            None,
+            "child pid should be cleared on error"
+        );
+        assert_eq!(
+            status.lock().map(|value| *value).ok(),
+            Some(Status::Review),
+            "status should leave InProgress on app-server errors"
+        );
+        let sessions = db.load_sessions().await.expect("failed to load sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].status, Status::Review.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_run_codex_app_server_task_error_keeps_review_status() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        let session_id = "session-id";
+        db.insert_session(
+            session_id,
+            AgentModel::Gpt53Codex.as_str(),
+            "main",
+            "Review",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let mut mock_codex_client = MockCodexAppServerClient::new();
+        mock_codex_client
+            .expect_run_turn()
+            .times(1)
+            .returning(|_| Box::pin(async { Err("turn failed".to_string()) }));
+        mock_codex_client
+            .expect_shutdown_session()
+            .times(1)
+            .returning(|_| Box::pin(async {}));
+        let child_pid = Arc::new(Mutex::new(Some(999)));
+        let status = Arc::new(Mutex::new(Status::Review));
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = TaskService::run_codex_app_server_task(
+            Arc::new(mock_codex_client),
+            RunCodexAppServerTaskInput {
+                app_event_tx,
+                child_pid: Arc::clone(&child_pid),
+                db: db.clone(),
+                folder: dir.path().to_path_buf(),
+                git_client: Arc::new(git::RealGitClient),
+                id: session_id.to_string(),
+                is_initial_plan_prompt: false,
+                output: Arc::new(Mutex::new(String::new())),
+                permission_mode: PermissionMode::AutoEdit,
+                prompt: "hello".to_string(),
+                session_output: None,
+                session_model: AgentModel::Gpt53Codex,
+                status: Arc::clone(&status),
+            },
+        )
+        .await;
+
+        // Assert
+        assert_eq!(result, Err("turn failed".to_string()));
+        assert_eq!(
+            child_pid.lock().ok().and_then(|guard| *guard),
+            None,
+            "child pid should be cleared on error"
+        );
+        assert_eq!(
+            status.lock().map(|value| *value).ok(),
+            Some(Status::Review),
+            "status should remain Review when already settled"
+        );
+        let sessions = db.load_sessions().await.expect("failed to load sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].status, Status::Review.to_string());
+    }
 
     #[test]
     fn test_spawn_codex_usage_limits_task_is_noop_in_tests() {
