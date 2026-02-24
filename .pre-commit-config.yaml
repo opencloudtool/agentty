@@ -23,6 +23,7 @@ repos:
         language: python
         additional_dependencies: [djlint==1.36.4]
         files: \.html?$
+        exclude: docs/site/templates/base\.html
       - id: rustfmt-fix
         name: rustfmt fix
         description: Format the code with rustfmt.
