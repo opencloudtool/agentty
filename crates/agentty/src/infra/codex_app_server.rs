@@ -3,16 +3,15 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tokio::sync::mpsc;
 
 use crate::domain::permission::PermissionMode;
-
-const CODEX_APP_SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-const CODEX_APP_SERVER_TURN_TIMEOUT: Duration = Duration::from_mins(5);
+use crate::infra::app_server_transport::{
+    self, extract_json_error_message, response_id_matches, write_json_line,
+};
 
 /// Canonical wire-level policy mapping for one [`PermissionMode`].
 ///
@@ -272,14 +271,15 @@ impl RealCodexAppServerClient {
                 }
             }
         });
-        Self::write_json_line(&mut session.stdin, &initialize_payload).await?;
-        Self::wait_for_response_line(&mut session.stdout_lines, &initialize_id).await?;
+        write_json_line(&mut session.stdin, &initialize_payload).await?;
+        app_server_transport::wait_for_response_line(&mut session.stdout_lines, &initialize_id)
+            .await?;
 
         let runtime_initialized_payload = serde_json::json!({
             "method": "initialized",
             "params": {}
         });
-        Self::write_json_line(&mut session.stdin, &runtime_initialized_payload).await?;
+        write_json_line(&mut session.stdin, &runtime_initialized_payload).await?;
 
         Ok(())
     }
@@ -308,9 +308,12 @@ impl RealCodexAppServerClient {
             }
         });
 
-        Self::write_json_line(&mut session.stdin, &thread_start_payload).await?;
-        let response_line =
-            Self::wait_for_response_line(&mut session.stdout_lines, &thread_start_id).await?;
+        write_json_line(&mut session.stdin, &thread_start_payload).await?;
+        let response_line = app_server_transport::wait_for_response_line(
+            &mut session.stdout_lines,
+            &thread_start_id,
+        )
+        .await?;
         let response_value = serde_json::from_str::<Value>(&response_line)
             .map_err(|error| format!("Failed to parse thread/start response JSON: {error}"))?;
 
@@ -355,14 +358,14 @@ impl RealCodexAppServerClient {
                 "outputSchema": Value::Null
             }
         });
-        Self::write_json_line(&mut session.stdin, &turn_start_payload).await?;
+        write_json_line(&mut session.stdin, &turn_start_payload).await?;
 
         let mut assistant_messages = Vec::new();
         let mut active_turn_id: Option<String> = None;
         let mut latest_stream_usage: Option<(u64, u64)> = None;
         let mut completed_turn_usage: Option<(u64, u64)> = None;
 
-        tokio::time::timeout(CODEX_APP_SERVER_TURN_TIMEOUT, async {
+        tokio::time::timeout(app_server_transport::TURN_TIMEOUT, async {
             loop {
                 let stdout_line = session
                     .stdout_lines
@@ -398,7 +401,7 @@ impl RealCodexAppServerClient {
                     if let Some(approval_response) =
                         Self::build_pre_action_approval_response(&response_value)
                     {
-                        Self::write_json_line(&mut session.stdin, &approval_response).await?;
+                        write_json_line(&mut session.stdin, &approval_response).await?;
 
                         continue;
                     }
@@ -442,7 +445,7 @@ impl RealCodexAppServerClient {
         .map_err(|_| {
             format!(
                 "Timed out waiting for Codex app-server `turn/completed` after {} seconds",
-                CODEX_APP_SERVER_TURN_TIMEOUT.as_secs()
+                app_server_transport::TURN_TIMEOUT.as_secs()
             )
         })?
     }
@@ -554,72 +557,9 @@ impl RealCodexAppServerClient {
         }))
     }
 
-    /// Writes one JSON line payload to app-server stdin.
-    async fn write_json_line(
-        stdin: &mut tokio::process::ChildStdin,
-        payload: &Value,
-    ) -> Result<(), String> {
-        let serialized_payload = payload.to_string();
-
-        stdin
-            .write_all(serialized_payload.as_bytes())
-            .await
-            .map_err(|error| format!("Failed writing to Codex app-server stdin: {error}"))?;
-        stdin.write_all(b"\n").await.map_err(|error| {
-            format!("Failed writing newline to Codex app-server stdin: {error}")
-        })?;
-        stdin
-            .flush()
-            .await
-            .map_err(|error| format!("Failed flushing Codex app-server stdin: {error}"))
-    }
-
-    /// Waits until a response line carrying `response_id` is observed.
-    async fn wait_for_response_line<R>(
-        stdout_lines: &mut Lines<BufReader<R>>,
-        response_id: &str,
-    ) -> Result<String, String>
-    where
-        R: tokio::io::AsyncRead + Unpin,
-    {
-        tokio::time::timeout(CODEX_APP_SERVER_STARTUP_TIMEOUT, async {
-            loop {
-                let stdout_line = stdout_lines
-                    .next_line()
-                    .await
-                    .map_err(|error| format!("Failed reading Codex app-server stdout: {error}"))?
-                    .ok_or_else(|| {
-                        "Codex app-server terminated before sending expected response".to_string()
-                    })?;
-
-                let Ok(response_value) = serde_json::from_str::<Value>(&stdout_line) else {
-                    continue;
-                };
-                if response_id_matches(&response_value, response_id) {
-                    return Ok(stdout_line);
-                }
-            }
-        })
-        .await
-        .map_err(|_| {
-            format!(
-                "Timed out waiting for Codex app-server response `{response_id}` after {} seconds",
-                CODEX_APP_SERVER_STARTUP_TIMEOUT.as_secs()
-            )
-        })?
-    }
-
     /// Terminates one runtime process and waits for process exit.
     async fn shutdown_runtime(session: &mut CodexSessionRuntime) {
-        let _ = session.stdin.shutdown().await;
-
-        if tokio::time::timeout(Duration::from_secs(1), session.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = session.child.kill().await;
-            let _ = session.child.wait().await;
-        }
+        app_server_transport::shutdown_child(&mut session.child).await;
     }
 }
 
@@ -675,23 +615,6 @@ impl CodexSessionRuntime {
     fn matches_request(&self, request: &CodexTurnRequest) -> bool {
         self.folder == request.folder && self.model == request.model
     }
-}
-
-/// Returns whether a JSON response line has the requested id.
-fn response_id_matches(response_value: &Value, response_id: &str) -> bool {
-    response_value
-        .get("id")
-        .and_then(Value::as_str)
-        .is_some_and(|line_id| line_id == response_id)
-}
-
-/// Extracts a top-level JSON-RPC style error message from one line.
-fn extract_json_error_message(response_value: &Value) -> Option<String> {
-    response_value
-        .get("error")
-        .and_then(|error| error.get("message"))
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
 }
 
 /// Extracts the turn id from a successful `turn/start` response payload.
