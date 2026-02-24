@@ -2,6 +2,11 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+/// Maximum number of visible content lines inside the chat input viewport.
+pub const CHAT_INPUT_MAX_VISIBLE_LINES: u16 = 10;
+
+const CHAT_INPUT_BORDER_HEIGHT: u16 = 2;
+
 /// Split an area into a centered content column with side gutters.
 pub fn centered_horizontal_layout(area: Rect) -> std::rc::Rc<[Rect]> {
     Layout::default()
@@ -14,13 +19,19 @@ pub fn centered_horizontal_layout(area: Rect) -> std::rc::Rc<[Rect]> {
         .split(area)
 }
 
-/// Calculate the full chat input widget height, including borders and prompt
-/// padding.
+/// Calculate the chat input widget height with a capped visible viewport.
+///
+/// The returned height includes top and bottom borders and limits the visible
+/// content area to [`CHAT_INPUT_MAX_VISIBLE_LINES`].
 pub fn calculate_input_height(width: u16, input: &str) -> u16 {
     let char_count = input.chars().count();
     let (_, _, cursor_y) = compute_input_layout(input, width, char_count);
 
-    cursor_y + 3
+    let content_line_count = cursor_y.saturating_add(1);
+
+    content_line_count
+        .min(CHAT_INPUT_MAX_VISIBLE_LINES)
+        .saturating_add(CHAT_INPUT_BORDER_HEIGHT)
 }
 
 /// Compute chat input lines and the cursor position for rendering.
@@ -42,6 +53,32 @@ pub fn compute_input_layout(
         u16::try_from(cursor_x).unwrap_or(u16::MAX),
         u16::try_from(cursor_y).unwrap_or(u16::MAX),
     )
+}
+
+/// Calculate the input viewport scroll offset and cursor row inside it.
+///
+/// Returns `(scroll_offset, cursor_row)` where:
+/// - `scroll_offset` is the number of content lines hidden above the viewport.
+/// - `cursor_row` is the cursor's row relative to the viewport top.
+pub fn calculate_input_viewport(
+    total_line_count: usize,
+    cursor_y: u16,
+    viewport_height: u16,
+) -> (u16, u16) {
+    if viewport_height == 0 {
+        return (0, 0);
+    }
+
+    let total_line_count = u16::try_from(total_line_count).unwrap_or(u16::MAX).max(1);
+    let clamped_cursor_y = cursor_y.min(total_line_count.saturating_sub(1));
+    let viewport_height = viewport_height.min(total_line_count);
+    let max_scroll = total_line_count.saturating_sub(viewport_height);
+    let scroll_offset = clamped_cursor_y
+        .saturating_sub(viewport_height.saturating_sub(1))
+        .min(max_scroll);
+    let cursor_row = clamped_cursor_y.saturating_sub(scroll_offset);
+
+    (scroll_offset, cursor_row)
 }
 
 /// Move the cursor one visual line up in the wrapped chat input layout.
@@ -253,6 +290,55 @@ mod tests {
         assert_eq!(calculate_input_height(12, "1234567"), 4);
         assert_eq!(calculate_input_height(12, "12345678"), 4);
         assert_eq!(calculate_input_height(12, "12345671234567890"), 5);
+        assert_eq!(calculate_input_height(12, &"a".repeat(120)), 12);
+    }
+
+    #[test]
+    fn test_calculate_input_viewport_without_scroll() {
+        // Arrange
+        let total_line_count = 4;
+        let cursor_y = 2;
+        let viewport_height = 10;
+
+        // Act
+        let (scroll_offset, cursor_row) =
+            calculate_input_viewport(total_line_count, cursor_y, viewport_height);
+
+        // Assert
+        assert_eq!(scroll_offset, 0);
+        assert_eq!(cursor_row, 2);
+    }
+
+    #[test]
+    fn test_calculate_input_viewport_with_scroll() {
+        // Arrange
+        let total_line_count = 20;
+        let cursor_y = 15;
+        let viewport_height = 10;
+
+        // Act
+        let (scroll_offset, cursor_row) =
+            calculate_input_viewport(total_line_count, cursor_y, viewport_height);
+
+        // Assert
+        assert_eq!(scroll_offset, 6);
+        assert_eq!(cursor_row, 9);
+    }
+
+    #[test]
+    fn test_calculate_input_viewport_clamps_cursor_to_last_line() {
+        // Arrange
+        let total_line_count = 3;
+        let cursor_y = 10;
+        let viewport_height = 2;
+
+        // Act
+        let (scroll_offset, cursor_row) =
+            calculate_input_viewport(total_line_count, cursor_y, viewport_height);
+
+        // Assert
+        assert_eq!(scroll_offset, 1);
+        assert_eq!(cursor_row, 1);
     }
 
     #[test]

@@ -15,6 +15,9 @@ use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::ui::util::calculate_input_height;
 use crate::ui::{Component, Page};
 
+/// Maximum rendered height of the prompt input panel, including borders.
+const CHAT_INPUT_MAX_PANEL_HEIGHT: u16 = 10;
+
 /// Chat page renderer for a single session.
 pub struct SessionChatPage<'a> {
     pub active_progress: Option<&'a str>,
@@ -239,8 +242,13 @@ impl<'a> SessionChatPage<'a> {
                 0
             };
 
-            return calculate_input_height(area.width.saturating_sub(2), input.text())
+            let input_height = calculate_input_height(area.width.saturating_sub(2), input.text())
+                .min(CHAT_INPUT_MAX_PANEL_HEIGHT);
+            let desired_bottom_height = input_height
                 .saturating_add(u16::try_from(dropdown_option_count).unwrap_or(u16::MAX));
+            let max_bottom_height = area.height.saturating_sub(1);
+
+            return desired_bottom_height.min(max_bottom_height);
         }
 
         1
@@ -343,8 +351,10 @@ mod tests {
 
     use super::*;
     use crate::agent::AgentModel;
+    use crate::domain::input::InputState;
     use crate::domain::session::{SessionSize, SessionStats};
     use crate::infra::file_index::FileEntry;
+    use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
 
     fn session_fixture() -> Session {
         Session {
@@ -708,5 +718,49 @@ mod tests {
 
         // Assert
         assert!(help_text.contains("t: summary"));
+    }
+
+    #[test]
+    fn test_bottom_height_caps_prompt_input_panel_to_ten_lines() {
+        // Arrange
+        let session = session_fixture();
+        let mode = AppMode::Prompt {
+            at_mention_state: None,
+            history_state: PromptHistoryState::default(),
+            slash_state: PromptSlashState::new(),
+            session_id: "session-id".to_string(),
+            input: InputState::with_text("line\n".repeat(80)),
+            scroll_offset: None,
+        };
+        let page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
+        let area = Rect::new(0, 0, 120, 30);
+
+        // Act
+        let bottom_height = page.bottom_height(area, &session);
+
+        // Assert
+        assert_eq!(bottom_height, CHAT_INPUT_MAX_PANEL_HEIGHT);
+    }
+
+    #[test]
+    fn test_bottom_height_preserves_space_for_output_area() {
+        // Arrange
+        let session = session_fixture();
+        let mode = AppMode::Prompt {
+            at_mention_state: None,
+            history_state: PromptHistoryState::default(),
+            slash_state: PromptSlashState::new(),
+            session_id: "session-id".to_string(),
+            input: InputState::with_text("line\n".repeat(80)),
+            scroll_offset: None,
+        };
+        let page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
+        let area = Rect::new(0, 0, 120, 8);
+
+        // Act
+        let bottom_height = page.bottom_height(area, &session);
+
+        // Assert
+        assert_eq!(bottom_height, 7);
     }
 }

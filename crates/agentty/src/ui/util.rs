@@ -16,8 +16,9 @@ pub use crate::ui::diff_util::{
     wrap_diff_content,
 };
 pub use crate::ui::layout::{
-    calculate_input_height, centered_horizontal_layout, compute_input_layout,
-    first_table_column_width, move_input_cursor_down, move_input_cursor_up,
+    CHAT_INPUT_MAX_VISIBLE_LINES, calculate_input_height, calculate_input_viewport,
+    centered_horizontal_layout, compute_input_layout, first_table_column_width,
+    move_input_cursor_down, move_input_cursor_up,
 };
 pub use crate::ui::text_util::{
     format_duration_compact, format_token_count, truncate_with_ellipsis, wrap_lines,

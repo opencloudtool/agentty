@@ -5,7 +5,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::ui::Component;
-use crate::ui::util::compute_input_layout;
+use crate::ui::util::{
+    CHAT_INPUT_MAX_VISIBLE_LINES, calculate_input_viewport, compute_input_layout,
+};
 
 /// A single slash-command dropdown option.
 pub struct SlashMenuOption {
@@ -97,6 +99,7 @@ impl<'a> ChatInput<'a> {
         f.render_widget(dropdown, area);
     }
 
+    /// Render the prompt input with an internally scrollable viewport.
     fn render_input(&self, f: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
@@ -127,13 +130,21 @@ impl<'a> ChatInput<'a> {
 
         let (display_lines, cursor_x, cursor_y) =
             compute_input_layout(self.input, area.width, self.cursor);
-        let widget = Paragraph::new(display_lines).block(block);
+        let viewport_height = area
+            .height
+            .saturating_sub(2)
+            .min(CHAT_INPUT_MAX_VISIBLE_LINES);
+        let (scroll_offset, cursor_row) =
+            calculate_input_viewport(display_lines.len(), cursor_y, viewport_height);
+        let widget = Paragraph::new(display_lines)
+            .scroll((scroll_offset, 0))
+            .block(block);
 
         f.render_widget(Clear, area);
         f.render_widget(widget, area);
         f.set_cursor_position((
             area.x.saturating_add(1).saturating_add(cursor_x),
-            area.y.saturating_add(1).saturating_add(cursor_y),
+            area.y.saturating_add(1).saturating_add(cursor_row),
         ));
     }
 }
