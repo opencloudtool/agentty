@@ -1,7 +1,7 @@
 {% macro render_docs_nav(section_path, current_permalink, nested=false) %}
     {% set docs_nav_section = get_section(path=section_path) %}
     {% if nested %}
-        <h3 class="m-0 mt-4 mb-2 text-[0.78rem] uppercase tracking-[0.05em] text-dim">{{ docs_nav_section.title }}</h3>
+        <h3 class="m-0 mt-4 mb-2 text-[1rem] font-semibold tracking-[0.03em] text-accent">{{ docs_nav_section.title }}</h3>
     {% endif %}
     {% if docs_nav_section.pages | length > 0 %}
         {% if nested %}
@@ -11,7 +11,7 @@
                 {% endif %}
                 {% for docs_page in docs_nav_section.pages %}
                     <li>
-                        <a class="no-underline {% if docs_page.permalink == current_permalink %}text-accent{% else %}text-muted hover:text-accent{% endif %}"
+                        <a class="block text-[0.9rem] leading-snug no-underline {% if docs_page.permalink == current_permalink %}text-accent font-medium{% else %}text-muted hover:text-accent{% endif %}"
                            href="{{ docs_page.permalink }}">{{ docs_page.title }}</a>
                     </li>
                 {% endfor %}
@@ -173,7 +173,7 @@
             </nav>
             <main class="mx-auto max-w-[1080px] px-6 pt-12 pb-16 grid gap-8 md:grid-cols-[230px_minmax(0,1fr)]">
                 <aside class="bg-surface border border-border rounded-[10px] p-4 h-fit">
-                    <h2 class="m-0 mb-3 text-[0.85rem] tracking-[0.02em] text-muted">Guides</h2>
+                    <h2 class="m-0 mb-4 text-[1.15rem] font-bold tracking-[0.02em] text-accent">Guides</h2>
                     {{ self::render_docs_nav(section_path="docs/_index.md", current_permalink=page.permalink) }}
                 </aside>
                 <article class="min-w-0">
