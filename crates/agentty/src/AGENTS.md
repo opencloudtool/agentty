@@ -21,6 +21,6 @@
 - [runtime/](runtime/) - Runtime event loop, terminal integration, and mode key handling.
 - [runtime.rs](runtime.rs) - Runtime entry point and main event/render loop wiring.
 - [ui/](ui/) - User Interface module.
-- [ui.rs](ui.rs) - UI module root and top-level render dispatch.
+- [ui.rs](ui.rs) - UI module root with shared exports and submodule declarations.
 - [lib.rs](lib.rs) - Library entry point, exports modules.
 - [main.rs](main.rs) - Binary composition root for lock, DB bootstrap, and runtime launch.

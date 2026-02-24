@@ -53,6 +53,7 @@ When working within `crates/agentty/src/ui/`:
 - [markdown.rs](markdown.rs) - Styled markdown renderer for session output.
 - [overlays.rs](overlays.rs) - Overlay renderers and overlay-specific background composition.
 - [README.md](README.md) - Additional documentation.
+- [render.rs](render.rs) - Top-level frame rendering orchestration and shared UI traits/context.
 - [router.rs](router.rs) - Mode router for content-area rendering.
 - [state/](state/) - UI state definitions.
 - [style.rs](style.rs) - UI styling constants.
