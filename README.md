@@ -34,7 +34,6 @@ npx agentty
 
 ## Prerequisites
 
-- Rust nightly toolchain (configured via `rust-toolchain.toml`)
 - Git (required for session worktree integration)
 - One supported agent CLI installed: `gemini`, `claude`, or `codex`
 
@@ -108,34 +107,9 @@ This allows agents to work on code changes without affecting your main working d
   - in the top status bar next to the current version
   - on the onboarding screen when there are no sessions
 
-## Quickstart
+## Contributing
 
-```sh
-git clone <repo-url>
-cd agentty
-cargo run # Builds and runs the 'agentty' binary
-```
-
-## Website
-
-`agentty.xyz` is a Zola site stored in `docs/site/` and deployed through GitHub Pages.
-
-```sh
-# Preview locally
-zola serve --root docs/site
-
-# Build static output
-zola build --root docs/site
-```
-
-## Development
-
-```sh
-cargo test
-cargo clippy -- -D warnings
-cargo fmt --all -- --check
-cargo shear
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks and contribution guidance.
 
 ## License
 
