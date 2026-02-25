@@ -1471,6 +1471,9 @@ impl SessionManager {
 
     /// Removes a merged session worktree and deletes its source branch.
     ///
+    /// When `repo_root` is not provided, this resolves the shared repository
+    /// root through `git rev-parse` via `GitClient`.
+    ///
     /// # Errors
     /// Returns an error if worktree or branch cleanup fails.
     pub(crate) async fn cleanup_merged_session_worktree(
@@ -1479,7 +1482,10 @@ impl SessionManager {
         source_branch: String,
         repo_root: Option<PathBuf>,
     ) -> Result<(), String> {
-        let repo_root = repo_root.or_else(|| Self::resolve_repo_root_from_worktree(&folder));
+        let repo_root = match repo_root {
+            Some(repo_root) => Some(repo_root),
+            None => git_client.main_repo_root(folder.clone()).await.ok(),
+        };
 
         git_client.remove_worktree(folder.clone()).await?;
 
@@ -1490,29 +1496,6 @@ impl SessionManager {
         let _ = tokio::fs::remove_dir_all(&folder).await;
 
         Ok(())
-    }
-
-    /// Resolves a repository root path from a git worktree path.
-    pub(crate) fn resolve_repo_root_from_worktree(worktree_path: &Path) -> Option<PathBuf> {
-        let git_path = worktree_path.join(".git");
-        if git_path.is_dir() {
-            return Some(worktree_path.to_path_buf());
-        }
-
-        if !git_path.is_file() {
-            return None;
-        }
-
-        let git_file = std::fs::read_to_string(git_path).ok()?;
-        let git_dir_line = git_file.lines().find(|line| line.starts_with("gitdir:"))?;
-        let git_dir = PathBuf::from(git_dir_line.trim_start_matches("gitdir:").trim());
-        let git_dir = if git_dir.is_absolute() {
-            git_dir
-        } else {
-            worktree_path.join(git_dir)
-        };
-
-        git_dir.parent()?.parent()?.parent().map(Path::to_path_buf)
     }
 
     /// Commits all changes in a session worktree using a fixed message.

@@ -4,7 +4,7 @@ use std::process::Command;
 
 use tokio::task::spawn_blocking;
 
-use super::repo::resolve_git_dir;
+use super::repo::{main_repo_root_sync, resolve_git_dir};
 
 /// Detects git repository information for the given directory.
 /// Returns the current branch name if in a git repository, None otherwise.
@@ -69,7 +69,7 @@ pub async fn create_worktree(
 /// Removes a git worktree at the specified path.
 ///
 /// Uses --force to remove even with uncommitted changes.
-/// Finds the main repository by reading the worktree's .git file.
+/// Finds the main repository by comparing git-dir and git-common-dir.
 ///
 /// # Arguments
 /// * `worktree_path` - Path to the worktree to remove
@@ -82,26 +82,7 @@ pub async fn create_worktree(
 /// exits with a non-zero status.
 pub async fn remove_worktree(worktree_path: PathBuf) -> Result<(), String> {
     spawn_blocking(move || {
-        // Read the .git file in the worktree to find the main repo.
-        let git_file = worktree_path.join(".git");
-        let repo_root = if git_file.is_file() {
-            let git_dir = resolve_git_dir(&worktree_path)
-                .ok_or_else(|| "Invalid .git file format in worktree".to_string())?;
-
-            // Extract main repo path: /path/to/main/.git/worktrees/name -> /path/to/main.
-            git_dir
-                .parent()
-                .and_then(|path| path.parent())
-                .and_then(|path| path.parent())
-                .ok_or_else(|| "Invalid gitdir path in .git file".to_string())?
-                .to_path_buf()
-        } else {
-            // Not a worktree or doesn't exist; try parent directory.
-            worktree_path
-                .parent()
-                .ok_or_else(|| "Worktree path has no parent".to_string())?
-                .to_path_buf()
-        };
+        let repo_root = main_repo_root_sync(&worktree_path)?;
 
         let output = Command::new("git")
             .args(["worktree", "remove", "--force"])

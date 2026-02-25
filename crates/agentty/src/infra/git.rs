@@ -19,7 +19,7 @@ pub use rebase::{
     list_conflicted_files, list_staged_conflict_marker_files, rebase, rebase_continue,
     rebase_start,
 };
-pub use repo::repo_url;
+pub use repo::{main_repo_root, repo_url};
 pub use sync::{
     PullRebaseResult, commit_all, commit_all_preserving_single_commit, delete_branch, diff,
     fetch_remote, get_ahead_behind, head_short_hash, is_worktree_clean, pull_rebase,
@@ -152,6 +152,9 @@ pub trait GitClient: Send + Sync {
 
     /// Reads repository origin URL.
     fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
+
+    /// Resolves the main repository root for repository/worktree path.
+    fn main_repo_root(&self, repo_path: PathBuf) -> GitFuture<Result<PathBuf, String>>;
 }
 
 /// Production [`GitClient`] implementation backed by real git commands.
@@ -305,6 +308,10 @@ impl GitClient for RealGitClient {
 
     fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
         Box::pin(async move { repo_url(repo_path).await })
+    }
+
+    fn main_repo_root(&self, repo_path: PathBuf) -> GitFuture<Result<PathBuf, String>> {
+        Box::pin(async move { main_repo_root(repo_path).await })
     }
 }
 
@@ -530,6 +537,45 @@ mod tests {
 
         // Assert
         assert!(!is_clean);
+    }
+
+    #[tokio::test]
+    async fn test_main_repo_root_returns_repo_root_for_main_worktree() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+
+        // Act
+        let repo_root = main_repo_root(dir.path().to_path_buf())
+            .await
+            .expect("failed to resolve main repo root");
+
+        // Assert
+        assert_eq!(repo_root, dir.path().to_path_buf());
+    }
+
+    #[tokio::test]
+    async fn test_main_repo_root_returns_shared_repo_root_for_linked_worktree() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let linked_worktree = dir.path().join("linked-worktree");
+        create_worktree(
+            dir.path().to_path_buf(),
+            linked_worktree.clone(),
+            "agentty/main-repo-root-test".to_string(),
+            "main".to_string(),
+        )
+        .await
+        .expect("failed to create linked worktree");
+
+        // Act
+        let repo_root = main_repo_root(linked_worktree)
+            .await
+            .expect("failed to resolve shared repo root");
+
+        // Assert
+        assert_eq!(repo_root, dir.path().to_path_buf());
     }
 
     #[tokio::test]

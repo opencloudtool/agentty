@@ -1194,13 +1194,30 @@ impl App {
     }
 
     /// Loads project list entries for projects tab and project switcher.
+    ///
+    /// Agentty-managed session worktrees are excluded so the list keeps only
+    /// user-facing repository roots.
     async fn load_project_items(db: &Database) -> Vec<ProjectListItem> {
+        let session_worktree_root = agentty_home().join(AGENTTY_WT_DIR);
+
         db.load_projects_with_stats()
             .await
             .unwrap_or_default()
             .into_iter()
+            .filter(|project_row| {
+                !Self::is_session_worktree_project_path(
+                    project_row.path.as_str(),
+                    &session_worktree_root,
+                )
+            })
             .map(Self::project_list_item_from_row)
             .collect()
+    }
+
+    /// Returns whether a persisted project path points to an agentty session
+    /// worktree under `~/.agentty/wt`.
+    fn is_session_worktree_project_path(project_path: &str, session_worktree_root: &Path) -> bool {
+        Path::new(project_path).starts_with(session_worktree_root)
     }
 
     /// Converts a project row into domain project model.
@@ -1483,6 +1500,35 @@ mod tests {
             Some(second_entries)
         );
     }
+
+    #[test]
+    fn is_session_worktree_project_path_returns_true_for_agentty_worktree_path() {
+        // Arrange
+        let session_worktree_root = Path::new("/home/test/.agentty/wt");
+        let project_path = "/home/test/.agentty/wt/a1b2c3d4";
+
+        // Act
+        let is_session_worktree =
+            App::is_session_worktree_project_path(project_path, session_worktree_root);
+
+        // Assert
+        assert!(is_session_worktree);
+    }
+
+    #[test]
+    fn is_session_worktree_project_path_returns_false_for_main_repository_path() {
+        // Arrange
+        let session_worktree_root = Path::new("/home/test/.agentty/wt");
+        let project_path = "/home/test/src/agentty";
+
+        // Act
+        let is_session_worktree =
+            App::is_session_worktree_project_path(project_path, session_worktree_root);
+
+        // Assert
+        assert!(!is_session_worktree);
+    }
+
     /// Builds deterministic Codex usage-limit snapshots for tests.
     fn limits_fixture(primary_used_percent: u8, secondary_used_percent: u8) -> CodexUsageLimits {
         CodexUsageLimits {
