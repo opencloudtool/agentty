@@ -185,6 +185,7 @@ minimal output (errors only).
 
 - For all commit preparation and commit message work, use `skills/git-commit/SKILL.md`.
 - **Tagging:** Always use the `v` prefix for version tags (e.g., `v0.1.0`).
+- **Never bypass pre-commit hooks:** Do not use `--no-verify`, `--no-gpg-sign`, or any other flag that skips or disables pre-commit hooks. If a hook fails, investigate and fix the underlying issue instead of bypassing it.
 
 ## Git Worktree Integration
 
