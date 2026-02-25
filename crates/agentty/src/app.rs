@@ -293,11 +293,6 @@ impl App {
         self.latest_available_version.as_deref()
     }
 
-    /// Returns whether the onboarding screen should be shown.
-    pub fn should_show_onboarding(&self) -> bool {
-        self.sessions.sessions.is_empty()
-    }
-
     /// Renders a complete UI frame by assembling a [`ui::RenderContext`] from
     /// current app state and dispatching to the UI render pipeline.
     pub fn draw(&mut self, frame: &mut Frame) {
@@ -308,7 +303,6 @@ impl App {
         let latest_available_version = self.latest_available_version.as_deref().map(str::to_string);
         let projects = self.projects.project_items().to_vec();
         let session_progress_messages = self.session_progress_messages.clone();
-        let show_onboarding = self.sessions.sessions.is_empty();
         let mode = &self.mode;
         let project_switcher_items = match mode {
             AppMode::ProjectSwitcher { query, .. } => self.project_switcher_items(query),
@@ -341,7 +335,6 @@ impl App {
                 projects: &projects,
                 session_progress_messages: &session_progress_messages,
                 settings,
-                show_onboarding,
                 stats_activity,
                 sessions,
                 table_state,

@@ -10,7 +10,7 @@ use crate::app::{ProjectSwitcherItem, SettingsManager, Tab};
 use crate::domain::project::ProjectListItem;
 use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session};
 use crate::ui::state::app_mode::{AppMode, HelpContext};
-use crate::ui::{components, pages, router};
+use crate::ui::{components, router};
 
 /// A trait for UI pages that enforces a standard rendering interface.
 pub trait Page {
@@ -39,7 +39,6 @@ pub struct RenderContext<'a> {
     pub projects: &'a [ProjectListItem],
     pub session_progress_messages: &'a HashMap<String, String>,
     pub settings: &'a mut SettingsManager,
-    pub show_onboarding: bool,
     pub stats_activity: &'a [DailyActivity],
     pub sessions: &'a [Session],
     pub table_state: &'a mut TableState,
@@ -49,31 +48,6 @@ pub struct RenderContext<'a> {
 /// Renders a complete frame including status bar, content area, and footer.
 pub fn render(f: &mut Frame, context: RenderContext<'_>) {
     let area = f.area();
-    if should_render_onboarding(context.current_tab, context.mode, context.show_onboarding) {
-        let onboarding_chunks = Layout::default()
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(area);
-
-        pages::onboarding::OnboardingPage::new(
-            current_version_display_text(),
-            context
-                .latest_available_version
-                .map(std::string::ToString::to_string),
-        )
-        .render(f, onboarding_chunks[0]);
-        render_footer_bar(
-            f,
-            onboarding_chunks[1],
-            context.mode,
-            context.sessions,
-            context.working_dir,
-            context.git_branch,
-            context.git_status,
-        );
-
-        return;
-    }
-
     let outer_chunks = Layout::default()
         .constraints([
             Constraint::Length(1),
@@ -104,11 +78,6 @@ pub fn render(f: &mut Frame, context: RenderContext<'_>) {
     );
 
     router::route_frame(f, content_area, context);
-}
-
-/// Returns `true` when the onboarding page should replace the normal UI.
-fn should_render_onboarding(current_tab: Tab, mode: &AppMode, show_onboarding: bool) -> bool {
-    matches!(mode, AppMode::List) && current_tab == Tab::Sessions && show_onboarding
 }
 
 /// Returns the current app version as displayed in the status bar.
@@ -163,72 +132,4 @@ fn render_footer_bar(
         .git_branch(footer_branch)
         .git_status(footer_status)
         .render(f, footer_bar_area);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_should_render_onboarding_returns_true_for_list_mode() {
-        // Arrange
-        let current_tab = Tab::Sessions;
-        let mode = AppMode::List;
-        let show_onboarding = true;
-
-        // Act
-        let should_render = should_render_onboarding(current_tab, &mode, show_onboarding);
-
-        // Assert
-        assert!(should_render);
-    }
-
-    #[test]
-    fn test_should_render_onboarding_returns_false_for_non_list_mode() {
-        // Arrange
-        let current_tab = Tab::Sessions;
-        let mode = AppMode::Help {
-            context: HelpContext::List {
-                keybindings: vec![crate::ui::state::help_action::HelpAction::new(
-                    "quit", "q", "Quit",
-                )],
-            },
-            scroll_offset: 0,
-        };
-        let show_onboarding = true;
-
-        // Act
-        let should_render = should_render_onboarding(current_tab, &mode, show_onboarding);
-
-        // Assert
-        assert!(!should_render);
-    }
-
-    #[test]
-    fn test_should_render_onboarding_returns_false_when_disabled() {
-        // Arrange
-        let current_tab = Tab::Sessions;
-        let mode = AppMode::List;
-        let show_onboarding = false;
-
-        // Act
-        let should_render = should_render_onboarding(current_tab, &mode, show_onboarding);
-
-        // Assert
-        assert!(!should_render);
-    }
-
-    #[test]
-    fn test_should_render_onboarding_returns_false_on_projects_tab() {
-        // Arrange
-        let current_tab = Tab::Projects;
-        let mode = AppMode::List;
-        let show_onboarding = true;
-
-        // Act
-        let should_render = should_render_onboarding(current_tab, &mode, show_onboarding);
-
-        // Assert
-        assert!(!should_render);
-    }
 }

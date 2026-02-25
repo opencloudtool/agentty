@@ -45,27 +45,6 @@ pub(crate) struct ViewHelpState {
     pub(crate) session_state: ViewSessionState,
 }
 
-/// Returns help actions for the onboarding page.
-/// These entries are used by the help overlay and include all available
-/// actions.
-pub(crate) fn onboarding_actions() -> Vec<HelpAction> {
-    let mut actions = list_base_actions();
-    actions.push(HelpAction::new("start", "Enter", "Start session"));
-    actions.push(HelpAction::new("next tab", "Tab", "Switch tab"));
-    actions.push(HelpAction::new("help", "?", "Help"));
-
-    actions
-}
-
-/// Returns compact onboarding footer actions for the page-level hint line.
-pub(crate) fn onboarding_footer_actions() -> Vec<HelpAction> {
-    vec![
-        HelpAction::new("quit", "q", "Quit"),
-        HelpAction::new("start", "Enter", "Start session"),
-        HelpAction::new("help", "?", "Help"),
-    ]
-}
-
 /// Returns help actions for the sessions page in list mode.
 /// These entries are used by the help overlay and include all available
 /// actions.
@@ -311,8 +290,8 @@ pub(crate) fn footer_text(actions: &[HelpAction]) -> String {
     help_text
 }
 
-/// Returns list-mode actions that are shared by onboarding, sessions, stats,
-/// and settings pages.
+/// Returns list-mode actions that are shared by sessions, stats, and settings
+/// pages.
 ///
 /// The `"a"` shortcut starts a new session.
 fn list_base_actions() -> Vec<HelpAction> {
@@ -337,32 +316,6 @@ mod tests {
         // Assert
         assert!(!actions.iter().any(|action| action.key == "Enter"));
         assert!(actions.iter().any(|action| action.key == "j/k"));
-    }
-
-    #[test]
-    fn test_onboarding_actions_include_start_shortcut() {
-        // Arrange
-
-        // Act
-        let actions = onboarding_actions();
-
-        // Assert
-        assert!(actions.iter().any(|action| action.key == "Enter"));
-        assert!(actions.iter().any(|action| action.key == "Tab"));
-        assert!(actions.iter().any(|action| action.key == "?"));
-    }
-
-    #[test]
-    fn test_onboarding_footer_actions_uses_compact_set() {
-        // Arrange
-
-        // Act
-        let actions = onboarding_footer_actions();
-
-        // Assert
-        assert!(!actions.iter().any(|action| action.key == "Tab"));
-        assert!(actions.iter().any(|action| action.key == "Enter"));
-        assert!(actions.iter().any(|action| action.key == "?"));
     }
 
     #[test]

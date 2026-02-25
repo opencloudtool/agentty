@@ -9,8 +9,7 @@ use crate::runtime::EventResult;
 use crate::runtime::mode::confirmation::DEFAULT_OPTION_INDEX;
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode, HelpContext};
 use crate::ui::state::help_action::{
-    HelpAction, onboarding_actions, project_list_actions, session_list_actions, settings_actions,
-    stats_actions,
+    HelpAction, project_list_actions, session_list_actions, settings_actions, stats_actions,
 };
 use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
 
@@ -93,15 +92,8 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
     Ok(EventResult::Continue)
 }
 
-/// Handles `Enter` in list mode, including onboarding launch and per-tab
-/// primary actions.
+/// Handles `Enter` in list mode and triggers the selected tab primary action.
 async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
-    if app.should_show_onboarding() && app.tabs.current() == Tab::Sessions {
-        open_new_session_prompt(app).await?;
-
-        return Ok(EventResult::Continue);
-    }
-
     match app.tabs.current() {
         Tab::Projects => {
             if app.switch_selected_project().await.is_ok() {
@@ -187,10 +179,6 @@ fn list_keybindings(app: &App) -> Vec<HelpAction> {
 
     if app.tabs.current() == Tab::Stats {
         return stats_actions();
-    }
-
-    if app.should_show_onboarding() {
-        return onboarding_actions();
     }
 
     let is_sessions_tab = app.tabs.current() == Tab::Sessions;
@@ -571,7 +559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_enter_key_starts_session_from_onboarding() {
+    async fn test_handle_enter_key_without_session_selection_keeps_list_mode() {
         // Arrange
         let (mut app, _base_dir) = new_test_app_with_git().await;
         app.tabs.set(Tab::Sessions);
@@ -584,15 +572,8 @@ mod tests {
 
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
-        assert_eq!(app.sessions.sessions.len(), 1);
-        assert!(matches!(
-            app.mode,
-            AppMode::Prompt {
-                ref session_id,
-                scroll_offset: None,
-                ..
-            } if !session_id.is_empty()
-        ));
+        assert!(app.sessions.sessions.is_empty());
+        assert!(matches!(app.mode, AppMode::List));
     }
 
     #[tokio::test]

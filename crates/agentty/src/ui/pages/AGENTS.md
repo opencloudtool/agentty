@@ -6,7 +6,6 @@ Full-screen page implementations implementing the `Page` trait.
 
 - [diff.rs](diff.rs) - Diff view page.
 - [mod.rs](mod.rs) - Page module exports.
-- [onboarding.rs](onboarding.rs) - Onboarding page shown when there are no sessions.
 - [project_list.rs](project_list.rs) - Project management table page.
 - [stats.rs](stats.rs) - Stats view page.
 - [session_chat.rs](session_chat.rs) - Main chat interface page (handles both new sessions and replies).
