@@ -1,5 +1,4 @@
 +++
-+++
 title = "Overview"
 description = "Understand how Agentty organizes AI agent sessions and workflows."
 weight = 0
