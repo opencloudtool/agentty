@@ -666,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn test_view_help_text_includes_git_actions() {
+    fn test_view_help_text_includes_reply_open_and_git_actions() {
         // Arrange
         let session = session_fixture();
 
@@ -676,8 +676,8 @@ mod tests {
         // Assert
         assert!(help_text.contains("Enter: reply"));
         assert!(help_text.contains("o: open"));
-        assert!(!help_text.contains("m: queue merge"));
-        assert!(!help_text.contains("r: rebase"));
+        assert!(help_text.contains("m: queue merge"));
+        assert!(help_text.contains("r: rebase"));
         assert!(!help_text.contains("d: diff"));
     }
 

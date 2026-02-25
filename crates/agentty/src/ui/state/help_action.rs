@@ -205,6 +205,9 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
 }
 
 /// Returns compact session-view footer actions for the page-level hint line.
+///
+/// Interactive and review sessions include merge and rebase controls directly
+/// in the footer to keep those actions discoverable without opening help.
 pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
     let can_open_worktree = state.session_state != ViewSessionState::Done;
     let can_edit_session = matches!(
@@ -216,6 +219,8 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
 
     if can_edit_session {
         actions.push(HelpAction::new("reply", "Enter", "Reply"));
+        actions.push(HelpAction::new("queue merge", "m", "Queue merge"));
+        actions.push(HelpAction::new("rebase", "r", "Rebase"));
     }
 
     if can_open_worktree {
@@ -407,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn test_view_footer_actions_review_hides_advanced_actions() {
+    fn test_view_footer_actions_review_shows_advanced_actions() {
         // Arrange
         let state = ViewHelpState {
             session_state: ViewSessionState::Review,
@@ -419,9 +424,8 @@ mod tests {
         // Assert
         assert!(actions.iter().any(|action| action.key == "Enter"));
         assert!(actions.iter().any(|action| action.key == "o"));
-        assert!(!actions.iter().any(|action| action.key == "m"));
-        assert!(!actions.iter().any(|action| action.key == "r"));
-        assert!(!actions.iter().any(|action| action.key == "S-Tab"));
+        assert!(actions.iter().any(|action| action.key == "m"));
+        assert!(actions.iter().any(|action| action.key == "r"));
     }
 
     #[test]
