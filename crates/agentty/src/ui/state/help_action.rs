@@ -277,10 +277,12 @@ pub(crate) fn footer_text(actions: &[HelpAction]) -> String {
 
 /// Returns list-mode actions that are shared by onboarding, sessions, stats,
 /// and settings pages.
+///
+/// The `"a"` shortcut starts a new session.
 fn list_base_actions() -> Vec<HelpAction> {
     vec![
         HelpAction::new("quit", "q", "Quit"),
-        HelpAction::new("add", "a", "Add session"),
+        HelpAction::new("start new session", "a", "Start new session"),
         HelpAction::new("sync", "s", "Sync"),
     ]
 }
