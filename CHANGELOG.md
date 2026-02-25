@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.0] - 2026-02-24
+
+### Added
+
+- **Projects:** Add a projects tab with quick project switching.
+- **Navigation:** Add backward tab navigation with `Shift+Tab`.
+- **Docs:** Add the getting started overview guide.
+
+### Changed
+
+- **App:** Resolve main repository roots via git and exclude session worktrees.
+- **UI:** Switch to `Sessions` after project selection and compact footer help actions.
+- **Runtime:** Route app-server turns by provider, include root `AGENTS.md` instructions, and pass session folder/model in Codex payloads.
+- **Docs:** Reorganize site sections, standardize skill headers, and migrate the docs site to compiled Sass styling.
+- **Models:** Add support for the `gpt-5.3-codex-spark` model.
+
+### Fixed
+
+- **Database:** Fix SQLite migration `025` to avoid non-constant defaults.
+- **Templates:** Fix malformed Tera block syntax in the base template.
+- **Docs:** Remove duplicate front matter delimiters in overview content.
+
+### Removed
+
+- **Onboarding:** Remove the onboarding page from the list-mode flow.
+- **Projects:** Remove project favorite controls from the project list.
+
+### Contributors
+
+- @andagaev
+- @minev-dev
+
 ## [v0.3.0] - 2026-02-23
 
 ### Added
