@@ -4,7 +4,9 @@ description = "Understand how Agentty organizes AI agent sessions and workflows.
 weight = 0
 +++
 
-`agentty` is a terminal-first tool that runs AI coding agents in dedicated, isolated git worktrees.
+`agentty` is a terminal-first Agentic Development Environment (ADE), designed for building software alongside AI agents.
+
+It runs AI coding agents in dedicated, isolated git worktrees.
 
 <!-- more -->
 
