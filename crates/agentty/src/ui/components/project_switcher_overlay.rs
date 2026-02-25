@@ -8,6 +8,7 @@ use crate::app::ProjectSwitcherItem;
 use crate::ui::Component;
 
 const EMPTY_RESULTS_TEXT: &str = "No projects available";
+/// Maximum number of project rows rendered at once.
 const MAX_VISIBLE_ITEMS: u16 = 8;
 
 /// Overlay renderer for quick project switching.
@@ -53,7 +54,11 @@ impl Component for ProjectSwitcherOverlay<'_> {
     }
 }
 
-/// Builds switcher list lines with one highlighted selection row.
+/// Builds switcher list lines using a sliding window and highlights the
+/// selected row.
+///
+/// When the selected item moves beyond `MAX_VISIBLE_ITEMS`, the rendered list
+/// shifts down so the selected project remains visible.
 fn switcher_list_lines(
     projects: &[ProjectSwitcherItem],
     selected_index: usize,
@@ -65,12 +70,21 @@ fn switcher_list_lines(
         ))];
     }
 
+    let clamped_selected_index = selected_index.min(projects.len().saturating_sub(1));
+    let start_index = switcher_window_start_index(projects.len(), clamped_selected_index);
+
     projects
         .iter()
+        .skip(start_index)
         .take(usize::from(MAX_VISIBLE_ITEMS))
         .enumerate()
         .map(|(index, project)| {
-            let marker = if index == selected_index { ">" } else { " " };
+            let absolute_index = start_index + index;
+            let marker = if absolute_index == clamped_selected_index {
+                ">"
+            } else {
+                " "
+            };
             let favorite = if project.is_favorite { "★ " } else { "" };
             let branch = project.git_branch.as_deref().unwrap_or("-");
             let line_text = format!(
@@ -78,7 +92,7 @@ fn switcher_list_lines(
                 project.title, branch, project.session_count
             );
 
-            if index == selected_index {
+            if absolute_index == clamped_selected_index {
                 Line::from(Span::styled(
                     line_text,
                     Style::default()
@@ -91,6 +105,16 @@ fn switcher_list_lines(
             }
         })
         .collect()
+}
+
+/// Returns the first visible item index for a fixed-height sliding list window.
+fn switcher_window_start_index(project_count: usize, selected_index: usize) -> usize {
+    let max_visible_items = usize::from(MAX_VISIBLE_ITEMS);
+    let selected_index = selected_index.min(project_count.saturating_sub(1));
+
+    selected_index
+        .saturating_add(1)
+        .saturating_sub(max_visible_items)
 }
 
 /// Returns a centered popup rectangle using percent-based dimensions.
@@ -163,5 +187,37 @@ mod tests {
         // Assert
         assert!(lines[0].spans[0].content.starts_with("  ★ agentty"));
         assert!(lines[1].spans[0].content.starts_with("> service"));
+    }
+
+    /// Keeps the selected project visible when selection moves past the first
+    /// page.
+    #[test]
+    fn test_switcher_list_lines_keep_selected_row_visible_beyond_max_visible_items() {
+        // Arrange
+        let projects: Vec<ProjectSwitcherItem> = (0_i64..12)
+            .map(|index| ProjectSwitcherItem {
+                git_branch: Some("main".to_string()),
+                id: index,
+                is_favorite: false,
+                last_opened_at: None,
+                path: PathBuf::from(format!("/tmp/project-{index:02}")),
+                session_count: index as u32,
+                title: format!("project-{index:02}"),
+            })
+            .collect();
+
+        // Act
+        let lines = switcher_list_lines(&projects, 10);
+
+        // Assert
+        assert_eq!(lines.len(), usize::from(MAX_VISIBLE_ITEMS));
+        assert!(lines[0].spans[0].content.starts_with("  project-03"));
+
+        let selected_lines: Vec<&Line<'static>> = lines
+            .iter()
+            .filter(|line| line.spans[0].content.starts_with("> "))
+            .collect();
+        assert_eq!(selected_lines.len(), 1);
+        assert!(selected_lines[0].spans[0].content.contains("project-10"));
     }
 }

@@ -7,6 +7,8 @@ use crate::runtime::EventResult;
 use crate::ui::state::app_mode::AppMode;
 
 /// Handles key input while the quick project switcher overlay is open.
+///
+/// Navigation accepts both arrow keys and vim-style `j`/`k`.
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
     let mut selected_index = match &app.mode {
         AppMode::ProjectSwitcher { selected_index } => *selected_index,
@@ -29,11 +31,11 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
                 return Ok(EventResult::Continue);
             }
         }
-        KeyCode::Down => {
+        KeyCode::Char('j') | KeyCode::Down => {
             let item_count = app.project_switcher_items().len();
             selected_index = increment_selected_index(selected_index, item_count);
         }
-        KeyCode::Up => {
+        KeyCode::Char('k') | KeyCode::Up => {
             let item_count = app.project_switcher_items().len();
             selected_index = decrement_selected_index(selected_index, item_count);
         }
@@ -96,6 +98,20 @@ mod tests {
         App::new(base_path.clone(), base_path, None, database).await
     }
 
+    /// Builds a test app seeded with a second project for navigation tests.
+    async fn new_test_app_with_additional_project() -> App {
+        let base_path = PathBuf::from("/tmp");
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        database
+            .upsert_project("/tmp/agentty-switcher-secondary", None)
+            .await
+            .expect("failed to seed additional project");
+
+        App::new(base_path.clone(), base_path, None, database).await
+    }
+
     #[tokio::test]
     async fn test_handle_esc_closes_switcher() {
         // Arrange
@@ -131,6 +147,52 @@ mod tests {
         assert!(matches!(
             app.mode,
             AppMode::ProjectSwitcher { selected_index: 0 }
+        ));
+    }
+
+    /// Verifies `j` advances project switcher selection.
+    #[tokio::test]
+    async fn test_handle_j_moves_selected_index_forward() {
+        // Arrange
+        let mut app = new_test_app_with_additional_project().await;
+        app.mode = AppMode::ProjectSwitcher { selected_index: 0 };
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::ProjectSwitcher { selected_index: 1 }
+        ));
+    }
+
+    /// Verifies `k` moves selection backward and wraps at the first row.
+    #[tokio::test]
+    async fn test_handle_k_moves_selected_index_backward_with_wrap() {
+        // Arrange
+        let mut app = new_test_app_with_additional_project().await;
+        app.mode = AppMode::ProjectSwitcher { selected_index: 0 };
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::ProjectSwitcher { selected_index: 1 }
         ));
     }
 
