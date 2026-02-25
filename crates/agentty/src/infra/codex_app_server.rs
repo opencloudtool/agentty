@@ -293,10 +293,13 @@ impl RealCodexAppServerClient {
                         let (input_tokens, output_tokens) =
                             Self::resolve_turn_usage(completed_turn_usage, latest_stream_usage);
 
-                        return turn_result.map(|()| {
-                            let assistant_message = assistant_messages.join("\n\n");
-                            (assistant_message, input_tokens, output_tokens)
-                        });
+                        return Self::finalize_turn_completion(
+                            turn_result,
+                            assistant_messages,
+                            &stream_tx,
+                            input_tokens,
+                            output_tokens,
+                        );
                     }
                 }
             }
@@ -352,6 +355,34 @@ impl RealCodexAppServerClient {
         completed_turn_usage
             .or(latest_stream_usage)
             .unwrap_or((0, 0))
+    }
+
+    /// Finalizes one parsed `turn/completed` result into the normalized turn
+    /// response tuple.
+    ///
+    /// Successful completions join streamed assistant messages. Non-completed
+    /// terminal statuses are surfaced as visible assistant output so the
+    /// session never lands in `Review` silently.
+    fn finalize_turn_completion(
+        turn_result: Result<(), String>,
+        assistant_messages: Vec<String>,
+        stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Result<(String, u64, u64), String> {
+        match turn_result {
+            Ok(()) => {
+                let assistant_message = assistant_messages.join("\n\n");
+
+                Ok((assistant_message, input_tokens, output_tokens))
+            }
+            Err(error) => {
+                let streamed_error = format!("[Codex app-server] {error}");
+                let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage(streamed_error));
+
+                Err(error)
+            }
+        }
     }
 
     /// Updates usage trackers for one app-server response line.
@@ -578,6 +609,11 @@ fn extract_agent_message(response_value: &Value) -> Option<String> {
 /// Completion payloads without a turn id are ignored even when the expected
 /// turn id is known so that nested turns are never mistaken for the active
 /// user turn.
+///
+/// A terminal status is only treated as success when it is exactly
+/// `"completed"`. Any other terminal status (for example `"interrupted"` or
+/// `"unfinished"`) is mapped to an error so callers do not mistake an
+/// unfinished turn for a completed response.
 fn parse_turn_completed(
     response_value: &Value,
     expected_turn_id: Option<&str>,
@@ -598,20 +634,33 @@ fn parse_turn_completed(
         .and_then(|turn| turn.get("status"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if status == "failed" {
-        let message = response_value
-            .get("params")
-            .and_then(|params| params.get("turn"))
-            .and_then(|turn| turn.get("error"))
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or("Codex app-server turn failed")
-            .to_string();
 
-        return Some(Err(message));
+    match status {
+        "completed" => Some(Ok(())),
+        "failed" => Some(Err(
+            extract_turn_completed_error_message(response_value)
+                .unwrap_or_else(|| "Codex app-server turn failed".to_string()),
+        )),
+        "" => Some(Err(
+            "Codex app-server `turn/completed` response is missing `turn.status`".to_string(),
+        )),
+        other => Some(Err(
+            extract_turn_completed_error_message(response_value).unwrap_or_else(|| {
+                format!("Codex app-server turn ended with non-completed status `{other}`")
+            }),
+        )),
     }
+}
 
-    Some(Ok(()))
+/// Extracts an optional turn-level error message from `turn/completed`.
+fn extract_turn_completed_error_message(response_value: &Value) -> Option<String> {
+    response_value
+        .get("params")
+        .and_then(|params| params.get("turn"))
+        .and_then(|turn| turn.get("error"))
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
 }
 
 /// Extracts one turn id from a `turn/completed` notification payload.
@@ -789,7 +838,77 @@ mod tests {
     }
 
     #[test]
-    fn parse_turn_completed_returns_success_for_non_failed_turn() {
+    fn parse_turn_completed_returns_error_for_interrupted_turn() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "active-turn",
+                    "status": "interrupted",
+                    "error": {"message": "turn interrupted"}
+                }
+            }
+        });
+
+        // Act
+        let turn_result = parse_turn_completed(&response_value, Some("active-turn"));
+
+        // Assert
+        assert_eq!(turn_result, Some(Err("turn interrupted".to_string())));
+    }
+
+    #[test]
+    fn parse_turn_completed_returns_error_for_unfinished_turn_without_error_payload() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "active-turn",
+                    "status": "unfinished"
+                }
+            }
+        });
+
+        // Act
+        let turn_result = parse_turn_completed(&response_value, Some("active-turn"));
+
+        // Assert
+        assert_eq!(
+            turn_result,
+            Some(Err(
+                "Codex app-server turn ended with non-completed status `unfinished`".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_turn_completed_returns_error_when_status_is_missing() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "active-turn"
+                }
+            }
+        });
+
+        // Act
+        let turn_result = parse_turn_completed(&response_value, Some("active-turn"));
+
+        // Assert
+        assert_eq!(
+            turn_result,
+            Some(Err(
+                "Codex app-server `turn/completed` response is missing `turn.status`".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_turn_completed_returns_success_for_completed_turn() {
         // Arrange
         let response_value = serde_json::json!({
             "method": "turn/completed",
@@ -806,6 +925,52 @@ mod tests {
 
         // Assert
         assert_eq!(turn_result, Some(Ok(())));
+    }
+
+    #[test]
+    fn finalize_turn_completion_returns_joined_assistant_messages_for_completed_turn() {
+        // Arrange
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+        let turn_result = Ok(());
+        let assistant_messages = vec!["First".to_string(), "Second".to_string()];
+
+        // Act
+        let result = RealCodexAppServerClient::finalize_turn_completion(
+            turn_result,
+            assistant_messages,
+            &stream_tx,
+            7,
+            3,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(("First\n\nSecond".to_string(), 7, 3)));
+        assert!(stream_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn finalize_turn_completion_streams_error_message_for_non_completed_turn() {
+        // Arrange
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+        let turn_result = Err("turn interrupted".to_string());
+
+        // Act
+        let result = RealCodexAppServerClient::finalize_turn_completion(
+            turn_result,
+            vec![],
+            &stream_tx,
+            0,
+            0,
+        );
+
+        // Assert
+        assert_eq!(result, Err("turn interrupted".to_string()));
+        assert_eq!(
+            stream_rx.try_recv().ok(),
+            Some(AppServerStreamEvent::AssistantMessage(
+                "[Codex app-server] turn interrupted".to_string()
+            ))
+        );
     }
 
     #[test]
