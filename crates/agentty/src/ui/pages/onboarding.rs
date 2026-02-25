@@ -148,9 +148,10 @@ impl Page for OnboardingPage {
         let onboarding = Paragraph::new(lines).alignment(Alignment::Center);
         f.render_widget(onboarding, horizontal_chunks[1]);
 
-        let help_message =
-            Paragraph::new(help_action::footer_text(&help_action::onboarding_actions()))
-                .style(Style::default().fg(Color::Gray));
+        let help_message = Paragraph::new(help_action::footer_text(
+            &help_action::onboarding_footer_actions(),
+        ))
+        .style(Style::default().fg(Color::Gray));
         f.render_widget(help_message, help_area);
     }
 }

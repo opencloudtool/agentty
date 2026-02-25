@@ -46,6 +46,8 @@ pub(crate) struct ViewHelpState {
 }
 
 /// Returns help actions for the onboarding page.
+/// These entries are used by the help overlay and include all available
+/// actions.
 pub(crate) fn onboarding_actions() -> Vec<HelpAction> {
     let mut actions = list_base_actions();
     actions.push(HelpAction::new("start", "Enter", "Start session"));
@@ -55,7 +57,18 @@ pub(crate) fn onboarding_actions() -> Vec<HelpAction> {
     actions
 }
 
+/// Returns compact onboarding footer actions for the page-level hint line.
+pub(crate) fn onboarding_footer_actions() -> Vec<HelpAction> {
+    vec![
+        HelpAction::new("quit", "q", "Quit"),
+        HelpAction::new("start", "Enter", "Start session"),
+        HelpAction::new("help", "?", "Help"),
+    ]
+}
+
 /// Returns help actions for the sessions page in list mode.
+/// These entries are used by the help overlay and include all available
+/// actions.
 pub(crate) fn session_list_actions(
     can_cancel_selected_session: bool,
     can_delete_selected_session: bool,
@@ -82,7 +95,24 @@ pub(crate) fn session_list_actions(
     actions
 }
 
+/// Returns compact session list footer actions for the page-level hint line.
+pub(crate) fn session_list_footer_actions(can_open_selected_session: bool) -> Vec<HelpAction> {
+    let mut actions = list_base_actions();
+
+    if can_open_selected_session {
+        actions.push(HelpAction::new("view", "Enter", "Open session"));
+    }
+
+    actions.push(HelpAction::new("nav", "j/k", "Navigate sessions"));
+    actions.push(HelpAction::new("next tab", "Tab", "Switch tab"));
+    actions.push(HelpAction::new("help", "?", "Help"));
+
+    actions
+}
+
 /// Returns help actions for the settings page.
+/// These entries are used by the help overlay and include all available
+/// actions.
 pub(crate) fn settings_actions() -> Vec<HelpAction> {
     let mut actions = list_base_actions();
     actions.push(HelpAction::new("nav", "j/k", "Navigate settings"));
@@ -93,7 +123,20 @@ pub(crate) fn settings_actions() -> Vec<HelpAction> {
     actions
 }
 
+/// Returns compact settings footer actions for the page-level hint line.
+pub(crate) fn settings_footer_actions() -> Vec<HelpAction> {
+    vec![
+        HelpAction::new("quit", "q", "Quit"),
+        HelpAction::new("nav", "j/k", "Navigate settings"),
+        HelpAction::new("edit", "Enter", "Edit setting"),
+        HelpAction::new("next tab", "Tab", "Switch tab"),
+        HelpAction::new("help", "?", "Help"),
+    ]
+}
+
 /// Returns help actions for the stats page.
+/// These entries are used by the help overlay and include all available
+/// actions.
 pub(crate) fn stats_actions() -> Vec<HelpAction> {
     let mut actions = list_base_actions();
     actions.push(HelpAction::new("next tab", "Tab", "Switch tab"));
@@ -102,7 +145,18 @@ pub(crate) fn stats_actions() -> Vec<HelpAction> {
     actions
 }
 
+/// Returns compact stats footer actions for the page-level hint line.
+pub(crate) fn stats_footer_actions() -> Vec<HelpAction> {
+    vec![
+        HelpAction::new("quit", "q", "Quit"),
+        HelpAction::new("next tab", "Tab", "Switch tab"),
+        HelpAction::new("help", "?", "Help"),
+    ]
+}
+
 /// Projects currently available view-mode actions into help entries.
+/// These entries are used by the help overlay and include all available
+/// actions.
 pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
     let can_open_worktree = state.session_state != ViewSessionState::Done;
     let can_edit_session = matches!(
@@ -150,8 +204,52 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
     actions
 }
 
+/// Returns compact session-view footer actions for the page-level hint line.
+pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
+    let can_open_worktree = state.session_state != ViewSessionState::Done;
+    let can_edit_session = matches!(
+        state.session_state,
+        ViewSessionState::Interactive | ViewSessionState::Review
+    );
+
+    let mut actions = vec![HelpAction::new("back", "q", "Back to list")];
+
+    if can_edit_session {
+        actions.push(HelpAction::new("reply", "Enter", "Reply"));
+    }
+
+    if can_open_worktree {
+        actions.push(HelpAction::new("open", "o", "Open worktree"));
+    }
+
+    if state.session_state == ViewSessionState::InProgress {
+        actions.push(HelpAction::new("stop", "Ctrl+c", "Stop agent"));
+    }
+
+    if state.session_state == ViewSessionState::Done {
+        actions.push(HelpAction::new("toggle view", "t", "Switch summary/output"));
+    }
+
+    actions.push(HelpAction::new("scroll", "j/k", "Scroll output"));
+    actions.push(HelpAction::new("help", "?", "Help"));
+
+    actions
+}
+
 /// Returns help entries for diff-mode actions.
+/// These entries are used by the help overlay and include all available
+/// actions.
 pub(crate) fn diff_actions() -> Vec<HelpAction> {
+    vec![
+        HelpAction::new("back", "q/Esc", "Back to session"),
+        HelpAction::new("select file", "j/k", "Select file"),
+        HelpAction::new("scroll file", "Up/Down", "Scroll selected file"),
+        HelpAction::new("help", "?", "Help"),
+    ]
+}
+
+/// Returns compact diff footer actions for the page-level hint line.
+pub(crate) fn diff_footer_actions() -> Vec<HelpAction> {
     vec![
         HelpAction::new("back", "q/Esc", "Back to session"),
         HelpAction::new("select file", "j/k", "Select file"),
@@ -213,6 +311,32 @@ mod tests {
         assert!(actions.iter().any(|action| action.key == "Enter"));
         assert!(actions.iter().any(|action| action.key == "Tab"));
         assert!(actions.iter().any(|action| action.key == "?"));
+    }
+
+    #[test]
+    fn test_onboarding_footer_actions_uses_compact_set() {
+        // Arrange
+
+        // Act
+        let actions = onboarding_footer_actions();
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "Tab"));
+        assert!(actions.iter().any(|action| action.key == "Enter"));
+        assert!(actions.iter().any(|action| action.key == "?"));
+    }
+
+    #[test]
+    fn test_session_list_footer_actions_hides_non_critical_session_commands() {
+        // Arrange
+
+        // Act
+        let actions = session_list_footer_actions(true);
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "Enter"));
+        assert!(!actions.iter().any(|action| action.key == "d"));
+        assert!(!actions.iter().any(|action| action.key == "c"));
     }
 
     #[test]
@@ -278,6 +402,24 @@ mod tests {
         assert!(!actions.iter().any(|action| action.key == "d"));
         assert!(!actions.iter().any(|action| action.key == "m"));
         assert!(!actions.iter().any(|action| action.key == "r"));
+    }
+
+    #[test]
+    fn test_view_footer_actions_review_hides_advanced_actions() {
+        // Arrange
+        let state = ViewHelpState {
+            session_state: ViewSessionState::Review,
+        };
+
+        // Act
+        let actions = view_footer_actions(state);
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "Enter"));
+        assert!(actions.iter().any(|action| action.key == "o"));
+        assert!(!actions.iter().any(|action| action.key == "m"));
+        assert!(!actions.iter().any(|action| action.key == "r"));
+        assert!(!actions.iter().any(|action| action.key == "S-Tab"));
     }
 
     #[test]

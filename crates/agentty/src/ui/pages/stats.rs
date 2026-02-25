@@ -166,8 +166,10 @@ impl StatsPage<'_> {
             .constraints([Constraint::Min(0), Constraint::Min(0)])
             .split(area);
 
-        let help = Paragraph::new(help_action::footer_text(&help_action::stats_actions()))
-            .style(Style::default().fg(Color::Gray));
+        let help = Paragraph::new(help_action::footer_text(
+            &help_action::stats_footer_actions(),
+        ))
+        .style(Style::default().fg(Color::Gray));
         f.render_widget(help, footer_chunks[0]);
 
         let total_input: u64 = self

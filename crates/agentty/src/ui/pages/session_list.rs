@@ -99,11 +99,9 @@ impl Page for SessionListPage<'_> {
 
 /// Builds footer help text for session list mode.
 fn session_list_help_text(selected_session: Option<&Session>) -> String {
-    let actions = help_action::session_list_actions(
-        selected_session.is_some_and(|session| session.status == Status::Review),
-        selected_session.is_some(),
-        selected_session.is_some_and(|session| !matches!(session.status, Status::Canceled)),
-    );
+    let can_open_selected_session =
+        selected_session.is_some_and(|session| !matches!(session.status, Status::Canceled));
+    let actions = help_action::session_list_footer_actions(can_open_selected_session);
 
     help_action::footer_text(&actions)
 }

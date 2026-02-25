@@ -1,6 +1,7 @@
-# Getting Started
+# Getting Started Docs
 
-Getting started guides for `agentty` installation and setup.
+Getting started guides for `agentty` installation and setup under
+`/docs/getting-started/`.
 
 ## Directory Index
 

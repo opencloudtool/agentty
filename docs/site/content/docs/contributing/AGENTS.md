@@ -1,6 +1,6 @@
-# Contributing
+# Contributing Docs
 
-Contribution guides for the `docs` section.
+Contribution guides for the `docs` section under `/docs/contributing/`.
 
 ## Directory Index
 

@@ -69,7 +69,7 @@ fn settings_footer_text(manager: &SettingsManager) -> String {
         return manager.footer_hint().to_string();
     }
 
-    let actions = help_action::settings_actions();
+    let actions = help_action::settings_footer_actions();
 
     help_action::footer_text(&actions)
 }

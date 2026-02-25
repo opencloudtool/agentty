@@ -308,16 +308,16 @@ impl<'a> SessionChatPage<'a> {
         session: &Session,
         done_session_output_mode: DoneSessionOutputMode,
     ) -> String {
-        let mut actions = help_action::view_actions(ViewHelpState {
-            session_state: match session.status {
-                Status::Done => ViewSessionState::Done,
-                Status::InProgress => ViewSessionState::InProgress,
-                Status::Review => ViewSessionState::Review,
-                _ => ViewSessionState::Interactive,
-            },
-        });
+        let session_state = match session.status {
+            Status::Done => ViewSessionState::Done,
+            Status::InProgress => ViewSessionState::InProgress,
+            Status::Review => ViewSessionState::Review,
+            _ => ViewSessionState::Interactive,
+        };
 
-        if session.status == Status::Done {
+        let mut actions = help_action::view_footer_actions(ViewHelpState { session_state });
+
+        if session_state == ViewSessionState::Done {
             let toggle_action_label = Self::done_toggle_action_label(done_session_output_mode);
             if let Some(toggle_action_index) = actions.iter().position(|action| action.key == "t") {
                 actions[toggle_action_index] =
@@ -674,13 +674,15 @@ mod tests {
         let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
+        assert!(help_text.contains("Enter: reply"));
+        assert!(help_text.contains("o: open"));
+        assert!(!help_text.contains("m: queue merge"));
+        assert!(!help_text.contains("r: rebase"));
         assert!(!help_text.contains("d: diff"));
-        assert!(help_text.contains("m: queue merge"));
-        assert!(help_text.contains("r: rebase"));
     }
 
     #[test]
-    fn test_view_help_text_review_includes_diff_hint() {
+    fn test_view_help_text_review_hides_diff_hint() {
         // Arrange
         let mut session = session_fixture();
         session.status = Status::Review;
@@ -689,7 +691,8 @@ mod tests {
         let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
-        assert!(help_text.contains("d: diff"));
+        assert!(!help_text.contains("d: diff"));
+        assert!(help_text.contains("Enter: reply"));
     }
 
     #[test]
