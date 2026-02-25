@@ -66,6 +66,7 @@ svg {
 .site-nav-left {
     display: flex;
     align-items: center;
+    flex-wrap: nowrap;
     gap: 1rem;
     min-width: 0;
 }
@@ -73,6 +74,7 @@ svg {
 .site-nav-actions {
     display: flex;
     align-items: center;
+    white-space: nowrap;
     gap: 1rem;
 }
 
@@ -100,6 +102,7 @@ svg {
 .site-nav-links {
     display: flex;
     align-items: center;
+    white-space: nowrap;
     gap: 1rem;
 }
 
@@ -645,5 +648,22 @@ svg {
 
     .docs-layout {
         grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 560px) {
+    .site-nav-inner {
+        flex-wrap: wrap;
+        row-gap: 0.6rem;
+    }
+
+    .site-nav-left {
+        width: 100%;
+        flex: 1 1 auto;
+    }
+
+    .site-nav-actions {
+        width: 100%;
+        justify-content: flex-start;
     }
 }
