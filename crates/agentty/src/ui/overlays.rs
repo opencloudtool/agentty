@@ -75,17 +75,12 @@ pub(crate) fn render_project_switcher_overlay(
     area: Rect,
     list_background: ListBackgroundRenderContext<'_>,
     projects: &[ProjectSwitcherItem],
-    query: &str,
     selected_index: usize,
 ) {
     render_list_background(f, area, list_background);
 
-    components::project_switcher_overlay::ProjectSwitcherOverlay::new(
-        projects,
-        query,
-        selected_index,
-    )
-    .render(f, area);
+    components::project_switcher_overlay::ProjectSwitcherOverlay::new(projects, selected_index)
+        .render(f, area);
 }
 
 /// Composes sync popup body with optional project and branch context.

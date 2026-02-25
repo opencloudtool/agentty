@@ -305,7 +305,7 @@ impl App {
         let session_progress_messages = self.session_progress_messages.clone();
         let mode = &self.mode;
         let project_switcher_items = match mode {
-            AppMode::ProjectSwitcher { query, .. } => self.project_switcher_items(query),
+            AppMode::ProjectSwitcher { .. } => self.project_switcher_items(),
             _ => Vec::new(),
         };
         let project_table_state = self.projects.project_table_state_mut();
@@ -363,18 +363,11 @@ impl App {
         self.projects.previous_project();
     }
 
-    /// Returns quick-switch candidates for the provided query text.
-    pub fn project_switcher_items(&self, query: &str) -> Vec<ProjectSwitcherItem> {
-        let filtered_ids = self.projects.filtered_project_ids(query);
-
-        filtered_ids
-            .into_iter()
-            .filter_map(|project_id| {
-                self.projects
-                    .project_items()
-                    .iter()
-                    .find(|project_item| project_item.project.id == project_id)
-            })
+    /// Returns quick-switch candidates from the current project list.
+    pub fn project_switcher_items(&self) -> Vec<ProjectSwitcherItem> {
+        self.projects
+            .project_items()
+            .iter()
             .map(|project_item| ProjectSwitcherItem {
                 git_branch: project_item.project.git_branch.clone(),
                 id: project_item.project.id,

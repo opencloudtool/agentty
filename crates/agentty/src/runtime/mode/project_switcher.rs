@@ -1,6 +1,6 @@
 use std::io;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
 use crate::runtime::EventResult;
@@ -8,11 +8,8 @@ use crate::ui::state::app_mode::AppMode;
 
 /// Handles key input while the quick project switcher overlay is open.
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
-    let (mut query, mut selected_index) = match &app.mode {
-        AppMode::ProjectSwitcher {
-            query,
-            selected_index,
-        } => (query.clone(), *selected_index),
+    let mut selected_index = match &app.mode {
+        AppMode::ProjectSwitcher { selected_index } => *selected_index,
         _ => return Ok(EventResult::Continue),
     };
 
@@ -23,8 +20,8 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
             return Ok(EventResult::Continue);
         }
         KeyCode::Enter => {
-            let filtered_items = app.project_switcher_items(&query);
-            if let Some(project_item) = filtered_items.get(selected_index)
+            let project_switcher_items = app.project_switcher_items();
+            if let Some(project_item) = project_switcher_items.get(selected_index)
                 && app.switch_project(project_item.id).await.is_ok()
             {
                 app.mode = AppMode::List;
@@ -33,37 +30,21 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
             }
         }
         KeyCode::Down => {
-            let item_count = app.project_switcher_items(&query).len();
+            let item_count = app.project_switcher_items().len();
             selected_index = increment_selected_index(selected_index, item_count);
         }
         KeyCode::Up => {
-            let item_count = app.project_switcher_items(&query).len();
+            let item_count = app.project_switcher_items().len();
             selected_index = decrement_selected_index(selected_index, item_count);
-        }
-        KeyCode::Backspace => {
-            query.pop();
-            selected_index = 0;
-        }
-        KeyCode::Char(character) if is_text_input_key(key) => {
-            query.push(character);
-            selected_index = 0;
         }
         _ => {}
     }
 
-    let item_count = app.project_switcher_items(&query).len();
+    let item_count = app.project_switcher_items().len();
     selected_index = clamp_selected_index(selected_index, item_count);
-    app.mode = AppMode::ProjectSwitcher {
-        query,
-        selected_index,
-    };
+    app.mode = AppMode::ProjectSwitcher { selected_index };
 
     Ok(EventResult::Continue)
-}
-
-/// Returns whether a key event should append to the switcher query.
-fn is_text_input_key(key: KeyEvent) -> bool {
-    key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT
 }
 
 /// Returns selected index clamped into `[0, project_count - 1]`.
@@ -119,10 +100,7 @@ mod tests {
     async fn test_handle_esc_closes_switcher() {
         // Arrange
         let mut app = new_test_app().await;
-        app.mode = AppMode::ProjectSwitcher {
-            query: String::new(),
-            selected_index: 0,
-        };
+        app.mode = AppMode::ProjectSwitcher { selected_index: 0 };
 
         // Act
         let event_result = handle(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
@@ -135,13 +113,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_text_input_appends_query() {
+    async fn test_handle_character_input_keeps_selected_index() {
         // Arrange
         let mut app = new_test_app().await;
-        app.mode = AppMode::ProjectSwitcher {
-            query: "a".to_string(),
-            selected_index: 1,
-        };
+        app.mode = AppMode::ProjectSwitcher { selected_index: 0 };
 
         // Act
         let event_result = handle(
@@ -155,10 +130,7 @@ mod tests {
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(
             app.mode,
-            AppMode::ProjectSwitcher {
-                ref query,
-                selected_index: 0,
-            } if query == "ab"
+            AppMode::ProjectSwitcher { selected_index: 0 }
         ));
     }
 

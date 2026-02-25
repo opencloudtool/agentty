@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::widgets::TableState;
 
-use crate::domain::project::{ProjectListItem, project_name_from_path};
+use crate::domain::project::ProjectListItem;
 
 /// Project domain state and git status tracking for the active project.
 pub struct ProjectManager {
@@ -156,15 +156,6 @@ impl ProjectManager {
         self.table_state.select(Some(previous_index));
     }
 
-    /// Returns project identifiers matching the provided quick-switch query.
-    pub(crate) fn filtered_project_ids(&self, query: &str) -> Vec<i64> {
-        self.project_items
-            .iter()
-            .filter(|project_item| project_matches_query(project_item, query))
-            .map(|project_item| project_item.project.id)
-            .collect()
-    }
-
     /// Updates the active project context values.
     pub(crate) fn update_active_project_context(
         &mut self,
@@ -231,24 +222,6 @@ impl ProjectManager {
     }
 }
 
-/// Returns whether one project matches quick-switch query text.
-fn project_matches_query(project_item: &ProjectListItem, query: &str) -> bool {
-    let trimmed_query = query.trim();
-    if trimmed_query.is_empty() {
-        return true;
-    }
-
-    let lowered_query = trimmed_query.to_lowercase();
-    let project = &project_item.project;
-    let display_label = project.display_label().to_lowercase();
-    let path_text = project.path.to_string_lossy().to_lowercase();
-    let fallback_name = project_name_from_path(project.path.as_path()).to_lowercase();
-
-    display_label.contains(&lowered_query)
-        || path_text.contains(&lowered_query)
-        || fallback_name.contains(&lowered_query)
-}
-
 #[cfg(test)]
 impl ProjectManager {
     /// Replaces the active project context values.
@@ -262,7 +235,8 @@ impl ProjectManager {
         working_dir: PathBuf,
     ) {
         self.active_project_id = active_project_id;
-        self.active_project_name = project_name_from_path(working_dir.as_path());
+        self.active_project_name =
+            crate::domain::project::project_name_from_path(working_dir.as_path());
         self.git_branch = git_branch;
         self.working_dir = working_dir;
     }
@@ -272,18 +246,6 @@ impl ProjectManager {
 mod tests {
     use super::*;
     use crate::domain::project::{Project, ProjectListItem};
-
-    #[test]
-    fn test_filtered_project_ids_matches_name_and_path_case_insensitive() {
-        // Arrange
-        let manager = project_manager_fixture();
-
-        // Act
-        let filtered_ids = manager.filtered_project_ids("SERV");
-
-        // Assert
-        assert_eq!(filtered_ids, vec![2]);
-    }
 
     #[test]
     fn test_next_project_wraps_to_first_row() {

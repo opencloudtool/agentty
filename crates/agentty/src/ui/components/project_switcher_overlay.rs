@@ -7,22 +7,20 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use crate::app::ProjectSwitcherItem;
 use crate::ui::Component;
 
-const EMPTY_RESULTS_TEXT: &str = "No matching projects";
+const EMPTY_RESULTS_TEXT: &str = "No projects available";
 const MAX_VISIBLE_ITEMS: u16 = 8;
 
-/// Overlay renderer for query-based project switching.
+/// Overlay renderer for quick project switching.
 pub struct ProjectSwitcherOverlay<'a> {
     projects: &'a [ProjectSwitcherItem],
-    query: &'a str,
     selected_index: usize,
 }
 
 impl<'a> ProjectSwitcherOverlay<'a> {
     /// Creates one project switcher overlay renderer.
-    pub fn new(projects: &'a [ProjectSwitcherItem], query: &'a str, selected_index: usize) -> Self {
+    pub fn new(projects: &'a [ProjectSwitcherItem], selected_index: usize) -> Self {
         Self {
             projects,
-            query,
             selected_index,
         }
     }
@@ -33,7 +31,6 @@ impl Component for ProjectSwitcherOverlay<'_> {
         let popup_area = centered_rect(72, 60, area);
         let layout = Layout::default()
             .constraints([
-                Constraint::Length(3),
                 Constraint::Length(MAX_VISIBLE_ITEMS + 2),
                 Constraint::Length(1),
             ])
@@ -46,19 +43,13 @@ impl Component for ProjectSwitcherOverlay<'_> {
         f.render_widget(Clear, popup_area);
         f.render_widget(block, popup_area);
 
-        let query_text = format!("Query: {}", self.query);
-        let query_widget = Paragraph::new(query_text)
-            .style(Style::default().fg(Color::Yellow))
-            .alignment(Alignment::Left);
-        f.render_widget(query_widget, layout[0]);
-
         let list_text = switcher_list_lines(self.projects, self.selected_index);
         let list_widget = Paragraph::new(list_text).alignment(Alignment::Left);
-        f.render_widget(list_widget, layout[1]);
+        f.render_widget(list_widget, layout[0]);
 
         let footer_widget = Paragraph::new("Enter: switch | Esc: close | j/k: navigate")
             .style(Style::default().fg(Color::Gray));
-        f.render_widget(footer_widget, layout[2]);
+        f.render_widget(footer_widget, layout[1]);
     }
 }
 

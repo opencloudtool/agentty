@@ -162,15 +162,11 @@ fn render_list_or_overlay_mode(
             shared.list_background(),
             aux.session_progress_messages,
         ),
-        AppMode::ProjectSwitcher {
-            query,
-            selected_index,
-        } => overlays::render_project_switcher_overlay(
+        AppMode::ProjectSwitcher { selected_index } => overlays::render_project_switcher_overlay(
             f,
             area,
             shared.list_background(),
             aux.project_switcher_items,
-            query,
             *selected_index,
         ),
         AppMode::View { .. } | AppMode::Prompt { .. } | AppMode::Diff { .. } => {
