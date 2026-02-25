@@ -17,7 +17,8 @@ use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
 /// Handles key input while the app is in list mode.
 ///
 /// Pressing `q` opens a confirmation overlay instead of quitting immediately,
-/// with `No` selected by default.
+/// with `No` selected by default. Pressing `Enter` on the `Projects` tab
+/// switches the active project and then moves focus to `Tab::Sessions`.
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
     if app.tabs.current() == Tab::Settings && app.settings.is_editing_text_input() {
         return handle_settings_text_input(app, key).await;
@@ -58,36 +59,7 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
             Tab::Stats => {}
             Tab::Settings => app.settings.previous(),
         },
-        KeyCode::Enter => {
-            if app.should_show_onboarding() && app.tabs.current() == Tab::Sessions {
-                open_new_session_prompt(app).await?;
-
-                return Ok(EventResult::Continue);
-            }
-
-            match app.tabs.current() {
-                Tab::Projects => {
-                    let _ = app.switch_selected_project().await;
-                }
-                Tab::Sessions => {
-                    if let Some(session_index) = app.sessions.table_state.selected()
-                        && let Some(session) = app.sessions.sessions.get(session_index)
-                        && !matches!(session.status, Status::Canceled)
-                        && let Some(session_id) = app.session_id_for_index(session_index)
-                    {
-                        app.mode = AppMode::View {
-                            done_session_output_mode: DoneSessionOutputMode::Summary,
-                            session_id,
-                            scroll_offset: None,
-                        };
-                    }
-                }
-                Tab::Settings => {
-                    app.settings.handle_enter(&app.services).await;
-                }
-                Tab::Stats => {}
-            }
-        }
+        KeyCode::Enter => return handle_enter_key(app).await,
         KeyCode::Char('f') if app.tabs.current() == Tab::Projects => {
             app.toggle_selected_project_favorite().await;
         }
@@ -119,6 +91,43 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
             open_list_help_overlay(app);
         }
         _ => {}
+    }
+
+    Ok(EventResult::Continue)
+}
+
+/// Handles `Enter` in list mode, including onboarding launch and per-tab
+/// primary actions.
+async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
+    if app.should_show_onboarding() && app.tabs.current() == Tab::Sessions {
+        open_new_session_prompt(app).await?;
+
+        return Ok(EventResult::Continue);
+    }
+
+    match app.tabs.current() {
+        Tab::Projects => {
+            if app.switch_selected_project().await.is_ok() {
+                app.tabs.set(Tab::Sessions);
+            }
+        }
+        Tab::Sessions => {
+            if let Some(session_index) = app.sessions.table_state.selected()
+                && let Some(session) = app.sessions.sessions.get(session_index)
+                && !matches!(session.status, Status::Canceled)
+                && let Some(session_id) = app.session_id_for_index(session_index)
+            {
+                app.mode = AppMode::View {
+                    done_session_output_mode: DoneSessionOutputMode::Summary,
+                    session_id,
+                    scroll_offset: None,
+                };
+            }
+        }
+        Tab::Settings => {
+            app.settings.handle_enter(&app.services).await;
+        }
+        Tab::Stats => {}
     }
 
     Ok(EventResult::Continue)
@@ -468,6 +477,23 @@ mod tests {
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_handle_enter_key_switches_to_sessions_tab_from_projects_tab() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        app.tabs.set(Tab::Projects);
+        app.mode = AppMode::List;
+
+        // Act
+        let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert_eq!(app.tabs.current(), Tab::Sessions);
     }
 
     #[tokio::test]
