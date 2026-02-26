@@ -182,7 +182,7 @@ impl RealGeminiAcpClient {
     /// Sends one prompt turn and waits for the matching prompt response id.
     ///
     /// Streaming progress updates are forwarded to the UI while assistant text
-    /// chunks are accumulated and returned as the final assistant message.
+    /// chunks are streamed to the UI and accumulated for the final response.
     async fn run_turn_with_runtime(
         session: &mut GeminiSessionRuntime,
         prompt: &str,
@@ -261,6 +261,7 @@ impl RealGeminiAcpClient {
                     extract_assistant_message_chunk(&response_value, &session.session_id)
                 {
                     assistant_message.push_str(chunk.as_str());
+                    Self::stream_assistant_chunk(&stream_tx, chunk);
                 }
             }
         })
@@ -271,6 +272,18 @@ impl RealGeminiAcpClient {
                 app_server_transport::TURN_TIMEOUT.as_secs()
             )
         })?
+    }
+
+    /// Streams one non-empty assistant chunk to the UI.
+    fn stream_assistant_chunk(
+        stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
+        chunk: String,
+    ) {
+        if chunk.is_empty() {
+            return;
+        }
+
+        let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage(chunk));
     }
 
     /// Terminates one Gemini ACP runtime process.
@@ -342,10 +355,7 @@ fn build_permission_response(response_value: &Value, expected_session_id: &str) 
     }
 
     let request_id = response_value.get("id")?.clone();
-    if let Some(option_id) = params
-        .get("options")
-        .and_then(select_permission_option_id)
-    {
+    if let Some(option_id) = params.get("options").and_then(select_permission_option_id) {
         return Some(serde_json::json!({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -635,6 +645,35 @@ mod tests {
             session_id,
             Err("Gemini ACP `session/new` response missing `sessionId`".to_string())
         );
+    }
+
+    #[test]
+    fn stream_assistant_chunk_sends_assistant_message_event_for_non_empty_chunks() {
+        // Arrange
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+
+        // Act
+        RealGeminiAcpClient::stream_assistant_chunk(&stream_tx, "Hello from Gemini".to_string());
+
+        // Assert
+        assert_eq!(
+            stream_rx.try_recv().ok(),
+            Some(AppServerStreamEvent::AssistantMessage(
+                "Hello from Gemini".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn stream_assistant_chunk_ignores_empty_chunks() {
+        // Arrange
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+
+        // Act
+        RealGeminiAcpClient::stream_assistant_chunk(&stream_tx, String::new());
+
+        // Assert
+        assert!(stream_rx.try_recv().is_err());
     }
 
     #[test]
