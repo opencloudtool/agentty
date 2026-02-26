@@ -608,7 +608,7 @@ mod tests {
                 app_event_tx,
                 child_pid: Arc::clone(&child_pid),
                 db: db.clone(),
-                folder: dir.path().to_path_buf(),
+                folder: dir.path().join("worktree"),
                 git_client: Arc::new(mock_git_client),
                 id: session_id.to_string(),
                 output: Arc::clone(&output),

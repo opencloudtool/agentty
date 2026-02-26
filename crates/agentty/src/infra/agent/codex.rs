@@ -11,7 +11,8 @@ const CODEX_REASONING_EFFORT_CONFIG: &str = r#"model_reasoning_effort="high""#;
 ///
 /// Interactive `codex` requires a TTY and fails in this app with
 /// `Error: stdout is not a terminal`, so this backend runs
-/// `codex exec --full-auto` and `codex exec resume --last --full-auto`.
+/// `codex exec --full-auto`. Resume uses `codex exec resume --last --full-auto`
+/// only when replay history is not injected into the prompt.
 pub(super) struct CodexBackend;
 
 impl AgentBackend for CodexBackend {
@@ -45,13 +46,19 @@ impl AgentBackend for CodexBackend {
         model: &str,
         session_output: Option<String>,
     ) -> Command {
+        let has_history_replay = session_output
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
         let prompt = build_resume_prompt(prompt, session_output.as_deref());
         let prompt = prepend_root_instructions_if_available(&prompt, folder);
         let mut command = Command::new("codex");
+        command.arg("exec").arg("resume");
+
+        if !has_history_replay {
+            command.arg("--last");
+        }
+
         command
-            .arg("exec")
-            .arg("resume")
-            .arg("--last")
             .arg("-c")
             .arg(CODEX_REASONING_EFFORT_CONFIG)
             .arg("--model")
@@ -124,6 +131,8 @@ mod tests {
         );
     }
 
+    /// Verifies resume command composes replay-based prompt content when
+    /// session output is available.
     #[test]
     fn build_resume_command_appends_root_instructions_and_session_output() {
         // Arrange
@@ -175,6 +184,9 @@ mod tests {
         let debug_command = format!("{command:?}");
 
         // Assert
+        assert!(debug_command.contains("exec"));
+        assert!(debug_command.contains("resume"));
+        assert!(debug_command.contains("--last"));
         assert!(debug_command.contains("Project instructions from AGENTS.md"));
         assert!(debug_command.contains(instructions));
         assert!(debug_command.contains("-c"));
