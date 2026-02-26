@@ -64,14 +64,10 @@ pub(crate) async fn handle(
             handle_prompt_cancel_key(app, &prompt_context).await;
         }
         KeyCode::Left => {
-            if let AppMode::Prompt { input, .. } = &mut app.mode {
-                input.move_left();
-            }
+            handle_prompt_left(app, key);
         }
         KeyCode::Right => {
-            if let AppMode::Prompt { input, .. } = &mut app.mode {
-                input.move_right();
-            }
+            handle_prompt_right(app, key);
         }
         KeyCode::Up => {
             handle_prompt_up_key(app, terminal, &prompt_context)?;
@@ -673,6 +669,68 @@ fn prompt_input_width(terminal: &TuiTerminal) -> io::Result<u16> {
     let terminal_width = terminal.size()?.width;
 
     Ok(terminal_width.saturating_sub(2))
+}
+
+/// Moves the prompt cursor one character left, or to the previous word start
+/// when the `Shift` modifier is pressed.
+fn handle_prompt_left(app: &mut App, key: KeyEvent) {
+    if let AppMode::Prompt { input, .. } = &mut app.mode {
+        if key.modifiers.contains(event::KeyModifiers::SHIFT) {
+            move_prompt_cursor_word_left(input);
+        } else {
+            input.move_left();
+        }
+    }
+}
+
+/// Moves the prompt cursor one character right, or to the next word start when
+/// the `Shift` modifier is pressed.
+fn handle_prompt_right(app: &mut App, key: KeyEvent) {
+    if let AppMode::Prompt { input, .. } = &mut app.mode {
+        if key.modifiers.contains(event::KeyModifiers::SHIFT) {
+            move_prompt_cursor_word_right(input);
+        } else {
+            input.move_right();
+        }
+    }
+}
+
+/// Moves the cursor to the start of the previous word, skipping adjacent
+/// whitespace separators.
+fn move_prompt_cursor_word_left(input: &mut InputState) {
+    if input.cursor == 0 {
+        return;
+    }
+
+    let characters: Vec<char> = input.text().chars().collect();
+    let mut cursor = input.cursor;
+
+    while cursor > 0 && characters[cursor - 1].is_whitespace() {
+        cursor -= 1;
+    }
+
+    while cursor > 0 && !characters[cursor - 1].is_whitespace() {
+        cursor -= 1;
+    }
+
+    input.cursor = cursor;
+}
+
+/// Moves the cursor to the start of the next word, skipping adjacent
+/// whitespace separators.
+fn move_prompt_cursor_word_right(input: &mut InputState) {
+    let characters: Vec<char> = input.text().chars().collect();
+    let mut cursor = input.cursor;
+
+    while cursor < characters.len() && !characters[cursor].is_whitespace() {
+        cursor += 1;
+    }
+
+    while cursor < characters.len() && characters[cursor].is_whitespace() {
+        cursor += 1;
+    }
+
+    input.cursor = cursor;
 }
 
 /// Handles prompt backspace by deleting one character or one whole word when
@@ -1343,6 +1401,60 @@ mod tests {
             assert_eq!(input.text(), "draft");
             assert_eq!(history_state.selected_index, None);
             assert_eq!(history_state.draft_text, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_left_with_shift_moves_cursor_to_previous_word_start() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("hello brave world", None).await;
+        if let AppMode::Prompt { input, .. } = &mut app.mode {
+            input.cursor = "hello brave world".chars().count();
+        }
+
+        // Act
+        let key = KeyEvent::new(KeyCode::Left, event::KeyModifiers::SHIFT);
+        handle_prompt_left(&mut app, key);
+
+        // Assert
+        if let AppMode::Prompt { input, .. } = &app.mode {
+            assert_eq!(input.cursor, "hello brave ".chars().count());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_left_with_shift_skips_whitespace_separators() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("hello\t \nworld", None).await;
+        if let AppMode::Prompt { input, .. } = &mut app.mode {
+            input.cursor = "hello\t \nworld".chars().count();
+        }
+
+        // Act
+        let key = KeyEvent::new(KeyCode::Left, event::KeyModifiers::SHIFT);
+        handle_prompt_left(&mut app, key);
+
+        // Assert
+        if let AppMode::Prompt { input, .. } = &app.mode {
+            assert_eq!(input.cursor, "hello\t \n".chars().count());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_right_with_shift_moves_cursor_to_next_word_start() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("hello brave world", None).await;
+        if let AppMode::Prompt { input, .. } = &mut app.mode {
+            input.cursor = 0;
+        }
+
+        // Act
+        let key = KeyEvent::new(KeyCode::Right, event::KeyModifiers::SHIFT);
+        handle_prompt_right(&mut app, key);
+
+        // Assert
+        if let AppMode::Prompt { input, .. } = &app.mode {
+            assert_eq!(input.cursor, "hello ".chars().count());
         }
     }
 
