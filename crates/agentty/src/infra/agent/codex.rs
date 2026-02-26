@@ -152,4 +152,38 @@ mod tests {
         assert!(debug_command.contains("Continue this session using the full transcript below."));
         assert!(debug_command.contains("previous assistant output"));
     }
+
+    /// Verifies resume command keeps a plain user prompt when no session output
+    /// is available for replay.
+    #[test]
+    fn build_resume_command_uses_plain_prompt_without_session_output() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let backend = CodexBackend;
+        let instructions = "Follow project rules";
+        std::fs::write(temp_directory.path().join("AGENTS.md"), instructions)
+            .expect("failed to write test instructions");
+
+        // Act
+        let command = AgentBackend::build_resume_command(
+            &backend,
+            temp_directory.path(),
+            "Continue edits",
+            "gpt-5.3-codex",
+            None,
+        );
+        let debug_command = format!("{command:?}");
+
+        // Assert
+        assert!(debug_command.contains("Project instructions from AGENTS.md"));
+        assert!(debug_command.contains(instructions));
+        assert!(debug_command.contains("-c"));
+        assert!(debug_command.contains("model_reasoning_effort"));
+        assert!(debug_command.contains("high"));
+        assert!(
+            debug_command.contains("User prompt:\nContinue edits")
+                || debug_command.contains("User prompt:\\nContinue edits")
+        );
+        assert!(!debug_command.contains("Continue this session using the full transcript below."));
+    }
 }

@@ -224,10 +224,10 @@ fn parse_gemini_stream_output_line(stdout_line: &str) -> Option<(String, bool)> 
     Some((progress_message, false))
 }
 
-/// Parses Codex NDJSON output into the final assistant response and usage.
+/// Parses Codex NDJSON output into the final assistant message and usage.
 ///
-/// Synthetic completion-status `agent_message` events are ignored so the
-/// returned content reflects assistant-authored text.
+/// Synthetic completion-status `agent_message` events are ignored so trailing
+/// status lines do not replace the assistant-authored reply.
 fn parse_codex_response(stdout: &str) -> Option<ParsedResponse> {
     let mut last_message: Option<String> = None;
     let mut total_input_tokens: u64 = 0;
@@ -549,6 +549,28 @@ mod tests {
         assert_eq!(parsed.content, "Planned response");
         assert_eq!(parsed.stats.input_tokens, 11);
         assert_eq!(parsed.stats.output_tokens, 7);
+    }
+
+    /// Ensures final NDJSON parsing keeps the real assistant reply when
+    /// completion-status messages trail the stream.
+    #[test]
+    fn test_parse_response_codex_ignores_trailing_completion_status_message() {
+        // Arrange
+        let stdout = concat!(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"Planned final answer"}}"#,
+            "\n",
+            r#"{"type":"turn.completed","usage":{"input_tokens":21,"output_tokens":8}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"Command completed"}}"#,
+        );
+
+        // Act
+        let parsed = parse_response(AgentKind::Codex, stdout, "");
+
+        // Assert
+        assert_eq!(parsed.content, "Planned final answer");
+        assert_eq!(parsed.stats.input_tokens, 21);
+        assert_eq!(parsed.stats.output_tokens, 8);
     }
 
     #[test]
