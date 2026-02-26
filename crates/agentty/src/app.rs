@@ -38,7 +38,7 @@ pub use project::ProjectManager;
 pub use service::AppServices;
 pub use session::SessionManager;
 use session::SessionTaskService;
-pub(crate) use session::SyncSessionStartError;
+pub(crate) use session::{SyncMainOutcome, SyncSessionStartError};
 pub use session_state::SessionState;
 pub use settings::SettingsManager;
 pub use tab::{Tab, TabManager};
@@ -90,7 +90,7 @@ pub(crate) enum AppEvent {
     },
     /// Indicates completion of a list-mode sync workflow.
     SyncMainCompleted {
-        result: Result<(), SyncSessionStartError>,
+        result: Result<SyncMainOutcome, SyncSessionStartError>,
     },
     /// Indicates that a session handle snapshot changed in-memory.
     SessionUpdated { session_id: String },
@@ -108,7 +108,7 @@ struct AppEventBatch {
     session_progress_updates: HashMap<String, Option<String>>,
     session_ids: HashSet<String>,
     should_force_reload: bool,
-    sync_main_result: Option<Result<(), SyncSessionStartError>>,
+    sync_main_result: Option<Result<SyncMainOutcome, SyncSessionStartError>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1026,15 +1026,15 @@ impl App {
 
     /// Builds final sync popup mode from background sync completion result.
     fn sync_main_popup_mode(
-        sync_main_result: Result<(), SyncSessionStartError>,
+        sync_main_result: Result<SyncMainOutcome, SyncSessionStartError>,
         sync_popup_context: &SyncPopupContext,
     ) -> AppMode {
         match sync_main_result {
-            Ok(()) => AppMode::SyncBlockedPopup {
+            Ok(sync_main_outcome) => AppMode::SyncBlockedPopup {
                 project_name: Some(sync_popup_context.project_name.clone()),
                 default_branch: Some(sync_popup_context.default_branch.clone()),
                 is_loading: false,
-                message: "Successfully synchronized with its upstream.".to_string(),
+                message: Self::sync_success_message(&sync_main_outcome),
                 title: "Sync complete".to_string(),
             },
             Err(sync_error @ SyncSessionStartError::MainHasUncommittedChanges { .. }) => {
@@ -1054,6 +1054,38 @@ impl App {
                 title: "Sync failed".to_string(),
             },
         }
+    }
+
+    /// Builds success copy for sync completion with pull/push/conflict summary.
+    fn sync_success_message(sync_main_outcome: &SyncMainOutcome) -> String {
+        let pulled_summary = Self::sync_commit_summary("pulled", sync_main_outcome.pulled_commits);
+        let pushed_summary = Self::sync_commit_summary("pushed", sync_main_outcome.pushed_commits);
+        let conflict_summary =
+            Self::sync_conflict_summary(&sync_main_outcome.resolved_conflict_files);
+
+        format!(
+            "Successfully synchronized with its upstream.\n{pulled_summary}; {pushed_summary}; \
+             {conflict_summary}."
+        )
+    }
+
+    /// Returns one brief pull/push sentence fragment for sync completion.
+    fn sync_commit_summary(direction: &str, commit_count: Option<u32>) -> String {
+        match commit_count {
+            Some(1) => format!("1 commit {direction}"),
+            Some(commit_count) => format!("{commit_count} commits {direction}"),
+            None => format!("commits {direction}: unknown"),
+        }
+    }
+
+    /// Returns one brief conflict-resolution sentence fragment for sync
+    /// completion.
+    fn sync_conflict_summary(resolved_conflict_files: &[String]) -> String {
+        if resolved_conflict_files.is_empty() {
+            return "no conflicts fixed".to_string();
+        }
+
+        format!("conflicts fixed: {}", resolved_conflict_files.join(", "))
     }
 
     /// Returns popup context for the currently active project sync target.
@@ -1360,9 +1392,14 @@ mod tests {
             default_branch: "develop".to_string(),
             project_name: "agentty".to_string(),
         };
+        let sync_main_outcome = SyncMainOutcome {
+            pulled_commits: Some(2),
+            pushed_commits: Some(1),
+            resolved_conflict_files: vec!["src/lib.rs".to_string()],
+        };
 
         // Act
-        let mode = App::sync_main_popup_mode(Ok(()), &sync_popup_context);
+        let mode = App::sync_main_popup_mode(Ok(sync_main_outcome), &sync_popup_context);
 
         // Assert
         assert!(matches!(
@@ -1376,6 +1413,9 @@ mod tests {
             } if title == "Sync complete"
                 && default_branch.as_deref() == Some("develop")
                 && message.contains("Successfully synchronized")
+                && message.contains("2 commits pulled")
+                && message.contains("1 commit pushed")
+                && message.contains("conflicts fixed: src/lib.rs")
                 && project_name.as_deref() == Some("agentty")
         ));
     }

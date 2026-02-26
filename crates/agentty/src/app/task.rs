@@ -589,6 +589,10 @@ mod tests {
             });
         let mut mock_git_client = MockGitClient::new();
         mock_git_client
+            .expect_diff()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(String::new()) }));
+        mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
             .returning(|_, _, _| Box::pin(async { Err("Nothing to commit".to_string()) }));

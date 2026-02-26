@@ -24,8 +24,8 @@ mod refresh;
 mod task;
 mod worker;
 
-/// Merge workflow error exported for app orchestration callers.
-pub(crate) use merge::SyncSessionStartError;
+/// Merge workflow sync types exported for app orchestration callers.
+pub(crate) use merge::{SyncMainOutcome, SyncSessionStartError};
 /// Session task inputs/services exported for sibling app modules.
 pub(crate) use task::{RunAgentAssistTaskInput, SessionTaskService};
 

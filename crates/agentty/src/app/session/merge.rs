@@ -338,6 +338,43 @@ pub(crate) enum SyncSessionStartError {
     Other(String),
 }
 
+/// Summary of one completed main-branch sync run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SyncMainOutcome {
+    /// Number of commits rebased from upstream into the local branch.
+    pub(crate) pulled_commits: Option<u32>,
+    /// Number of local commits pushed to upstream during sync.
+    pub(crate) pushed_commits: Option<u32>,
+    /// Paths that were conflicted and resolved during assisted sync rebase.
+    pub(crate) resolved_conflict_files: Vec<String>,
+}
+
+/// Successful assisted rebase completion details.
+#[derive(Debug)]
+struct RebaseAssistOutcome {
+    resolved_conflict_files: Vec<String>,
+}
+
+impl RebaseAssistOutcome {
+    /// Creates an empty assisted-rebase completion payload.
+    fn empty() -> Self {
+        Self {
+            resolved_conflict_files: Vec::new(),
+        }
+    }
+
+    /// Adds conflicted file names and keeps the list unique and sorted.
+    fn extend_resolved_conflict_files(&mut self, conflict_files: &[String]) {
+        for conflict_file in conflict_files {
+            if !self.resolved_conflict_files.contains(conflict_file) {
+                self.resolved_conflict_files.push(conflict_file.clone());
+            }
+        }
+
+        self.resolved_conflict_files.sort_unstable();
+    }
+}
+
 impl SyncSessionStartError {
     /// Returns user-facing detail for non-popup sync start errors.
     pub(crate) fn detail_message(&self) -> String {
@@ -697,6 +734,7 @@ impl SessionManager {
     /// Synchronizes a project branch with upstream using only project context.
     ///
     /// This helper is reused by background-triggered sync workflows and tests.
+    /// On success returns a [`SyncMainOutcome`] for popup status messaging.
     ///
     /// # Errors
     /// Returns a [`SyncSessionStartError`] when project context is invalid or
@@ -707,7 +745,7 @@ impl SessionManager {
         working_dir: PathBuf,
         git_client: Arc<dyn GitClient>,
         session_model: AgentModel,
-    ) -> Result<(), SyncSessionStartError> {
+    ) -> Result<SyncMainOutcome, SyncSessionStartError> {
         let sync_assist_client: Arc<dyn SyncAssistClient> = Arc::new(RealSyncAssistClient);
 
         Self::sync_main_for_project_with_assist_client(
@@ -733,7 +771,7 @@ impl SessionManager {
         git_client: Arc<dyn GitClient>,
         session_model: AgentModel,
         sync_assist_client: Arc<dyn SyncAssistClient>,
-    ) -> Result<(), SyncSessionStartError> {
+    ) -> Result<SyncMainOutcome, SyncSessionStartError> {
         let default_branch = default_branch.ok_or_else(|| {
             SyncSessionStartError::Other("Active project has no git branch".to_string())
         })?;
@@ -755,10 +793,13 @@ impl SessionManager {
             });
         }
 
+        let ahead_behind_before_pull = git_client.get_ahead_behind(working_dir.clone()).await.ok();
+
         let pull_result = git_client
             .pull_rebase(working_dir.clone())
             .await
             .map_err(SyncSessionStartError::Other)?;
+        let mut resolved_conflict_files = Vec::new();
         if let git::PullRebaseResult::Conflict { detail } = pull_result {
             let sync_rebase_input = SyncRebaseAssistInput {
                 base_branch: default_branch.clone(),
@@ -767,38 +808,65 @@ impl SessionManager {
                 session_model,
                 sync_assist_client,
             };
-            if let Err(error) =
-                Self::run_sync_rebase_assist_loop(sync_rebase_input, detail.clone()).await
-            {
-                return Err(SyncSessionStartError::Other(format!(
-                    "Sync stopped on rebase conflicts while updating `{default_branch}`: \
-                     {detail}. Assisted resolution failed: {error}"
-                )));
-            }
+            resolved_conflict_files =
+                match Self::run_sync_rebase_assist_loop(sync_rebase_input, detail.clone()).await {
+                    Ok(resolved_conflict_files) => resolved_conflict_files,
+                    Err(error) => {
+                        return Err(SyncSessionStartError::Other(format!(
+                            "Sync stopped on rebase conflicts while updating `{default_branch}`: \
+                             {detail}. Assisted resolution failed: {error}"
+                        )));
+                    }
+                };
         }
+        let ahead_behind_after_pull = git_client.get_ahead_behind(working_dir.clone()).await.ok();
 
         git_client
             .push_current_branch(working_dir)
             .await
             .map_err(SyncSessionStartError::Other)?;
 
-        Ok(())
+        let (pulled_commits, pushed_commits) = Self::summarize_sync_ahead_behind_counts(
+            ahead_behind_before_pull,
+            ahead_behind_after_pull,
+        );
+
+        Ok(SyncMainOutcome {
+            pulled_commits,
+            pushed_commits,
+            resolved_conflict_files,
+        })
     }
 
     /// Runs assisted conflict resolution for a main-project rebase in progress.
     ///
     /// # Errors
     /// Returns an error when conflicts remain unresolved after all attempts or
-    /// when git/agent operations fail.
+    /// when git/agent operations fail. On success returns resolved conflict
+    /// file paths observed during assistance.
     async fn run_sync_rebase_assist_loop(
         input: SyncRebaseAssistInput,
         initial_conflict_detail: String,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
         Self::run_rebase_assist_loop_core(
             RebaseAssistLoopInput::Project(input),
             Some(initial_conflict_detail),
         )
         .await
+        .map(|outcome| outcome.resolved_conflict_files)
+    }
+
+    /// Returns pull/push counts inferred around one completed sync run.
+    fn summarize_sync_ahead_behind_counts(
+        ahead_behind_before_pull: Option<(u32, u32)>,
+        ahead_behind_after_pull: Option<(u32, u32)>,
+    ) -> (Option<u32>, Option<u32>) {
+        let pulled_commits = ahead_behind_before_pull.map(|(_ahead, behind)| behind);
+        let pushed_commits = ahead_behind_after_pull
+            .map(|(ahead, _behind)| ahead)
+            .or_else(|| ahead_behind_before_pull.map(|(ahead, _behind)| ahead));
+
+        (pulled_commits, pushed_commits)
     }
 
     /// Loads current conflicted files for sync assistance.
@@ -1044,7 +1112,9 @@ impl SessionManager {
             }
         }
 
-        Self::run_rebase_assist_loop_core(RebaseAssistLoopInput::Session(input), None).await
+        Self::run_rebase_assist_loop_core(RebaseAssistLoopInput::Session(input), None)
+            .await
+            .map(|_| ())
     }
 
     /// Executes shared bounded assistance loop for both session rebases and
@@ -1058,10 +1128,11 @@ impl SessionManager {
     async fn run_rebase_assist_loop_core(
         assist_input: RebaseAssistLoopInput,
         initial_conflict_detail: Option<String>,
-    ) -> Result<(), String> {
-        let assist_result: Result<(), String> = async {
+    ) -> Result<RebaseAssistOutcome, String> {
+        let assist_result: Result<RebaseAssistOutcome, String> = async {
             let mut failure_tracker =
                 FailureTracker::new(REBASE_ASSIST_POLICY.max_identical_failure_streak);
+            let mut assist_outcome = RebaseAssistOutcome::empty();
             if let Some(initial_conflict_detail) = initial_conflict_detail {
                 let _ = failure_tracker.observe(&initial_conflict_detail);
             }
@@ -1076,7 +1147,7 @@ impl SessionManager {
                     let continue_step = assist_input.run_rebase_continue().await?;
                     match continue_step {
                         git::RebaseStepResult::Completed => {
-                            return Ok(());
+                            return Ok(assist_outcome);
                         }
                         git::RebaseStepResult::Conflict { detail } => {
                             if failure_tracker.observe(&detail) {
@@ -1097,6 +1168,7 @@ impl SessionManager {
                 if failure_tracker.observe(&conflict_fingerprint) {
                     return Err(assist_input.unchanged_conflict_files_error());
                 }
+                assist_outcome.extend_resolved_conflict_files(&conflicted_files);
 
                 assist_input
                     .run_assist_attempt(assist_attempt, &conflicted_files)
@@ -1119,7 +1191,7 @@ impl SessionManager {
                 let continue_step = assist_input.run_rebase_continue().await?;
                 match continue_step {
                     git::RebaseStepResult::Completed => {
-                        return Ok(());
+                        return Ok(assist_outcome);
                     }
                     git::RebaseStepResult::Conflict { detail } => {
                         if failure_tracker.observe(&detail) {
@@ -1137,13 +1209,14 @@ impl SessionManager {
         }
         .await;
 
-        if let Err(error) = assist_result {
-            assist_input.abort_rebase_after_assist_failure().await;
+        match assist_result {
+            Ok(assist_outcome) => Ok(assist_outcome),
+            Err(error) => {
+                assist_input.abort_rebase_after_assist_failure().await;
 
-            return Err(error);
+                Err(error)
+            }
         }
-
-        Ok(())
     }
 
     /// Returns whether the session worktree has an in-progress rebase.
@@ -1811,6 +1884,14 @@ mod tests {
             .times(1)
             .returning(|_| Box::pin(async { Ok(true) }));
         mock_git_client
+            .expect_get_ahead_behind()
+            .times(1)
+            .return_once(|_| Box::pin(async { Ok((1, 2)) }));
+        mock_git_client
+            .expect_get_ahead_behind()
+            .times(1)
+            .return_once(|_| Box::pin(async { Ok((1, 0)) }));
+        mock_git_client
             .expect_pull_rebase()
             .times(1)
             .returning(|_| {
@@ -1863,7 +1944,15 @@ mod tests {
         .await;
 
         // Assert
-        assert!(result.is_ok(), "sync should succeed after assistance");
+        assert_eq!(
+            result,
+            Ok(SyncMainOutcome {
+                pulled_commits: Some(2),
+                pushed_commits: Some(1),
+                resolved_conflict_files: vec!["src/lib.rs".to_string()],
+            }),
+            "sync should succeed after assistance with summary details"
+        );
     }
 
     #[tokio::test]
@@ -1879,6 +1968,10 @@ mod tests {
             .expect_is_worktree_clean()
             .times(1)
             .returning(|_| Box::pin(async { Ok(true) }));
+        mock_git_client
+            .expect_get_ahead_behind()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok((0, 1)) }));
         mock_git_client
             .expect_pull_rebase()
             .times(1)
