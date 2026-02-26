@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use tokio::task::spawn_blocking;
 
 use super::rebase::{is_rebase_conflict, run_git_command_with_index_lock_retry};
-use super::repo::command_output_detail;
+use super::repo::{
+    command_output_detail, run_git_command, run_git_command_output_sync, run_git_command_sync,
+};
 
 const COMMIT_ALL_HOOK_RETRY_ATTEMPTS: usize = 5;
 
@@ -93,28 +95,22 @@ pub async fn stage_all(repo_path: PathBuf) -> Result<(), String> {
 /// # Errors
 /// Returns an error if resolving `HEAD` fails.
 pub async fn head_short_hash(repo_path: PathBuf) -> Result<String, String> {
-    spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["rev-parse", "--short", "HEAD"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+    let hash = run_git_command(
+        repo_path,
+        vec![
+            "rev-parse".to_string(),
+            "--short".to_string(),
+            "HEAD".to_string(),
+        ],
+        "Failed to resolve HEAD hash".to_string(),
+    )
+    .await?;
+    let hash = hash.trim().to_string();
+    if hash.is_empty() {
+        return Err("Failed to resolve HEAD hash: empty output".to_string());
+    }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!("Failed to resolve HEAD hash: {}", stderr.trim()));
-        }
-
-        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if hash.is_empty() {
-            return Err("Failed to resolve HEAD hash: empty output".to_string());
-        }
-
-        Ok(hash)
-    })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    Ok(hash)
 }
 
 /// Deletes a git branch.
@@ -131,23 +127,14 @@ pub async fn head_short_hash(repo_path: PathBuf) -> Result<String, String> {
 /// # Errors
 /// Returns an error if the branch delete command fails.
 pub async fn delete_branch(repo_path: PathBuf, branch_name: String) -> Result<(), String> {
-    spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["branch", "-D", &branch_name])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+    run_git_command(
+        repo_path,
+        vec!["branch".to_string(), "-D".to_string(), branch_name],
+        "Git branch deletion failed".to_string(),
+    )
+    .await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!("Git branch deletion failed: {}", stderr.trim()));
-        }
-
-        Ok(())
-    })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    Ok(())
 }
 
 /// Returns the output of `git diff` for the given repository path, showing
@@ -171,23 +158,14 @@ pub async fn delete_branch(repo_path: PathBuf, branch_name: String) -> Result<()
 /// index state fails.
 pub async fn diff(repo_path: PathBuf, base_branch: String) -> Result<String, String> {
     spawn_blocking(move || {
-        let intent_to_add = Command::new("git")
-            .args(["add", "-A", "--intent-to-add"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        run_git_command_sync(
+            &repo_path,
+            &["add", "-A", "--intent-to-add"],
+            "Git add --intent-to-add failed",
+        )?;
 
-        if !intent_to_add.status.success() {
-            let stderr = String::from_utf8_lossy(&intent_to_add.stderr);
-
-            return Err(format!("Git add --intent-to-add failed: {}", stderr.trim()));
-        }
-
-        let merge_base_output = Command::new("git")
-            .args(["merge-base", "HEAD", &base_branch])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let merge_base_output =
+            run_git_command_output_sync(&repo_path, &["merge-base", "HEAD", &base_branch])?;
 
         let diff_target = if merge_base_output.status.success() {
             String::from_utf8_lossy(&merge_base_output.stdout)
@@ -197,25 +175,14 @@ pub async fn diff(repo_path: PathBuf, base_branch: String) -> Result<String, Str
             base_branch
         };
 
-        let diff_output = Command::new("git")
-            .args(["diff", &diff_target])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let diff_output = run_git_command_sync(
+            &repo_path,
+            &["diff", diff_target.as_str()],
+            "Git diff failed",
+        )?;
+        run_git_command_sync(&repo_path, &["reset"], "Git reset failed")?;
 
-        let reset = Command::new("git")
-            .arg("reset")
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !reset.status.success() {
-            let stderr = String::from_utf8_lossy(&reset.stderr);
-
-            return Err(format!("Git reset failed: {}", stderr.trim()));
-        }
-
-        Ok(String::from_utf8_lossy(&diff_output.stdout).into_owned())
+        Ok(diff_output)
     })
     .await
     .map_err(|error| format!("Join error: {error}"))?
@@ -232,23 +199,14 @@ pub async fn diff(repo_path: PathBuf, base_branch: String) -> Result<String, Str
 /// # Errors
 /// Returns an error if `git status --porcelain` cannot be executed.
 pub async fn is_worktree_clean(repo_path: PathBuf) -> Result<bool, String> {
-    spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+    let status_output = run_git_command(
+        repo_path,
+        vec!["status".to_string(), "--porcelain".to_string()],
+        "Git status --porcelain failed".to_string(),
+    )
+    .await?;
 
-        if !output.status.success() {
-            let detail = command_output_detail(&output.stdout, &output.stderr);
-
-            return Err(format!("Git status --porcelain failed: {detail}"));
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().is_empty())
-    })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    Ok(status_output.trim().is_empty())
 }
 
 /// Runs `git pull --rebase` and returns conflict outcome when applicable.
@@ -338,19 +296,12 @@ fn primary_upstream_reference(repo_path: &Path) -> Result<String, String> {
 
 /// Returns the full upstream reference for `HEAD` (for example, `origin/main`).
 fn upstream_reference_name(repo_path: &Path) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-    if !output.status.success() {
-        let detail = command_output_detail(&output.stdout, &output.stderr);
-
-        return Err(format!("Failed to resolve upstream branch: {detail}"));
-    }
-
-    let upstream_reference = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let upstream_reference = run_git_command_sync(
+        repo_path,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        "Failed to resolve upstream branch",
+    )?;
+    let upstream_reference = upstream_reference.trim().to_string();
     if upstream_reference.is_empty() {
         return Err("Failed to resolve upstream branch: empty output".to_string());
     }
@@ -365,21 +316,12 @@ fn upstream_reference_name(repo_path: &Path) -> Result<String, String> {
 fn current_branch_remote_name(repo_path: &Path) -> Result<String, String> {
     let current_branch_name = current_branch_name(repo_path)?;
     let remote_config_key = format!("branch.{current_branch_name}.remote");
-    let output = Command::new("git")
-        .args(["config", "--get", &remote_config_key])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-    if !output.status.success() {
-        let detail = command_output_detail(&output.stdout, &output.stderr);
-
-        return Err(format!(
-            "Failed to resolve current branch remote `{remote_config_key}`: {detail}"
-        ));
-    }
-
-    let remote_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let remote_name = run_git_command_sync(
+        repo_path,
+        &["config", "--get", &remote_config_key],
+        &format!("Failed to resolve current branch remote `{remote_config_key}`"),
+    )?;
+    let remote_name = remote_name.trim().to_string();
     if remote_name.is_empty() {
         return Err(format!(
             "Failed to resolve current branch remote `{remote_config_key}`: empty output"
@@ -391,19 +333,12 @@ fn current_branch_remote_name(repo_path: &Path) -> Result<String, String> {
 
 /// Returns the current local branch name for `HEAD`.
 fn current_branch_name(repo_path: &Path) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-    if !output.status.success() {
-        let detail = command_output_detail(&output.stdout, &output.stderr);
-
-        return Err(format!("Failed to resolve current branch name: {detail}"));
-    }
-
-    let branch_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let branch_name = run_git_command_sync(
+        repo_path,
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        "Failed to resolve current branch name",
+    )?;
+    let branch_name = branch_name.trim().to_string();
     if branch_name.is_empty() {
         return Err("Failed to resolve current branch name: empty output".to_string());
     }
@@ -430,11 +365,7 @@ fn current_branch_name(repo_path: &Path) -> Result<String, String> {
 /// Returns an error if `git push` fails.
 pub async fn push_current_branch(repo_path: PathBuf) -> Result<(), String> {
     spawn_blocking(move || {
-        let push_output = Command::new("git")
-            .arg("push")
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let push_output = run_git_command_output_sync(&repo_path, &["push"])?;
 
         if push_output.status.success() {
             return Ok(());
@@ -445,18 +376,11 @@ pub async fn push_current_branch(repo_path: PathBuf) -> Result<(), String> {
             return Err(format!("Git push failed: {push_detail}"));
         }
 
-        let upstream_output = Command::new("git")
-            .args(["push", "--set-upstream", "origin", "HEAD"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !upstream_output.status.success() {
-            let upstream_detail =
-                command_output_detail(&upstream_output.stdout, &upstream_output.stderr);
-
-            return Err(format!("Git push failed: {upstream_detail}"));
-        }
+        run_git_command_sync(
+            &repo_path,
+            &["push", "--set-upstream", "origin", "HEAD"],
+            "Git push failed",
+        )?;
 
         Ok(())
     })
@@ -475,23 +399,14 @@ pub async fn push_current_branch(repo_path: PathBuf) -> Result<(), String> {
 /// # Errors
 /// Returns an error if `git fetch` cannot be executed successfully.
 pub async fn fetch_remote(repo_path: PathBuf) -> Result<(), String> {
-    spawn_blocking(move || {
-        let output = Command::new("git")
-            .arg("fetch")
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+    run_git_command(
+        repo_path,
+        vec!["fetch".to_string()],
+        "Git fetch failed".to_string(),
+    )
+    .await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!("Git fetch failed: {}", stderr.trim()));
-        }
-
-        Ok(())
-    })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    Ok(())
 }
 
 /// Returns the number of commits ahead and behind the upstream branch.
@@ -505,32 +420,26 @@ pub async fn fetch_remote(repo_path: PathBuf) -> Result<(), String> {
 /// # Errors
 /// Returns an error if `git rev-list` fails or returns unexpected output.
 pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), String> {
-    spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+    let rev_list_output = run_git_command(
+        repo_path,
+        vec![
+            "rev-list".to_string(),
+            "--left-right".to_string(),
+            "--count".to_string(),
+            "HEAD...@{u}".to_string(),
+        ],
+        "Git rev-list failed".to_string(),
+    )
+    .await?;
+    let parts: Vec<&str> = rev_list_output.split_whitespace().collect();
+    if parts.len() >= 2 {
+        let ahead = parts[0].parse().unwrap_or(0);
+        let behind = parts[1].parse().unwrap_or(0);
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        return Ok((ahead, behind));
+    }
 
-            return Err(format!("Git rev-list failed: {}", stderr.trim()));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let parts: Vec<&str> = stdout.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let ahead = parts[0].parse().unwrap_or(0);
-            let behind = parts[1].parse().unwrap_or(0);
-
-            return Ok((ahead, behind));
-        }
-
-        Err("Unexpected output format from git rev-list".to_string())
-    })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    Err("Unexpected output format from git rev-list".to_string())
 }
 
 /// Stages all changes and commits or amends with retry behavior for hook
@@ -568,7 +477,9 @@ async fn commit_all_with_retry(
                 continue;
             }
 
-            return Err(format!("Failed to commit: {}", stderr.trim()));
+            let detail = command_output_detail(&output.stdout, &output.stderr);
+
+            return Err(format!("Failed to commit: {detail}"));
         }
 
         Err(format!(
@@ -620,30 +531,18 @@ fn head_commit_message_sync(repo_path: &Path) -> Result<Option<String>, String> 
         return Ok(None);
     }
 
-    let output = Command::new("git")
-        .args(["log", "-1", "--pretty=%B"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git: {error}"))?;
+    let output = run_git_command_sync(
+        repo_path,
+        &["log", "-1", "--pretty=%B"],
+        "Failed to read HEAD commit message",
+    )?;
 
-    if !output.status.success() {
-        let detail = command_output_detail(&output.stdout, &output.stderr);
-
-        return Err(format!("Failed to read HEAD commit message: {detail}"));
-    }
-
-    Ok(Some(
-        String::from_utf8_lossy(&output.stdout).trim().to_string(),
-    ))
+    Ok(Some(output.trim().to_string()))
 }
 
 /// Returns whether `HEAD` resolves to an existing commit.
 fn has_head_commit_sync(repo_path: &Path) -> Result<bool, String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--verify", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git: {error}"))?;
+    let output = run_git_command_output_sync(repo_path, &["rev-parse", "--verify", "HEAD"])?;
 
     if output.status.success() {
         return Ok(true);

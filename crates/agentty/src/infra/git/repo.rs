@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use tokio::task::spawn_blocking;
 
@@ -15,25 +15,18 @@ use tokio::task::spawn_blocking;
 /// # Errors
 /// Returns an error if the remote URL cannot be read via `git remote get-url`.
 pub async fn repo_url(repo_path: PathBuf) -> Result<String, String> {
-    spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["remote", "get-url", "origin"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git remote get-url: {error}"))?;
+    let remote = run_git_command(
+        repo_path,
+        vec![
+            "remote".to_string(),
+            "get-url".to_string(),
+            "origin".to_string(),
+        ],
+        "Git remote get-url failed".to_string(),
+    )
+    .await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!("Git remote get-url failed: {}", stderr.trim()));
-        }
-
-        let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-        Ok(normalize_repo_url(&remote))
-    })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    Ok(normalize_repo_url(remote.trim()))
 }
 
 /// Resolves the main repository root for a repository or linked worktree.
@@ -91,6 +84,109 @@ pub(super) fn resolve_git_dir(repo_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Runs a git command in a blocking task and returns stdout text.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository or worktree
+/// * `args` - Git command arguments
+/// * `error_context` - Prefix used for command failure messages
+///
+/// # Returns
+/// The command stdout on success.
+///
+/// # Errors
+/// Returns an error if spawning the command fails, the command exits with a
+/// non-zero status, or the blocking task cannot be joined.
+pub(super) async fn run_git_command(
+    repo_path: PathBuf,
+    args: Vec<String>,
+    error_context: String,
+) -> Result<String, String> {
+    spawn_blocking(move || {
+        let argument_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+        run_git_command_sync(&repo_path, &argument_refs, &error_context)
+    })
+    .await
+    .map_err(|error| format!("Join error: {error}"))?
+}
+
+/// Runs a git command in `repo_path` and returns stdout text.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository or worktree
+/// * `args` - Git command arguments
+/// * `error_context` - Prefix used for command failure messages
+///
+/// # Returns
+/// The command stdout on success.
+///
+/// # Errors
+/// Returns an error if spawning the command fails or the command exits with a
+/// non-zero status.
+pub(super) fn run_git_command_sync(
+    repo_path: &Path,
+    args: &[&str],
+    error_context: &str,
+) -> Result<String, String> {
+    let output = run_git_command_output_sync(repo_path, args)?;
+    if !output.status.success() {
+        let detail = command_output_detail(&output.stdout, &output.stderr);
+
+        return Err(format!("{error_context}: {detail}"));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Runs a git command in `repo_path` and returns raw process output.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository or worktree
+/// * `args` - Git command arguments
+///
+/// # Returns
+/// The process output, including status, stdout, and stderr.
+///
+/// # Errors
+/// Returns an error if spawning the command fails.
+pub(super) fn run_git_command_output_sync(
+    repo_path: &Path,
+    args: &[&str],
+) -> Result<Output, String> {
+    run_git_command_output_with_env_sync(repo_path, args, &[])
+}
+
+/// Runs a git command in `repo_path` with environment overrides and returns
+/// raw process output.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository or worktree
+/// * `args` - Git command arguments
+/// * `environment` - Environment variables applied to the git process
+///
+/// # Returns
+/// The process output, including status, stdout, and stderr.
+///
+/// # Errors
+/// Returns an error if spawning the command fails.
+pub(super) fn run_git_command_output_with_env_sync(
+    repo_path: &Path,
+    args: &[&str],
+    environment: &[(&str, &str)],
+) -> Result<Output, String> {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(repo_path);
+
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+
+    command
+        .output()
+        .map_err(|error| format!("Failed to execute git{}: {error}", git_command_suffix(args)))
+}
+
 /// Extracts the best human-readable error detail from command output.
 pub(super) fn command_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
     let stderr_text = String::from_utf8_lossy(stderr).trim().to_string();
@@ -122,19 +218,11 @@ fn normalize_repo_url(remote: &str) -> String {
 
 /// Reads absolute git and common git directory paths for `repo_path`.
 fn git_directory_paths(repo_path: &Path) -> Result<(PathBuf, PathBuf), String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--git-dir", "--git-common-dir"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git rev-parse: {error}"))?;
-
-    if !output.status.success() {
-        let detail = command_output_detail(&output.stdout, &output.stderr);
-
-        return Err(format!("Git rev-parse failed: {detail}"));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = run_git_command_sync(
+        repo_path,
+        &["rev-parse", "--git-dir", "--git-common-dir"],
+        "Git rev-parse failed",
+    )?;
     let mut lines = stdout
         .lines()
         .map(str::trim)
@@ -165,19 +253,12 @@ fn repo_root_from_git_dir(repo_path: &Path, git_dir: &Path) -> Result<PathBuf, S
             .ok_or_else(|| format!("Git directory has no parent: {}", git_dir.display()));
     }
 
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(repo_path)
-        .output()
-        .map_err(|error| format!("Failed to execute git rev-parse: {error}"))?;
-
-    if !output.status.success() {
-        let detail = command_output_detail(&output.stdout, &output.stderr);
-
-        return Err(format!("Git rev-parse --show-toplevel failed: {detail}"));
-    }
-
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let root = run_git_command_sync(
+        repo_path,
+        &["rev-parse", "--show-toplevel"],
+        "Git rev-parse --show-toplevel failed",
+    )?;
+    let root = root.trim().to_string();
     if root.is_empty() {
         return Err("Git rev-parse --show-toplevel returned empty output".to_string());
     }
@@ -195,4 +276,13 @@ fn normalize_git_dir_path(repo_path: &Path, git_path: &str) -> PathBuf {
     };
 
     std::fs::canonicalize(&git_path).unwrap_or(git_path)
+}
+
+/// Formats git arguments for execution failure messages.
+fn git_command_suffix(args: &[&str]) -> String {
+    if args.is_empty() {
+        return String::new();
+    }
+
+    format!(" {}", args.join(" "))
 }

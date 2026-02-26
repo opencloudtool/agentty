@@ -1,10 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use tokio::task::spawn_blocking;
 
-use super::repo::{main_repo_root_sync, resolve_git_dir};
+use super::repo::{main_repo_root_sync, resolve_git_dir, run_git_command_sync};
 
 /// Detects git repository information for the given directory.
 /// Returns the current branch name if in a git repository, None otherwise.
@@ -46,19 +45,19 @@ pub async fn create_worktree(
     base_branch: String,
 ) -> Result<(), String> {
     spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["worktree", "add", "-b", &branch_name])
-            .arg(&worktree_path)
-            .arg(&base_branch)
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!("Git worktree command failed: {}", stderr.trim()));
-        }
+        let worktree_path = worktree_path.to_string_lossy().to_string();
+        run_git_command_sync(
+            &repo_path,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch_name.as_str(),
+                worktree_path.as_str(),
+                base_branch.as_str(),
+            ],
+            "Git worktree command failed",
+        )?;
 
         Ok(())
     })
@@ -83,19 +82,12 @@ pub async fn create_worktree(
 pub async fn remove_worktree(worktree_path: PathBuf) -> Result<(), String> {
     spawn_blocking(move || {
         let repo_root = main_repo_root_sync(&worktree_path)?;
-
-        let output = Command::new("git")
-            .args(["worktree", "remove", "--force"])
-            .arg(&worktree_path)
-            .current_dir(repo_root)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!("Git worktree command failed: {}", stderr.trim()));
-        }
+        let worktree_path = worktree_path.to_string_lossy().to_string();
+        run_git_command_sync(
+            &repo_root,
+            &["worktree", "remove", "--force", worktree_path.as_str()],
+            "Git worktree command failed",
+        )?;
 
         Ok(())
     })

@@ -1,9 +1,8 @@
 use std::path::PathBuf;
-use std::process::Command;
 
 use tokio::task::spawn_blocking;
 
-use super::repo::command_output_detail;
+use super::repo::{command_output_detail, run_git_command_output_sync, run_git_command_sync};
 use super::worktree::detect_git_info_sync;
 
 /// Outcome of attempting a squash merge operation.
@@ -38,23 +37,11 @@ pub async fn squash_merge_diff(
 ) -> Result<String, String> {
     spawn_blocking(move || {
         let revision_range = format!("{target_branch}..{source_branch}");
-        let output = Command::new("git")
-            .arg("diff")
-            .arg(revision_range)
-            .current_dir(repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!(
-                "Failed to read squash merge diff: {}",
-                stderr.trim()
-            ));
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        run_git_command_sync(
+            &repo_path,
+            &["diff", revision_range.as_str()],
+            "Failed to read squash merge diff",
+        )
     })
     .await
     .map_err(|error| format!("Join error: {error}"))?
@@ -101,27 +88,15 @@ pub async fn squash_merge(
             ));
         }
 
-        let output = Command::new("git")
-            .args(["merge", "--squash", &source_branch])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!(
-                "Failed to squash merge {source_branch}: {}",
-                stderr.trim()
-            ));
-        }
+        run_git_command_sync(
+            &repo_path,
+            &["merge", "--squash", source_branch.as_str()],
+            &format!("Failed to squash merge {source_branch}"),
+        )?;
 
         // `git diff --cached --quiet` exits 0 when index matches `HEAD`.
-        let cached_diff = Command::new("git")
-            .args(["diff", "--cached", "--quiet"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let cached_diff =
+            run_git_command_output_sync(&repo_path, &["diff", "--cached", "--quiet"])?;
 
         if cached_diff.status.success() {
             return Ok(SquashMergeOutcome::AlreadyPresentInTarget);
@@ -136,17 +111,11 @@ pub async fn squash_merge(
         }
 
         // Skip hooks here because the session worktree already ran them.
-        let output = Command::new("git")
-            .args(["commit", "--no-verify", "-m", &commit_message])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            return Err(format!("Failed to commit squash merge: {}", stderr.trim()));
-        }
+        run_git_command_sync(
+            &repo_path,
+            &["commit", "--no-verify", "-m", commit_message.as_str()],
+            "Failed to commit squash merge",
+        )?;
 
         Ok(SquashMergeOutcome::Committed)
     })

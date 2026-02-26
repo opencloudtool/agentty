@@ -1,11 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::Duration;
 
 use tokio::task::spawn_blocking;
 
-use super::repo::{command_output_detail, resolve_git_dir};
+use super::repo::{
+    command_output_detail, resolve_git_dir, run_git_command_output_sync,
+    run_git_command_output_with_env_sync, run_git_command_sync,
+};
 
 const GIT_INDEX_LOCK_RETRY_ATTEMPTS: usize = 5;
 const GIT_INDEX_LOCK_RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -233,14 +236,10 @@ pub async fn list_staged_conflict_marker_files(
     }
 
     spawn_blocking(move || {
-        let mut command = Command::new("git");
-        command
-            .args(["grep", "--cached", "-l", "^<<<<<<<", "--"])
-            .args(&paths)
-            .current_dir(&repo_path);
-        let output = command
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let mut grep_arguments = vec!["grep", "--cached", "-l", "^<<<<<<<", "--"];
+        let path_arguments: Vec<&str> = paths.iter().map(String::as_str).collect();
+        grep_arguments.extend(path_arguments);
+        let output = run_git_command_output_sync(&repo_path, &grep_arguments)?;
 
         // git grep exits with 1 when no matches are found.
         let exit_code = output.status.code().unwrap_or(2);
@@ -277,19 +276,12 @@ pub async fn list_staged_conflict_marker_files(
 /// Returns an error if invoking `git diff --name-only --diff-filter=U` fails.
 pub async fn list_conflicted_files(repo_path: PathBuf) -> Result<Vec<String>, String> {
     spawn_blocking(move || {
-        let output = Command::new("git")
-            .args(["diff", "--name-only", "--diff-filter=U"])
-            .current_dir(&repo_path)
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
-
-        if !output.status.success() {
-            let detail = command_output_detail(&output.stdout, &output.stderr);
-
-            return Err(format!("Failed to read conflicted files: {detail}."));
-        }
-
-        let files = String::from_utf8_lossy(&output.stdout)
+        let output = run_git_command_sync(
+            &repo_path,
+            &["diff", "--name-only", "--diff-filter=U"],
+            "Failed to read conflicted files",
+        )?;
+        let files = output
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
@@ -309,16 +301,7 @@ pub(super) fn run_git_command_with_index_lock_retry(
     environment: &[(&str, &str)],
 ) -> Result<Output, String> {
     for attempt in 0..GIT_INDEX_LOCK_RETRY_ATTEMPTS {
-        let mut command = Command::new("git");
-        command.args(args).current_dir(repo_path);
-
-        for (key, value) in environment {
-            command.env(key, value);
-        }
-
-        let output = command
-            .output()
-            .map_err(|error| format!("Failed to execute git: {error}"))?;
+        let output = run_git_command_output_with_env_sync(repo_path, args, environment)?;
         if output.status.success() {
             return Ok(output);
         }
