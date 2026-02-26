@@ -24,16 +24,16 @@ struct CodexAppServerEnvelope {
 /// Payload returned by `account/rateLimits/read`.
 #[derive(Deserialize)]
 struct CodexRateLimitsReadResult {
-    #[serde(rename = "rateLimits")]
+    #[serde(rename = "rateLimits", alias = "rate_limits")]
     rate_limits: Option<CodexRateLimitSnapshot>,
-    #[serde(rename = "rateLimitsByLimitId")]
+    #[serde(rename = "rateLimitsByLimitId", alias = "rate_limits_by_limit_id")]
     rate_limits_by_limit_id: Option<HashMap<String, CodexRateLimitSnapshot>>,
 }
 
 /// Account-level Codex rate-limit snapshot payload.
 #[derive(Deserialize)]
 struct CodexRateLimitSnapshot {
-    #[serde(rename = "limitId")]
+    #[serde(rename = "limitId", alias = "limit_id")]
     limit_id: Option<String>,
     primary: Option<CodexRateLimitWindowPayload>,
     secondary: Option<CodexRateLimitWindowPayload>,
@@ -42,12 +42,22 @@ struct CodexRateLimitSnapshot {
 /// One window payload in the app-server rate-limit response.
 #[derive(Deserialize)]
 struct CodexRateLimitWindowPayload {
-    #[serde(rename = "resetsAt")]
-    resets_at: Option<i64>,
-    #[serde(rename = "usedPercent")]
-    used_percent: Option<i64>,
-    #[serde(rename = "windowDurationMins")]
-    window_duration_mins: Option<i64>,
+    #[serde(rename = "resetsAt", alias = "resets_at")]
+    resets_at: Option<CodexNumericField>,
+    #[serde(rename = "usedPercent", alias = "used_percent")]
+    used_percent: Option<CodexNumericField>,
+    #[serde(rename = "windowDurationMins", alias = "window_minutes")]
+    window_duration_mins: Option<CodexNumericField>,
+}
+
+/// Flexible numeric field that accepts integer, float, or numeric string
+/// values from Codex payloads.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CodexNumericField {
+    Float(f64),
+    Integer(i64),
+    String(String),
 }
 
 impl SessionManager {
@@ -207,7 +217,13 @@ fn codex_rate_limit_snapshot(
 ) -> Option<CodexRateLimitSnapshot> {
     let codex_snapshot = rate_limits_by_limit_id.and_then(|limits| {
         for (limit_key, snapshot) in limits {
-            if limit_key == "codex" || snapshot.limit_id.as_deref() == Some("codex") {
+            let key_contains_codex = limit_key.to_ascii_lowercase().contains("codex");
+            let id_contains_codex = snapshot
+                .limit_id
+                .as_deref()
+                .is_some_and(|limit_id| limit_id.to_ascii_lowercase().contains("codex"));
+
+            if key_contains_codex || id_contains_codex {
                 return Some(snapshot);
             }
         }
@@ -226,18 +242,54 @@ fn parse_codex_limit_window(
     window: Option<CodexRateLimitWindowPayload>,
 ) -> Option<CodexUsageLimitWindow> {
     let window = window?;
-    let used_percent_value = window.used_percent?.clamp(0, 100);
+    let used_percent_value =
+        parse_codex_numeric_field_i64(window.used_percent.as_ref())?.clamp(0, 100);
     let used_percent = u8::try_from(used_percent_value).ok()?;
+    let resets_at = parse_codex_numeric_field_i64(window.resets_at.as_ref());
     let window_minutes = window
         .window_duration_mins
+        .as_ref()
+        .and_then(|window_minutes_value| parse_codex_numeric_field_i64(Some(window_minutes_value)))
         .and_then(|window_minutes_value| u32::try_from(window_minutes_value).ok())
         .filter(|minutes| *minutes > 0);
 
     Some(CodexUsageLimitWindow {
-        resets_at: window.resets_at,
+        resets_at,
         used_percent,
         window_minutes,
     })
+}
+
+/// Converts one Codex numeric payload field to `i64`.
+fn parse_codex_numeric_field_i64(field: Option<&CodexNumericField>) -> Option<i64> {
+    let field = field?;
+
+    match field {
+        CodexNumericField::Float(value) => parse_f64_as_i64(*value),
+        CodexNumericField::Integer(value) => Some(*value),
+        CodexNumericField::String(value) => parse_numeric_string_as_i64(value),
+    }
+}
+
+/// Parses one numeric string into `i64`, supporting both integer and float
+/// formats.
+fn parse_numeric_string_as_i64(value: &str) -> Option<i64> {
+    if let Ok(integer_value) = value.parse::<i64>() {
+        return Some(integer_value);
+    }
+
+    let float_value = value.parse::<f64>().ok()?;
+
+    parse_f64_as_i64(float_value)
+}
+
+/// Converts one finite `f64` to the nearest `i64` when in range.
+fn parse_f64_as_i64(value: f64) -> Option<i64> {
+    if !value.is_finite() {
+        return None;
+    }
+
+    serde_json::Number::from_f64(value.round()).and_then(|rounded_value| rounded_value.as_i64())
 }
 
 #[cfg(test)]
@@ -338,6 +390,54 @@ mod tests {
                     resets_at: None,
                     used_percent: 30,
                     window_minutes: None,
+                }),
+                secondary: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_codex_usage_limits_response_accepts_snake_case_float_payloads() {
+        // Arrange
+        let stdout = r#"{"id":"rate-limits-read","result":{"rate_limits":{"primary":{"used_percent":30.0,"window_minutes":300.0,"resets_at":1.0},"secondary":{"used_percent":"26.0","window_minutes":"10080","resets_at":"2"}}}}"#;
+
+        // Act
+        let limits = parse_codex_usage_limits_response(stdout);
+
+        // Assert
+        assert_eq!(
+            limits,
+            Some(CodexUsageLimits {
+                primary: Some(CodexUsageLimitWindow {
+                    resets_at: Some(1),
+                    used_percent: 30,
+                    window_minutes: Some(300),
+                }),
+                secondary: Some(CodexUsageLimitWindow {
+                    resets_at: Some(2),
+                    used_percent: 26,
+                    window_minutes: Some(10_080),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_codex_usage_limits_response_matches_codex_like_limit_ids() {
+        // Arrange
+        let stdout = r#"{"id":"rate-limits-read","result":{"rateLimitsByLimitId":{"chatgpt":{"limitId":"chatgpt","primary":{"usedPercent":10,"windowDurationMins":60,"resetsAt":1}},"codex_pro":{"limitId":"codex-pro","primary":{"usedPercent":55,"windowDurationMins":300,"resetsAt":8}}}}}"#;
+
+        // Act
+        let limits = parse_codex_usage_limits_response(stdout);
+
+        // Assert
+        assert_eq!(
+            limits,
+            Some(CodexUsageLimits {
+                primary: Some(CodexUsageLimitWindow {
+                    resets_at: Some(8),
+                    used_percent: 55,
+                    window_minutes: Some(300),
                 }),
                 secondary: None,
             })
