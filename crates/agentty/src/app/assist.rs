@@ -22,12 +22,19 @@ pub(super) struct AssistPolicy {
 
 /// Shared context required to execute one assistance attempt.
 pub(super) struct AssistContext {
+    /// App event sender used to update UI progress/output state.
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    /// Database handle used for session persistence updates.
     pub(super) db: Database,
+    /// Session worktree folder where git/agent commands run.
     pub(super) folder: PathBuf,
+    /// Git boundary used for commit/rebase operations.
     pub(super) git_client: Arc<dyn GitClient>,
+    /// Session identifier receiving assist output updates.
     pub(super) id: String,
+    /// Shared output buffer mirrored to persistence and UI.
     pub(super) output: Arc<Mutex<String>>,
+    /// Model used when invoking agent-assisted recovery.
     pub(super) session_model: AgentModel,
 }
 

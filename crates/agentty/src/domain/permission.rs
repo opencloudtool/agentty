@@ -2,6 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+/// Supported permission mode values for agent execution workflows.
 pub enum PermissionMode {
     #[default]
     AutoEdit,

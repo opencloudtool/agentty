@@ -74,8 +74,11 @@ impl SettingRow {
 
 /// Manages user-configurable application settings.
 pub struct SettingsManager {
+    /// Default model used when creating new sessions.
     pub default_model: AgentModel,
+    /// Optional app-server endpoint override entered by the user.
     pub dev_server: String,
+    /// Table selection state for the settings page.
     pub table_state: TableState,
     editing_text_row: Option<SettingRow>,
     use_last_used_model_as_default: bool,

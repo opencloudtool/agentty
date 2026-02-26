@@ -13,18 +13,23 @@ mod sync;
 /// Worktree and branch-detection workflows.
 mod worktree;
 
+/// Re-exported squash-merge APIs.
 pub use merge::{SquashMergeOutcome, squash_merge, squash_merge_diff};
+/// Re-exported rebase/conflict APIs.
 pub use rebase::{
     RebaseStepResult, abort_rebase, has_unmerged_paths, is_rebase_in_progress,
     list_conflicted_files, list_staged_conflict_marker_files, rebase, rebase_continue,
     rebase_start,
 };
+/// Re-exported repository metadata APIs.
 pub use repo::{main_repo_root, repo_url};
+/// Re-exported commit/sync/diff APIs.
 pub use sync::{
     PullRebaseResult, commit_all, commit_all_preserving_single_commit, delete_branch, diff,
     fetch_remote, get_ahead_behind, head_short_hash, is_worktree_clean, pull_rebase,
     push_current_branch, stage_all,
 };
+/// Re-exported worktree and branch-detection APIs.
 pub use worktree::{create_worktree, detect_git_info, find_git_repo_root, remove_worktree};
 
 /// Boxed async result used by [`GitClient`] trait methods.
@@ -36,13 +41,23 @@ pub type GitFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// `MockGitClient` to avoid flaky multi-command process workflows.
 #[cfg_attr(test, mockall::automock)]
 pub trait GitClient: Send + Sync {
-    /// Detects current branch information for `dir`.
+    /// Detects the current branch name for the repository containing `dir`.
+    ///
+    /// Returns `None` when `dir` is not inside a git repository or no branch
+    /// can be determined.
     fn detect_git_info(&self, dir: PathBuf) -> GitFuture<Option<String>>;
 
-    /// Resolves the repository root for `dir`.
+    /// Resolves the repository root directory that contains `dir`.
+    ///
+    /// Returns `None` when `dir` is not in a git repository.
     fn find_git_repo_root(&self, dir: PathBuf) -> GitFuture<Option<PathBuf>>;
 
-    /// Creates a new worktree branch.
+    /// Creates a new worktree at `worktree_path` on `branch_name` from
+    /// `base_branch` inside `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when any underlying git command fails, when branches
+    /// cannot be resolved, or when the target worktree path cannot be created.
     fn create_worktree(
         &self,
         repo_path: PathBuf,
@@ -51,10 +66,18 @@ pub trait GitClient: Send + Sync {
         base_branch: String,
     ) -> GitFuture<Result<(), String>>;
 
-    /// Removes an existing worktree.
+    /// Removes the existing worktree at `worktree_path`.
+    ///
+    /// # Errors
+    /// Returns an error when the path is not a registered worktree or git
+    /// cannot remove it.
     fn remove_worktree(&self, worktree_path: PathBuf) -> GitFuture<Result<(), String>>;
 
-    /// Returns squash-merge diff text for source/target range.
+    /// Returns the staged squash-merge preview diff from `source_branch` into
+    /// `target_branch` within `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when either branch is missing or diff generation fails.
     fn squash_merge_diff(
         &self,
         repo_path: PathBuf,
@@ -62,7 +85,11 @@ pub trait GitClient: Send + Sync {
         target_branch: String,
     ) -> GitFuture<Result<String, String>>;
 
-    /// Performs a squash merge and returns outcome.
+    /// Performs a squash merge of `source_branch` into `target_branch` inside
+    /// `repo_path` using `commit_message`.
+    ///
+    /// # Errors
+    /// Returns an error when checkout, merge, or commit operations fail.
     fn squash_merge(
         &self,
         repo_path: PathBuf,
@@ -71,39 +98,70 @@ pub trait GitClient: Send + Sync {
         commit_message: String,
     ) -> GitFuture<Result<SquashMergeOutcome, String>>;
 
-    /// Runs full rebase against `target_branch`.
+    /// Runs `git rebase <target_branch>` in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when rebase setup fails or git reports a fatal error.
     fn rebase(&self, repo_path: PathBuf, target_branch: String) -> GitFuture<Result<(), String>>;
 
-    /// Starts rebase and reports completion/conflict.
+    /// Starts a rebase onto `target_branch` and reports whether it completed
+    /// immediately or stopped for conflicts.
+    ///
+    /// # Errors
+    /// Returns an error when rebase cannot be started.
     fn rebase_start(
         &self,
         repo_path: PathBuf,
         target_branch: String,
     ) -> GitFuture<Result<RebaseStepResult, String>>;
 
-    /// Continues in-progress rebase.
+    /// Continues an in-progress rebase in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when there is no rebase to continue or git fails.
     fn rebase_continue(&self, repo_path: PathBuf) -> GitFuture<Result<RebaseStepResult, String>>;
 
-    /// Aborts in-progress rebase.
+    /// Aborts an in-progress rebase in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when abort fails or no rebase state exists.
     fn abort_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>>;
 
-    /// Returns whether rebase state exists.
+    /// Returns whether rebase metadata exists in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when git state cannot be inspected.
     fn is_rebase_in_progress(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>>;
 
-    /// Returns whether unmerged index entries remain.
+    /// Returns whether unmerged index entries remain in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when index status cannot be read.
     fn has_unmerged_paths(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>>;
 
-    /// Lists staged files that still contain conflict markers.
+    /// Filters `paths` to files that are staged and still contain conflict
+    /// markers in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when staged content cannot be inspected.
     fn list_staged_conflict_marker_files(
         &self,
         repo_path: PathBuf,
         paths: Vec<String>,
     ) -> GitFuture<Result<Vec<String>, String>>;
 
-    /// Lists conflicted files from index.
+    /// Lists files currently marked conflicted in the index for `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when conflict state cannot be queried.
     fn list_conflicted_files(&self, repo_path: PathBuf) -> GitFuture<Result<Vec<String>, String>>;
 
-    /// Commits all changes in repository.
+    /// Stages and commits all changes in `repo_path` using `message`.
+    ///
+    /// Set `no_verify` to skip commit hooks.
+    ///
+    /// # Errors
+    /// Returns an error when staging or commit creation fails.
     fn commit_all(
         &self,
         repo_path: PathBuf,
@@ -111,7 +169,14 @@ pub trait GitClient: Send + Sync {
         no_verify: bool,
     ) -> GitFuture<Result<(), String>>;
 
-    /// Commits all changes while preserving single evolving session commit.
+    /// Commits all changes while preserving one evolving session commit in
+    /// `repo_path`.
+    ///
+    /// Uses `commit_message` for new or amended commit content. Set
+    /// `no_verify` to skip commit hooks.
+    ///
+    /// # Errors
+    /// Returns an error when staging, amend/create, or branch inspection fails.
     fn commit_all_preserving_single_commit(
         &self,
         repo_path: PathBuf,
@@ -119,41 +184,76 @@ pub trait GitClient: Send + Sync {
         no_verify: bool,
     ) -> GitFuture<Result<(), String>>;
 
-    /// Stages all modified files.
+    /// Stages all tracked and untracked changes in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when `git add` fails.
     fn stage_all(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>>;
 
-    /// Returns short `HEAD` hash.
+    /// Returns the short `HEAD` hash for `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when `HEAD` cannot be resolved.
     fn head_short_hash(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
 
-    /// Deletes branch in repository.
+    /// Deletes `branch_name` in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when the branch is missing, checked out, or deletion
+    /// is rejected by git.
     fn delete_branch(
         &self,
         repo_path: PathBuf,
         branch_name: String,
     ) -> GitFuture<Result<(), String>>;
 
-    /// Returns diff against base branch.
+    /// Returns a patch diff from `base_branch` to current `HEAD` in
+    /// `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when refs are invalid or diff generation fails.
     fn diff(&self, repo_path: PathBuf, base_branch: String) -> GitFuture<Result<String, String>>;
 
-    /// Returns whether worktree is clean.
+    /// Returns whether the worktree in `repo_path` has no local changes.
+    ///
+    /// # Errors
+    /// Returns an error when status inspection fails.
     fn is_worktree_clean(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>>;
 
-    /// Performs pull --rebase operation.
+    /// Performs a `pull --rebase` in `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when pull/rebase setup fails.
     fn pull_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<PullRebaseResult, String>>;
 
-    /// Pushes current branch.
+    /// Pushes the currently checked out branch for `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when remote push fails.
     fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>>;
 
-    /// Fetches from remote.
+    /// Fetches remote refs for `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when fetch fails.
     fn fetch_remote(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>>;
 
-    /// Reads ahead/behind status.
+    /// Reads ahead/behind commit counts for `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when upstream tracking information is unavailable.
     fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), String>>;
 
-    /// Reads repository origin URL.
+    /// Reads the configured origin URL for `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when origin is missing or cannot be resolved.
     fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
 
-    /// Resolves the main repository root for repository/worktree path.
+    /// Resolves the main repository root for a repository or worktree path.
+    ///
+    /// # Errors
+    /// Returns an error when the main repository cannot be resolved.
     fn main_repo_root(&self, repo_path: PathBuf) -> GitFuture<Result<PathBuf, String>>;
 }
 

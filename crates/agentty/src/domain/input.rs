@@ -1,9 +1,12 @@
+/// Editable text input with a character-based cursor index.
 pub struct InputState {
+    /// Cursor position measured in Unicode scalar values from the start.
     pub cursor: usize,
     text: String,
 }
 
 impl InputState {
+    /// Creates an empty input state with the cursor at position `0`.
     pub fn new() -> Self {
         Self {
             cursor: 0,
@@ -11,26 +14,31 @@ impl InputState {
         }
     }
 
+    /// Creates an input state from existing text with the cursor at the end.
     pub fn with_text(text: String) -> Self {
         let cursor = text.chars().count();
 
         Self { cursor, text }
     }
 
+    /// Returns the current text buffer.
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Drains and returns the text buffer, then resets the cursor to `0`.
     pub fn take_text(&mut self) -> String {
         self.cursor = 0;
 
         std::mem::take(&mut self.text)
     }
 
+    /// Returns whether the current text buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
 
+    /// Inserts one character at the cursor and advances the cursor by one.
     pub fn insert_char(&mut self, ch: char) {
         let byte_offset = self.byte_offset();
         self.text.insert(byte_offset, ch);
@@ -49,10 +57,12 @@ impl InputState {
         self.cursor += text.chars().count();
     }
 
+    /// Inserts a newline at the cursor position.
     pub fn insert_newline(&mut self) {
         self.insert_char('\n');
     }
 
+    /// Deletes the character immediately before the cursor.
     pub fn delete_backward(&mut self) {
         if self.cursor == 0 {
             return;
@@ -64,6 +74,7 @@ impl InputState {
         self.cursor -= 1;
     }
 
+    /// Deletes the character at the cursor position.
     pub fn delete_forward(&mut self) {
         let char_count = self.text.chars().count();
         if self.cursor >= char_count {
@@ -75,10 +86,12 @@ impl InputState {
         self.text.replace_range(start..end, "");
     }
 
+    /// Moves the cursor one character to the left.
     pub fn move_left(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
 
+    /// Moves the cursor one character to the right.
     pub fn move_right(&mut self) {
         let char_count = self.text.chars().count();
         if self.cursor < char_count {
@@ -86,6 +99,7 @@ impl InputState {
         }
     }
 
+    /// Moves the cursor to the previous line while preserving visual column.
     pub fn move_up(&mut self) {
         let (line, column) = self.line_column();
         if line == 0 {
@@ -117,6 +131,7 @@ impl InputState {
         self.cursor = prev_line_start + column.min(prev_line_len);
     }
 
+    /// Moves the cursor to the next line while preserving visual column.
     pub fn move_down(&mut self) {
         let (line, column) = self.line_column();
         let line_count = self.text.chars().filter(|&c| c == '\n').count() + 1;
@@ -150,10 +165,12 @@ impl InputState {
         self.cursor = next_line_start + column.min(next_line_len);
     }
 
+    /// Moves the cursor to the start of the buffer.
     pub fn move_home(&mut self) {
         self.cursor = 0;
     }
 
+    /// Moves the cursor to the end of the buffer.
     pub fn move_end(&mut self) {
         self.cursor = self.text.chars().count();
     }

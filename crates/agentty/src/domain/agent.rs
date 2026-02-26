@@ -2,9 +2,13 @@ use std::fmt;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Supported agent provider families.
 pub enum AgentKind {
+    /// Google Gemini CLI/backend.
     Gemini,
+    /// Anthropic Claude Code CLI/backend.
     Claude,
+    /// `OpenAI` Codex CLI/backend.
     Codex,
 }
 
@@ -32,6 +36,8 @@ pub trait AgentSelectionMetadata {
 }
 
 impl AgentModel {
+    /// Returns the stable wire/model identifier used in persistence and CLI
+    /// invocations.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Gemini3FlashPreview => "gemini-3-flash-preview",
@@ -45,6 +51,7 @@ impl AgentModel {
         }
     }
 
+    /// Returns the owning provider family for this model.
     pub fn kind(self) -> AgentKind {
         match self {
             Self::Gemini3FlashPreview | Self::Gemini31ProPreview => AgentKind::Gemini,

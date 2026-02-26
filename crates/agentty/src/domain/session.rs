@@ -7,6 +7,7 @@ use ratatui::style::Color;
 
 use super::agent::AgentModel;
 
+/// Folder name under a project root that stores Agentty session metadata.
 pub const SESSION_DATA_DIR: &str = ".agentty";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -108,6 +109,7 @@ pub enum SessionSize {
 }
 
 impl SessionSize {
+    /// Ordered list of all session size buckets from smallest to largest.
     pub const ALL: [SessionSize; 6] = [
         SessionSize::Xs,
         SessionSize::S,
@@ -117,6 +119,7 @@ impl SessionSize {
         SessionSize::Xxl,
     ];
 
+    /// Classifies one git diff into a session size bucket.
     pub fn from_diff(diff: &str) -> Self {
         let changed_line_count = diff
             .lines()
@@ -140,6 +143,7 @@ impl SessionSize {
         }
     }
 
+    /// Returns a short UI label for this size bucket.
     pub fn label(self) -> &'static str {
         match self {
             SessionSize::Xs => "XS",
@@ -177,16 +181,22 @@ impl FromStr for SessionSize {
 /// Per-session token statistics.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionStats {
+    /// Input/prompt tokens consumed by this session.
     pub input_tokens: u64,
+    /// Output/response tokens produced by this session.
     pub output_tokens: u64,
 }
 
 /// All-time token usage and session count grouped by model name.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AllTimeModelUsage {
+    /// Aggregate input tokens consumed by this model across all sessions.
     pub input_tokens: u64,
+    /// Stable model identifier string.
     pub model: String,
+    /// Aggregate output tokens produced by this model across all sessions.
     pub output_tokens: u64,
+    /// Number of sessions that used this model.
     pub session_count: u64,
 }
 
@@ -218,26 +228,42 @@ pub struct CodexUsageLimits {
 /// deletion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DailyActivity {
+    /// Day key measured as whole days since Unix epoch.
     pub day_key: i64,
+    /// Number of sessions created on the corresponding day.
     pub session_count: u32,
 }
 
 /// In-memory snapshot of one persisted session row used by the UI and app
 /// orchestration layers.
 pub struct Session {
+    /// Base branch used to create the session worktree.
     pub base_branch: String,
+    /// Session creation timestamp (Unix seconds).
     pub created_at: i64,
+    /// Worktree folder path for this session.
     pub folder: PathBuf,
+    /// Stable session identifier.
     pub id: String,
+    /// Agent model selected for this session.
     pub model: AgentModel,
+    /// Captured output transcript.
     pub output: String,
+    /// Human-readable project name associated with the session.
     pub project_name: String,
+    /// Initial user prompt used to create the session.
     pub prompt: String,
+    /// Derived size bucket computed from diff size.
     pub size: SessionSize,
+    /// Token usage statistics associated with this session.
     pub stats: SessionStats,
+    /// Current lifecycle status.
     pub status: Status,
+    /// Optional summary generated for list display.
     pub summary: Option<String>,
+    /// Optional explicit session title.
     pub title: Option<String>,
+    /// Last update timestamp (Unix seconds).
     pub updated_at: i64,
 }
 
@@ -248,9 +274,13 @@ impl Session {
     }
 }
 
+/// Shared runtime handles for one active session worker.
 pub struct SessionHandles {
+    /// Child process identifier for the running agent command, when present.
     pub child_pid: Arc<Mutex<Option<u32>>>,
+    /// Shared output buffer mirrored to persistence/UI.
     pub output: Arc<Mutex<String>>,
+    /// Shared mutable status synchronized with persistence/UI.
     pub status: Arc<Mutex<Status>>,
 }
 

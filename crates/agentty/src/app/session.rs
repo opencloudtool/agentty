@@ -24,7 +24,9 @@ mod refresh;
 mod task;
 mod worker;
 
+/// Merge workflow error exported for app orchestration callers.
 pub(crate) use merge::SyncSessionStartError;
+/// Session task inputs/services exported for sibling app modules.
 pub(crate) use task::{RunAgentAssistTaskInput, SessionTaskService};
 
 /// Render payload tuple returned by [`SessionManager::render_parts`].
@@ -45,6 +47,7 @@ pub(super) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
 /// Defaults used when creating new sessions from the UI.
 #[derive(Clone, Copy)]
 pub(crate) struct SessionDefaults {
+    /// Default model selected for newly created sessions.
     pub(crate) model: AgentModel,
 }
 
@@ -1999,8 +2002,8 @@ FROM session
             .iter()
             .find(|db_session| db_session.id == session_id)
             .expect("missing persisted session");
-        assert_eq!(session.size, SessionSize::S);
-        assert_eq!(db_session.size, "S");
+        assert_eq!(session.size, SessionSize::Xs);
+        assert_eq!(db_session.size, "XS");
     }
 
     #[tokio::test]
@@ -3082,10 +3085,6 @@ FROM session
             .expect_create_worktree()
             .times(1)
             .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
-        mock_git_client
-            .expect_diff()
-            .times(1)
-            .returning(|_, _| Box::pin(async { Ok(String::new()) }));
         let base_path = app.services.base_path().to_path_buf();
         let db = app.services.db().clone();
         let event_sender = app.services.event_sender();

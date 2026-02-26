@@ -37,45 +37,74 @@ pub(crate) struct SessionTaskService;
 
 /// Inputs needed to execute one session command.
 pub(super) struct RunSessionTaskInput {
+    /// App event sender used for progress and status updates.
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    /// Shared child pid slot for cancellation and status views.
     pub(super) child_pid: Arc<Mutex<Option<u32>>>,
+    /// Prepared agent command to execute.
     pub(super) cmd: Command,
+    /// Database handle used for output/status/stat persistence.
     pub(super) db: Database,
+    /// Session worktree folder where the command runs.
     pub(super) folder: PathBuf,
+    /// Git boundary used for post-run size/commit operations.
     pub(super) git_client: Arc<dyn GitClient>,
+    /// Session identifier for persisted updates.
     pub(super) id: String,
+    /// Shared output buffer for streamed and parsed content.
     pub(super) output: Arc<Mutex<String>>,
+    /// Session model used for command parsing and follow-up operations.
     pub(super) session_model: AgentModel,
+    /// Shared mutable lifecycle status.
     pub(super) status: Arc<Mutex<Status>>,
 }
 
 /// Inputs needed to execute an agent-assisted edit task.
 pub(crate) struct RunAgentAssistTaskInput {
+    /// Agent family used for response parsing.
     pub(crate) agent: AgentKind,
+    /// App event sender used for progress and status updates.
     pub(crate) app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    /// Prepared assist command to execute.
     pub(crate) cmd: Command,
+    /// Database handle used for output/status persistence.
     pub(crate) db: Database,
+    /// Session identifier for persisted updates.
     pub(crate) id: String,
+    /// Shared output buffer receiving incremental output.
     pub(crate) output: Arc<Mutex<String>>,
+    /// Session model used for agent metadata and parsing.
     pub(crate) session_model: AgentModel,
 }
 
 /// Shared context for streaming incremental agent output as it arrives.
 #[derive(Clone)]
 pub(super) struct StreamOutputContext {
+    /// Latest progress line currently shown in the UI, if any.
     active_progress_message: Arc<Mutex<Option<String>>>,
+    /// Agent family used for stream parsing.
     agent: AgentKind,
+    /// App event sender used to publish output/progress updates.
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    /// Database handle used for persisted output chunks.
     db: Database,
+    /// Session identifier for output updates.
     id: String,
+    /// Tracks whether non-response stream output was seen.
     non_response_stream_output_seen: Arc<AtomicBool>,
+    /// Shared in-memory output buffer.
     output: Arc<Mutex<String>>,
+    /// Tracks whether streamed response chunks were seen.
     streamed_response_seen: Arc<AtomicBool>,
 }
 
+/// Captured terminal output from one child process run.
 struct CapturedOutput {
+    /// Full stderr text captured while the child process ran.
     stderr_text: String,
+    /// Whether response content was already emitted incrementally from stream.
     streamed_response_seen: bool,
+    /// Full stdout text captured while the child process ran.
     stdout_text: String,
 }
 
