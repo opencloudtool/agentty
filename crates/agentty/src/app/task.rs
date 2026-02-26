@@ -191,11 +191,12 @@ impl TaskService {
         } = input;
         let model = session_model.as_str().to_string();
         let request = AppServerTurnRequest {
+            live_session_output: Some(Arc::clone(&output)),
             folder: folder.clone(),
             model,
             prompt,
-            session_output,
             session_id: id.clone(),
+            session_output,
         };
 
         let (stream_tx, stream_rx) = mpsc::unbounded_channel::<AppServerStreamEvent>();

@@ -108,11 +108,12 @@ mod tests {
         );
         let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
         let request = AppServerTurnRequest {
+            live_session_output: None,
             folder: std::env::temp_dir(),
             model: AgentModel::Gpt53Codex.as_str().to_string(),
             prompt: "prompt".to_string(),
-            session_output: None,
             session_id: "session-1".to_string(),
+            session_output: None,
         };
 
         // Act
@@ -148,11 +149,12 @@ mod tests {
         );
         let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
         let request = AppServerTurnRequest {
+            live_session_output: None,
             folder: std::env::temp_dir(),
             model: AgentModel::Gemini3FlashPreview.as_str().to_string(),
             prompt: "prompt".to_string(),
-            session_output: None,
             session_id: "session-1".to_string(),
+            session_output: None,
         };
 
         // Act
@@ -178,11 +180,12 @@ mod tests {
         );
         let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
         let request = AppServerTurnRequest {
+            live_session_output: None,
             folder: std::env::temp_dir(),
             model: "unknown-model".to_string(),
             prompt: "prompt".to_string(),
-            session_output: None,
             session_id: "session-1".to_string(),
+            session_output: None,
         };
 
         // Act

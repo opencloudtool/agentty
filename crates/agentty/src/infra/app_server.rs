@@ -30,11 +30,17 @@ pub enum AppServerStreamEvent {
 /// Input payload for one app-server turn execution.
 #[derive(Clone)]
 pub struct AppServerTurnRequest {
+    /// Live in-memory session output buffer updated by the streaming consumer.
+    ///
+    /// When set, restart-and-retry reads the latest accumulated output from
+    /// this buffer instead of the stale `session_output` snapshot, ensuring
+    /// content streamed before the crash is included in the replay prompt.
+    pub live_session_output: Option<Arc<Mutex<String>>>,
     pub folder: PathBuf,
     pub model: String,
     pub prompt: String,
-    pub session_output: Option<String>,
     pub session_id: String,
+    pub session_output: Option<String>,
 }
 
 /// Normalized result for one app-server turn.
@@ -187,9 +193,10 @@ where
         Some(existing_runtime) => existing_runtime,
         None => start_runtime(&request).await?,
     };
+    let first_attempt_session_output = read_latest_session_output(&request);
     let first_attempt_prompt = turn_prompt_for_runtime(
         request.prompt.as_str(),
-        request.session_output.as_deref(),
+        first_attempt_session_output.as_deref(),
         context_reset,
     );
     let first_attempt = run_turn_with_runtime(&mut session_runtime, &first_attempt_prompt).await;
@@ -213,9 +220,10 @@ where
     shutdown_runtime(&mut session_runtime).await;
 
     let mut restarted_runtime = start_runtime(&request).await?;
+    let retry_session_output = read_latest_session_output(&request);
     let retry_attempt_prompt = turn_prompt_for_runtime(
         request.prompt.as_str(),
-        request.session_output.as_deref(),
+        retry_session_output.as_deref(),
         true,
     );
     let retry_attempt = run_turn_with_runtime(&mut restarted_runtime, &retry_attempt_prompt).await;
@@ -242,6 +250,26 @@ where
             ))
         }
     }
+}
+
+/// Reads the latest session output, preferring the live buffer over the
+/// stale snapshot.
+///
+/// The live buffer (`live_session_output`) accumulates all streamed content
+/// in real time, including output from a turn that failed mid-stream. When
+/// available, it provides a more complete transcript than the snapshot
+/// captured at turn-enqueue time.
+fn read_latest_session_output(request: &AppServerTurnRequest) -> Option<String> {
+    if let Some(live_output) = &request.live_session_output
+        && let Ok(guard) = live_output.lock()
+    {
+        let output = guard.clone();
+        if !output.trim().is_empty() {
+            return Some(output);
+        }
+    }
+
+    request.session_output.clone()
 }
 
 /// Returns the turn prompt, replaying session output after context reset.
@@ -319,16 +347,163 @@ mod tests {
         assert!(turn_prompt.contains(prompt));
     }
 
+    #[test]
+    fn read_latest_session_output_prefers_live_buffer_over_snapshot() {
+        // Arrange
+        let live_output = Arc::new(Mutex::new("live content from stream".to_string()));
+        let request = AppServerTurnRequest {
+            live_session_output: Some(live_output),
+            folder: PathBuf::from("/tmp"),
+            model: "model-a".to_string(),
+            prompt: "Do work".to_string(),
+            session_id: "session-1".to_string(),
+            session_output: Some("stale snapshot".to_string()),
+        };
+
+        // Act
+        let output = read_latest_session_output(&request);
+
+        // Assert
+        assert_eq!(output, Some("live content from stream".to_string()));
+    }
+
+    #[test]
+    fn read_latest_session_output_falls_back_to_snapshot_when_live_buffer_is_empty() {
+        // Arrange
+        let live_output = Arc::new(Mutex::new(String::new()));
+        let request = AppServerTurnRequest {
+            live_session_output: Some(live_output),
+            folder: PathBuf::from("/tmp"),
+            model: "model-a".to_string(),
+            prompt: "Do work".to_string(),
+            session_id: "session-1".to_string(),
+            session_output: Some("stale snapshot".to_string()),
+        };
+
+        // Act
+        let output = read_latest_session_output(&request);
+
+        // Assert
+        assert_eq!(output, Some("stale snapshot".to_string()));
+    }
+
+    #[test]
+    fn read_latest_session_output_falls_back_to_snapshot_when_no_live_buffer() {
+        // Arrange
+        let request = AppServerTurnRequest {
+            live_session_output: None,
+            folder: PathBuf::from("/tmp"),
+            model: "model-a".to_string(),
+            prompt: "Do work".to_string(),
+            session_id: "session-1".to_string(),
+            session_output: Some("stale snapshot".to_string()),
+        };
+
+        // Act
+        let output = read_latest_session_output(&request);
+
+        // Assert
+        assert_eq!(output, Some("stale snapshot".to_string()));
+    }
+
+    #[test]
+    fn read_latest_session_output_returns_none_when_both_are_absent() {
+        // Arrange
+        let request = AppServerTurnRequest {
+            live_session_output: None,
+            folder: PathBuf::from("/tmp"),
+            model: "model-a".to_string(),
+            prompt: "Do work".to_string(),
+            session_id: "session-1".to_string(),
+            session_output: None,
+        };
+
+        // Act
+        let output = read_latest_session_output(&request);
+
+        // Assert
+        assert_eq!(output, None);
+    }
+
+    #[tokio::test]
+    async fn run_turn_with_restart_retry_uses_live_output_on_retry() {
+        // Arrange
+        let sessions = AppServerSessionRegistry::new("Test");
+        let live_output = Arc::new(Mutex::new("streamed before crash".to_string()));
+        let request = AppServerTurnRequest {
+            live_session_output: Some(live_output),
+            folder: PathBuf::from("/tmp"),
+            model: "model-a".to_string(),
+            prompt: "Do work".to_string(),
+            session_id: "session-1".to_string(),
+            session_output: Some("stale snapshot".to_string()),
+        };
+        let captured_retry_prompt = Arc::new(Mutex::new(String::new()));
+
+        // Act
+        let response = run_turn_with_restart_retry(
+            &sessions,
+            request,
+            |runtime: &TestRuntime, request: &AppServerTurnRequest| runtime.model == request.model,
+            |_runtime| Some(42),
+            |request: &AppServerTurnRequest| {
+                let model = request.model.clone();
+
+                Box::pin(async move { Ok(TestRuntime { model }) })
+            },
+            {
+                let run_count = Arc::new(AtomicUsize::new(0));
+                let captured_retry_prompt = Arc::clone(&captured_retry_prompt);
+                move |_runtime: &mut TestRuntime, prompt: &str| {
+                    let attempt = run_count.fetch_add(1, Ordering::SeqCst);
+                    let prompt = prompt.to_string();
+                    let captured_retry_prompt = Arc::clone(&captured_retry_prompt);
+
+                    Box::pin(async move {
+                        if attempt == 0 {
+                            return Err("first failure".to_string());
+                        }
+
+                        if let Ok(mut guard) = captured_retry_prompt.lock() {
+                            *guard = prompt;
+                        }
+
+                        Ok(("done".to_string(), 7, 3))
+                    })
+                }
+            },
+            |_runtime: &mut TestRuntime| Box::pin(async {}),
+        )
+        .await
+        .expect("retry should succeed");
+
+        // Assert
+        assert!(response.context_reset);
+        let retry_prompt = captured_retry_prompt
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert!(
+            retry_prompt.contains("streamed before crash"),
+            "retry prompt should contain live output, not stale snapshot"
+        );
+        assert!(
+            !retry_prompt.contains("stale snapshot"),
+            "retry prompt should use live output instead of stale snapshot"
+        );
+    }
+
     #[tokio::test]
     async fn run_turn_with_restart_retry_restarts_once_after_first_failure() {
         // Arrange
         let sessions = AppServerSessionRegistry::new("Test");
         let request = AppServerTurnRequest {
+            live_session_output: None,
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
             prompt: "Do work".to_string(),
-            session_output: Some("previous output".to_string()),
             session_id: "session-1".to_string(),
+            session_output: Some("previous output".to_string()),
         };
         let start_count = Arc::new(AtomicUsize::new(0));
         let run_count = Arc::new(AtomicUsize::new(0));
