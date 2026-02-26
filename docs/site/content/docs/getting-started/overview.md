@@ -5,8 +5,9 @@ weight = 0
 +++
 
 `agentty` is a terminal-first Agentic Development Environment (ADE), designed for building software alongside AI agents.
+This project is built using `agentty` itself, including the docs and docs-site you are reading.
 
-It runs AI coding agents in dedicated, isolated git worktrees.
+It runs AI coding agents in dedicated AI sessions.
 
 <!-- more -->
 

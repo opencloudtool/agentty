@@ -2,7 +2,7 @@
 
 ![NPM Version](https://img.shields.io/npm/v/agentty)
 
-Agentty is a terminal-first **Agentic Development Environment (ADE)**, designed for building software alongside AI agents. It is built with Rust and [Ratatui](https://ratatui.rs), with a deeply integrated, git-native workflow.
+Agentty is a terminal-first **Agentic Development Environment (ADE)**, designed for building software alongside AI agents, and is itself developed with Agentty. It is built with Rust and [Ratatui](https://ratatui.rs), with a deeply integrated, git-native workflow.
 
 ## Installation
 
