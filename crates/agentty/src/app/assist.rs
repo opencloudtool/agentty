@@ -123,7 +123,7 @@ pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> R
         prompt,
         context.session_model.as_str(),
         None,
-    );
+    )?;
 
     SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
         agent: context.session_model.kind(),

@@ -1,7 +1,7 @@
 You are helping fix a failed git commit in an agent session worktree.
 
 Commit error:
-{commit_error}
+{{ commit_error }}
 
 Requirements:
 

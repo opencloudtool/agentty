@@ -45,11 +45,11 @@ impl AgentBackend for CodexBackend {
         prompt: &str,
         model: &str,
         session_output: Option<String>,
-    ) -> Command {
+    ) -> Result<Command, String> {
         let has_history_replay = session_output
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
-        let prompt = build_resume_prompt(prompt, session_output.as_deref());
+        let prompt = build_resume_prompt(prompt, session_output.as_deref())?;
         let prompt = prepend_root_instructions_if_available(&prompt, folder);
         let mut command = Command::new("codex");
         command.arg("exec").arg("resume");
@@ -70,7 +70,7 @@ impl AgentBackend for CodexBackend {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        command
+        Ok(command)
     }
 }
 
@@ -149,7 +149,8 @@ mod tests {
             "Continue edits",
             "gpt-5.3-codex",
             Some("previous assistant output".to_string()),
-        );
+        )
+        .expect("resume command should build");
         let debug_command = format!("{command:?}");
 
         // Assert
@@ -180,7 +181,8 @@ mod tests {
             "Continue edits",
             "gpt-5.3-codex",
             None,
-        );
+        )
+        .expect("resume command should build");
         let debug_command = format!("{command:?}");
 
         // Assert

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use askama::Template;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use tokio::sync::mpsc;
 
@@ -22,12 +23,18 @@ use crate::domain::session::Status;
 use crate::infra::db::Database;
 use crate::infra::git::GitClient;
 
-const AUTO_COMMIT_ASSIST_PROMPT_TEMPLATE: &str =
-    include_str!("../../../resources/auto_commit_assist_prompt.md");
 const AUTO_COMMIT_ASSIST_POLICY: AssistPolicy = AssistPolicy {
     max_attempts: 10,
     max_identical_failure_streak: 3,
 };
+
+/// Askama view model for rendering auto-commit recovery prompts.
+#[derive(Template)]
+#[template(path = "auto_commit_assist_prompt.md", escape = "none")]
+struct AutoCommitAssistPromptTemplate<'a> {
+    commit_error: &'a str,
+}
+
 /// Maximum wall-clock delay before buffered output is flushed.
 const OUTPUT_BATCH_INTERVAL: Duration = Duration::from_millis(50);
 /// Maximum buffered output size before a flush is triggered.
@@ -368,7 +375,7 @@ impl SessionTaskService {
         context: &AssistContext,
         commit_error: &str,
     ) -> Result<(), String> {
-        let prompt = Self::auto_commit_assist_prompt(commit_error);
+        let prompt = Self::auto_commit_assist_prompt(commit_error)?;
         let assist_context = AssistContext {
             app_event_tx: context.app_event_tx.clone(),
             db: context.db.clone(),
@@ -384,8 +391,17 @@ impl SessionTaskService {
             .map_err(|error| format!("Commit assistance failed: {error}"))
     }
 
-    fn auto_commit_assist_prompt(commit_error: &str) -> String {
-        AUTO_COMMIT_ASSIST_PROMPT_TEMPLATE.replace("{commit_error}", commit_error.trim())
+    /// Renders the commit-assistance prompt from the markdown template.
+    ///
+    /// # Errors
+    /// Returns an error if Askama template rendering fails.
+    fn auto_commit_assist_prompt(commit_error: &str) -> Result<String, String> {
+        let commit_error = commit_error.trim();
+        let template = AutoCommitAssistPromptTemplate { commit_error };
+
+        template
+            .render()
+            .map_err(|error| format!("Failed to render `auto_commit_assist_prompt.md`: {error}"))
     }
 
     fn format_commit_error_for_display(commit_error: &str) -> String {
@@ -919,7 +935,8 @@ mod tests {
         let commit_error = "Failed to commit: merge conflict remains";
 
         // Act
-        let prompt = SessionTaskService::auto_commit_assist_prompt(commit_error);
+        let prompt = SessionTaskService::auto_commit_assist_prompt(commit_error)
+            .expect("auto commit assist prompt should render");
 
         // Assert
         assert!(prompt.contains("Failed to commit: merge conflict remains"));

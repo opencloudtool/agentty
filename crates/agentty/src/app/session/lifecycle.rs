@@ -25,6 +25,9 @@ struct BuildSessionCommandInput {
     session_output: Option<String>,
 }
 
+/// Intermediate values captured while preparing a session reply.
+type ReplyContext = (PathBuf, Option<String>, bool, String, Option<String>);
+
 /// Cleanup payload for a deleted session's git and filesystem resources.
 struct DeletedSessionCleanup {
     branch_name: String,
@@ -541,61 +544,33 @@ impl SessionManager {
             return;
         };
         let should_replay_history = self.pending_history_replay.contains(session_id);
-        let mut blocked_session_id = None;
-        let reply_context = {
-            let Some(session) = self.sessions.get_mut(session_index) else {
-                return;
+        let (folder, session_output, is_first_message, persisted_session_id, title_to_save) =
+            match self.prepare_reply_context(
+                session_index,
+                prompt,
+                session_model,
+                should_replay_history,
+            ) {
+                Ok(Some(reply_context)) => reply_context,
+                Ok(None) => return,
+                Err(blocked_session_id) => {
+                    self.append_reply_status_error(services, &blocked_session_id)
+                        .await;
+
+                    return;
+                }
             };
 
-            let is_first_message = session.prompt.is_empty();
-            let allowed = session.status == Status::Review
-                || (is_first_message && session.status == Status::New);
-            if allowed {
-                let mut title_to_save = None;
-                if is_first_message {
-                    session.prompt = prompt.to_string();
-                    let title = prompt.to_string();
-                    session.title = Some(title.clone());
-                    title_to_save = Some(title);
-                }
-
-                Some((
-                    session.folder.clone(),
-                    if !is_first_message
-                        && (should_replay_history || session_model.kind().supports_app_server())
-                    {
-                        Some(session.output.clone())
-                    } else {
-                        None
-                    },
-                    is_first_message,
-                    session.id.clone(),
-                    title_to_save,
-                ))
-            } else {
-                blocked_session_id = Some(session.id.clone());
-
-                None
-            }
-        };
-        if let Some(session_id) = blocked_session_id {
-            self.append_reply_status_error(services, &session_id).await;
-
-            return;
-        }
-        let Some((folder, session_output, is_first_message, persisted_session_id, title_to_save)) =
-            reply_context
-        else {
-            return;
-        };
         if should_replay_history {
             self.pending_history_replay.remove(&persisted_session_id);
         }
+
         let app_event_tx = services.event_sender();
 
         let Ok(handles) = self.session_handles_or_err(&persisted_session_id) else {
             return;
         };
+
         let output = Arc::clone(&handles.output);
         let status = Arc::clone(&handles.status);
 
@@ -630,12 +605,96 @@ impl SessionManager {
                 session_output,
             },
         );
+        let command = match command {
+            Ok(command) => command,
+            Err(error) => {
+                self.append_reply_command_build_error(
+                    services,
+                    &output,
+                    &app_event_tx,
+                    &persisted_session_id,
+                    &error,
+                )
+                .await;
+
+                return;
+            }
+        };
         self.enqueue_reply_command(
             services,
             &output,
             &app_event_tx,
             &persisted_session_id,
             command,
+        )
+        .await;
+    }
+
+    /// Validates reply eligibility and gathers per-session values needed for
+    /// queueing a reply command.
+    ///
+    /// # Errors
+    /// Returns the blocked session id when session status does not allow
+    /// replying.
+    fn prepare_reply_context(
+        &mut self,
+        session_index: usize,
+        prompt: &str,
+        session_model: AgentModel,
+        should_replay_history: bool,
+    ) -> Result<Option<ReplyContext>, String> {
+        let Some(session) = self.sessions.get_mut(session_index) else {
+            return Ok(None);
+        };
+
+        let is_first_message = session.prompt.is_empty();
+        let allowed =
+            session.status == Status::Review || (is_first_message && session.status == Status::New);
+        if !allowed {
+            return Err(session.id.clone());
+        }
+
+        let mut title_to_save = None;
+        if is_first_message {
+            session.prompt = prompt.to_string();
+            let title = prompt.to_string();
+            session.title = Some(title.clone());
+            title_to_save = Some(title);
+        }
+
+        let session_output = if !is_first_message
+            && (should_replay_history || session_model.kind().supports_app_server())
+        {
+            Some(session.output.clone())
+        } else {
+            None
+        };
+
+        Ok(Some((
+            session.folder.clone(),
+            session_output,
+            is_first_message,
+            session.id.clone(),
+            title_to_save,
+        )))
+    }
+
+    /// Appends a reply error line when command construction fails.
+    async fn append_reply_command_build_error(
+        &self,
+        services: &AppServices,
+        output: &Arc<Mutex<String>>,
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
+        session_id: &str,
+        error: &str,
+    ) {
+        let error_line = format!("\n[Reply Error] {error}\n");
+        SessionTaskService::append_session_output(
+            output,
+            services.db(),
+            app_event_tx,
+            session_id,
+            &error_line,
         )
         .await;
     }
@@ -684,10 +743,15 @@ impl SessionManager {
         .await;
     }
 
+    /// Builds a queued command for starting or resuming a session interaction.
+    ///
+    /// # Errors
+    /// Returns an error when resume-command rendering fails for non-app-server
+    /// models.
     fn build_session_command(
         backend: &dyn AgentBackend,
         input: BuildSessionCommandInput,
-    ) -> SessionCommand {
+    ) -> Result<SessionCommand, String> {
         let BuildSessionCommandInput {
             folder,
             is_first_message,
@@ -699,22 +763,22 @@ impl SessionManager {
 
         if session_model.kind().supports_app_server() {
             if is_first_message {
-                SessionCommand::StartPromptAppServer {
+                Ok(SessionCommand::StartPromptAppServer {
                     operation_id,
                     prompt,
                     session_model,
-                }
+                })
             } else {
-                SessionCommand::ReplyAppServer {
+                Ok(SessionCommand::ReplyAppServer {
                     operation_id,
                     prompt,
                     session_output,
                     session_model,
-                }
+                })
             }
         } else {
             let command = if is_first_message {
-                backend.build_start_command(&folder, &prompt, session_model.as_str())
+                Ok(backend.build_start_command(&folder, &prompt, session_model.as_str()))
             } else {
                 backend.build_resume_command(
                     &folder,
@@ -722,20 +786,20 @@ impl SessionManager {
                     session_model.as_str(),
                     session_output,
                 )
-            };
+            }?;
 
             if is_first_message {
-                SessionCommand::StartPrompt {
+                Ok(SessionCommand::StartPrompt {
                     command,
                     operation_id,
                     session_model,
-                }
+                })
             } else {
-                SessionCommand::Reply {
+                Ok(SessionCommand::Reply {
                     command,
                     operation_id,
                     session_model,
-                }
+                })
             }
         }
     }

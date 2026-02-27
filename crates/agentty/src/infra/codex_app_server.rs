@@ -1572,7 +1572,8 @@ mod tests {
         let session_output = Some("prior context");
 
         // Act
-        let turn_prompt = app_server::turn_prompt_for_runtime(prompt, session_output, false);
+        let turn_prompt = app_server::turn_prompt_for_runtime(prompt, session_output, false)
+            .expect("turn prompt should render");
 
         // Assert
         assert_eq!(turn_prompt, prompt);
@@ -1585,7 +1586,8 @@ mod tests {
         let session_output = Some("assistant: proposed plan");
 
         // Act
-        let turn_prompt = app_server::turn_prompt_for_runtime(prompt, session_output, true);
+        let turn_prompt = app_server::turn_prompt_for_runtime(prompt, session_output, true)
+            .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("Continue this session using the full transcript below."));

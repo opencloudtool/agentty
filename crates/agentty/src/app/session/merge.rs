@@ -9,6 +9,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use askama::Template;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
@@ -33,10 +34,21 @@ const REBASE_ASSIST_POLICY: AssistPolicy = AssistPolicy {
     // progress is made inside a file without fully clearing all markers.
     max_identical_failure_streak: 3,
 };
-const REBASE_ASSIST_PROMPT_TEMPLATE: &str =
-    include_str!("../../../resources/rebase_assist_prompt.md");
-const MERGE_COMMIT_MESSAGE_PROMPT_TEMPLATE: &str =
-    include_str!("../../../resources/merge_commit_message_prompt.md");
+
+/// Askama view model for rendering rebase conflict-assistance prompts.
+#[derive(Template)]
+#[template(path = "rebase_assist_prompt.md", escape = "none")]
+struct RebaseAssistPromptTemplate<'a> {
+    base_branch: &'a str,
+    conflicted_files: &'a str,
+}
+
+/// Askama view model for rendering squash commit-message generation prompts.
+#[derive(Template)]
+#[template(path = "merge_commit_message_prompt.md", escape = "none")]
+struct MergeCommitMessagePromptTemplate<'a> {
+    diff: &'a str,
+}
 
 /// Boxed async result used by sync conflict assistance boundary methods.
 type SyncAssistFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -905,7 +917,7 @@ impl SessionManager {
         input: &SyncRebaseAssistInput,
         conflicted_files: &[String],
     ) -> Result<(), String> {
-        let prompt = Self::rebase_assist_prompt(&input.base_branch, conflicted_files);
+        let prompt = Self::rebase_assist_prompt(&input.base_branch, conflicted_files)?;
         input
             .sync_assist_client
             .resolve_rebase_conflicts(input.folder.clone(), prompt, input.session_model)
@@ -1357,7 +1369,7 @@ impl SessionManager {
         input: &RebaseAssistInput,
         conflicted_files: &[String],
     ) -> Result<(), String> {
-        let prompt = Self::rebase_assist_prompt(&input.base_branch, conflicted_files);
+        let prompt = Self::rebase_assist_prompt(&input.base_branch, conflicted_files)?;
         let assist_context = Self::assist_context(input);
 
         run_agent_assist(&assist_context, &prompt)
@@ -1413,12 +1425,22 @@ impl SessionManager {
     }
 
     /// Renders the rebase-assist prompt from the markdown template.
-    fn rebase_assist_prompt(base_branch: &str, conflicted_files: &[String]) -> String {
+    ///
+    /// # Errors
+    /// Returns an error if Askama template rendering fails.
+    fn rebase_assist_prompt(
+        base_branch: &str,
+        conflicted_files: &[String],
+    ) -> Result<String, String> {
         let conflicted_files = Self::format_conflicted_file_list(conflicted_files);
+        let template = RebaseAssistPromptTemplate {
+            base_branch,
+            conflicted_files: &conflicted_files,
+        };
 
-        REBASE_ASSIST_PROMPT_TEMPLATE
-            .replace("{base_branch}", base_branch)
-            .replace("{conflicted_files}", &conflicted_files)
+        template
+            .render()
+            .map_err(|error| format!("Failed to render `rebase_assist_prompt.md`: {error}"))
     }
 
     /// Formats conflicted file paths as a bullet list for prompt rendering.
@@ -1473,7 +1495,7 @@ impl SessionManager {
         session_model: AgentModel,
         diff: &str,
     ) -> Option<String> {
-        let prompt = Self::merge_commit_message_prompt(diff);
+        let prompt = Self::merge_commit_message_prompt(diff).ok()?;
         let model_response =
             Self::generate_merge_commit_message_with_model(folder, session_model, &prompt).ok()?;
         let parsed_response = Self::parse_merge_commit_message_response(&model_response)?;
@@ -1531,8 +1553,16 @@ impl SessionManager {
         })
     }
 
-    pub(crate) fn merge_commit_message_prompt(diff: &str) -> String {
-        MERGE_COMMIT_MESSAGE_PROMPT_TEMPLATE.replace("{{diff}}", diff)
+    /// Renders the merge commit-message prompt from the markdown template.
+    ///
+    /// # Errors
+    /// Returns an error if Askama template rendering fails.
+    pub(crate) fn merge_commit_message_prompt(diff: &str) -> Result<String, String> {
+        let template = MergeCommitMessagePromptTemplate { diff };
+
+        template
+            .render()
+            .map_err(|error| format!("Failed to render `merge_commit_message_prompt.md`: {error}"))
     }
 
     pub(crate) fn fallback_merge_commit_message(
@@ -1643,7 +1673,8 @@ mod tests {
         let conflicted_files = vec!["src/lib.rs".to_string(), "README.md".to_string()];
 
         // Act
-        let prompt = SessionManager::rebase_assist_prompt(base_branch, &conflicted_files);
+        let prompt = SessionManager::rebase_assist_prompt(base_branch, &conflicted_files)
+            .expect("rebase assist prompt should render");
 
         // Assert
         assert!(prompt.contains("rebasing onto `main`"));

@@ -391,8 +391,8 @@ mod tests {
             .any(|event| matches!(event, AppEvent::RefreshSessions))
     }
 
-    /// Asserts that session-update and refresh events were both emitted.
-    fn assert_session_refresh_events(observed_events: &[AppEvent], session_id: &str) {
+    /// Verifies successful app-server turns emit update and refresh events.
+    fn assert_success_status_events(observed_events: &[AppEvent], session_id: &str) {
         assert!(
             has_session_updated_event(observed_events, session_id),
             "expected at least one SessionUpdated event"
@@ -671,7 +671,6 @@ mod tests {
         )
         .await;
         let observed_events = collect_app_events(&mut app_event_rx);
-
         // Assert
         assert!(result.is_ok());
         assert_successful_turn_runtime_state(&child_pid, &status);
@@ -683,7 +682,7 @@ mod tests {
         assert_eq!(sessions[0].status, Status::Review.to_string());
         assert_eq!(sessions[0].input_tokens, 9);
         assert_eq!(sessions[0].output_tokens, 7);
-        assert_session_refresh_events(&observed_events, session_id);
+        assert_success_status_events(&observed_events, session_id);
     }
 
     #[tokio::test]

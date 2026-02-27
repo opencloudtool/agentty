@@ -204,7 +204,7 @@ where
         request.prompt.as_str(),
         first_attempt_session_output.as_deref(),
         context_reset,
-    );
+    )?;
     let first_attempt = run_turn_with_runtime(&mut session_runtime, &first_attempt_prompt).await;
     if let Ok((assistant_message, input_tokens, output_tokens)) = first_attempt {
         let pid = runtime_pid(&session_runtime);
@@ -231,7 +231,7 @@ where
         request.prompt.as_str(),
         retry_session_output.as_deref(),
         true,
-    );
+    )?;
     let retry_attempt = run_turn_with_runtime(&mut restarted_runtime, &retry_attempt_prompt).await;
     match retry_attempt {
         Ok((assistant_message, input_tokens, output_tokens)) => {
@@ -279,13 +279,16 @@ fn read_latest_session_output(request: &AppServerTurnRequest) -> Option<String> 
 }
 
 /// Returns the turn prompt, replaying session output after context reset.
+///
+/// # Errors
+/// Returns an error when Askama prompt rendering fails after a context reset.
 pub fn turn_prompt_for_runtime(
     prompt: &str,
     session_output: Option<&str>,
     context_reset: bool,
-) -> String {
+) -> Result<String, String> {
     if !context_reset {
-        return prompt.to_string();
+        return Ok(prompt.to_string());
     }
 
     crate::infra::agent::build_resume_prompt(prompt, session_output)
@@ -333,7 +336,8 @@ mod tests {
         let prompt = "Implement feature";
 
         // Act
-        let turn_prompt = turn_prompt_for_runtime(prompt, Some("prior context"), false);
+        let turn_prompt = turn_prompt_for_runtime(prompt, Some("prior context"), false)
+            .expect("turn prompt should render");
 
         // Assert
         assert_eq!(turn_prompt, prompt);
@@ -345,7 +349,8 @@ mod tests {
         let prompt = "Implement feature";
 
         // Act
-        let turn_prompt = turn_prompt_for_runtime(prompt, Some("assistant: proposed plan"), true);
+        let turn_prompt = turn_prompt_for_runtime(prompt, Some("assistant: proposed plan"), true)
+            .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("Continue this session using the full transcript below."));

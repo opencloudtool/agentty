@@ -13,4 +13,4 @@ Rules:
 - Do not wrap the JSON in markdown fences.
 
 Diff:
-{{diff}}
+{{ diff }}

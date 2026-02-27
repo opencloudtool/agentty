@@ -2155,7 +2155,7 @@ FROM session
                     .current_dir(folder)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
-                cmd
+                Ok(cmd)
             });
         let session_id = app.sessions.sessions[0].id.clone();
         app.sessions
@@ -2241,7 +2241,7 @@ FROM session
                     .current_dir(folder)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
-                cmd
+                Ok(cmd)
             },
         );
         app.sessions
@@ -2268,7 +2268,7 @@ FROM session
                     .current_dir(folder)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
-                cmd
+                Ok(cmd)
             },
         );
         app.sessions
@@ -3326,7 +3326,8 @@ FROM session
         let diff = "diff --git a/file.txt b/file.txt\n+change";
 
         // Act
-        let prompt = SessionManager::merge_commit_message_prompt(diff);
+        let prompt = SessionManager::merge_commit_message_prompt(diff)
+            .expect("merge commit message prompt should render");
 
         // Assert
         assert!(prompt.contains("`title` must be one line, concise, and in present simple tense."));

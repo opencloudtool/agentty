@@ -35,18 +35,18 @@ impl AgentBackend for GeminiBackend {
         prompt: &str,
         model: &str,
         session_output: Option<String>,
-    ) -> Command {
+    ) -> Result<Command, String> {
         let has_history_replay = session_output
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
-        let prompt = build_resume_prompt(prompt, session_output.as_deref());
+        let prompt = build_resume_prompt(prompt, session_output.as_deref())?;
         let mut command = self.build_start_command(folder, &prompt, model);
 
         if !has_history_replay {
             command.arg("--resume").arg("latest");
         }
 
-        command
+        Ok(command)
     }
 }
 

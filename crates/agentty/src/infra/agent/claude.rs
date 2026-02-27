@@ -33,8 +33,8 @@ impl AgentBackend for ClaudeBackend {
         prompt: &str,
         model: &str,
         session_output: Option<String>,
-    ) -> Command {
-        let prompt = build_resume_prompt(prompt, session_output.as_deref());
+    ) -> Result<Command, String> {
+        let prompt = build_resume_prompt(prompt, session_output.as_deref())?;
         let mut command = Command::new("claude");
         command.arg("-c").arg("-p").arg(prompt);
         command.arg("--allowedTools").arg("Edit,Bash");
@@ -47,7 +47,7 @@ impl AgentBackend for ClaudeBackend {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        command
+        Ok(command)
     }
 }
 
