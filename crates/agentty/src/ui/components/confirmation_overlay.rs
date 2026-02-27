@@ -2,9 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::ui::Component;
+use crate::ui::text_util::truncate_with_ellipsis;
 
 const MIN_OVERLAY_HEIGHT: u16 = 7;
 const MIN_OVERLAY_WIDTH: u16 = 30;
@@ -12,6 +13,9 @@ const OVERLAY_HEIGHT_PERCENT: u16 = 20;
 const OVERLAY_WIDTH_PERCENT: u16 = 40;
 
 /// Centered confirmation popup used for destructive actions.
+///
+/// The message body is truncated to a single visible line so confirmation
+/// choices remain visible even when session titles are very long.
 pub struct ConfirmationOverlay<'a> {
     message: &'a str,
     selected_yes: bool,
@@ -50,6 +54,8 @@ impl Component for ConfirmationOverlay<'_> {
             width,
             height,
         );
+        let message_width = usize::from(popup_area.width.saturating_sub(4));
+        let message = truncate_with_ellipsis(self.message, message_width);
 
         let title = format!(" {} ", self.title);
         let selected_option_style = Style::default()
@@ -69,10 +75,7 @@ impl Component for ConfirmationOverlay<'_> {
         };
 
         let paragraph = Paragraph::new(vec![
-            Line::from(Span::styled(
-                self.message,
-                Style::default().fg(Color::White),
-            )),
+            Line::from(Span::styled(message, Style::default().fg(Color::White))),
             Line::from(""),
             Line::from(vec![
                 Span::styled(" Yes ", yes_option_style),
@@ -81,7 +84,6 @@ impl Component for ConfirmationOverlay<'_> {
             ]),
         ])
         .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -139,5 +141,31 @@ mod tests {
         assert!(!text.contains("Left/Right"));
         assert!(!text.contains(": choose"));
         assert!(!text.contains(": select"));
+    }
+
+    #[test]
+    fn test_confirmation_overlay_render_preserves_choices_for_long_message() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let message = "Delete session \"session with a very long name that keeps going and would \
+                       otherwise hide choices in the confirmation popup\"?";
+        let overlay = ConfirmationOverlay::new("Confirm Delete", message).selected_yes(false);
+
+        // Act
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                crate::ui::Component::render(&overlay, f, area);
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let buffer = terminal.backend().buffer();
+        let content = buffer.content();
+        let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(text.contains("Yes"));
+        assert!(text.contains("No"));
+        assert!(text.contains("..."));
     }
 }
