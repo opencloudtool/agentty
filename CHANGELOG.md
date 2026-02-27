@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.3] - 2026-02-26
+
+### Added
+
+- **ACP:** Integrate typed Gemini ACP protocol transport and tests.
+- **ACP:** Send empty Gemini ACP client capabilities on initialize.
+- **Session:** Use Askama templates for session prompts and propagate render errors.
+
+### Changed
+
+- **Gemini:** Remove reconnect banner and rename Gemini stdout reader.
+
+### Contributors
+
+- @minev-dev
+- @andagaev
+
 ## [v0.4.2] - 2026-02-26
 
 ### Added
