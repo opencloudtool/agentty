@@ -16,6 +16,7 @@ repository = "https://github.com/agentty-xyz/agentty"
 homepage = "https://github.com/agentty-xyz/agentty"
 
 [workspace.dependencies]
+agent-client-protocol = "0.9.4"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.30.0"
 crossterm = "0.29.0"

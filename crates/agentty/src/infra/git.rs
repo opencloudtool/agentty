@@ -417,7 +417,7 @@ impl GitClient for RealGitClient {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::Duration;
     use std::{fs, thread};
@@ -425,6 +425,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    /// Canonicalizes a test path for stable comparisons across symlinked
+    /// temporary directory roots (for example `/var` vs `/private/var`).
+    fn canonicalize_test_path(path: &Path) -> PathBuf {
+        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
 
     fn run_git_command(repo_path: &Path, args: &[&str]) {
         let output = Command::new("git")
@@ -733,7 +739,10 @@ mod tests {
             .expect("failed to resolve main repo root");
 
         // Assert
-        assert_eq!(repo_root, dir.path().to_path_buf());
+        assert_eq!(
+            canonicalize_test_path(&repo_root),
+            canonicalize_test_path(dir.path())
+        );
     }
 
     #[tokio::test]
@@ -757,7 +766,10 @@ mod tests {
             .expect("failed to resolve shared repo root");
 
         // Assert
-        assert_eq!(repo_root, dir.path().to_path_buf());
+        assert_eq!(
+            canonicalize_test_path(&repo_root),
+            canonicalize_test_path(dir.path())
+        );
     }
 
     #[tokio::test]

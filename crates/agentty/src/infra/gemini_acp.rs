@@ -1,7 +1,16 @@
 //! Gemini ACP-backed implementation of the shared app-server client.
 
-use std::path::PathBuf;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
+use agent_client_protocol::{
+    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
+    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, TextContent,
+};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tokio::sync::mpsc;
@@ -13,6 +22,69 @@ use crate::infra::app_server::{
 use crate::infra::app_server_transport::{
     self, extract_json_error_message, response_id_matches, write_json_line,
 };
+
+/// Boxed async result used by [`GeminiRuntimeTransport`] methods.
+type GeminiTransportFuture<'scope, T> = Pin<Box<dyn Future<Output = T> + Send + 'scope>>;
+
+/// Async ACP transport boundary for one running Gemini runtime.
+///
+/// Production uses [`GeminiStdioTransport`] backed by child process stdio,
+/// while tests can inject `MockGeminiRuntimeTransport` to validate high-level
+/// protocol workflows without spawning external commands.
+#[cfg_attr(test, mockall::automock)]
+trait GeminiRuntimeTransport {
+    /// Writes one JSON-RPC payload to runtime stdin.
+    fn write_json_line(&mut self, payload: Value) -> GeminiTransportFuture<'_, Result<(), String>>;
+
+    /// Waits for one JSON-RPC response line matching `response_id`.
+    fn wait_for_response_line(
+        &mut self,
+        response_id: String,
+    ) -> GeminiTransportFuture<'_, Result<String, String>>;
+
+    /// Reads the next raw stdout line from the runtime.
+    fn next_stdout_line(&mut self) -> GeminiTransportFuture<'_, Result<Option<String>, String>>;
+}
+
+/// Production ACP transport backed by Gemini child process stdio streams.
+struct GeminiStdioTransport {
+    stdin: tokio::process::ChildStdin,
+    stdout_lines: Lines<BufReader<tokio::process::ChildStdout>>,
+}
+
+impl GeminiStdioTransport {
+    /// Creates a stdio transport over the provided child pipes.
+    fn new(stdin: tokio::process::ChildStdin, stdout: tokio::process::ChildStdout) -> Self {
+        Self {
+            stdin,
+            stdout_lines: BufReader::new(stdout).lines(),
+        }
+    }
+}
+
+impl GeminiRuntimeTransport for GeminiStdioTransport {
+    fn write_json_line(&mut self, payload: Value) -> GeminiTransportFuture<'_, Result<(), String>> {
+        Box::pin(async move { write_json_line(&mut self.stdin, &payload).await })
+    }
+
+    fn wait_for_response_line(
+        &mut self,
+        response_id: String,
+    ) -> GeminiTransportFuture<'_, Result<String, String>> {
+        Box::pin(async move {
+            app_server_transport::wait_for_response_line(&mut self.stdout_lines, &response_id).await
+        })
+    }
+
+    fn next_stdout_line(&mut self) -> GeminiTransportFuture<'_, Result<Option<String>, String>> {
+        Box::pin(async move {
+            self.stdout_lines
+                .next_line()
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+}
 
 /// Production [`AppServerClient`] backed by `gemini --experimental-acp`.
 pub struct RealGeminiAcpClient {
@@ -55,7 +127,12 @@ impl RealGeminiAcpClient {
             move |runtime, prompt| {
                 let stream_tx = stream_tx.clone();
 
-                Box::pin(Self::run_turn_with_runtime(runtime, prompt, stream_tx))
+                Box::pin(Self::run_turn_with_runtime(
+                    &mut runtime.transport,
+                    &runtime.session_id,
+                    prompt,
+                    stream_tx,
+                ))
             },
             |runtime| Box::pin(Self::shutdown_runtime(runtime)),
         )
@@ -90,71 +167,106 @@ impl RealGeminiAcpClient {
             folder: request.folder.clone(),
             model: request.model.clone(),
             session_id: String::new(),
-            stdin,
-            stdout_lines: BufReader::new(stdout).lines(),
+            transport: GeminiStdioTransport::new(stdin, stdout),
         };
 
-        Self::initialize_runtime(&mut session).await?;
-        session.session_id = Self::start_session(&mut session).await?;
+        Self::initialize_runtime(&mut session.transport).await?;
+        session.session_id = Self::start_session(&mut session.transport, &session.folder).await?;
 
         Ok(session)
     }
 
     /// Sends the ACP initialize handshake.
-    async fn initialize_runtime(session: &mut GeminiSessionRuntime) -> Result<(), String> {
+    async fn initialize_runtime<Transport: GeminiRuntimeTransport>(
+        transport: &mut Transport,
+    ) -> Result<(), String> {
         let initialization_request_id = format!("init-{}", uuid::Uuid::new_v4());
-        let initialization_request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": initialization_request_id,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": 1,
-                "clientCapabilities": {}
-            }
-        });
-        write_json_line(&mut session.stdin, &initialization_request).await?;
-        let initialize_response_line = app_server_transport::wait_for_response_line(
-            &mut session.stdout_lines,
-            &initialization_request_id,
-        )
-        .await?;
+        let initialization_request =
+            Self::build_initialize_request_payload(&initialization_request_id)?;
+        transport.write_json_line(initialization_request).await?;
+        let initialize_response_line = transport
+            .wait_for_response_line(initialization_request_id)
+            .await?;
         let initialize_response = serde_json::from_str::<Value>(&initialize_response_line)
             .map_err(|error| format!("Failed to parse Gemini ACP initialize response: {error}"))?;
         if initialize_response.get("error").is_some() {
             return Err(extract_json_error_message(&initialize_response)
                 .unwrap_or_else(|| "Gemini ACP returned an error for `initialize`".to_string()));
         }
+        Self::parse_json_rpc_result::<InitializeResponse>(&initialize_response, "`initialize`")?;
 
         let initialized_notification = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "initialized"
         });
-        write_json_line(&mut session.stdin, &initialized_notification).await?;
+        transport.write_json_line(initialized_notification).await?;
 
         Ok(())
+    }
+
+    /// Builds a typed ACP `initialize` request with conservative client
+    /// capabilities.
+    ///
+    /// The client intentionally does not advertise optional capability handlers
+    /// it does not implement yet (for example `fs` and `terminal`) to avoid
+    /// protocol-level deadlocks on unsupported client calls.
+    fn build_initialize_request_payload(request_id: &str) -> Result<Value, String> {
+        let initialize_params = InitializeRequest::new(ProtocolVersion::LATEST);
+
+        Self::build_json_rpc_request_payload(
+            request_id,
+            AGENT_METHOD_NAMES.initialize,
+            initialize_params,
+        )
+    }
+
+    /// Builds a typed JSON-RPC request payload.
+    fn build_json_rpc_request_payload<T: Serialize>(
+        request_id: &str,
+        method: &str,
+        params: T,
+    ) -> Result<Value, String> {
+        let params_value = serde_json::to_value(params)
+            .map_err(|error| format!("Failed to serialize `{method}` request params: {error}"))?;
+
+        Ok(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params_value
+        }))
+    }
+
+    /// Extracts one typed JSON-RPC `result` payload.
+    fn parse_json_rpc_result<T: serde::de::DeserializeOwned>(
+        response_value: &Value,
+        method: &str,
+    ) -> Result<T, String> {
+        let result_value = response_value
+            .get("result")
+            .cloned()
+            .ok_or_else(|| format!("Gemini ACP `{method}` response missing `result`"))?;
+
+        serde_json::from_value::<T>(result_value)
+            .map_err(|error| format!("Failed to parse Gemini ACP `{method}` result: {error}"))
     }
 
     /// Creates one ACP session and returns the assigned `sessionId`.
     ///
     /// JSON-RPC `error` payloads are surfaced directly to keep diagnostics
     /// actionable when session creation fails.
-    async fn start_session(session: &mut GeminiSessionRuntime) -> Result<String, String> {
+    async fn start_session<Transport: GeminiRuntimeTransport>(
+        transport: &mut Transport,
+        folder: &Path,
+    ) -> Result<String, String> {
         let session_new_id = format!("session-new-{}", uuid::Uuid::new_v4());
-        let session_new_payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": session_new_id,
-            "method": "session/new",
-            "params": {
-                "cwd": session.folder.to_string_lossy(),
-                "mcpServers": []
-            }
-        });
-        write_json_line(&mut session.stdin, &session_new_payload).await?;
-        let response_line = app_server_transport::wait_for_response_line(
-            &mut session.stdout_lines,
+        let session_new_payload = Self::build_json_rpc_request_payload(
             &session_new_id,
-        )
-        .await?;
+            AGENT_METHOD_NAMES.session_new,
+            NewSessionRequest::new(folder.to_path_buf()),
+        )?;
+        transport.write_json_line(session_new_payload).await?;
+        let response_line = transport.wait_for_response_line(session_new_id).await?;
         let response_value = serde_json::from_str::<Value>(&response_line)
             .map_err(|error| format!("Failed to parse session/new response JSON: {error}"))?;
 
@@ -171,44 +283,45 @@ impl RealGeminiAcpClient {
                 .unwrap_or_else(|| "Gemini ACP returned an error for `session/new`".to_string()));
         }
 
-        response_value
-            .get("result")
-            .and_then(|result| result.get("sessionId"))
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .ok_or_else(|| "Gemini ACP `session/new` response missing `sessionId`".to_string())
+        let session_new_result =
+            Self::parse_json_rpc_result::<NewSessionResponse>(response_value, "`session/new`")
+                .map_err(|error| {
+                    if error.contains("missing field `sessionId`") {
+                        return "Gemini ACP `session/new` response missing `sessionId`".to_string();
+                    }
+
+                    error
+                })?;
+
+        Ok(session_new_result.session_id.to_string())
     }
 
     /// Sends one prompt turn and waits for the matching prompt response id.
     ///
     /// Streaming progress updates are forwarded to the UI while assistant text
     /// chunks are streamed to the UI and accumulated for the final response.
-    async fn run_turn_with_runtime(
-        session: &mut GeminiSessionRuntime,
+    async fn run_turn_with_runtime<Transport: GeminiRuntimeTransport>(
+        transport: &mut Transport,
+        session_id: &str,
         prompt: &str,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
     ) -> Result<(String, u64, u64), String> {
         let prompt_id = format!("session-prompt-{}", uuid::Uuid::new_v4());
-        let session_prompt_payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": prompt_id,
-            "method": "session/prompt",
-            "params": {
-                "sessionId": session.session_id,
-                "prompt": [{
-                    "type": "text",
-                    "text": prompt
-                }]
-            }
-        });
-        write_json_line(&mut session.stdin, &session_prompt_payload).await?;
+        let session_prompt_payload = Self::build_json_rpc_request_payload(
+            &prompt_id,
+            AGENT_METHOD_NAMES.session_prompt,
+            PromptRequest::new(
+                session_id.to_string(),
+                vec![ContentBlock::Text(TextContent::new(prompt.to_string()))],
+            ),
+        )?;
+        transport.write_json_line(session_prompt_payload).await?;
 
         let mut assistant_message = String::new();
         tokio::time::timeout(app_server_transport::TURN_TIMEOUT, async {
             loop {
-                let stdout_line = session
-                    .stdout_lines
-                    .next_line()
+                let stdout_line = transport
+                    .next_stdout_line()
                     .await
                     .map_err(|error| format!("Failed reading Gemini ACP stdout: {error}"))?
                     .ok_or_else(|| {
@@ -224,9 +337,9 @@ impl RealGeminiAcpClient {
                 };
 
                 if let Some(permission_response) =
-                    build_permission_response(&response_value, &session.session_id)
+                    build_permission_response(&response_value, session_id)
                 {
-                    write_json_line(&mut session.stdin, &permission_response).await?;
+                    transport.write_json_line(permission_response).await?;
 
                     continue;
                 }
@@ -251,15 +364,11 @@ impl RealGeminiAcpClient {
                     ));
                 }
 
-                if let Some(progress) =
-                    extract_progress_update(&response_value, &session.session_id)
-                {
+                if let Some(progress) = extract_progress_update(&response_value, session_id) {
                     let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(progress));
                 }
 
-                if let Some(chunk) =
-                    extract_assistant_message_chunk(&response_value, &session.session_id)
-                {
+                if let Some(chunk) = extract_assistant_message_chunk(&response_value, session_id) {
                     assistant_message.push_str(chunk.as_str());
                     Self::stream_assistant_chunk(&stream_tx, chunk);
                 }
@@ -330,8 +439,7 @@ struct GeminiSessionRuntime {
     folder: PathBuf,
     model: String,
     session_id: String,
-    stdin: tokio::process::ChildStdin,
-    stdout_lines: Lines<BufReader<tokio::process::ChildStdout>>,
+    transport: GeminiStdioTransport,
 }
 
 impl GeminiSessionRuntime {
@@ -348,45 +456,110 @@ impl GeminiSessionRuntime {
 /// options are provided or parsable, this returns a `cancelled` outcome to
 /// avoid leaving the turn blocked indefinitely.
 fn build_permission_response(response_value: &Value, expected_session_id: &str) -> Option<Value> {
-    if response_value.get("method").and_then(Value::as_str) != Some("session/request_permission") {
+    if response_value.get("method").and_then(Value::as_str)
+        != Some(CLIENT_METHOD_NAMES.session_request_permission)
+    {
         return None;
     }
 
     let params = response_value.get("params")?;
+    let request_id = response_value.get("id")?.clone();
+    if let Ok(permission_request) =
+        serde_json::from_value::<RequestPermissionRequest>(params.clone())
+    {
+        if permission_request.session_id.to_string() != expected_session_id {
+            return None;
+        }
+
+        let selected_option_id = select_permission_option(&permission_request.options)
+            .map(|option| option.option_id.clone().to_string());
+
+        return Some(build_permission_result_payload(
+            &request_id,
+            selected_option_id,
+        ));
+    }
+
     if params.get("sessionId").and_then(Value::as_str)? != expected_session_id {
         return None;
     }
 
-    let request_id = response_value.get("id")?.clone();
-    if let Some(option_id) = params.get("options").and_then(select_permission_option_id) {
-        return Some(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": {
-                "outcome": {
-                    "outcome": "selected",
-                    "optionId": option_id
-                }
-            }
-        }));
-    }
+    let selected_option_id = params
+        .get("options")
+        .and_then(select_permission_option_id_from_value);
 
-    Some(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": {
-            "outcome": {
-                "outcome": "cancelled"
-            }
-        }
-    }))
+    Some(build_permission_result_payload(
+        &request_id,
+        selected_option_id,
+    ))
 }
 
-/// Selects the preferred allow option from ACP permission choices.
+/// Builds a JSON-RPC `result` payload from a typed ACP permission decision.
+fn build_permission_result_payload(
+    request_id: &Value,
+    selected_option_id: Option<String>,
+) -> Value {
+    let outcome =
+        selected_option_id
+            .as_ref()
+            .map_or(RequestPermissionOutcome::Cancelled, |option_id| {
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                    option_id.clone(),
+                ))
+            });
+    let permission_response = RequestPermissionResponse::new(outcome);
+    let result_value = match serde_json::to_value(permission_response) {
+        Ok(result_value) => result_value,
+        Err(_) => build_permission_result_value_fallback(selected_option_id),
+    };
+
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": result_value
+    })
+}
+
+/// Builds a fallback ACP permission response result payload from raw values.
+fn build_permission_result_value_fallback(selected_option_id: Option<String>) -> Value {
+    if let Some(option_id) = selected_option_id {
+        return serde_json::json!({
+            "outcome": {
+                "outcome": "selected",
+                "optionId": option_id
+            }
+        });
+    }
+
+    serde_json::json!({
+        "outcome": {
+            "outcome": "cancelled"
+        }
+    })
+}
+
+/// Selects the preferred allow option from typed ACP permission choices.
+///
+/// Preference order is [`PermissionOptionKind::AllowAlways`], then
+/// [`PermissionOptionKind::AllowOnce`], then the first listed option.
+fn select_permission_option(options: &[PermissionOption]) -> Option<&PermissionOption> {
+    for preferred_kind in [
+        PermissionOptionKind::AllowAlways,
+        PermissionOptionKind::AllowOnce,
+    ] {
+        if let Some(option) = options.iter().find(|option| option.kind == preferred_kind) {
+            return Some(option);
+        }
+    }
+
+    options.first()
+}
+
+/// Selects the preferred allow option identifier from raw ACP choices.
 ///
 /// Preference order is `allow_always`, then `allow_once`, then the first
 /// listed option when no allow-kind option is available.
-fn select_permission_option_id(options: &Value) -> Option<String> {
+fn select_permission_option_id_from_value(options: &Value) -> Option<String> {
     let options = options.as_array()?;
     for preferred_kind in ["allow_always", "allow_once"] {
         if let Some(option_id) = options.iter().find_map(|option| {
@@ -594,7 +767,9 @@ fn extract_session_update_kind<'value>(
     response_value: &'value Value,
     expected_session_id: &str,
 ) -> Option<&'value str> {
-    if response_value.get("method").and_then(Value::as_str) != Some("session/update") {
+    if response_value.get("method").and_then(Value::as_str)
+        != Some(CLIENT_METHOD_NAMES.session_update)
+    {
         return None;
     }
 
@@ -611,7 +786,394 @@ fn extract_session_update_kind<'value>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use mockall::Sequence;
+
     use super::*;
+
+    /// Configures the expected `session/prompt` request and stores its dynamic
+    /// JSON-RPC `id` for a later completion response.
+    fn expect_session_prompt_request(
+        transport: &mut MockGeminiRuntimeTransport,
+        sequence: &mut Sequence,
+        prompt_id: Arc<Mutex<Option<String>>>,
+    ) {
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(sequence)
+            .withf(move |payload| {
+                payload.get("method").and_then(Value::as_str) == Some("session/prompt")
+                    && payload
+                        .get("params")
+                        .and_then(|params| params.get("sessionId"))
+                        .and_then(Value::as_str)
+                        == Some("session-1")
+            })
+            .returning(move |payload| {
+                let id = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+                if let Ok(mut guard) = prompt_id.lock() {
+                    *guard = id;
+                }
+
+                Box::pin(async { Ok(()) })
+            });
+    }
+
+    /// Configures one ACP permission request notification.
+    fn expect_permission_request(
+        transport: &mut MockGeminiRuntimeTransport,
+        sequence: &mut Sequence,
+    ) {
+        transport
+            .expect_next_stdout_line()
+            .times(1)
+            .in_sequence(sequence)
+            .returning(|| {
+                Box::pin(async {
+                    Ok(Some(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": "permission-1",
+                            "method": "session/request_permission",
+                            "params": {
+                                "sessionId": "session-1",
+                                "toolCall": {
+                                    "toolCallId": "tool-call-1",
+                                    "title": "read_file"
+                                },
+                                "options": [{
+                                    "optionId": "allow-once",
+                                    "name": "Allow once",
+                                    "kind": "allow_once"
+                                }]
+                            }
+                        })
+                        .to_string(),
+                    ))
+                })
+            });
+    }
+
+    /// Configures the expected permission response write for `allow_once`.
+    fn expect_permission_response_write(
+        transport: &mut MockGeminiRuntimeTransport,
+        sequence: &mut Sequence,
+    ) {
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(sequence)
+            .withf(|payload| {
+                payload.get("id") == Some(&Value::String("permission-1".to_string()))
+                    && payload
+                        .get("result")
+                        .and_then(|result| result.get("outcome"))
+                        .and_then(|outcome| outcome.get("optionId"))
+                        .and_then(Value::as_str)
+                        == Some("allow-once")
+            })
+            .returning(|_| Box::pin(async { Ok(()) }));
+    }
+
+    /// Configures one `tool_call` progress update notification.
+    fn expect_tool_call_update(
+        transport: &mut MockGeminiRuntimeTransport,
+        sequence: &mut Sequence,
+    ) {
+        transport
+            .expect_next_stdout_line()
+            .times(1)
+            .in_sequence(sequence)
+            .returning(|| {
+                Box::pin(async {
+                    Ok(Some(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": "session-1",
+                                "update": {
+                                    "sessionUpdate": "tool_call",
+                                    "title": "read_file"
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                })
+            });
+    }
+
+    /// Configures one assistant chunk update notification.
+    fn expect_assistant_chunk_update(
+        transport: &mut MockGeminiRuntimeTransport,
+        sequence: &mut Sequence,
+    ) {
+        transport
+            .expect_next_stdout_line()
+            .times(1)
+            .in_sequence(sequence)
+            .returning(|| {
+                Box::pin(async {
+                    Ok(Some(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": "session-1",
+                                "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {
+                                        "type": "text",
+                                        "text": "Chunk text"
+                                    }
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                })
+            });
+    }
+
+    /// Configures one prompt completion response with usage counters.
+    fn expect_prompt_completion(
+        transport: &mut MockGeminiRuntimeTransport,
+        sequence: &mut Sequence,
+        prompt_id: Arc<Mutex<Option<String>>>,
+    ) {
+        transport
+            .expect_next_stdout_line()
+            .times(1)
+            .in_sequence(sequence)
+            .returning(move || {
+                let response_id = prompt_id
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.clone())
+                    .unwrap_or_else(|| "session-prompt-1".to_string());
+
+                Box::pin(async move {
+                    Ok(Some(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": response_id,
+                            "result": {
+                                "usage": {
+                                    "inputTokens": 2,
+                                    "outputTokens": 3
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                })
+            });
+    }
+
+    /// Verifies progress and chunk events emitted for one streamed turn.
+    fn assert_turn_stream_events(stream_rx: &mut mpsc::UnboundedReceiver<AppServerStreamEvent>) {
+        assert_eq!(
+            stream_rx.try_recv().ok(),
+            Some(AppServerStreamEvent::ProgressUpdate(
+                "Using tool: read_file".to_string()
+            ))
+        );
+        assert_eq!(
+            stream_rx.try_recv().ok(),
+            Some(AppServerStreamEvent::AssistantMessage {
+                is_delta: true,
+                message: "Chunk text".to_string(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_runtime_writes_initialize_then_initialized_notification() {
+        // Arrange
+        let mut transport = MockGeminiRuntimeTransport::new();
+        let mut sequence = Sequence::new();
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|payload| {
+                let client_capabilities = payload
+                    .get("params")
+                    .and_then(|params| params.get("clientCapabilities"));
+                let terminal_disabled = client_capabilities
+                    .and_then(|capabilities| capabilities.get("terminal"))
+                    .and_then(Value::as_bool)
+                    .is_none_or(|terminal_enabled| !terminal_enabled);
+                let filesystem_disabled = client_capabilities
+                    .and_then(|capabilities| capabilities.get("fs"))
+                    .and_then(Value::as_object)
+                    .is_none_or(|filesystem| {
+                        let can_read_text_file = filesystem
+                            .get("readTextFile")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let can_write_text_file = filesystem
+                            .get("writeTextFile")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+
+                        !can_read_text_file && !can_write_text_file
+                    });
+
+                payload.get("method").and_then(Value::as_str) == Some("initialize")
+                    && terminal_disabled
+                    && filesystem_disabled
+            })
+            .returning(|_| Box::pin(async { Ok(()) }));
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|response_id| response_id.starts_with("init-"))
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": "init-1",
+                        "result": {
+                            "protocolVersion": 1
+                        }
+                    })
+                    .to_string())
+                })
+            });
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|payload| payload.get("method").and_then(Value::as_str) == Some("initialized"))
+            .returning(|_| Box::pin(async { Ok(()) }));
+
+        // Act
+        let initialize_result = RealGeminiAcpClient::initialize_runtime(&mut transport).await;
+
+        // Assert
+        assert_eq!(initialize_result, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn initialize_runtime_returns_error_for_json_rpc_error_payload() {
+        // Arrange
+        let mut transport = MockGeminiRuntimeTransport::new();
+        let mut sequence = Sequence::new();
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": "init-1",
+                        "error": {
+                            "code": -32000,
+                            "message": "initialize failed"
+                        }
+                    })
+                    .to_string())
+                })
+            });
+
+        // Act
+        let initialize_result = RealGeminiAcpClient::initialize_runtime(&mut transport).await;
+
+        // Assert
+        assert_eq!(initialize_result, Err("initialize failed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn start_session_writes_session_new_and_returns_session_id() {
+        // Arrange
+        let mut transport = MockGeminiRuntimeTransport::new();
+        let mut sequence = Sequence::new();
+        let folder = PathBuf::from("/tmp/worktree");
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf({
+                let folder = folder.clone();
+                move |payload| {
+                    payload.get("method").and_then(Value::as_str) == Some("session/new")
+                        && payload
+                            .get("params")
+                            .and_then(|params| params.get("cwd"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|cwd| cwd == folder.to_string_lossy())
+                }
+            })
+            .returning(|_| Box::pin(async { Ok(()) }));
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|response_id| response_id.starts_with("session-new-"))
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": "session-new-1",
+                        "result": {
+                            "sessionId": "session-123"
+                        }
+                    })
+                    .to_string())
+                })
+            });
+
+        // Act
+        let session_id = RealGeminiAcpClient::start_session(&mut transport, &folder).await;
+
+        // Assert
+        assert_eq!(session_id, Ok("session-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn run_turn_with_runtime_handles_permission_progress_chunk_and_completion() {
+        // Arrange
+        let mut transport = MockGeminiRuntimeTransport::new();
+        let mut sequence = Sequence::new();
+        let prompt_id = Arc::new(Mutex::new(None::<String>));
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+        expect_session_prompt_request(&mut transport, &mut sequence, Arc::clone(&prompt_id));
+        expect_permission_request(&mut transport, &mut sequence);
+        expect_permission_response_write(&mut transport, &mut sequence);
+        expect_tool_call_update(&mut transport, &mut sequence);
+        expect_assistant_chunk_update(&mut transport, &mut sequence);
+        expect_prompt_completion(&mut transport, &mut sequence, Arc::clone(&prompt_id));
+
+        // Act
+        let run_turn_result = RealGeminiAcpClient::run_turn_with_runtime(
+            &mut transport,
+            "session-1",
+            "List files",
+            stream_tx,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(
+            run_turn_result,
+            Ok(("Chunk text".to_string(), 2_u64, 3_u64))
+        );
+        assert_turn_stream_events(&mut stream_rx);
+    }
 
     #[test]
     fn parse_session_new_response_returns_session_id_for_success_payload() {

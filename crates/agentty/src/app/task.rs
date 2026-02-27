@@ -428,6 +428,67 @@ mod tests {
         );
     }
 
+    /// Inserts a test session with the provided model and status.
+    async fn insert_test_session(
+        db: &Database,
+        session_id: &str,
+        session_model: AgentModel,
+        status: &str,
+    ) {
+        let project_id = db
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+
+        db.insert_session(
+            session_id,
+            session_model.as_str(),
+            "main",
+            status,
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+    }
+
+    /// Builds mocks for a successful app-server turn and no-op commit flow.
+    fn build_success_turn_mocks() -> (MockAppServerClient, MockGitClient) {
+        let mut mock_app_server_client = MockAppServerClient::new();
+        mock_app_server_client
+            .expect_run_turn()
+            .times(1)
+            .returning(|_, stream_tx| {
+                let _ =
+                    stream_tx.send(AppServerStreamEvent::ProgressUpdate("Thinking".to_string()));
+                let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
+                    is_delta: false,
+                    message: "streamed assistant output".to_string(),
+                });
+
+                Box::pin(async {
+                    Ok(AppServerTurnResponse {
+                        assistant_message: "fallback message".to_string(),
+                        context_reset: false,
+                        input_tokens: 9,
+                        output_tokens: 7,
+                        pid: Some(5150),
+                    })
+                })
+            });
+
+        let mut mock_git_client = MockGitClient::new();
+        mock_git_client
+            .expect_diff()
+            .times(1..=2)
+            .returning(|_, _| Box::pin(async { Ok(String::new()) }));
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .returning(|_, _, _| Box::pin(async { Err("Nothing to commit".to_string()) }));
+
+        (mock_app_server_client, mock_git_client)
+    }
+
     #[tokio::test]
     /// Ensures app-server turn failures clear runtime process state and
     /// restore `Review` from `InProgress`.
@@ -581,54 +642,14 @@ mod tests {
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let project_id = db
-            .upsert_project("/tmp/project", None)
-            .await
-            .expect("failed to upsert project");
         let session_id = "session-id";
-        db.insert_session(
-            session_id,
-            AgentModel::Gpt53Codex.as_str(),
-            "main",
-            "InProgress",
-            project_id,
-        )
-        .await
-        .expect("failed to insert session");
-        let mut mock_app_server_client = MockAppServerClient::new();
-        mock_app_server_client
-            .expect_run_turn()
-            .times(1)
-            .returning(|_, stream_tx| {
-                let _ =
-                    stream_tx.send(AppServerStreamEvent::ProgressUpdate("Thinking".to_string()));
-                let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
-                    is_delta: false,
-                    message: "streamed assistant output".to_string(),
-                });
-                Box::pin(async {
-                    Ok(AppServerTurnResponse {
-                        assistant_message: "fallback message".to_string(),
-                        context_reset: false,
-                        input_tokens: 9,
-                        output_tokens: 7,
-                        pid: Some(5150),
-                    })
-                })
-            });
-        let mut mock_git_client = MockGitClient::new();
-        mock_git_client
-            .expect_diff()
-            .times(1)
-            .returning(|_, _| Box::pin(async { Ok(String::new()) }));
-        mock_git_client
-            .expect_commit_all_preserving_single_commit()
-            .times(1)
-            .returning(|_, _, _| Box::pin(async { Err("Nothing to commit".to_string()) }));
+        insert_test_session(&db, session_id, AgentModel::Gpt53Codex, "InProgress").await;
+        let (mock_app_server_client, mock_git_client) = build_success_turn_mocks();
         let child_pid = Arc::new(Mutex::new(None));
         let output = Arc::new(Mutex::new(String::new()));
         let status = Arc::new(Mutex::new(Status::InProgress));
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+
         // Act
         let worktree_dir = dir.path().join("worktree");
         std::fs::create_dir_all(&worktree_dir).expect("failed to create worktree dir");
