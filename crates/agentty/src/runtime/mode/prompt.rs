@@ -1026,11 +1026,14 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
+        let mock_app_server: std::sync::Arc<dyn crate::infra::app_server::AppServerClient> =
+            std::sync::Arc::new(crate::infra::app_server::MockAppServerClient::new());
         let mut app = App::new(
             base_path.clone(),
             base_path,
             Some("main".to_string()),
             database,
+            mock_app_server,
         )
         .await;
 

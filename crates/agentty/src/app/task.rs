@@ -590,7 +590,7 @@ mod tests {
         let mut mock_git_client = MockGitClient::new();
         mock_git_client
             .expect_diff()
-            .times(2)
+            .times(1)
             .returning(|_, _| Box::pin(async { Ok(String::new()) }));
         mock_git_client
             .expect_commit_all_preserving_single_commit()
@@ -601,13 +601,15 @@ mod tests {
         let status = Arc::new(Mutex::new(Status::InProgress));
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
         // Act
+        let worktree_dir = dir.path().join("worktree");
+        std::fs::create_dir_all(&worktree_dir).expect("failed to create worktree dir");
         let result = TaskService::run_app_server_task(
             Arc::new(mock_app_server_client),
             RunAppServerTaskInput {
                 app_event_tx,
                 child_pid: Arc::clone(&child_pid),
                 db: db.clone(),
-                folder: dir.path().join("worktree"),
+                folder: worktree_dir,
                 git_client: Arc::new(mock_git_client),
                 id: session_id.to_string(),
                 output: Arc::clone(&output),

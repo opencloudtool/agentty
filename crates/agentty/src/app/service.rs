@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use crate::app::AppEvent;
 use crate::db::Database;
 use crate::infra::app_server::AppServerClient;
-use crate::infra::app_server_router::RoutingAppServerClient;
 use crate::infra::git::GitClient;
 
 /// Shared app dependencies used by managers and background workflows.
@@ -21,25 +20,9 @@ pub struct AppServices {
 }
 
 impl AppServices {
-    /// Creates a shared service container.
-    pub(crate) fn new(
-        base_path: PathBuf,
-        db: Database,
-        event_tx: mpsc::UnboundedSender<AppEvent>,
-        git_client: Arc<dyn GitClient>,
-    ) -> Self {
-        Self::new_with_clients(
-            base_path,
-            db,
-            event_tx,
-            git_client,
-            Arc::new(RoutingAppServerClient::new()),
-        )
-    }
-
     /// Creates a shared service container with explicit external client
     /// dependencies.
-    pub(crate) fn new_with_clients(
+    pub(crate) fn new(
         base_path: PathBuf,
         db: Database,
         event_tx: mpsc::UnboundedSender<AppEvent>,

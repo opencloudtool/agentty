@@ -197,9 +197,15 @@ mod tests {
         SessionHandles, SessionSize, SessionStats, Status,
     };
     use crate::infra::agent::tests::MockAgentBackend;
+    use crate::infra::app_server::MockAppServerClient;
     use crate::infra::db::Database;
     use crate::infra::git;
     use crate::ui::state::app_mode::AppMode;
+
+    /// Returns a mock app-server client wrapped in `Arc` for test injection.
+    fn mock_app_server() -> Arc<dyn crate::infra::app_server::AppServerClient> {
+        Arc::new(MockAppServerClient::new())
+    }
 
     fn create_mock_backend() -> MockAgentBackend {
         let mut mock = MockAgentBackend::new();
@@ -272,7 +278,7 @@ mod tests {
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        App::new(path, working_dir, None, db).await
+        App::new(path, working_dir, None, db, mock_app_server()).await
     }
 
     fn setup_test_git_repo(path: &Path) {
@@ -324,6 +330,7 @@ mod tests {
             path.to_path_buf(),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await
     }
@@ -383,7 +390,7 @@ mod tests {
                 &session_id,
                 prompt,
                 &start_backend,
-                AgentModel::Gemini3FlashPreview,
+                AgentModel::ClaudeOpus46,
             )
             .await;
     }
@@ -631,6 +638,7 @@ mod tests {
             working_dir,
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -907,6 +915,7 @@ mod tests {
             dir.path().to_path_buf(),
             Some("main".to_string()),
             db.clone(),
+            mock_app_server(),
         )
         .await;
         app.services
@@ -935,6 +944,7 @@ mod tests {
             dir.path().to_path_buf(),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
         let second_session_id = restarted_app
@@ -1275,6 +1285,7 @@ mod tests {
             PathBuf::from("/tmp/test"),
             None,
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -1357,6 +1368,7 @@ mod tests {
             dir.path().to_path_buf(),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -1437,6 +1449,7 @@ mod tests {
             PathBuf::from("/tmp/test"),
             None,
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -1632,6 +1645,7 @@ FROM session
             PathBuf::from("/tmp/test"),
             None,
             db,
+            mock_app_server(),
         )
         .await;
         app.sessions.table_state.select(Some(1));
@@ -1707,6 +1721,7 @@ FROM session
             PathBuf::from("/tmp/test"),
             None,
             db,
+            mock_app_server(),
         )
         .await;
         let selected_session_id = app.sessions.sessions[1].id.clone();
@@ -1760,6 +1775,7 @@ FROM session
             PathBuf::from("/tmp/test"),
             None,
             db,
+            mock_app_server(),
         )
         .await;
         let existing_limits = codex_usage_limits_fixture(42);
@@ -1811,6 +1827,7 @@ FROM session
             PathBuf::from("/tmp/test"),
             None,
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -1847,6 +1864,7 @@ FROM session
             PathBuf::from("/tmp/test"),
             None,
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -1979,7 +1997,7 @@ FROM session
                 &session_id,
                 "compute size after turn",
                 &backend,
-                AgentModel::Gemini3FlashPreview,
+                AgentModel::ClaudeOpus46,
             )
             .await;
         wait_for_status(&mut app, &session_id, Status::Review).await;
@@ -2002,8 +2020,8 @@ FROM session
             .iter()
             .find(|db_session| db_session.id == session_id)
             .expect("missing persisted session");
-        assert_eq!(session.size, SessionSize::Xs);
-        assert_eq!(db_session.size, "XS");
+        assert_eq!(session.size, SessionSize::S);
+        assert_eq!(db_session.size, "S");
     }
 
     #[tokio::test]
@@ -2089,6 +2107,7 @@ FROM session
             dir.path().to_path_buf(),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -2175,6 +2194,7 @@ FROM session
             dir.path().to_path_buf(),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -2274,6 +2294,7 @@ FROM session
             dir.path().to_path_buf(),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
         let repo_root = dir.path().to_path_buf();
@@ -2304,8 +2325,13 @@ FROM session
         let base_path = app.services.base_path().to_path_buf();
         let db = app.services.db().clone();
         let event_sender = app.services.event_sender();
-        app.services =
-            crate::app::AppServices::new(base_path, db, event_sender, Arc::new(mock_git_client));
+        app.services = crate::app::AppServices::new(
+            base_path,
+            db,
+            event_sender,
+            Arc::new(mock_git_client),
+            mock_app_server(),
+        );
 
         // Create a session that writes a file so commit_all has something to commit
         let mut mock = MockAgentBackend::new();
@@ -2436,6 +2462,7 @@ FROM session
             dir.path().to_path_buf(),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -2459,19 +2486,19 @@ FROM session
                 &session_id,
                 "NoChanges",
                 &mock,
-                AgentModel::Gemini3FlashPreview,
+                AgentModel::ClaudeOpus46,
             )
             .await;
 
         // Act — wait for agent to finish
         wait_for_status(&mut app, &session_id, Status::Review).await;
 
-        // Assert — no commit output (nothing to commit is silently ignored)
+        // Assert — no-op commit output is visible
         let session = &app.sessions.sessions[0];
         let output = session.output.clone();
         assert!(
-            !output.contains("[Commit]"),
-            "should not contain commit output when nothing to commit"
+            output.contains("[Commit] No changes to commit."),
+            "should contain no-op commit output when nothing to commit"
         );
         assert!(
             !output.contains("[Commit Error]"),
@@ -2543,6 +2570,7 @@ FROM session
             PathBuf::from("/tmp/test"),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -2570,6 +2598,7 @@ FROM session
             PathBuf::from("/tmp/test"),
             Some("main".to_string()),
             db,
+            mock_app_server(),
         )
         .await;
 
@@ -3089,8 +3118,13 @@ FROM session
         let base_path = app.services.base_path().to_path_buf();
         let db = app.services.db().clone();
         let event_sender = app.services.event_sender();
-        app.services =
-            crate::app::AppServices::new(base_path, db, event_sender, Arc::new(mock_git_client));
+        app.services = crate::app::AppServices::new(
+            base_path,
+            db,
+            event_sender,
+            Arc::new(mock_git_client),
+            mock_app_server(),
+        );
         let session_id = app
             .create_session()
             .await

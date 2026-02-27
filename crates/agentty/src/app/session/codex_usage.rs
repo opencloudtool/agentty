@@ -284,12 +284,15 @@ fn parse_numeric_string_as_i64(value: &str) -> Option<i64> {
 }
 
 /// Converts one finite `f64` to the nearest `i64` when in range.
+///
+/// Returns `None` for non-finite values or values outside `i64` range.
+/// Uses string formatting to avoid direct float-to-int casts.
 fn parse_f64_as_i64(value: f64) -> Option<i64> {
     if !value.is_finite() {
         return None;
     }
 
-    serde_json::Number::from_f64(value.round()).and_then(|rounded_value| rounded_value.as_i64())
+    format!("{:.0}", value.round()).parse::<i64>().ok()
 }
 
 #[cfg(test)]

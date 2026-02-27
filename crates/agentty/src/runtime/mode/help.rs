@@ -41,13 +41,25 @@ mod tests {
     use crate::ui::state::app_mode::{DoneSessionOutputMode, HelpContext};
     use crate::ui::state::help_action::HelpAction;
 
+    /// Returns a mock app-server client wrapped in `Arc` for test injection.
+    fn mock_app_server() -> std::sync::Arc<dyn crate::infra::app_server::AppServerClient> {
+        std::sync::Arc::new(crate::infra::app_server::MockAppServerClient::new())
+    }
+
     async fn new_test_app() -> (App, tempfile::TempDir) {
         let base_dir = tempdir().expect("failed to create temp dir");
         let base_path = base_dir.path().to_path_buf();
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let app = App::new(base_path.clone(), base_path, None, database).await;
+        let app = App::new(
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            mock_app_server(),
+        )
+        .await;
 
         (app, base_dir)
     }

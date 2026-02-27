@@ -19,7 +19,14 @@ async fn main() -> io::Result<()> {
     let db_path = home.join(DB_DIR).join(DB_FILE);
     let db = Database::open(&db_path).await.map_err(io::Error::other)?;
 
-    let mut app = App::new(base_path, working_dir, git_branch, db).await;
+    let mut app = App::new(
+        base_path,
+        working_dir,
+        git_branch,
+        db,
+        std::sync::Arc::new(agentty::infra::app_server_router::RoutingAppServerClient::new()),
+    )
+    .await;
 
     agentty::runtime::run(&mut app).await
 }

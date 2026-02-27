@@ -151,6 +151,7 @@ impl App {
         working_dir: PathBuf,
         git_branch: Option<String>,
         db: Database,
+        app_server_client: Arc<dyn crate::infra::app_server::AppServerClient>,
     ) -> Self {
         let current_project_id = db
             .upsert_project(&working_dir.to_string_lossy(), git_branch.as_deref())
@@ -197,7 +198,13 @@ impl App {
 
         let git_status_cancel = Arc::new(AtomicBool::new(false));
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let services = AppServices::new(base_path, db.clone(), event_tx.clone(), git_client);
+        let services = AppServices::new(
+            base_path,
+            db.clone(),
+            event_tx.clone(),
+            git_client,
+            app_server_client,
+        );
         let projects = ProjectManager::new(
             active_project_id,
             active_project_name,
@@ -230,16 +237,7 @@ impl App {
             stats_activity,
         );
 
-        task::TaskService::spawn_codex_usage_limits_task(&event_tx);
-        task::TaskService::spawn_version_check_task(&event_tx);
-        if projects.has_git_branch() {
-            task::TaskService::spawn_git_status_task(
-                projects.working_dir(),
-                projects.git_status_cancel(),
-                event_tx,
-                services.git_client(),
-            );
-        }
+        Self::spawn_background_tasks(&event_tx, &projects, &services);
 
         Self {
             mode: AppMode::List,
@@ -252,6 +250,25 @@ impl App {
             latest_available_version: None,
             merge_queue: MergeQueue::default(),
             session_progress_messages: HashMap::new(),
+        }
+    }
+
+    /// Spawns background pollers for git status, Codex usage limits, and
+    /// version checks.
+    fn spawn_background_tasks(
+        event_tx: &mpsc::UnboundedSender<AppEvent>,
+        projects: &ProjectManager,
+        services: &AppServices,
+    ) {
+        task::TaskService::spawn_codex_usage_limits_task(event_tx);
+        task::TaskService::spawn_version_check_task(event_tx);
+        if projects.has_git_branch() {
+            task::TaskService::spawn_git_status_task(
+                projects.working_dir(),
+                projects.git_status_cancel(),
+                event_tx.clone(),
+                services.git_client(),
+            );
         }
     }
 
