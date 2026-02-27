@@ -391,6 +391,18 @@ mod tests {
             .any(|event| matches!(event, AppEvent::RefreshSessions))
     }
 
+    /// Asserts that session-update and refresh events were both emitted.
+    fn assert_session_refresh_events(observed_events: &[AppEvent], session_id: &str) {
+        assert!(
+            has_session_updated_event(observed_events, session_id),
+            "expected at least one SessionUpdated event"
+        );
+        assert!(
+            has_refresh_sessions_event(observed_events),
+            "expected refresh notification after status transition"
+        );
+    }
+
     /// Clones the current session output buffer from shared state.
     fn output_snapshot(output: &Arc<Mutex<String>>) -> String {
         output
@@ -642,14 +654,7 @@ mod tests {
         assert_eq!(sessions[0].status, Status::Review.to_string());
         assert_eq!(sessions[0].input_tokens, 9);
         assert_eq!(sessions[0].output_tokens, 7);
-        assert!(
-            has_session_updated_event(&observed_events, session_id),
-            "expected at least one SessionUpdated event"
-        );
-        assert!(
-            has_refresh_sessions_event(&observed_events),
-            "expected refresh notification after status transition"
-        );
+        assert_session_refresh_events(&observed_events, session_id);
     }
 
     #[tokio::test]

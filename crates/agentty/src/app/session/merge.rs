@@ -380,7 +380,7 @@ impl SyncSessionStartError {
     pub(crate) fn detail_message(&self) -> String {
         match self {
             Self::MainHasUncommittedChanges { default_branch } => format!(
-                "Sync cannot run while `{default_branch}` has uncommitted changes. Commit or \
+                "Sync cannot run while `{default_branch}` has uncommitted changes.\nCommit or \
                  stash changes in `{default_branch}`, then try again."
             ),
             Self::Other(detail) => detail.clone(),
@@ -1867,6 +1867,24 @@ mod tests {
         assert!(
             error.contains("Cleanup with `git rebase --abort` failed: abort failed"),
             "error should include abort failure detail"
+        );
+    }
+
+    #[test]
+    fn test_detail_message_for_uncommitted_changes_uses_sentence_lines() {
+        // Arrange
+        let sync_error = SyncSessionStartError::MainHasUncommittedChanges {
+            default_branch: "main".to_string(),
+        };
+
+        // Act
+        let detail_message = sync_error.detail_message();
+
+        // Assert
+        assert_eq!(
+            detail_message,
+            "Sync cannot run while `main` has uncommitted changes.\nCommit or stash changes in \
+             `main`, then try again."
         );
     }
 

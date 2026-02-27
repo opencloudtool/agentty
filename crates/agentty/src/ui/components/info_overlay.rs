@@ -35,6 +35,27 @@ impl<'a> InfoOverlay<'a> {
         self.is_loading = loading;
         self
     }
+
+    /// Splits the body message into styled lines and preserves explicit
+    /// newline breaks.
+    fn message_lines(&self) -> Vec<Line<'a>> {
+        let mut message_lines = self
+            .message
+            .lines()
+            .map(|message_line| {
+                Line::from(Span::styled(
+                    message_line,
+                    Style::default().fg(Color::White),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        if message_lines.is_empty() {
+            message_lines.push(Line::from(""));
+        }
+
+        message_lines
+    }
 }
 
 impl Component for InfoOverlay<'_> {
@@ -53,32 +74,26 @@ impl Component for InfoOverlay<'_> {
         );
 
         let title = format!(" {} ", self.title);
-        let paragraph_lines = if self.is_loading {
+        let mut paragraph_lines = self.message_lines();
+
+        if self.is_loading {
             let loading_line = format!("{} Sync in progress...", Icon::current_spinner());
 
-            vec![
-                Line::from(Span::styled(
-                    self.message,
-                    Style::default().fg(Color::White),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(loading_line, Style::default().fg(Color::Cyan))),
-            ]
+            paragraph_lines.push(Line::from(""));
+            paragraph_lines.push(Line::from(Span::styled(
+                loading_line,
+                Style::default().fg(Color::Cyan),
+            )));
         } else {
             let ok_style = Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD);
 
-            vec![
-                Line::from(Span::styled(
-                    self.message,
-                    Style::default().fg(Color::White),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(" OK ", ok_style)),
-            ]
-        };
+            paragraph_lines.push(Line::from(""));
+            paragraph_lines.push(Line::from(Span::styled(" OK ", ok_style)));
+        }
+
         let paragraph = Paragraph::new(paragraph_lines)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true })
@@ -157,5 +172,28 @@ mod tests {
         let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(text.contains("Sync in progress..."));
         assert!(!text.contains("OK"));
+    }
+
+    #[test]
+    fn test_message_lines_keeps_each_sentence_on_its_own_line() {
+        // Arrange
+        let overlay = InfoOverlay::new(
+            "Sync blocked",
+            "Sync cannot run on this branch.\nCommit or stash, then retry.",
+        );
+
+        // Act
+        let message_lines = overlay.message_lines();
+
+        // Assert
+        assert_eq!(message_lines.len(), 2);
+        assert_eq!(
+            message_lines[0].spans[0].content.as_ref(),
+            "Sync cannot run on this branch."
+        );
+        assert_eq!(
+            message_lines[1].spans[0].content.as_ref(),
+            "Commit or stash, then retry."
+        );
     }
 }
