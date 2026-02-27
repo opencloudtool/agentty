@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.1] - 2026-02-26
+
+### Added
+
+- **UI:** Add `Shift+Arrow` and `Alt/Shift+Backspace` word-wise cursor movement in prompt mode.
+- **Models:** Stream Gemini assistant chunks to the UI during turns and handle ACP permission requests.
+- **Skills:** Add code review skill.
+- **Tests:** Add regression tests and improve coverage with mocked clients.
+
+### Changed
+
+- **UI:** Project switcher supports `j`/`k` navigation, unfiltered list navigation, and visible selection.
+- **UI:** Report sync outcome details in completion popup and keep confirmation choices visible.
+- **UX:** List mode opens canceled sessions on `Enter`.
+- **Models:** Codex resume uses `--last` only without replay history and enforces high reasoning effort.
+- **Models:** Rename Gemini Pro preview variant to Gemini 3.1.
+- **Session Output:** Keep clean auto-commit silent, report no-op states, and ignore synthetic Codex completion messages.
+- **Architecture:** Centralize git command execution and isolate Codex usage-limit loading.
+- **Docs:** Update documentation to highlight Agentty self-hosting and align docs page widths.
+
+### Fixed
+
+- **Models:** Handle Gemini `session/new` error responses explicitly and ignore empty assistant chunks.
+- **UI:** Stabilize site header across routes.
+
+### Removed
+
+- **UI:** Remove quick project switcher mode and overlay.
+
+### Contributors
+
+- @andagaev
+- @minev-dev
+
 ## [v0.4.0] - 2026-02-24
 
 ### Added
