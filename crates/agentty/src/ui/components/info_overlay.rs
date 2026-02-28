@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::ui::Component;
 use crate::ui::icon::Icon;
+use crate::ui::text_util::wrap_lines;
 
 const MIN_OVERLAY_HEIGHT: u16 = 7;
 const MIN_OVERLAY_WIDTH: u16 = 38;
@@ -56,23 +57,39 @@ impl<'a> InfoOverlay<'a> {
 
         message_lines
     }
+
+    /// Returns popup width constrained by overlay defaults and frame bounds.
+    fn popup_width(area: Rect) -> u16 {
+        (area.width * OVERLAY_WIDTH_PERCENT / 100)
+            .max(MIN_OVERLAY_WIDTH)
+            .min(area.width)
+    }
+
+    /// Returns popup height sized to keep wrapped body content and the action
+    /// row visible.
+    fn popup_height(&self, area: Rect, width: u16) -> u16 {
+        let inner_width = width.saturating_sub(2).max(1);
+        let min_height = (area.height * OVERLAY_HEIGHT_PERCENT / 100)
+            .max(MIN_OVERLAY_HEIGHT)
+            .min(area.height);
+        let action_row = if self.is_loading {
+            format!("{} Sync in progress...", Icon::current_spinner())
+        } else {
+            "OK".to_string()
+        };
+        let body_with_action = format!("{}\n\n{action_row}", self.message);
+        let required_inner_lines = wrap_lines(&body_with_action, usize::from(inner_width)).len();
+        let required_height = u16::try_from(required_inner_lines.saturating_add(2))
+            .unwrap_or(area.height)
+            .min(area.height);
+
+        required_height.max(min_height)
+    }
 }
 
 impl Component for InfoOverlay<'_> {
     fn render(&self, f: &mut Frame, area: Rect) {
-        let width = (area.width * OVERLAY_WIDTH_PERCENT / 100)
-            .max(MIN_OVERLAY_WIDTH)
-            .min(area.width);
-        let height = (area.height * OVERLAY_HEIGHT_PERCENT / 100)
-            .max(MIN_OVERLAY_HEIGHT)
-            .min(area.height);
-        let popup_area = Rect::new(
-            area.x + (area.width.saturating_sub(width)) / 2,
-            area.y + (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        );
-
+        let width = Self::popup_width(area);
         let title = format!(" {} ", self.title);
         let mut paragraph_lines = self.message_lines();
 
@@ -103,6 +120,13 @@ impl Component for InfoOverlay<'_> {
                     .border_style(Style::default().fg(Color::Yellow))
                     .title(Span::styled(title, Style::default().fg(Color::Yellow))),
             );
+        let height = self.popup_height(area, width);
+        let popup_area = Rect::new(
+            area.x + (area.width.saturating_sub(width)) / 2,
+            area.y + (area.height.saturating_sub(height)) / 2,
+            width,
+            height,
+        );
 
         f.render_widget(Clear, popup_area);
         f.render_widget(paragraph, popup_area);
@@ -172,6 +196,33 @@ mod tests {
         let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(text.contains("Sync in progress..."));
         assert!(!text.contains("OK"));
+    }
+
+    #[test]
+    fn test_info_overlay_render_keeps_ok_indicator_for_multiline_message() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let overlay = InfoOverlay::new(
+            "Sync failed",
+            "Project `agentty` on main branch `main`.\n\nGit push requires authentication for \
+             this repository.\nAuthorize git access, then run sync again.\nRun `gh auth login`, \
+             or configure credentials with a PAT/SSH key.",
+        );
+
+        // Act
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                crate::ui::Component::render(&overlay, f, area);
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let buffer = terminal.backend().buffer();
+        let content = buffer.content();
+        let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(text.contains("OK"));
     }
 
     #[test]
