@@ -1,7 +1,7 @@
 +++
 title = "Contributing"
 description = "Contribution and maintenance guides for Agentty."
-weight = 2
+weight = 3
 sort_by = "weight"
 +++
 
