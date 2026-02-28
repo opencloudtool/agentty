@@ -1,7 +1,7 @@
 +++
 title = "MCP"
 description = "Model Context Protocol setup recommendations."
-weight = 2
+weight = 4
 sort_by = "weight"
 +++
 

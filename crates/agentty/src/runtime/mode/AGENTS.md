@@ -11,3 +11,7 @@ Key handling logic split by `AppMode`.
 - [prompt.rs](prompt.rs) - Prompt mode editing and submit handling.
 - [sync_blocked.rs](sync_blocked.rs) - Sync-blocked popup key handling.
 - [session_view.rs](session_view.rs) - Session view mode navigation and actions.
+
+## Docs
+
+Keybinding changes require updating `docs/site/content/docs/usage/usage.md`.

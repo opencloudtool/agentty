@@ -182,6 +182,16 @@ minimal output (errors only).
 - **Rust Docs:** Add `///` doc comments to structs and all public functions/types in touched Rust files.
 - **Contextual Docs:** When touching a file for code changes and updating docs, also add or refresh missing/stale doc comments for related sibling and parent elements (for example `struct`, `enum`, `impl`, and closely related items) when needed for clarity.
 
+## Documentation Sync
+
+When adding, removing, or changing user-facing features (agent backends, models, keybindings, session states, UI pages), update the corresponding documentation page in `docs/site/content/docs/`. Source-side `AGENTS.md` files indicate which doc pages track their area.
+
+| Doc Page | Covers |
+|----------|--------|
+| `docs/site/content/docs/agents/backends.md` | Agent backends and models. |
+| `docs/site/content/docs/usage/usage.md` | Keybindings, session lifecycle, and workflow. |
+| `docs/site/content/docs/getting-started/overview.md` | High-level concepts and worktree isolation. |
+
 ## Git Conventions
 
 - For all commit preparation and commit message work, use `skills/git-commit/SKILL.md`.

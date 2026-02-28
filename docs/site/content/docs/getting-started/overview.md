@@ -26,8 +26,33 @@ When you start a session, Agentty does the operational heavy lifting for workflo
 1. Let the agent modify files in its worktree.
 1. Review the diff (`d`) and decide to apply or discard.
 
+## Worktree Isolation
+
+Every session runs in its own [git worktree](https://git-scm.com/docs/git-worktree),
+created automatically when the session starts:
+
+- The worktree branch is named `agentty/<hash>`, where `<hash>` is derived from
+  the session ID.
+- The branch is based on whichever branch was active when you launched `agentty`.
+- All agent edits happen inside the worktree, keeping your base branch untouched
+  until you explicitly merge.
+- If worktree creation fails (e.g., git is not installed or permissions are
+  insufficient), session creation fails atomically and displays an error.
+
+Worktrees are stored under `~/.agentty/wt/` and are cleaned up automatically
+when you delete a session.
+
+## Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Agent** | An external AI CLI backend (Gemini, Claude, or Codex) that performs coding work. See [Agents & Models](@/docs/agents/backends.md). |
+| **Session** | An isolated unit of work: one prompt, one worktree branch, one reviewable diff. See [Workflow & Keybindings](@/docs/usage/usage.md). |
+| **Project** | A git repository registered in Agentty. Switch between projects with the Projects tab. |
+| **Diff view** | Press `d` in a review-state session to see exactly what the agent changed. |
+
 ## Next Steps
 
-Continue with the `installation` guide for exact commands and the first-run setup.
-
-[Go to Installation](./installation)
+- [Installation](./installation) — install Agentty and run it for the first time.
+- [Agents & Models](@/docs/agents/backends.md) — configure backends and choose models.
+- [Workflow & Keybindings](@/docs/usage/usage.md) — learn the interface and keyboard shortcuts.
