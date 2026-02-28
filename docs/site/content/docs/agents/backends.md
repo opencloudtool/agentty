@@ -23,21 +23,16 @@ installed and available on your `PATH`.
 
 ## Selecting a Backend
 
-Set the `AGENTTY_AGENT` environment variable to choose which backend to use:
+Choose the backend from the `/model` picker:
 
 ```bash
-# Use Claude as the default agent
-export AGENTTY_AGENT=claude
-
-# Use Codex as the default agent
-export AGENTTY_AGENT=codex
-
-# Use Gemini (the default if unset)
-export AGENTTY_AGENT=gemini
+# Open model selection (backend first, then model)
+/model
 ```
 
-If `AGENTTY_AGENT` is not set or contains an unrecognized value, Agentty
-defaults to **Gemini**.
+For persistent defaults, choose a default model in the **Settings** tab
+(`Tab` to navigate, `Enter` to edit). The selected model determines which
+backend is used for new sessions.
 
 ## Available Models
 
@@ -70,8 +65,8 @@ quality, and cost.
 ## Switching Models
 
 You can switch the model for the current session using the `/model` slash
-command in the prompt input. This opens a picker showing all models available
-for the active backend.
+command in the prompt input. This opens a two-step picker: first choose the
+backend, then choose one of its models.
 
 To change the **default model** persistently, use the **Settings** tab
 (`Tab` to navigate to it, `Enter` to edit).

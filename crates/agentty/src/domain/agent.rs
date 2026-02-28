@@ -104,14 +104,6 @@ impl AgentKind {
     /// All available agent kinds, in display order.
     pub const ALL: &[AgentKind] = &[AgentKind::Gemini, AgentKind::Claude, AgentKind::Codex];
 
-    /// Parse from `AGENTTY_AGENT` env var, defaulting to Gemini.
-    pub fn from_env() -> Self {
-        std::env::var("AGENTTY_AGENT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(Self::Gemini)
-    }
-
     /// Returns the default model for this agent kind.
     pub fn default_model(self) -> AgentModel {
         match self {
