@@ -456,6 +456,42 @@ pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), String> 
     Err("Unexpected output format from git rev-list".to_string())
 }
 
+/// Returns upstream commit subjects that are not yet in local `HEAD`.
+///
+/// The returned order is oldest to newest to match pull application order.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository root
+///
+/// # Errors
+/// Returns an error when `git log` fails or upstream tracking refs are
+/// unavailable.
+pub async fn list_upstream_commit_titles(repo_path: PathBuf) -> Result<Vec<String>, String> {
+    let git_output = run_git_command(
+        repo_path,
+        vec![
+            "log".to_string(),
+            "--reverse".to_string(),
+            "--pretty=%s".to_string(),
+            "HEAD..@{u}".to_string(),
+        ],
+        "Git log failed".to_string(),
+    )
+    .await?;
+
+    Ok(parse_commit_titles(&git_output))
+}
+
+/// Parses newline-delimited commit subjects from `git log` output.
+fn parse_commit_titles(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 /// Resolves the commit/tree to use as the `git diff` "before" side.
 ///
 /// Starts from the merge-base fallback and, when `git cherry` reports leading

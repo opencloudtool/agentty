@@ -1193,17 +1193,35 @@ impl App {
     }
 
     /// Builds success copy for sync completion with pull/push/conflict metrics
-    /// rendered on separate lines.
+    /// rendered on separate lines, including pulled commit titles when
+    /// available.
     fn sync_success_message(sync_main_outcome: &SyncMainOutcome) -> String {
         let pulled_summary = Self::sync_commit_summary("pulled", sync_main_outcome.pulled_commits);
+        let pulled_titles =
+            Self::sync_pulled_commit_titles_summary(&sync_main_outcome.pulled_commit_titles);
         let pushed_summary = Self::sync_commit_summary("pushed", sync_main_outcome.pushed_commits);
         let conflict_summary =
             Self::sync_conflict_summary(&sync_main_outcome.resolved_conflict_files);
 
         format!(
             "Successfully synchronized with its \
-             upstream.\n{pulled_summary}\n{pushed_summary}\n{conflict_summary}"
+             upstream.\n{pulled_summary}{pulled_titles}\n{pushed_summary}\n{conflict_summary}"
         )
+    }
+
+    /// Returns pulled commit titles formatted as an indented list.
+    fn sync_pulled_commit_titles_summary(pulled_commit_titles: &[String]) -> String {
+        if pulled_commit_titles.is_empty() {
+            return String::new();
+        }
+
+        let pulled_title_lines = pulled_commit_titles
+            .iter()
+            .map(|title| format!("  - {title}"))
+            .collect::<Vec<String>>()
+            .join("\n");
+
+        format!("\nnewly pulled commits:\n{pulled_title_lines}")
     }
 
     /// Returns sync failure copy with actionable guidance for auth failures.
@@ -1584,6 +1602,10 @@ mod tests {
         };
         let sync_main_outcome = SyncMainOutcome {
             pulled_commits: Some(2),
+            pulled_commit_titles: vec![
+                "Add audit log indexing".to_string(),
+                "Fix merge conflict prompt wording".to_string(),
+            ],
             pushed_commits: Some(1),
             resolved_conflict_files: vec!["src/lib.rs".to_string()],
         };
@@ -1604,11 +1626,15 @@ mod tests {
                 && default_branch.as_deref() == Some("develop")
                 && message.contains("Successfully synchronized")
                 && message.contains("2 commits pulled")
+                && message.contains("newly pulled commits:")
+                && message.contains("  - Add audit log indexing")
+                && message.contains("  - Fix merge conflict prompt wording")
                 && message.contains("1 commit pushed")
                 && message.contains("conflicts fixed: src/lib.rs")
                 && message.contains(
-                    "Successfully synchronized with its upstream.\n2 commits pulled\n1 commit \
-                     pushed\nconflicts fixed: src/lib.rs"
+                    "Successfully synchronized with its upstream.\n2 commits pulled\nnewly \
+                     pulled commits:\n  - Add audit log indexing\n  - Fix merge conflict prompt \
+                     wording\n1 commit pushed\nconflicts fixed: src/lib.rs"
                 )
                 && project_name.as_deref() == Some("agentty")
         ));

@@ -26,8 +26,8 @@ pub use repo::{main_repo_root, repo_url};
 /// Re-exported commit/sync/diff APIs.
 pub use sync::{
     PullRebaseResult, commit_all, commit_all_preserving_single_commit, delete_branch, diff,
-    fetch_remote, get_ahead_behind, head_short_hash, is_worktree_clean, pull_rebase,
-    push_current_branch, stage_all,
+    fetch_remote, get_ahead_behind, head_short_hash, is_worktree_clean,
+    list_upstream_commit_titles, pull_rebase, push_current_branch, stage_all,
 };
 /// Re-exported worktree and branch-detection APIs.
 pub use worktree::{create_worktree, detect_git_info, find_git_repo_root, remove_worktree};
@@ -244,6 +244,17 @@ pub trait GitClient: Send + Sync {
     /// Returns an error when upstream tracking information is unavailable.
     fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), String>>;
 
+    /// Returns commit subjects that exist in upstream but not in local
+    /// `HEAD`.
+    ///
+    /// # Errors
+    /// Returns an error when upstream tracking data or commit history cannot be
+    /// read.
+    fn list_upstream_commit_titles(
+        &self,
+        repo_path: PathBuf,
+    ) -> GitFuture<Result<Vec<String>, String>>;
+
     /// Reads the configured origin URL for `repo_path`.
     ///
     /// # Errors
@@ -404,6 +415,13 @@ impl GitClient for RealGitClient {
 
     fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), String>> {
         Box::pin(async move { get_ahead_behind(repo_path).await })
+    }
+
+    fn list_upstream_commit_titles(
+        &self,
+        repo_path: PathBuf,
+    ) -> GitFuture<Result<Vec<String>, String>> {
+        Box::pin(async move { list_upstream_commit_titles(repo_path).await })
     }
 
     fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
@@ -911,6 +929,65 @@ mod tests {
 
         // Assert
         assert_eq!(result, Ok(PullRebaseResult::Completed));
+    }
+
+    #[tokio::test]
+    async fn test_list_upstream_commit_titles_returns_error_without_upstream() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+
+        // Act
+        let result = list_upstream_commit_titles(dir.path().to_path_buf()).await;
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_upstream_commit_titles_returns_new_upstream_commit_titles() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        let contributor_dir = tempdir().expect("failed to create contributor temp dir");
+        let contributor_clone_path = contributor_dir.path().join("clone");
+        setup_test_git_repo(dir.path());
+        run_git_command(remote_dir.path(), &["init", "--bare"]);
+
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        let contributor_clone_path_text = contributor_clone_path.to_string_lossy().to_string();
+        run_git_command(dir.path(), &["remote", "add", "origin", &remote_path]);
+        run_git_command(dir.path(), &["push", "-u", "origin", "main"]);
+
+        run_git_command(
+            contributor_dir.path(),
+            &["clone", &remote_path, &contributor_clone_path_text],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["config", "user.name", "Contributor User"],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["config", "user.email", "contributor@example.com"],
+        );
+        fs::write(contributor_clone_path.join("remote.txt"), "remote change")
+            .expect("failed to write remote change");
+        run_git_command(&contributor_clone_path, &["add", "remote.txt"]);
+        run_git_command(
+            &contributor_clone_path,
+            &["commit", "-m", "Remote commit title"],
+        );
+        run_git_command(&contributor_clone_path, &["push", "origin", "main"]);
+        run_git_command(dir.path(), &["fetch", "origin"]);
+
+        // Act
+        let titles = list_upstream_commit_titles(dir.path().to_path_buf())
+            .await
+            .expect("failed to list upstream commit titles");
+
+        // Assert
+        assert_eq!(titles, vec!["Remote commit title".to_string()]);
     }
 
     #[tokio::test]

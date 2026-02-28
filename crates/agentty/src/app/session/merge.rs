@@ -363,6 +363,8 @@ pub(crate) enum SyncSessionStartError {
 pub(crate) struct SyncMainOutcome {
     /// Number of commits rebased from upstream into the local branch.
     pub(crate) pulled_commits: Option<u32>,
+    /// Commit titles discovered upstream and pulled during sync.
+    pub(crate) pulled_commit_titles: Vec<String>,
     /// Number of local commits pushed to upstream during sync.
     pub(crate) pushed_commits: Option<u32>,
     /// Paths that were conflicted and resolved during assisted sync rebase.
@@ -814,6 +816,10 @@ impl SessionManager {
         }
 
         let ahead_behind_before_pull = git_client.get_ahead_behind(working_dir.clone()).await.ok();
+        let pulled_commit_titles = git_client
+            .list_upstream_commit_titles(working_dir.clone())
+            .await
+            .unwrap_or_default();
 
         let pull_result = git_client
             .pull_rebase(working_dir.clone())
@@ -853,6 +859,7 @@ impl SessionManager {
 
         Ok(SyncMainOutcome {
             pulled_commits,
+            pulled_commit_titles,
             pushed_commits,
             resolved_conflict_files,
         })
@@ -1951,6 +1958,17 @@ mod tests {
             .times(1)
             .return_once(|_| Box::pin(async { Ok((1, 2)) }));
         mock_git_client
+            .expect_list_upstream_commit_titles()
+            .times(1)
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(vec![
+                        "Update changelog format".to_string(),
+                        "Fix sync popup copy".to_string(),
+                    ])
+                })
+            });
+        mock_git_client
             .expect_get_ahead_behind()
             .times(1)
             .return_once(|_| Box::pin(async { Ok((1, 0)) }));
@@ -2011,6 +2029,10 @@ mod tests {
             result,
             Ok(SyncMainOutcome {
                 pulled_commits: Some(2),
+                pulled_commit_titles: vec![
+                    "Update changelog format".to_string(),
+                    "Fix sync popup copy".to_string(),
+                ],
                 pushed_commits: Some(1),
                 resolved_conflict_files: vec!["src/lib.rs".to_string()],
             }),
@@ -2035,6 +2057,10 @@ mod tests {
             .expect_get_ahead_behind()
             .times(1)
             .returning(|_| Box::pin(async { Ok((0, 1)) }));
+        mock_git_client
+            .expect_list_upstream_commit_titles()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(vec!["Upstream patch".to_string()]) }));
         mock_git_client
             .expect_pull_rebase()
             .times(1)
