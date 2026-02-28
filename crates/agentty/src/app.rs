@@ -1042,6 +1042,9 @@ impl App {
     }
 
     /// Builds final sync popup mode from background sync completion result.
+    ///
+    /// Authentication-related push failures are normalized to actionable
+    /// authorization guidance so users can recover quickly.
     fn sync_main_popup_mode(
         sync_main_result: Result<SyncMainOutcome, SyncSessionStartError>,
         sync_popup_context: &SyncPopupContext,
@@ -1067,7 +1070,7 @@ impl App {
                 project_name: Some(sync_popup_context.project_name.clone()),
                 default_branch: Some(sync_popup_context.default_branch.clone()),
                 is_loading: false,
-                message: sync_error.detail_message(),
+                message: Self::sync_failure_message(&sync_error),
                 title: "Sync failed".to_string(),
             },
         }
@@ -1084,6 +1087,41 @@ impl App {
             "Successfully synchronized with its upstream.\n{pulled_summary}; {pushed_summary}; \
              {conflict_summary}."
         )
+    }
+
+    /// Returns sync failure copy with actionable guidance for auth failures.
+    fn sync_failure_message(sync_error: &SyncSessionStartError) -> String {
+        let detail_message = sync_error.detail_message();
+        if !Self::is_sync_push_authentication_error(&detail_message) {
+            return detail_message;
+        }
+
+        "Git push requires authentication for this repository.\nAuthorize git access, then retry \
+         sync with `r`.\nRun `gh auth login`, or configure credentials with a PAT/SSH key."
+            .to_string()
+    }
+
+    /// Returns whether sync error output looks like a push auth failure.
+    fn is_sync_push_authentication_error(detail_message: &str) -> bool {
+        let normalized_detail = detail_message.to_ascii_lowercase();
+
+        let is_push_context = normalized_detail.contains("git push failed")
+            || (normalized_detail.contains("push")
+                && (normalized_detail.contains("remote") || normalized_detail.contains("origin")));
+        if !is_push_context {
+            return false;
+        }
+
+        normalized_detail.contains("authentication failed")
+            || normalized_detail.contains("terminal prompts disabled")
+            || normalized_detail.contains("could not read username")
+            || normalized_detail.contains("could not read password")
+            || normalized_detail.contains("permission denied")
+            || normalized_detail.contains("access denied")
+            || normalized_detail.contains("not authorized")
+            || normalized_detail.contains("support for password authentication was removed")
+            || normalized_detail.contains("the requested url returned error: 403")
+            || normalized_detail.contains("repository not found")
     }
 
     /// Returns one brief pull/push sentence fragment for sync completion.
@@ -1465,6 +1503,40 @@ mod tests {
             } if title == "Sync blocked"
                 && default_branch.as_deref() == Some("develop")
                 && message.contains("uncommitted changes")
+                && project_name.as_deref() == Some("agentty")
+        ));
+    }
+
+    #[test]
+    fn sync_main_popup_mode_auth_failure_shows_authorization_guidance() {
+        // Arrange
+        let sync_popup_context = SyncPopupContext {
+            default_branch: "main".to_string(),
+            project_name: "agentty".to_string(),
+        };
+        let sync_error = SyncSessionStartError::Other(
+            "Git push failed: fatal: could not read Username for 'https://github.com': terminal \
+             prompts disabled"
+                .to_string(),
+        );
+
+        // Act
+        let mode = App::sync_main_popup_mode(Err(sync_error), &sync_popup_context);
+
+        // Assert
+        assert!(matches!(
+            mode,
+            AppMode::SyncBlockedPopup {
+                ref default_branch,
+                is_loading: false,
+                ref title,
+                ref message,
+                ref project_name,
+            } if title == "Sync failed"
+                && default_branch.as_deref() == Some("main")
+                && message.contains("Git push requires authentication")
+                && message.contains("`gh auth login`")
+                && message.contains("retry sync with `r`")
                 && project_name.as_deref() == Some("agentty")
         ));
     }
