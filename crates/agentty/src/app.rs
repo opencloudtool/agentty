@@ -1192,7 +1192,8 @@ impl App {
         }
     }
 
-    /// Builds success copy for sync completion with pull/push/conflict summary.
+    /// Builds success copy for sync completion with pull/push/conflict metrics
+    /// rendered on separate lines.
     fn sync_success_message(sync_main_outcome: &SyncMainOutcome) -> String {
         let pulled_summary = Self::sync_commit_summary("pulled", sync_main_outcome.pulled_commits);
         let pushed_summary = Self::sync_commit_summary("pushed", sync_main_outcome.pushed_commits);
@@ -1200,8 +1201,8 @@ impl App {
             Self::sync_conflict_summary(&sync_main_outcome.resolved_conflict_files);
 
         format!(
-            "Successfully synchronized with its upstream.\n{pulled_summary}; {pushed_summary}; \
-             {conflict_summary}."
+            "Successfully synchronized with its upstream.\n{pulled_summary}\n{pushed_summary}\n\
+             {conflict_summary}"
         )
     }
 
@@ -1605,6 +1606,10 @@ mod tests {
                 && message.contains("2 commits pulled")
                 && message.contains("1 commit pushed")
                 && message.contains("conflicts fixed: src/lib.rs")
+                && message.contains(
+                    "Successfully synchronized with its upstream.\n2 commits pulled\n1 commit \
+                     pushed\nconflicts fixed: src/lib.rs"
+                )
                 && project_name.as_deref() == Some("agentty")
         ));
     }
