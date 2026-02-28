@@ -23,7 +23,9 @@ struct PermissionModePolicy {
     legacy_pre_action_decision: &'static str,
     pre_action_decision: &'static str,
     thread_sandbox_mode: &'static str,
+    turn_network_access: bool,
     turn_sandbox_type: &'static str,
+    web_search_mode: &'static str,
 }
 
 const AUTO_EDIT_POLICY: PermissionModePolicy = PermissionModePolicy {
@@ -31,7 +33,9 @@ const AUTO_EDIT_POLICY: PermissionModePolicy = PermissionModePolicy {
     legacy_pre_action_decision: "approved",
     pre_action_decision: "accept",
     thread_sandbox_mode: "workspace-write",
+    turn_network_access: true,
     turn_sandbox_type: "workspaceWrite",
+    web_search_mode: "live",
 };
 
 /// Input token threshold above which proactive context compaction is triggered
@@ -186,8 +190,9 @@ impl RealCodexAppServerClient {
     /// Builds one `thread/start` request payload for a runtime folder.
     ///
     /// Root `AGENTS.md` content is intentionally not forwarded through
-    /// app-server instruction fields. Codex config overrides are omitted so
-    /// runtime defaults (including configured MCP servers) are preserved.
+    /// app-server instruction fields. The payload only applies a minimal
+    /// `config` override to enable `web_search`, preserving other runtime
+    /// defaults (including configured MCP servers).
     fn build_thread_start_payload(folder: &Path, model: &str, thread_start_id: &str) -> Value {
         serde_json::json!({
             "method": "thread/start",
@@ -198,6 +203,7 @@ impl RealCodexAppServerClient {
                 "cwd": folder.to_string_lossy(),
                 "approvalPolicy": Self::approval_policy(),
                 "sandbox": Self::thread_sandbox_mode(),
+                "config": Self::thread_config(),
                 "baseInstructions": Value::Null,
                 "developerInstructions": Value::Null,
                 "personality": Value::Null,
@@ -542,9 +548,35 @@ impl RealCodexAppServerClient {
 
     /// Returns the turn-level sandbox policy object for one permission mode.
     fn turn_sandbox_policy() -> Value {
+        let policy = Self::permission_mode_policy(PermissionMode::default());
+        let mut turn_sandbox_policy = serde_json::json!({
+            "type": policy.turn_sandbox_type
+        });
+
+        if policy.turn_sandbox_type == "workspaceWrite"
+            && let Some(policy_object) = turn_sandbox_policy.as_object_mut()
+        {
+            policy_object.insert(
+                "networkAccess".to_string(),
+                Value::Bool(policy.turn_network_access),
+            );
+        }
+
+        turn_sandbox_policy
+    }
+
+    /// Returns per-thread config overrides for one permission mode.
+    ///
+    /// This keeps overrides minimal and only enables live `web_search`.
+    fn thread_config() -> Value {
         serde_json::json!({
-            "type": Self::permission_mode_policy(PermissionMode::default()).turn_sandbox_type
+            "web_search": Self::web_search_mode(),
         })
+    }
+
+    /// Returns the `web_search` mode for one permission mode.
+    fn web_search_mode() -> &'static str {
+        Self::permission_mode_policy(PermissionMode::default()).web_search_mode
     }
 
     /// Returns the modern pre-action approval decision for one permission
@@ -1491,6 +1523,33 @@ mod tests {
     }
 
     #[test]
+    fn turn_sandbox_policy_enables_network_access_for_workspace_write() {
+        // Act
+        let turn_sandbox_policy = RealCodexAppServerClient::turn_sandbox_policy();
+
+        // Assert
+        assert_eq!(
+            turn_sandbox_policy.get("type").and_then(Value::as_str),
+            Some("workspaceWrite")
+        );
+        assert_eq!(
+            turn_sandbox_policy
+                .get("networkAccess")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn web_search_mode_maps_auto_edit_mode() {
+        // Act
+        let web_search_mode = RealCodexAppServerClient::web_search_mode();
+
+        // Assert
+        assert_eq!(web_search_mode, "live");
+    }
+
+    #[test]
     fn build_pre_action_approval_response_for_command_request_uses_mode_decision() {
         // Arrange
         let request_value = serde_json::json!({
@@ -1729,7 +1788,7 @@ mod tests {
     }
 
     #[test]
-    fn build_thread_start_payload_omits_config_and_dynamic_tools_overrides() {
+    fn build_thread_start_payload_sets_live_web_search_config_without_dynamic_tools() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let thread_start_id = "thread-start-1";
@@ -1743,7 +1802,13 @@ mod tests {
         let params = payload.get("params").unwrap_or(&Value::Null);
 
         // Assert
-        assert!(params.get("config").is_none());
+        assert_eq!(
+            params
+                .get("config")
+                .and_then(|config| config.get("web_search"))
+                .and_then(Value::as_str),
+            Some("live")
+        );
         assert!(params.get("dynamicTools").is_none());
     }
 

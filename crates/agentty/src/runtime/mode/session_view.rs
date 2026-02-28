@@ -86,10 +86,11 @@ pub(crate) async fn handle(
         KeyCode::Char('G') => {
             next_scroll_offset = None;
         }
-        KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-            if view_session_snapshot.is_in_progress {
-                stop_view_session(app, &view_context.session_id).await;
-            }
+        KeyCode::Char('c')
+            if key.modifiers.contains(event::KeyModifiers::CONTROL)
+                && view_session_snapshot.is_in_progress =>
+        {
+            stop_view_session(app, &view_context.session_id).await;
         }
         KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
             next_scroll_offset = scroll_offset_down(
