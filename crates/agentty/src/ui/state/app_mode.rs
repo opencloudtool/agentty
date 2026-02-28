@@ -1,6 +1,7 @@
 use super::help_action::{self, HelpAction, ViewHelpState, ViewSessionState};
 use super::prompt::{PromptAtMentionState, PromptHistoryState, PromptSlashState};
 use crate::domain::input::InputState;
+use crate::infra::file_index::FileEntry;
 
 /// Selects the visible panel content for session view output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +74,22 @@ pub enum AppMode {
         scroll_offset: u16,
         file_explorer_selected_index: usize,
     },
+    /// Displays the project file explorer with a preview for one session
+    /// worktree.
+    ProjectExplorer {
+        /// Indexed file and directory rows shown in the explorer list.
+        entries: Vec<FileEntry>,
+        /// Preview text for the currently selected row.
+        preview: String,
+        /// Whether closing explorer should return to list mode.
+        return_to_list: bool,
+        /// Scroll position for the right-side preview panel.
+        scroll_offset: u16,
+        /// Selected row index in `entries`.
+        selected_index: usize,
+        /// Session identifier owning the worktree being explored.
+        session_id: String,
+    },
 
     Help {
         context: HelpContext,
@@ -98,6 +115,21 @@ pub enum HelpContext {
         scroll_offset: u16,
         file_explorer_selected_index: usize,
     },
+    /// Help overlay opened from the project explorer page.
+    ProjectExplorer {
+        /// Indexed file and directory rows shown in the explorer list.
+        entries: Vec<FileEntry>,
+        /// Preview text for the currently selected row.
+        preview: String,
+        /// Whether closing explorer should return to list mode.
+        return_to_list: bool,
+        /// Scroll position for the right-side preview panel.
+        scroll_offset: u16,
+        /// Selected row index in `entries`.
+        selected_index: usize,
+        /// Session identifier owning the worktree being explored.
+        session_id: String,
+    },
 }
 
 impl HelpContext {
@@ -109,6 +141,7 @@ impl HelpContext {
             }),
             HelpContext::List { keybindings } => keybindings.clone(),
             HelpContext::Diff { .. } => help_action::diff_actions(),
+            HelpContext::ProjectExplorer { .. } => help_action::project_explorer_actions(),
         }
     }
 
@@ -140,6 +173,21 @@ impl HelpContext {
                 diff,
                 scroll_offset,
                 file_explorer_selected_index,
+            },
+            HelpContext::ProjectExplorer {
+                entries,
+                preview,
+                return_to_list,
+                scroll_offset,
+                selected_index,
+                session_id,
+            } => AppMode::ProjectExplorer {
+                entries,
+                preview,
+                return_to_list,
+                scroll_offset,
+                selected_index,
+                session_id,
             },
         }
     }
@@ -245,5 +293,58 @@ mod tests {
         assert_eq!(bindings.len(), 2);
         assert!(bindings.iter().any(|binding| binding.key == "q"));
         assert!(bindings.iter().any(|binding| binding.key == "?"));
+    }
+
+    #[test]
+    fn test_help_context_project_explorer_keybindings_include_navigation() {
+        // Arrange
+        let context = HelpContext::ProjectExplorer {
+            entries: vec![],
+            preview: String::new(),
+            return_to_list: true,
+            scroll_offset: 0,
+            selected_index: 0,
+            session_id: "session-id".to_string(),
+        };
+
+        // Act
+        let bindings = context.keybindings();
+
+        // Assert
+        assert!(bindings.iter().any(|binding| binding.key == "q/Esc"));
+        assert!(bindings.iter().any(|binding| binding.key == "j/k"));
+        assert!(bindings.iter().any(|binding| binding.key == "Up/Down"));
+        assert!(bindings.iter().any(|binding| binding.key == "?"));
+    }
+
+    #[test]
+    fn test_help_context_restore_mode_returns_project_explorer_mode() {
+        // Arrange
+        let context = HelpContext::ProjectExplorer {
+            entries: vec![FileEntry {
+                is_dir: false,
+                path: "src/main.rs".to_string(),
+            }],
+            preview: "fn main() {}".to_string(),
+            return_to_list: false,
+            scroll_offset: 3,
+            selected_index: 0,
+            session_id: "session-id".to_string(),
+        };
+
+        // Act
+        let mode = context.restore_mode();
+
+        // Assert
+        assert!(matches!(
+            mode,
+            AppMode::ProjectExplorer {
+                ref session_id,
+                return_to_list: false,
+                scroll_offset: 3,
+                selected_index: 0,
+                ..
+            } if session_id == "session-id"
+        ));
     }
 }

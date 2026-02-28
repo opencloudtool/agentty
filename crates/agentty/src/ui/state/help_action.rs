@@ -286,6 +286,29 @@ pub(crate) fn diff_footer_actions() -> Vec<HelpAction> {
     ]
 }
 
+/// Returns help entries for project-explorer actions.
+/// These entries are used by the help overlay and include all available
+/// actions.
+pub(crate) fn project_explorer_actions() -> Vec<HelpAction> {
+    vec![
+        HelpAction::new("back", "q/Esc", "Back"),
+        HelpAction::new("select file", "j/k", "Select file"),
+        HelpAction::new("scroll file", "Up/Down", "Scroll file"),
+        HelpAction::new("help", "?", "Help"),
+    ]
+}
+
+/// Returns compact project-explorer footer actions for the page-level hint
+/// line.
+pub(crate) fn project_explorer_footer_actions() -> Vec<HelpAction> {
+    vec![
+        HelpAction::new("back", "q/Esc", "Back"),
+        HelpAction::new("select file", "j/k", "Select file"),
+        HelpAction::new("scroll file", "Up/Down", "Scroll file"),
+        HelpAction::new("help", "?", "Help"),
+    ]
+}
+
 /// Renders one-line footer help text from projected actions.
 pub(crate) fn footer_text(actions: &[HelpAction]) -> String {
     let mut help_text = String::new();
@@ -443,5 +466,33 @@ mod tests {
 
         // Assert
         assert_eq!(help_text, "q: quit | ?: help");
+    }
+
+    #[test]
+    fn test_project_explorer_actions_include_navigation_and_help() {
+        // Arrange
+
+        // Act
+        let actions = project_explorer_actions();
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "q/Esc"));
+        assert!(actions.iter().any(|action| action.key == "j/k"));
+        assert!(actions.iter().any(|action| action.key == "Up/Down"));
+        assert!(actions.iter().any(|action| action.key == "?"));
+    }
+
+    #[test]
+    fn test_project_explorer_footer_actions_include_navigation_and_help() {
+        // Arrange
+
+        // Act
+        let actions = project_explorer_footer_actions();
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "q/Esc"));
+        assert!(actions.iter().any(|action| action.key == "j/k"));
+        assert!(actions.iter().any(|action| action.key == "Up/Down"));
+        assert!(actions.iter().any(|action| action.key == "?"));
     }
 }

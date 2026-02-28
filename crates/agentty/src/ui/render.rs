@@ -102,8 +102,12 @@ fn render_footer_bar(
         | AppMode::View { session_id, .. }
         | AppMode::Prompt { session_id, .. }
         | AppMode::Diff { session_id, .. }
+        | AppMode::ProjectExplorer { session_id, .. }
         | AppMode::Help {
-            context: HelpContext::View { session_id, .. } | HelpContext::Diff { session_id, .. },
+            context:
+                HelpContext::View { session_id, .. }
+                | HelpContext::Diff { session_id, .. }
+                | HelpContext::ProjectExplorer { session_id, .. },
             ..
         } => Some(session_id.as_str()),
         _ => None,

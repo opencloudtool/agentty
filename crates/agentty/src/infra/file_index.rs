@@ -23,8 +23,32 @@ pub struct FileEntry {
 /// [`MAX_DEPTH`]. Directories sort before files; within each group,
 /// results are sorted alphabetically by path.
 pub fn list_files(root: &Path) -> Vec<FileEntry> {
+    list_files_with_limits(root, Some(MAX_DEPTH), Some(MAX_ENTRIES))
+}
+
+/// Lists files and directories recursively under `root` for project-explorer
+/// rendering with optional traversal and result limits.
+///
+/// Passing `None` for `max_depth` and `max_entries` provides an unbounded
+/// gitignore-aware traversal. Directories sort before files; within each
+/// group, results are sorted alphabetically by path.
+pub fn list_files_for_explorer(
+    root: &Path,
+    max_depth: Option<usize>,
+    max_entries: Option<usize>,
+) -> Vec<FileEntry> {
+    list_files_with_limits(root, max_depth, max_entries)
+}
+
+/// Lists files and directories recursively under `root` with optional
+/// traversal and result limits.
+fn list_files_with_limits(
+    root: &Path,
+    max_depth: Option<usize>,
+    max_entries: Option<usize>,
+) -> Vec<FileEntry> {
     let walker = WalkBuilder::new(root)
-        .max_depth(Some(MAX_DEPTH))
+        .max_depth(max_depth)
         .hidden(false)
         .build();
 
@@ -49,19 +73,24 @@ pub fn list_files(root: &Path) -> Vec<FileEntry> {
         })
         .collect();
 
-    sort_and_limit_entries(&mut entries);
+    sort_and_limit_entries(&mut entries, max_entries);
 
     entries
 }
 
-fn sort_and_limit_entries(entries: &mut Vec<FileEntry>) {
+/// Sorts entries with directories first and optionally truncates to
+/// `max_entries`.
+fn sort_and_limit_entries(entries: &mut Vec<FileEntry>, max_entries: Option<usize>) {
     entries.sort_by(|first, second| {
         second
             .is_dir
             .cmp(&first.is_dir)
             .then(first.path.cmp(&second.path))
     });
-    entries.truncate(MAX_ENTRIES);
+
+    if let Some(max_entries) = max_entries {
+        entries.truncate(max_entries);
+    }
 }
 
 /// Fuzzy-filters entries and returns them sorted by best match.
@@ -358,6 +387,38 @@ mod tests {
     }
 
     #[test]
+    fn test_list_files_for_explorer_can_be_unbounded() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("test expectation should hold");
+        for index in 0..MAX_ENTRIES + 50 {
+            fs::write(temp_dir.path().join(format!("file_{index:04}.txt")), "")
+                .expect("test expectation should hold");
+        }
+
+        // Act
+        let entries = list_files_for_explorer(temp_dir.path(), None, None);
+
+        // Assert
+        assert_eq!(entries.len(), MAX_ENTRIES + 50);
+    }
+
+    #[test]
+    fn test_list_files_for_explorer_respects_custom_limits() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("test expectation should hold");
+        for index in 0..20 {
+            fs::write(temp_dir.path().join(format!("file_{index:04}.txt")), "")
+                .expect("test expectation should hold");
+        }
+
+        // Act
+        let entries = list_files_for_explorer(temp_dir.path(), Some(3), Some(7));
+
+        // Assert
+        assert_eq!(entries.len(), 7);
+    }
+
+    #[test]
     fn test_sort_and_limit_entries_truncates_after_sort() {
         // Arrange
         let mut entries: Vec<FileEntry> = (0..MAX_ENTRIES + 20)
@@ -369,7 +430,7 @@ mod tests {
             .collect();
 
         // Act
-        sort_and_limit_entries(&mut entries);
+        sort_and_limit_entries(&mut entries, Some(MAX_ENTRIES));
 
         // Assert
         assert_eq!(entries.len(), MAX_ENTRIES);

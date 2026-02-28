@@ -159,7 +159,10 @@ fn render_list_or_overlay_mode(
             shared.list_background(),
             aux.session_progress_messages,
         ),
-        AppMode::View { .. } | AppMode::Prompt { .. } | AppMode::Diff { .. } => {
+        AppMode::View { .. }
+        | AppMode::Prompt { .. }
+        | AppMode::Diff { .. }
+        | AppMode::ProjectExplorer { .. } => {
             return false;
         }
     }
@@ -167,7 +170,7 @@ fn render_list_or_overlay_mode(
     true
 }
 
-/// Renders view, prompt, and diff modes that are tied to a selected session.
+/// Renders session-scoped modes tied to one selected session.
 fn render_session_or_diff_mode(
     f: &mut Frame,
     area: Rect,
@@ -210,6 +213,25 @@ fn render_session_or_diff_mode(
             *scroll_offset,
             *file_explorer_selected_index,
         ),
+        AppMode::ProjectExplorer {
+            entries,
+            preview,
+            return_to_list: _,
+            scroll_offset,
+            selected_index,
+            session_id,
+        } => {
+            if let Some(session) = sessions.iter().find(|session| session.id == *session_id) {
+                pages::project_explorer::ProjectExplorerPage::new(
+                    entries,
+                    *selected_index,
+                    preview,
+                    *scroll_offset,
+                    session,
+                )
+                .render(f, area);
+            }
+        }
         AppMode::List
         | AppMode::Confirmation { .. }
         | AppMode::SyncBlockedPopup { .. }

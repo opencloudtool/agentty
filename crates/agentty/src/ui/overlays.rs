@@ -170,6 +170,25 @@ fn render_help_background(
                 .render(f, area);
             }
         }
+        HelpContext::ProjectExplorer {
+            entries,
+            preview,
+            return_to_list: _,
+            scroll_offset,
+            selected_index,
+            session_id,
+        } => {
+            if let Some(session) = sessions.iter().find(|session| session.id == *session_id) {
+                pages::project_explorer::ProjectExplorerPage::new(
+                    entries,
+                    *selected_index,
+                    preview,
+                    *scroll_offset,
+                    session,
+                )
+                .render(f, area);
+            }
+        }
     }
 }
 

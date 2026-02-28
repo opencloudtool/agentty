@@ -154,7 +154,12 @@ impl SessionManager {
             }
             | AppMode::Prompt { session_id, .. }
             | AppMode::View { session_id, .. }
-            | AppMode::Diff { session_id, .. } => Some(session_id),
+            | AppMode::Diff { session_id, .. }
+            | AppMode::ProjectExplorer { session_id, .. }
+            | AppMode::Help {
+                context: crate::ui::state::app_mode::HelpContext::ProjectExplorer { session_id, .. },
+                ..
+            } => Some(session_id),
             _ => None,
         };
         let Some(session_id) = mode_session_id else {

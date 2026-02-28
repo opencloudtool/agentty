@@ -922,6 +922,7 @@ impl App {
             | AppMode::SyncBlockedPopup { .. }
             | AppMode::Prompt { .. }
             | AppMode::Diff { .. }
+            | AppMode::ProjectExplorer { .. }
             | AppMode::Help { .. }
             | AppMode::View { .. } => {}
         }
