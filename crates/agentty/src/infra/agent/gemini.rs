@@ -1,17 +1,38 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::backend::{AgentBackend, build_resume_prompt};
+use super::backend::{
+    AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
+};
 
 /// Backend implementation for the Gemini CLI.
 pub(super) struct GeminiBackend;
 
 impl AgentBackend for GeminiBackend {
-    fn setup(&self, _folder: &Path) {
+    fn setup(&self, _folder: &Path) -> Result<(), AgentBackendError> {
         // Gemini CLI needs no config files
+        Ok(())
     }
 
-    fn build_start_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
+    fn build_command(
+        &self,
+        request: BuildCommandRequest<'_>,
+    ) -> Result<Command, AgentBackendError> {
+        let BuildCommandRequest {
+            folder,
+            mode,
+            model,
+        } = request;
+        let has_history_replay = mode
+            .session_output()
+            .is_some_and(|session_output| !session_output.trim().is_empty());
+        let prompt = match mode {
+            AgentCommandMode::Start { prompt } => prompt.to_string(),
+            AgentCommandMode::Resume {
+                prompt,
+                session_output,
+            } => build_resume_prompt(prompt, session_output)?,
+        };
         let mut command = Command::new("gemini");
         command
             .arg("--prompt")
@@ -26,23 +47,7 @@ impl AgentBackend for GeminiBackend {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        command
-    }
-
-    fn build_resume_command(
-        &self,
-        folder: &Path,
-        prompt: &str,
-        model: &str,
-        session_output: Option<String>,
-    ) -> Result<Command, String> {
-        let has_history_replay = session_output
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty());
-        let prompt = build_resume_prompt(prompt, session_output.as_deref())?;
-        let mut command = self.build_start_command(folder, &prompt, model);
-
-        if !has_history_replay {
+        if matches!(mode, AgentCommandMode::Resume { .. }) && !has_history_replay {
             command.arg("--resume").arg("latest");
         }
 
@@ -63,7 +68,7 @@ mod tests {
         let backend = GeminiBackend;
 
         // Act
-        AgentBackend::setup(&backend, temp_directory.path());
+        AgentBackend::setup(&backend, temp_directory.path()).expect("setup should succeed");
 
         // Assert
         assert_eq!(

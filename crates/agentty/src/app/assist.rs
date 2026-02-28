@@ -118,12 +118,16 @@ pub(super) async fn append_assist_header(
 /// interrupted.
 pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> Result<(), String> {
     let backend = crate::infra::agent::create_backend(context.session_model.kind());
-    let command = backend.build_resume_command(
-        &context.folder,
-        prompt,
-        context.session_model.as_str(),
-        None,
-    )?;
+    let command = backend
+        .build_command(crate::infra::agent::BuildCommandRequest {
+            folder: &context.folder,
+            mode: crate::infra::agent::AgentCommandMode::Resume {
+                prompt,
+                session_output: None,
+            },
+            model: context.session_model.as_str(),
+        })
+        .map_err(|error| error.to_string())?;
 
     SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
         agent: context.session_model.kind(),

@@ -1,42 +1,42 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::backend::{AgentBackend, build_resume_prompt};
+use super::backend::{
+    AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
+};
 
 /// Backend implementation for the Claude CLI.
 pub(super) struct ClaudeBackend;
 
 impl AgentBackend for ClaudeBackend {
-    fn setup(&self, _folder: &Path) {
+    fn setup(&self, _folder: &Path) -> Result<(), AgentBackendError> {
         // Claude Code needs no config files
+        Ok(())
     }
 
-    fn build_start_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
-        let mut command = Command::new("claude");
-        command.arg("-p").arg(prompt);
-        command.arg("--allowedTools").arg("Edit,Bash");
-        command
-            .arg("--verbose")
-            .arg("--output-format")
-            .arg("stream-json")
-            .env("ANTHROPIC_MODEL", model)
-            .current_dir(folder)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        command
-    }
-
-    fn build_resume_command(
+    fn build_command(
         &self,
-        folder: &Path,
-        prompt: &str,
-        model: &str,
-        session_output: Option<String>,
-    ) -> Result<Command, String> {
-        let prompt = build_resume_prompt(prompt, session_output.as_deref())?;
+        request: BuildCommandRequest<'_>,
+    ) -> Result<Command, AgentBackendError> {
+        let BuildCommandRequest {
+            folder,
+            mode,
+            model,
+        } = request;
+        let prompt = match mode {
+            AgentCommandMode::Start { prompt } => prompt.to_string(),
+            AgentCommandMode::Resume {
+                prompt,
+                session_output,
+            } => build_resume_prompt(prompt, session_output)?,
+        };
         let mut command = Command::new("claude");
-        command.arg("-c").arg("-p").arg(prompt);
+
+        if matches!(mode, AgentCommandMode::Resume { .. }) {
+            command.arg("-c");
+        }
+
+        command.arg("-p").arg(prompt);
         command.arg("--allowedTools").arg("Edit,Bash");
         command
             .arg("--verbose")
@@ -64,12 +64,17 @@ mod tests {
         let backend = ClaudeBackend;
 
         // Act
-        let command = AgentBackend::build_start_command(
+        let command = AgentBackend::build_command(
             &backend,
-            temp_directory.path(),
-            "Plan prompt",
-            "claude-sonnet-4-6",
-        );
+            BuildCommandRequest {
+                folder: temp_directory.path(),
+                mode: AgentCommandMode::Start {
+                    prompt: "Plan prompt",
+                },
+                model: "claude-sonnet-4-6",
+            },
+        )
+        .expect("command should build");
         let debug_command = format!("{command:?}");
 
         // Assert

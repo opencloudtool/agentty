@@ -2,7 +2,9 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::backend::{AgentBackend, build_resume_prompt};
+use super::backend::{
+    AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
+};
 
 /// Codex config override that forces high reasoning effort per invocation.
 const CODEX_REASONING_EFFORT_CONFIG: &str = r#"model_reasoning_effort="high""#;
@@ -16,45 +18,40 @@ const CODEX_REASONING_EFFORT_CONFIG: &str = r#"model_reasoning_effort="high""#;
 pub(super) struct CodexBackend;
 
 impl AgentBackend for CodexBackend {
-    fn setup(&self, _folder: &Path) {
+    fn setup(&self, _folder: &Path) -> Result<(), AgentBackendError> {
         // Codex CLI needs no config files
+        Ok(())
     }
 
-    fn build_start_command(&self, folder: &Path, prompt: &str, model: &str) -> Command {
-        let prompt = prepend_root_instructions_if_available(prompt, folder);
-        let mut command = Command::new("codex");
-        command
-            .arg("exec")
-            .arg("-c")
-            .arg(CODEX_REASONING_EFFORT_CONFIG)
-            .arg("--model")
-            .arg(model)
-            .arg("--full-auto")
-            .arg("--json")
-            .arg(prompt)
-            .current_dir(folder)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        command
-    }
-
-    fn build_resume_command(
+    fn build_command(
         &self,
-        folder: &Path,
-        prompt: &str,
-        model: &str,
-        session_output: Option<String>,
-    ) -> Result<Command, String> {
-        let has_history_replay = session_output
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty());
-        let prompt = build_resume_prompt(prompt, session_output.as_deref())?;
+        request: BuildCommandRequest<'_>,
+    ) -> Result<Command, AgentBackendError> {
+        let BuildCommandRequest {
+            folder,
+            mode,
+            model,
+        } = request;
+        let has_history_replay = mode
+            .session_output()
+            .is_some_and(|session_output| !session_output.trim().is_empty());
+        let prompt = match mode {
+            AgentCommandMode::Start { prompt } => prompt.to_string(),
+            AgentCommandMode::Resume {
+                prompt,
+                session_output,
+            } => build_resume_prompt(prompt, session_output)?,
+        };
         let prompt = prepend_root_instructions_if_available(&prompt, folder);
-        let mut command = Command::new("codex");
-        command.arg("exec").arg("resume");
 
-        if !has_history_replay {
+        let mut command = Command::new("codex");
+        command.arg("exec");
+
+        if matches!(mode, AgentCommandMode::Resume { .. }) {
+            command.arg("resume");
+        }
+
+        if matches!(mode, AgentCommandMode::Resume { .. }) && !has_history_replay {
             command.arg("--last");
         }
 
@@ -111,12 +108,17 @@ mod tests {
             .expect("failed to write test instructions");
 
         // Act
-        let command = AgentBackend::build_start_command(
+        let command = AgentBackend::build_command(
             &backend,
-            temp_directory.path(),
-            "Run checks",
-            "gpt-5.3-codex",
-        );
+            BuildCommandRequest {
+                folder: temp_directory.path(),
+                mode: AgentCommandMode::Start {
+                    prompt: "Run checks",
+                },
+                model: "gpt-5.3-codex",
+            },
+        )
+        .expect("command should build");
         let debug_command = format!("{command:?}");
 
         // Assert
@@ -143,12 +145,16 @@ mod tests {
             .expect("failed to write test instructions");
 
         // Act
-        let command = AgentBackend::build_resume_command(
+        let command = AgentBackend::build_command(
             &backend,
-            temp_directory.path(),
-            "Continue edits",
-            "gpt-5.3-codex",
-            Some("previous assistant output".to_string()),
+            BuildCommandRequest {
+                folder: temp_directory.path(),
+                mode: AgentCommandMode::Resume {
+                    prompt: "Continue edits",
+                    session_output: Some("previous assistant output"),
+                },
+                model: "gpt-5.3-codex",
+            },
         )
         .expect("resume command should build");
         let debug_command = format!("{command:?}");
@@ -175,12 +181,16 @@ mod tests {
             .expect("failed to write test instructions");
 
         // Act
-        let command = AgentBackend::build_resume_command(
+        let command = AgentBackend::build_command(
             &backend,
-            temp_directory.path(),
-            "Continue edits",
-            "gpt-5.3-codex",
-            None,
+            BuildCommandRequest {
+                folder: temp_directory.path(),
+                mode: AgentCommandMode::Resume {
+                    prompt: "Continue edits",
+                    session_output: None,
+                },
+                model: "gpt-5.3-codex",
+            },
         )
         .expect("resume command should build");
         let debug_command = format!("{command:?}");

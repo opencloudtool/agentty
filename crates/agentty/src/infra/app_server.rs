@@ -292,6 +292,7 @@ pub fn turn_prompt_for_runtime(
     }
 
     crate::infra::agent::build_resume_prompt(prompt, session_output)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

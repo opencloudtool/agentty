@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::domain::agent::AgentKind;
 use crate::domain::session::SessionStats;
 
 /// Parsed agent response including content text and usage statistics.
@@ -94,32 +93,28 @@ struct CodexItem {
     text: Option<String>,
 }
 
-/// Parses provider output and returns final response content and usage stats.
-pub fn parse_response(kind: AgentKind, stdout: &str, stderr: &str) -> ParsedResponse {
-    match kind {
-        AgentKind::Claude => parse_claude_response(stdout),
-        AgentKind::Gemini => parse_gemini_response(stdout),
-        AgentKind::Codex => parse_codex_response(stdout),
-    }
-    .unwrap_or_else(|| ParsedResponse {
+/// Parses Claude output and falls back to raw output when parsing fails.
+pub(super) fn parse_claude_response_with_fallback(stdout: &str, stderr: &str) -> ParsedResponse {
+    parse_claude_response(stdout).unwrap_or_else(|| ParsedResponse {
         content: fallback_response(stdout, stderr),
         stats: SessionStats::default(),
     })
 }
 
-/// Parses one stream line into incremental text and content classification.
-///
-/// Returns `(text, is_response_content)` where `is_response_content` is `true`
-/// for model-authored content and `false` for progress updates.
-pub(crate) fn parse_stream_output_line(
-    kind: AgentKind,
-    stdout_line: &str,
-) -> Option<(String, bool)> {
-    match kind {
-        AgentKind::Claude => parse_claude_stream_output_line(stdout_line),
-        AgentKind::Gemini => parse_gemini_stream_output_line(stdout_line),
-        AgentKind::Codex => parse_codex_stream_output_line(stdout_line),
-    }
+/// Parses Gemini output and falls back to raw output when parsing fails.
+pub(super) fn parse_gemini_response_with_fallback(stdout: &str, stderr: &str) -> ParsedResponse {
+    parse_gemini_response(stdout).unwrap_or_else(|| ParsedResponse {
+        content: fallback_response(stdout, stderr),
+        stats: SessionStats::default(),
+    })
+}
+
+/// Parses Codex output and falls back to raw output when parsing fails.
+pub(super) fn parse_codex_response_with_fallback(stdout: &str, stderr: &str) -> ParsedResponse {
+    parse_codex_response(stdout).unwrap_or_else(|| ParsedResponse {
+        content: fallback_response(stdout, stderr),
+        stats: SessionStats::default(),
+    })
 }
 
 fn parse_claude_response(stdout: &str) -> Option<ParsedResponse> {
@@ -142,7 +137,8 @@ fn parse_claude_response(stdout: &str) -> Option<ParsedResponse> {
     None
 }
 
-fn parse_claude_stream_output_line(stdout_line: &str) -> Option<(String, bool)> {
+/// Parses one Claude stream line into display text and content/progress type.
+pub(super) fn parse_claude_stream_output_line(stdout_line: &str) -> Option<(String, bool)> {
     let trimmed_line = stdout_line.trim();
     if trimmed_line.is_empty() {
         return None;
@@ -207,7 +203,8 @@ fn parse_gemini_response(stdout: &str) -> Option<ParsedResponse> {
     })
 }
 
-fn parse_gemini_stream_output_line(stdout_line: &str) -> Option<(String, bool)> {
+/// Parses one Gemini stream line into display text and content/progress type.
+pub(super) fn parse_gemini_stream_output_line(stdout_line: &str) -> Option<(String, bool)> {
     let trimmed_line = stdout_line.trim();
     if trimmed_line.is_empty() {
         return None;
@@ -279,7 +276,8 @@ fn parse_codex_response(stdout: &str) -> Option<ParsedResponse> {
     last_message.map(|content| ParsedResponse { content, stats })
 }
 
-fn parse_codex_stream_output_line(stdout_line: &str) -> Option<(String, bool)> {
+/// Parses one Codex stream line into display text and content/progress type.
+pub(super) fn parse_codex_stream_output_line(stdout_line: &str) -> Option<(String, bool)> {
     let trimmed_line = stdout_line.trim();
     if trimmed_line.is_empty() {
         return None;
@@ -544,7 +542,7 @@ mod tests {
             r#"{"result":"Planned response","usage":{"input_tokens":11,"output_tokens":7}}"#;
 
         // Act
-        let parsed = parse_response(AgentKind::Claude, stdout, "");
+        let parsed = parse_claude_response_with_fallback(stdout, "");
 
         // Assert
         assert_eq!(parsed.content, "Planned response");
@@ -566,7 +564,7 @@ mod tests {
         );
 
         // Act
-        let parsed = parse_response(AgentKind::Codex, stdout, "");
+        let parsed = parse_codex_response_with_fallback(stdout, "");
 
         // Assert
         assert_eq!(parsed.content, "Planned final answer");
@@ -586,7 +584,7 @@ mod tests {
         );
 
         // Act
-        let parsed = parse_response(AgentKind::Codex, stdout, "");
+        let parsed = parse_codex_response_with_fallback(stdout, "");
 
         // Assert
         assert_eq!(parsed.content, "Final answer");
@@ -604,7 +602,7 @@ mod tests {
 
         // Act & Assert
         for completion_status_line in completion_status_lines {
-            let parsed_line = parse_stream_output_line(AgentKind::Codex, completion_status_line);
+            let parsed_line = parse_codex_stream_output_line(completion_status_line);
 
             assert_eq!(parsed_line, None);
         }
@@ -617,7 +615,7 @@ mod tests {
             r#"{"type":"item.completed","item":{"type":"agent_message","text":"Final answer"}}"#;
 
         // Act
-        let parsed_line = parse_stream_output_line(AgentKind::Codex, assistant_line);
+        let parsed_line = parse_codex_stream_output_line(assistant_line);
 
         // Assert
         assert_eq!(parsed_line, Some(("Final answer".to_string(), true)));

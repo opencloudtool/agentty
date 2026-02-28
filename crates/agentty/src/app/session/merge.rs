@@ -285,7 +285,15 @@ impl RealSyncAssistClient {
     ) -> Result<(), String> {
         tokio::task::spawn_blocking(move || {
             let backend = crate::infra::agent::create_backend(session_model.kind());
-            let mut command = backend.build_start_command(&folder, &prompt, session_model.as_str());
+            let mut command = backend
+                .build_command(crate::infra::agent::BuildCommandRequest {
+                    folder: &folder,
+                    mode: crate::infra::agent::AgentCommandMode::Start { prompt: &prompt },
+                    model: session_model.as_str(),
+                })
+                .map_err(|error| {
+                    format!("Failed to build sync rebase assist model command: {error}")
+                })?;
             command.stdin(Stdio::null());
 
             let output = command
@@ -1517,7 +1525,13 @@ impl SessionManager {
         prompt: &str,
     ) -> Result<String, String> {
         let backend = crate::infra::agent::create_backend(session_model.kind());
-        let mut command = backend.build_start_command(folder, prompt, session_model.as_str());
+        let mut command = backend
+            .build_command(crate::infra::agent::BuildCommandRequest {
+                folder,
+                mode: crate::infra::agent::AgentCommandMode::Start { prompt },
+                model: session_model.as_str(),
+            })
+            .map_err(|error| format!("Failed to build merge commit message command: {error}"))?;
         command.stdin(Stdio::null());
         let output = command
             .output()

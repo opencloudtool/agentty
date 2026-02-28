@@ -14,11 +14,14 @@ mod gemini;
 #[path = "agent/response_parser.rs"]
 mod response_parser;
 
-pub(crate) use backend::build_resume_prompt;
-pub use backend::{AgentBackend, create_backend};
-pub use response_parser::{ParsedResponse, parse_response};
+pub use backend::{
+    AgentBackend, AgentBackendError, AgentCommandMode, AgentTransport, BuildCommandRequest,
+    create_backend, parse_response, transport_mode,
+};
+pub(crate) use backend::{build_resume_prompt, parse_stream_output_line};
+pub use response_parser::ParsedResponse;
 pub(crate) use response_parser::{
-    compact_codex_progress_message, is_codex_completion_status_message, parse_stream_output_line,
+    compact_codex_progress_message, is_codex_completion_status_message,
 };
 
 #[cfg(test)]

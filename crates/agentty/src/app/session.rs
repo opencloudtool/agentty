@@ -196,6 +196,7 @@ mod tests {
         CodexUsageLimitWindow, CodexUsageLimits, DailyActivity, SESSION_DATA_DIR, Session,
         SessionHandles, SessionSize, SessionStats, Status,
     };
+    use crate::infra::agent::AgentCommandMode;
     use crate::infra::agent::tests::MockAgentBackend;
     use crate::infra::app_server::MockAppServerClient;
     use crate::infra::db::Database;
@@ -209,13 +210,13 @@ mod tests {
 
     fn create_mock_backend() -> MockAgentBackend {
         let mut mock = MockAgentBackend::new();
-        mock.expect_build_start_command().returning(|folder, _, _| {
+        mock.expect_build_command().returning(|request| {
             let mut cmd = Command::new("echo");
             cmd.arg("mock-start")
-                .current_dir(folder)
+                .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            cmd
+            Ok(cmd)
         });
         mock
     }
@@ -1974,21 +1975,19 @@ FROM session
             .await
             .expect("failed to create session");
         let mut backend = MockAgentBackend::new();
-        backend
-            .expect_build_start_command()
-            .returning(|folder, _, _| {
-                let mut command = Command::new("sh");
-                command
-                    .args([
-                        "-lc",
-                        "yes line | head -n 20 > turn-size-test.txt; echo turn-complete",
-                    ])
-                    .current_dir(folder)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null());
+        backend.expect_build_command().returning(|request| {
+            let mut command = Command::new("sh");
+            command
+                .args([
+                    "-lc",
+                    "yes line | head -n 20 > turn-size-test.txt; echo turn-complete",
+                ])
+                .current_dir(request.folder)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
 
-                command
-            });
+            Ok(command)
+        });
 
         // Act
         app.sessions
@@ -2090,18 +2089,19 @@ FROM session
             .await
             .expect("failed to open in-memory db");
         let mut mock = MockAgentBackend::new();
-        mock.expect_build_start_command()
-            .returning(|folder, prompt, _| {
-                let mut cmd = Command::new("echo");
-                cmd.arg("--prompt")
-                    .arg(prompt)
-                    .arg("--model")
-                    .arg("claude-sonnet-4-6")
-                    .current_dir(folder)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null());
-                cmd
-            });
+        mock.expect_build_command().returning(|request| {
+            assert!(matches!(request.mode, AgentCommandMode::Start { .. }));
+
+            let mut cmd = Command::new("echo");
+            cmd.arg("--prompt")
+                .arg(request.mode.prompt())
+                .arg("--model")
+                .arg(request.model)
+                .current_dir(request.folder)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            Ok(cmd)
+        });
         let mut app = App::new(
             dir.path().to_path_buf(),
             dir.path().to_path_buf(),
@@ -2140,23 +2140,22 @@ FROM session
 
         // Act — reply (resume command)
         let mut resume_mock = MockAgentBackend::new();
-        resume_mock
-            .expect_build_resume_command()
-            .returning(|folder, prompt, _, session_output| {
-                assert!(session_output.is_none());
+        resume_mock.expect_build_command().returning(|request| {
+            assert!(matches!(request.mode, AgentCommandMode::Resume { .. }));
+            assert!(request.mode.session_output().is_none());
 
-                let mut cmd = Command::new("echo");
-                cmd.arg("--prompt")
-                    .arg(prompt)
-                    .arg("--model")
-                    .arg("claude-sonnet-4-6")
-                    .arg("--resume")
-                    .arg("latest")
-                    .current_dir(folder)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null());
-                Ok(cmd)
-            });
+            let mut cmd = Command::new("echo");
+            cmd.arg("--prompt")
+                .arg(request.mode.prompt())
+                .arg("--model")
+                .arg(request.model)
+                .arg("--resume")
+                .arg("latest")
+                .current_dir(request.folder)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            Ok(cmd)
+        });
         let session_id = app.sessions.sessions[0].id.clone();
         app.sessions
             .reply_with_backend(
@@ -2228,22 +2227,27 @@ FROM session
 
         // Act
         let mut first_resume_mock = MockAgentBackend::new();
-        first_resume_mock.expect_build_resume_command().returning(
-            |folder, prompt, _, session_output| {
-                let session_output = session_output.expect("expected session output");
+        first_resume_mock
+            .expect_build_command()
+            .returning(|request| {
+                assert!(matches!(request.mode, AgentCommandMode::Resume { .. }));
+
+                let session_output = request
+                    .mode
+                    .session_output()
+                    .expect("expected session output");
                 assert!(session_output.contains("Initial prompt"));
                 assert!(session_output.contains("mock-start"));
 
                 let mut cmd = Command::new("echo");
                 cmd.arg("--prompt")
-                    .arg(prompt)
+                    .arg(request.mode.prompt())
                     .arg("history-replayed")
-                    .current_dir(folder)
+                    .current_dir(request.folder)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
                 Ok(cmd)
-            },
-        );
+            });
         app.sessions
             .reply_with_backend(
                 &app.services,
@@ -2257,20 +2261,21 @@ FROM session
 
         // Assert
         let mut second_resume_mock = MockAgentBackend::new();
-        second_resume_mock.expect_build_resume_command().returning(
-            |folder, prompt, _, session_output| {
-                assert!(session_output.is_none());
+        second_resume_mock
+            .expect_build_command()
+            .returning(|request| {
+                assert!(matches!(request.mode, AgentCommandMode::Resume { .. }));
+                assert!(request.mode.session_output().is_none());
 
                 let mut cmd = Command::new("echo");
                 cmd.arg("--prompt")
-                    .arg(prompt)
+                    .arg(request.mode.prompt())
                     .arg("history-not-replayed")
-                    .current_dir(folder)
+                    .current_dir(request.folder)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
                 Ok(cmd)
-            },
-        );
+            });
         app.sessions
             .reply_with_backend(
                 &app.services,
@@ -2335,14 +2340,14 @@ FROM session
 
         // Create a session that writes a file so commit_all has something to commit
         let mut mock = MockAgentBackend::new();
-        mock.expect_build_start_command().returning(|folder, _, _| {
+        mock.expect_build_command().returning(|request| {
             let mut cmd = Command::new("bash");
             cmd.arg("-c")
                 .arg("echo auto-content > auto-committed.txt")
-                .current_dir(folder)
+                .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            cmd
+            Ok(cmd)
         });
         let session_id = app
             .create_session()
@@ -2468,13 +2473,13 @@ FROM session
 
         // Agent that produces no file changes
         let mut mock = MockAgentBackend::new();
-        mock.expect_build_start_command().returning(|folder, _, _| {
+        mock.expect_build_command().returning(|request| {
             let mut cmd = Command::new("echo");
             cmd.arg("no-changes")
-                .current_dir(folder)
+                .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            cmd
+            Ok(cmd)
         });
         let session_id = app
             .create_session()

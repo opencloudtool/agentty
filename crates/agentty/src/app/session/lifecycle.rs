@@ -13,7 +13,7 @@ use crate::app::settings::SettingName;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::session::{SESSION_DATA_DIR, Session, Status};
-use crate::infra::agent::AgentBackend;
+use crate::infra::agent::{AgentBackend, AgentCommandMode, BuildCommandRequest};
 use crate::ui::pages::session_list::grouped_session_indexes;
 
 /// Input bag for constructing a queued session command.
@@ -100,8 +100,8 @@ impl SessionManager {
     /// the agent.
     ///
     /// # Errors
-    /// Returns an error if the worktree, session files, or database record
-    /// cannot be created.
+    /// Returns an error if the worktree, session files, database record, or
+    /// backend setup cannot be created.
     pub async fn create_session(
         &mut self,
         projects: &ProjectManager,
@@ -184,7 +184,20 @@ impl SessionManager {
             .insert_session_creation_activity_now(&session_id)
             .await;
 
-        crate::infra::agent::create_backend(session_model.kind()).setup(&folder);
+        if let Err(error) = crate::infra::agent::create_backend(session_model.kind()).setup(&folder)
+        {
+            self.rollback_failed_session_creation(
+                services,
+                &folder,
+                &repo_root,
+                &session_id,
+                &worktree_branch,
+                true,
+            )
+            .await;
+
+            return Err(format!("Failed to setup session backend: {error}"));
+        }
         services.emit_app_event(AppEvent::RefreshSessions);
 
         Ok(session_id)
@@ -255,7 +268,8 @@ impl SessionManager {
         .await;
 
         let operation_id = Uuid::new_v4().to_string();
-        let command = if session_model.kind().supports_app_server() {
+        let command = if crate::infra::agent::transport_mode(session_model.kind()).uses_app_server()
+        {
             SessionCommand::StartPromptAppServer {
                 operation_id,
                 prompt: prompt.clone(),
@@ -263,7 +277,13 @@ impl SessionManager {
             }
         } else {
             let backend = crate::infra::agent::create_backend(session_model.kind());
-            let command = backend.build_start_command(&folder, &prompt, session_model.as_str());
+            let command = backend
+                .build_command(BuildCommandRequest {
+                    folder: &folder,
+                    mode: AgentCommandMode::Start { prompt: &prompt },
+                    model: session_model.as_str(),
+                })
+                .map_err(|error| error.to_string())?;
             SessionCommand::StartPrompt {
                 command,
                 operation_id,
@@ -663,7 +683,8 @@ impl SessionManager {
         }
 
         let session_output = if !is_first_message
-            && (should_replay_history || session_model.kind().supports_app_server())
+            && (should_replay_history
+                || crate::infra::agent::transport_mode(session_model.kind()).uses_app_server())
         {
             Some(session.output.clone())
         } else {
@@ -746,8 +767,8 @@ impl SessionManager {
     /// Builds a queued command for starting or resuming a session interaction.
     ///
     /// # Errors
-    /// Returns an error when resume-command rendering fails for non-app-server
-    /// models.
+    /// Returns an error when provider command construction fails for
+    /// non-app-server models.
     fn build_session_command(
         backend: &dyn AgentBackend,
         input: BuildSessionCommandInput,
@@ -761,7 +782,7 @@ impl SessionManager {
         } = input;
         let operation_id = Uuid::new_v4().to_string();
 
-        if session_model.kind().supports_app_server() {
+        if crate::infra::agent::transport_mode(session_model.kind()).uses_app_server() {
             if is_first_message {
                 Ok(SessionCommand::StartPromptAppServer {
                     operation_id,
@@ -778,15 +799,22 @@ impl SessionManager {
             }
         } else {
             let command = if is_first_message {
-                Ok(backend.build_start_command(&folder, &prompt, session_model.as_str()))
+                backend.build_command(BuildCommandRequest {
+                    folder: &folder,
+                    mode: AgentCommandMode::Start { prompt: &prompt },
+                    model: session_model.as_str(),
+                })
             } else {
-                backend.build_resume_command(
-                    &folder,
-                    &prompt,
-                    session_model.as_str(),
-                    session_output,
-                )
-            }?;
+                backend.build_command(BuildCommandRequest {
+                    folder: &folder,
+                    mode: AgentCommandMode::Resume {
+                        prompt: &prompt,
+                        session_output: session_output.as_deref(),
+                    },
+                    model: session_model.as_str(),
+                })
+            }
+            .map_err(|error| error.to_string())?;
 
             if is_first_message {
                 Ok(SessionCommand::StartPrompt {

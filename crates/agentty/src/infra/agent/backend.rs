@@ -1,9 +1,94 @@
+use std::error::Error;
+use std::fmt;
 use std::path::Path;
 use std::process::Command;
 
 use askama::Template;
 
 use crate::domain::agent::AgentKind;
+use crate::infra::agent::response_parser::ParsedResponse;
+
+/// Transport runtime used to execute turns for one backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentTransport {
+    /// Provider runs through persistent app-server sessions.
+    AppServer,
+    /// Provider runs as direct CLI subprocess commands.
+    Cli,
+}
+
+impl AgentTransport {
+    /// Returns whether this transport uses app-server sessions.
+    pub fn uses_app_server(self) -> bool {
+        matches!(self, Self::AppServer)
+    }
+}
+
+/// Request payload used to build provider commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildCommandRequest<'a> {
+    /// Working directory where the command will run.
+    pub folder: &'a Path,
+    /// Prompt mode and optional replay payload.
+    pub mode: AgentCommandMode<'a>,
+    /// Provider-specific model identifier.
+    pub model: &'a str,
+}
+
+/// Prompt mode for command construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentCommandMode<'a> {
+    /// Starts a fresh turn.
+    Start {
+        /// User prompt to send.
+        prompt: &'a str,
+    },
+    /// Resumes a prior turn, optionally replaying transcript output.
+    Resume {
+        /// User prompt to send.
+        prompt: &'a str,
+        /// Prior session output used for history replay when present.
+        session_output: Option<&'a str>,
+    },
+}
+
+impl<'a> AgentCommandMode<'a> {
+    /// Returns the user prompt for this command mode.
+    pub fn prompt(self) -> &'a str {
+        match self {
+            Self::Start { prompt } | Self::Resume { prompt, .. } => prompt,
+        }
+    }
+
+    /// Returns transcript output used for resume replay, when present.
+    pub fn session_output(self) -> Option<&'a str> {
+        match self {
+            Self::Start { .. } => None,
+            Self::Resume { session_output, .. } => session_output,
+        }
+    }
+}
+
+/// Error type for backend setup and command construction failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentBackendError {
+    /// One-time backend setup failure.
+    Setup(String),
+    /// Per-command build failure.
+    CommandBuild(String),
+}
+
+impl fmt::Display for AgentBackendError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Setup(message) | Self::CommandBuild(message) => {
+                write!(formatter, "{message}")
+            }
+        }
+    }
+}
+
+impl Error for AgentBackendError {}
 
 /// Askama view model for rendering resume prompts with prior session output.
 #[derive(Template)]
@@ -17,35 +102,46 @@ struct ResumeWithSessionOutputPromptTemplate<'a> {
 #[cfg_attr(test, mockall::automock)]
 pub trait AgentBackend: Send + Sync {
     /// Performs one-time setup in an agent folder before first run.
-    fn setup(&self, folder: &Path);
-
-    /// Builds a command for an initial task prompt.
-    fn build_start_command(&self, folder: &Path, prompt: &str, model: &str) -> Command;
-
-    /// Builds a command for a resumed task or reply.
-    ///
-    /// Implementations may intentionally start a fresh conversation when
-    /// `session_output` is provided (for example, to replay history after a
-    /// model switch).
     ///
     /// # Errors
-    /// Returns an error when resume prompt rendering fails.
-    fn build_resume_command(
+    /// Returns an error when one-time backend setup cannot be completed.
+    fn setup(&self, folder: &Path) -> Result<(), AgentBackendError>;
+
+    /// Builds one command for a start or resume interaction.
+    ///
+    /// # Errors
+    /// Returns an error when prompt rendering or provider argument
+    /// construction fails.
+    fn build_command<'a>(
         &self,
-        folder: &Path,
-        prompt: &str,
-        model: &str,
-        session_output: Option<String>,
-    ) -> Result<Command, String>;
+        request: BuildCommandRequest<'a>,
+    ) -> Result<Command, AgentBackendError>;
 }
 
 /// Creates the backend implementation for the selected agent provider.
 pub fn create_backend(kind: AgentKind) -> Box<dyn AgentBackend> {
-    match kind {
-        AgentKind::Gemini => Box::new(super::gemini::GeminiBackend),
-        AgentKind::Claude => Box::new(super::claude::ClaudeBackend),
-        AgentKind::Codex => Box::new(super::codex::CodexBackend),
-    }
+    (provider_descriptor(kind).backend_factory)()
+}
+
+/// Parses provider output and returns final response content and usage stats.
+pub fn parse_response(kind: AgentKind, stdout: &str, stderr: &str) -> ParsedResponse {
+    (provider_descriptor(kind).parse_response)(stdout, stderr)
+}
+
+/// Parses one stream line into incremental text and content classification.
+///
+/// Returns `(text, is_response_content)` where `is_response_content` is `true`
+/// for model-authored content and `false` for progress updates.
+pub(crate) fn parse_stream_output_line(
+    kind: AgentKind,
+    stdout_line: &str,
+) -> Option<(String, bool)> {
+    (provider_descriptor(kind).parse_stream_output_line)(stdout_line)
+}
+
+/// Returns transport mode for the selected provider.
+pub fn transport_mode(kind: AgentKind) -> AgentTransport {
+    provider_descriptor(kind).transport
 }
 
 /// Builds a resume prompt that optionally prepends previous session output.
@@ -55,7 +151,7 @@ pub fn create_backend(kind: AgentKind) -> Box<dyn AgentBackend> {
 pub(crate) fn build_resume_prompt(
     prompt: &str,
     session_output: Option<&str>,
-) -> Result<String, String> {
+) -> Result<String, AgentBackendError> {
     let Some(session_output) = session_output
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -68,10 +164,43 @@ pub(crate) fn build_resume_prompt(
         session_output,
     };
     let rendered = template.render().map_err(|error| {
-        format!("Failed to render `resume_with_session_output_prompt.md`: {error}")
+        AgentBackendError::CommandBuild(format!(
+            "Failed to render `resume_with_session_output_prompt.md`: {error}"
+        ))
     })?;
 
     Ok(rendered.trim_end().to_string())
+}
+
+/// One backend/provider descriptor containing construction and parsing hooks.
+struct AgentProviderDescriptor {
+    backend_factory: fn() -> Box<dyn AgentBackend>,
+    parse_response: fn(&str, &str) -> ParsedResponse,
+    parse_stream_output_line: fn(&str) -> Option<(String, bool)>,
+    transport: AgentTransport,
+}
+
+fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
+    match kind {
+        AgentKind::Gemini => AgentProviderDescriptor {
+            backend_factory: || Box::new(super::gemini::GeminiBackend),
+            parse_response: super::response_parser::parse_gemini_response_with_fallback,
+            parse_stream_output_line: super::response_parser::parse_gemini_stream_output_line,
+            transport: AgentTransport::AppServer,
+        },
+        AgentKind::Claude => AgentProviderDescriptor {
+            backend_factory: || Box::new(super::claude::ClaudeBackend),
+            parse_response: super::response_parser::parse_claude_response_with_fallback,
+            parse_stream_output_line: super::response_parser::parse_claude_stream_output_line,
+            transport: AgentTransport::Cli,
+        },
+        AgentKind::Codex => AgentProviderDescriptor {
+            backend_factory: || Box::new(super::codex::CodexBackend),
+            parse_response: super::response_parser::parse_codex_response_with_fallback,
+            parse_stream_output_line: super::response_parser::parse_codex_stream_output_line,
+            transport: AgentTransport::AppServer,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -122,5 +251,25 @@ mod tests {
 
         // Assert
         assert_eq!(resume_prompt, prompt);
+    }
+
+    #[test]
+    /// Ensures transport capability is provided by infra backend descriptors,
+    /// not domain enums.
+    fn test_transport_mode_reports_expected_transport_by_provider() {
+        // Arrange
+        let claude_kind = AgentKind::Claude;
+        let codex_kind = AgentKind::Codex;
+        let gemini_kind = AgentKind::Gemini;
+
+        // Act
+        let claude_transport = transport_mode(claude_kind);
+        let codex_transport = transport_mode(codex_kind);
+        let gemini_transport = transport_mode(gemini_kind);
+
+        // Assert
+        assert_eq!(claude_transport, AgentTransport::Cli);
+        assert_eq!(codex_transport, AgentTransport::AppServer);
+        assert_eq!(gemini_transport, AgentTransport::AppServer);
     }
 }

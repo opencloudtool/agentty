@@ -121,14 +121,6 @@ impl AgentKind {
         }
     }
 
-    /// Returns whether this agent kind uses the app-server transport path.
-    ///
-    /// `Gemini` and `Codex` run through persistent app-server sessions, while
-    /// `Claude` continues to use the direct CLI command path.
-    pub fn supports_app_server(self) -> bool {
-        matches!(self, Self::Gemini | Self::Codex)
-    }
-
     /// Returns the model string when it belongs to this agent kind.
     pub fn model_str(self, model: AgentModel) -> Option<&'static str> {
         if model.kind() != self {
@@ -215,29 +207,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_supports_app_server_returns_true_for_supported_agents() {
-        // Arrange
-        let gemini_kind = AgentKind::Gemini;
-        let codex_kind = AgentKind::Codex;
-
-        // Act
-        let gemini_supports_app_server = gemini_kind.supports_app_server();
-        let codex_supports_app_server = codex_kind.supports_app_server();
-
-        // Assert
-        assert!(gemini_supports_app_server);
-        assert!(codex_supports_app_server);
-    }
-
-    #[test]
-    fn test_supports_app_server_returns_false_for_unsupported_agents() {
+    /// Ensures model parsing is constrained to the selected provider.
+    fn test_parse_model_returns_none_for_models_from_other_providers() {
         // Arrange
         let claude_kind = AgentKind::Claude;
+        let gemini_model = AgentModel::Gemini3FlashPreview.as_str();
 
         // Act
-        let claude_supports_app_server = claude_kind.supports_app_server();
+        let parsed_model = claude_kind.parse_model(gemini_model);
 
         // Assert
-        assert!(!claude_supports_app_server);
+        assert_eq!(parsed_model, None);
     }
 }
