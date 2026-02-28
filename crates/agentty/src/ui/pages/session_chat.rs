@@ -324,11 +324,22 @@ impl<'a> SessionChatPage<'a> {
     ///
     /// `InProgress` sessions keep worktree access but hide edit and diff
     /// shortcuts, `Review` sessions expose focused-review shortcuts, and
-    /// `Done` sessions expose only read-only shortcuts.
+    /// `Done` sessions expose only read-only shortcuts. `Canceled` sessions
+    /// expose only `back`, `scroll`, and `help`.
     fn view_help_text(
         session: &Session,
         done_session_output_mode: DoneSessionOutputMode,
     ) -> String {
+        if session.status == Status::Canceled {
+            let canceled_actions = vec![
+                help_action::HelpAction::new("back", "q", "Back to list"),
+                help_action::HelpAction::new("scroll", "j/k", "Scroll output"),
+                help_action::HelpAction::new("help", "?", "Help"),
+            ];
+
+            return help_action::footer_text(&canceled_actions);
+        }
+
         let session_state = match session.status {
             Status::Done => ViewSessionState::Done,
             Status::InProgress => ViewSessionState::InProgress,
@@ -686,6 +697,19 @@ mod tests {
         assert!(help_text.contains("o: open"));
         assert!(!help_text.contains("d: diff"));
         assert!(!help_text.contains("Enter: reply"));
+    }
+
+    #[test]
+    fn test_view_help_text_canceled_shows_only_back_scroll_and_help() {
+        // Arrange
+        let mut session = session_fixture();
+        session.status = Status::Canceled;
+
+        // Act
+        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
+
+        // Assert
+        assert_eq!(help_text, "q: back | j/k: scroll | ?: help");
     }
 
     #[test]

@@ -37,8 +37,8 @@ struct ViewSessionSnapshot {
 }
 
 /// Processes view-mode key presses and keeps shortcut availability aligned with
-/// session status (`open` disabled only for `Done`, `diff`/focused review only
-/// for `Review`).
+/// session status (`open` disabled for `Done`/`Canceled`, `diff`/focused
+/// review only for `Review`).
 pub(crate) async fn handle(
     app: &mut App,
     terminal: &mut TuiTerminal,
@@ -206,14 +206,14 @@ fn is_done_output_toggle_key(status: Status, key: KeyEvent) -> bool {
 
 /// Returns whether `o` can open the session worktree in tmux.
 fn is_view_worktree_open_allowed(status: Status) -> bool {
-    status != Status::Done
+    !matches!(status, Status::Done | Status::Canceled)
 }
 
 /// Returns whether non-navigation view shortcuts are available.
 ///
 /// This covers `Enter`, `m`, `r`, and `S-Tab`.
 fn is_view_action_allowed(status: Status) -> bool {
-    !matches!(status, Status::Done | Status::InProgress)
+    !matches!(status, Status::Done | Status::InProgress | Status::Canceled)
 }
 
 /// Returns whether the `d` shortcut can open the diff view.
@@ -245,7 +245,7 @@ fn switch_view_to_prompt(
 /// Returns whether the 'o' shortcut should open the worktree for the provided
 /// session status.
 fn can_open_session_worktree(status: Status) -> bool {
-    status != Status::Done
+    !matches!(status, Status::Done | Status::Canceled)
 }
 
 /// Maps session status to view help session state.
@@ -557,6 +557,18 @@ mod tests {
     }
 
     #[test]
+    fn test_is_view_worktree_open_allowed_returns_false_for_canceled() {
+        // Arrange
+        let status = Status::Canceled;
+
+        // Act
+        let can_open = is_view_worktree_open_allowed(status);
+
+        // Assert
+        assert!(!can_open);
+    }
+
+    #[test]
     fn test_is_view_worktree_open_allowed_returns_true_for_in_progress() {
         // Arrange
         let status = Status::InProgress;
@@ -571,16 +583,19 @@ mod tests {
     #[test]
     fn test_is_view_action_allowed_only_for_non_done_non_in_progress_status() {
         // Arrange
+        let canceled_status = Status::Canceled;
         let review_status = Status::Review;
         let in_progress_status = Status::InProgress;
         let done_status = Status::Done;
 
         // Act
+        let canceled_allowed = is_view_action_allowed(canceled_status);
         let review_allowed = is_view_action_allowed(review_status);
         let in_progress_allowed = is_view_action_allowed(in_progress_status);
         let done_allowed = is_view_action_allowed(done_status);
 
         // Assert
+        assert!(!canceled_allowed);
         assert!(review_allowed);
         assert!(!in_progress_allowed);
         assert!(!done_allowed);
@@ -1061,6 +1076,18 @@ mod tests {
                 scroll_offset: 0,
             } if !session_id.is_empty()
         ));
+    }
+
+    #[test]
+    fn test_can_open_session_worktree_disables_canceled_state() {
+        // Arrange
+        let status = Status::Canceled;
+
+        // Act
+        let result = can_open_session_worktree(status);
+
+        // Assert
+        assert!(!result);
     }
 
     #[test]
