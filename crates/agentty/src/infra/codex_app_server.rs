@@ -2042,6 +2042,8 @@ mod tests {
 
     #[test]
     fn approval_policy_maps_auto_edit_mode() {
+        // Arrange
+
         // Act
         let auto_edit_policy = RealCodexAppServerClient::approval_policy();
 
@@ -2051,6 +2053,8 @@ mod tests {
 
     #[test]
     fn thread_sandbox_mode_maps_auto_edit_mode() {
+        // Arrange
+
         // Act
         let auto_edit_sandbox = RealCodexAppServerClient::thread_sandbox_mode();
 
@@ -2060,6 +2064,8 @@ mod tests {
 
     #[test]
     fn turn_sandbox_policy_enables_network_access_for_workspace_write() {
+        // Arrange
+
         // Act
         let turn_sandbox_policy = RealCodexAppServerClient::turn_sandbox_policy();
 
@@ -2078,6 +2084,8 @@ mod tests {
 
     #[test]
     fn web_search_mode_maps_auto_edit_mode() {
+        // Arrange
+
         // Act
         let web_search_mode = RealCodexAppServerClient::web_search_mode();
 
@@ -2289,7 +2297,7 @@ mod tests {
 
     #[test]
     fn camel_to_snake_converts_camel_case_strings() {
-        // Act / Assert
+        // Arrange, Act, Assert
         assert_eq!(camel_to_snake("commandExecution"), "command_execution");
         assert_eq!(camel_to_snake("agentMessage"), "agent_message");
         assert_eq!(camel_to_snake("webSearch"), "web_search");
@@ -2349,7 +2357,7 @@ mod tests {
 
     #[test]
     fn is_context_window_exceeded_error_detects_structured_error() {
-        // Act / Assert
+        // Arrange, Act, Assert
         assert!(is_context_window_exceeded_error(
             "[ContextWindowExceeded] Token limit exceeded"
         ));
@@ -2360,7 +2368,7 @@ mod tests {
 
     #[test]
     fn is_context_window_exceeded_error_returns_false_for_other_errors() {
-        // Act / Assert
+        // Arrange, Act, Assert
         assert!(!is_context_window_exceeded_error("Connection reset"));
         assert!(!is_context_window_exceeded_error("Rate limit exceeded"));
         assert!(!is_context_window_exceeded_error(""));

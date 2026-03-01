@@ -623,6 +623,8 @@ mod tests {
 
     #[test]
     fn compact_codex_progress_message_returns_compacting_for_context_compaction() {
+        // Arrange
+
         // Act
         let progress = compact_codex_progress_message("context_compaction");
 
