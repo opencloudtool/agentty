@@ -77,10 +77,7 @@ impl<'a> InfoOverlay<'a> {
             .max(MIN_OVERLAY_HEIGHT)
             .min(area.height);
         let action_row = if self.is_loading {
-            format!(
-                "{} Sync in progress...  Please wait.",
-                Icon::current_spinner()
-            )
+            format!("{} Sync in progress...", Icon::current_spinner())
         } else {
             "OK".to_string()
         };
@@ -100,6 +97,11 @@ impl Component for InfoOverlay<'_> {
         let width = Self::popup_width(area);
         let title = format!(" {} ", self.title);
         let mut paragraph_lines = self.message_lines();
+        let paragraph_alignment = if self.is_loading {
+            Alignment::Center
+        } else {
+            Alignment::Left
+        };
         let border_color = if self.is_loading {
             Color::Cyan
         } else {
@@ -113,15 +115,15 @@ impl Component for InfoOverlay<'_> {
             let loading_line = format!("{} Sync in progress...", Icon::current_spinner());
 
             paragraph_lines.push(Line::from(""));
-            paragraph_lines.push(Line::from(vec![
-                Span::styled(
+            paragraph_lines.push(
+                Line::from(vec![Span::styled(
                     loading_line,
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  Please wait.", Style::default().fg(Color::Gray)),
-            ]));
+                )])
+                .alignment(Alignment::Center),
+            );
         } else {
             let ok_style = Style::default()
                 .fg(Color::Black)
@@ -135,7 +137,7 @@ impl Component for InfoOverlay<'_> {
         }
 
         let paragraph = Paragraph::new(paragraph_lines)
-            .alignment(Alignment::Left)
+            .alignment(paragraph_alignment)
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
@@ -226,6 +228,7 @@ mod tests {
         let content = buffer.content();
         let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(text.contains("Sync in progress..."));
+        assert!(!text.contains("Please wait."));
         assert!(!text.contains("OK"));
     }
 
@@ -277,5 +280,55 @@ mod tests {
             message_lines[1].spans[0].content.as_ref(),
             "Commit or stash, then retry."
         );
+    }
+
+    #[test]
+    fn test_loading_state_centers_branch_header_and_loader() {
+        // Arrange
+        let message =
+            "Project `agentty` on main branch `main`.\n\nSynchronizing with its upstream.";
+        let loading_lines =
+            render_overlay_lines(InfoOverlay::new("Sync in progress", message).is_loading(true));
+        let blocked_lines = render_overlay_lines(InfoOverlay::new("Sync blocked", message));
+        let header_text = "Project `agentty` on main branch `main`.";
+        let loader_text = "Sync in progress...";
+
+        // Act
+        let loading_header_column =
+            line_start_column(&loading_lines, header_text).expect("missing loading header");
+        let blocked_header_column =
+            line_start_column(&blocked_lines, header_text).expect("missing blocked header");
+        let loading_loader_column =
+            line_start_column(&loading_lines, loader_text).expect("missing loader text");
+
+        // Assert
+        assert!(loading_header_column > blocked_header_column);
+        assert!(loading_loader_column > blocked_header_column);
+    }
+
+    /// Renders one overlay and returns text rows for column-position
+    /// assertions.
+    fn render_overlay_lines(overlay: InfoOverlay<'_>) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                crate::ui::Component::render(&overlay, frame, area);
+            })
+            .expect("failed to draw");
+
+        let text_cells = terminal.backend().buffer().content();
+
+        text_cells
+            .chunks(100)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect()
+    }
+
+    /// Returns the left-most column index for `needle` within rendered rows.
+    fn line_start_column(lines: &[String], needle: &str) -> Option<usize> {
+        lines.iter().find_map(|line| line.find(needle))
     }
 }
