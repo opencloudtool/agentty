@@ -673,7 +673,7 @@ impl App {
     }
 
     /// Starts focused-review assist generation for one session using the
-    /// current diff text.
+    /// current diff text and the configured default review model.
     ///
     /// The focused-review assist prompt enforces read-only review constraints
     /// and allows only internet lookup and non-editing verification commands.
@@ -681,7 +681,6 @@ impl App {
         &self,
         session_id: &str,
         session_folder: &Path,
-        session_model: AgentModel,
         focused_review_diff: &str,
         session_summary: Option<&str>,
     ) {
@@ -690,7 +689,7 @@ impl App {
             focused_review_diff: focused_review_diff.to_string(),
             session_folder: session_folder.to_path_buf(),
             session_id: session_id.to_string(),
-            session_model,
+            review_model: self.settings.default_review_model,
             session_summary: session_summary.map(str::to_string),
         });
     }

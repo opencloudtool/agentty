@@ -64,15 +64,15 @@ struct ViewSessionSnapshot {
     is_action_allowed: bool,
     is_in_progress: bool,
     session_folder: PathBuf,
-    session_model: AgentModel,
     session_output: String,
     session_summary: Option<String>,
     session_state: ViewSessionState,
     session_status: Status,
 }
 
-/// Status line displayed while focused-review assist output is being prepared.
-const FOCUSED_REVIEW_LOADING_MESSAGE: &str = "Preparing focused review with agent help...";
+/// Prefix for the focused-review loading status while assist output is being
+/// prepared.
+const FOCUSED_REVIEW_LOADING_MESSAGE_PREFIX: &str = "Preparing focused review with agent help";
 /// Fallback copy used when no changes exist for focused review.
 const FOCUSED_REVIEW_NO_DIFF_MESSAGE: &str = "No diff changes found for focused review.";
 
@@ -286,7 +286,6 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
         is_action_allowed: is_view_action_allowed(session_status),
         is_in_progress: session_status == Status::InProgress,
         session_folder: session.folder.clone(),
-        session_model: session.model,
         session_output: session.output.clone(),
         session_summary: session.summary.clone(),
         session_state: view_session_state(session_status),
@@ -583,21 +582,22 @@ async fn toggle_focused_review_output_mode(
 
     *done_session_output_mode = DoneSessionOutputMode::FocusedReview;
 
-    let focused_review_is_loading =
-        focused_review_status_message.as_deref() == Some(FOCUSED_REVIEW_LOADING_MESSAGE);
+    let focused_review_is_loading = focused_review_status_message
+        .as_deref()
+        .is_some_and(is_focused_review_loading_status_message);
     if focused_review_text.is_some() || focused_review_is_loading {
         return;
     }
 
     let focused_review_diff = focused_review_diff_for_view_session(app, view_context).await;
     if should_request_focused_review_assist(&focused_review_diff) {
+        let review_model = focused_review_assist_model(app);
         *focused_review_status_message =
-            focused_review_initial_status_message(&focused_review_diff);
+            focused_review_initial_status_message(&focused_review_diff, review_model);
         *focused_review_text = None;
         app.start_focused_review_assist(
             &view_context.session_id,
             view_session_snapshot.session_folder.as_path(),
-            view_session_snapshot.session_model,
             &focused_review_diff,
             view_session_snapshot.session_summary.as_deref(),
         );
@@ -641,13 +641,32 @@ fn should_request_focused_review_assist(diff: &str) -> bool {
     !trimmed_diff.starts_with("Failed to run git diff:")
 }
 
+/// Returns whether a focused-review status line indicates assist is still
+/// loading.
+fn is_focused_review_loading_status_message(status_message: &str) -> bool {
+    status_message.starts_with(FOCUSED_REVIEW_LOADING_MESSAGE_PREFIX)
+}
+
+/// Returns the configured model used for focused-review assist generation.
+fn focused_review_assist_model(app: &App) -> AgentModel {
+    app.settings.default_review_model
+}
+
 /// Returns the status line shown while focused-review assist is pending.
-fn focused_review_initial_status_message(diff: &str) -> Option<String> {
+fn focused_review_initial_status_message(diff: &str, review_model: AgentModel) -> Option<String> {
     if should_request_focused_review_assist(diff) {
-        return Some(FOCUSED_REVIEW_LOADING_MESSAGE.to_string());
+        return Some(focused_review_loading_message(review_model));
     }
 
     None
+}
+
+/// Formats the focused-review loading status line with the active model name.
+fn focused_review_loading_message(review_model: AgentModel) -> String {
+    format!(
+        "{FOCUSED_REVIEW_LOADING_MESSAGE_PREFIX} with model {}...",
+        review_model.as_str(),
+    )
 }
 
 /// Loads the session worktree diff against its base branch.
@@ -1115,6 +1134,7 @@ mod tests {
     async fn test_apply_view_scroll_and_output_mode_updates_focused_review_state() {
         // Arrange
         let (mut app, _base_dir, expected_session_id) = new_test_app_with_session().await;
+        let expected_status_message = focused_review_loading_message(AgentModel::Gpt53Codex);
         app.mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             focused_review_status_message: None,
@@ -1127,7 +1147,7 @@ mod tests {
         apply_view_scroll_and_output_mode(
             &mut app,
             DoneSessionOutputMode::FocusedReview,
-            Some(FOCUSED_REVIEW_LOADING_MESSAGE.to_string()),
+            Some(expected_status_message.clone()),
             None,
             Some(1),
         );
@@ -1137,13 +1157,50 @@ mod tests {
             app.mode,
             AppMode::View {
                 done_session_output_mode: DoneSessionOutputMode::FocusedReview,
-                focused_review_status_message: Some(ref focused_review_status_message),
+                focused_review_status_message: Some(ref actual_status_message),
                 focused_review_text: None,
                 ref session_id,
                 scroll_offset: Some(1),
             } if session_id == &expected_session_id
-                && focused_review_status_message == FOCUSED_REVIEW_LOADING_MESSAGE
+                && actual_status_message == &expected_status_message
         ));
+    }
+
+    #[test]
+    fn test_is_focused_review_loading_status_message_matches_model_aware_message() {
+        // Arrange
+        let status_message = focused_review_loading_message(AgentModel::ClaudeOpus46);
+
+        // Act
+        let is_loading = is_focused_review_loading_status_message(&status_message);
+
+        // Assert
+        assert!(is_loading);
+    }
+
+    #[test]
+    fn test_is_focused_review_loading_status_message_rejects_unrelated_message() {
+        // Arrange
+        let status_message = "Focused review complete.";
+
+        // Act
+        let is_loading = is_focused_review_loading_status_message(status_message);
+
+        // Assert
+        assert!(!is_loading);
+    }
+
+    #[tokio::test]
+    async fn test_focused_review_assist_model_returns_default_review_model_setting() {
+        // Arrange
+        let (mut app, _base_dir, _session_id) = new_test_app_with_session().await;
+        app.settings.default_review_model = AgentModel::ClaudeOpus46;
+
+        // Act
+        let review_model = focused_review_assist_model(&app);
+
+        // Assert
+        assert_eq!(review_model, AgentModel::ClaudeOpus46);
     }
 
     #[tokio::test]

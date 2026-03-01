@@ -44,9 +44,9 @@ pub(super) struct RunAppServerTaskInput {
 pub(super) struct FocusedReviewAssistTaskInput {
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     pub(super) focused_review_diff: String,
+    pub(super) review_model: AgentModel,
     pub(super) session_folder: PathBuf,
     pub(super) session_id: String,
-    pub(super) session_model: AgentModel,
     pub(super) session_summary: Option<String>,
 }
 
@@ -179,16 +179,16 @@ impl TaskService {
         let FocusedReviewAssistTaskInput {
             app_event_tx,
             focused_review_diff,
+            review_model,
             session_folder,
             session_id,
-            session_model,
             session_summary,
         } = input;
 
         tokio::spawn(async move {
             let focused_review_result = Self::focused_review_assist_text(
                 &session_folder,
-                session_model,
+                review_model,
                 &focused_review_diff,
                 session_summary.as_deref(),
             )
@@ -325,13 +325,13 @@ impl TaskService {
     /// content.
     async fn focused_review_assist_text(
         session_folder: &Path,
-        session_model: AgentModel,
+        review_model: AgentModel,
         focused_review_diff: &str,
         session_summary: Option<&str>,
     ) -> Result<String, String> {
         let focused_review_prompt =
             Self::focused_review_assist_prompt(focused_review_diff, session_summary)?;
-        let backend = crate::infra::agent::create_backend(session_model.kind());
+        let backend = crate::infra::agent::create_backend(review_model.kind());
         let command = backend
             .build_command(crate::infra::agent::BuildCommandRequest {
                 folder: session_folder,
@@ -339,7 +339,7 @@ impl TaskService {
                     prompt: &focused_review_prompt,
                     session_output: None,
                 },
-                model: session_model.as_str(),
+                model: review_model.as_str(),
             })
             .map_err(|error| error.to_string())?;
         let mut tokio_command = tokio::process::Command::from(command);
@@ -360,7 +360,7 @@ impl TaskService {
         }
 
         let parsed =
-            crate::infra::agent::parse_response(session_model.kind(), &stdout_text, &stderr_text);
+            crate::infra::agent::parse_response(review_model.kind(), &stdout_text, &stderr_text);
         let focused_review_text = parsed.content.trim();
         if focused_review_text.is_empty() {
             return Err("Focused review assist returned empty output".to_string());
