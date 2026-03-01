@@ -47,8 +47,8 @@ impl<'a> DiffPage<'a> {
         }
     }
 
-    /// Renders the right-side diff panel with line-number gutters and change
-    /// totals in the title.
+    /// Renders the right-side diff panel with line-number gutters and
+    /// change totals prefixed in the title.
     fn render_diff_content(
         &self,
         f: &mut Frame,
@@ -58,7 +58,7 @@ impl<'a> DiffPage<'a> {
         total_removed_lines: usize,
     ) {
         let title = format!(
-            " Diff — {} (+{total_added_lines} -{total_removed_lines}) ",
+            " (+{total_added_lines} -{total_removed_lines}) Diff — {} ",
             self.session.display_title()
         );
 
@@ -252,7 +252,7 @@ mod tests {
 
         // Assert
         let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("(+1 -0)"));
+        assert!(text.contains("(+1 -0) Diff — Diff Session"));
         assert!(text.contains("j/k: select file"));
         assert!(text.contains("Up/Down: scroll file"));
     }
