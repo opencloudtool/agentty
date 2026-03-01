@@ -61,8 +61,8 @@ quality, and cost.
 
 | Model ID | Description | Default |
 |----------|-------------|---------|
-| `gemini-3-flash-preview` | Fast Gemini model for quick iterations. | Yes |
-| `gemini-3.1-pro-preview` | Higher-quality Gemini model for deeper reasoning. | |
+| `gemini-3-flash-preview` | Fast Gemini model for quick iterations. | |
+| `gemini-3.1-pro-preview` | Higher-quality Gemini model for deeper reasoning. | Yes |
 
 ### Claude Models
 
@@ -78,7 +78,6 @@ quality, and cost.
 |----------|-------------|---------|
 | `gpt-5.3-codex` | Latest Codex model for coding quality. | Yes |
 | `gpt-5.3-codex-spark` | Latest Codex spark model for coding quality. | |
-| `gpt-5.2-codex` | Faster Codex model with lower cost. | |
 
 ## Switching Models
 

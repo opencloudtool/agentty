@@ -15,14 +15,19 @@ pub enum AgentKind {
 /// Supported agent model names across all providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentModel {
+    /// Fast Gemini preview model backed by `gemini-3-flash-preview`.
     Gemini3FlashPreview,
     /// Higher-quality Gemini preview model backed by `gemini-3.1-pro-preview`.
     Gemini31ProPreview,
+    /// Codex spark model backed by `gpt-5.3-codex-spark`.
     Gpt53CodexSpark,
+    /// Codex model backed by `gpt-5.3-codex`.
     Gpt53Codex,
-    Gpt52Codex,
+    /// Claude Opus model backed by `claude-opus-4-6`.
     ClaudeOpus46,
+    /// Claude Sonnet model backed by `claude-sonnet-4-6`.
     ClaudeSonnet46,
+    /// Claude Haiku model backed by `claude-haiku-4-5-20251001`.
     ClaudeHaiku4520251001,
 }
 
@@ -44,7 +49,6 @@ impl AgentModel {
             Self::Gemini31ProPreview => "gemini-3.1-pro-preview",
             Self::Gpt53CodexSpark => "gpt-5.3-codex-spark",
             Self::Gpt53Codex => "gpt-5.3-codex",
-            Self::Gpt52Codex => "gpt-5.2-codex",
             Self::ClaudeOpus46 => "claude-opus-4-6",
             Self::ClaudeSonnet46 => "claude-sonnet-4-6",
             Self::ClaudeHaiku4520251001 => "claude-haiku-4-5-20251001",
@@ -55,7 +59,7 @@ impl AgentModel {
     pub fn kind(self) -> AgentKind {
         match self {
             Self::Gemini3FlashPreview | Self::Gemini31ProPreview => AgentKind::Gemini,
-            Self::Gpt53CodexSpark | Self::Gpt53Codex | Self::Gpt52Codex => AgentKind::Codex,
+            Self::Gpt53CodexSpark | Self::Gpt53Codex => AgentKind::Codex,
             Self::ClaudeOpus46 | Self::ClaudeSonnet46 | Self::ClaudeHaiku4520251001 => {
                 AgentKind::Claude
             }
@@ -70,9 +74,9 @@ impl FromStr for AgentModel {
         match value {
             "gemini-3-flash-preview" => Ok(Self::Gemini3FlashPreview),
             "gemini-3.1-pro-preview" => Ok(Self::Gemini31ProPreview),
-            "gpt-5.3-codex-spark" => Ok(Self::Gpt53CodexSpark),
+            // Legacy alias retained so persisted settings migrate to Spark.
+            "gpt-5.3-codex-spark" | "gpt-5.2-codex" => Ok(Self::Gpt53CodexSpark),
             "gpt-5.3-codex" => Ok(Self::Gpt53Codex),
-            "gpt-5.2-codex" => Ok(Self::Gpt52Codex),
             "claude-opus-4-6" => Ok(Self::ClaudeOpus46),
             "claude-sonnet-4-6" => Ok(Self::ClaudeSonnet46),
             "claude-haiku-4-5-20251001" => Ok(Self::ClaudeHaiku4520251001),
@@ -92,7 +96,6 @@ impl AgentSelectionMetadata for AgentModel {
             Self::Gemini31ProPreview => "Higher-quality Gemini model for deeper reasoning.",
             Self::Gpt53CodexSpark => "Latest Codex spark model for coding quality.",
             Self::Gpt53Codex => "Latest Codex model for coding quality.",
-            Self::Gpt52Codex => "Faster Codex model with lower cost.",
             Self::ClaudeOpus46 => "Top-tier Claude model for complex tasks.",
             Self::ClaudeSonnet46 => "Balanced Claude model for quality and latency.",
             Self::ClaudeHaiku4520251001 => "Fast Claude model for lighter tasks.",
@@ -107,7 +110,7 @@ impl AgentKind {
     /// Returns the default model for this agent kind.
     pub fn default_model(self) -> AgentModel {
         match self {
-            Self::Gemini => AgentModel::Gemini3FlashPreview,
+            Self::Gemini => AgentModel::Gemini31ProPreview,
             Self::Claude => AgentModel::ClaudeOpus46,
             Self::Codex => AgentModel::Gpt53Codex,
         }
@@ -125,19 +128,15 @@ impl AgentKind {
     /// Returns the curated model list for this agent kind.
     pub fn models(self) -> &'static [AgentModel] {
         const GEMINI_MODELS: &[AgentModel] = &[
-            AgentModel::Gemini3FlashPreview,
             AgentModel::Gemini31ProPreview,
+            AgentModel::Gemini3FlashPreview,
         ];
         const CLAUDE_MODELS: &[AgentModel] = &[
             AgentModel::ClaudeOpus46,
             AgentModel::ClaudeSonnet46,
             AgentModel::ClaudeHaiku4520251001,
         ];
-        const CODEX_MODELS: &[AgentModel] = &[
-            AgentModel::Gpt53Codex,
-            AgentModel::Gpt53CodexSpark,
-            AgentModel::Gpt52Codex,
-        ];
+        const CODEX_MODELS: &[AgentModel] = &[AgentModel::Gpt53Codex, AgentModel::Gpt53CodexSpark];
 
         match self {
             Self::Gemini => GEMINI_MODELS,
@@ -210,5 +209,18 @@ mod tests {
 
         // Assert
         assert_eq!(parsed_model, None);
+    }
+
+    #[test]
+    /// Ensures the removed `gpt-5.2-codex` id maps to Spark for compatibility.
+    fn test_parse_model_maps_legacy_gpt_52_codex_to_codex_spark() {
+        // Arrange
+        let codex_kind = AgentKind::Codex;
+
+        // Act
+        let parsed_model = codex_kind.parse_model("gpt-5.2-codex");
+
+        // Assert
+        assert_eq!(parsed_model, Some(AgentModel::Gpt53CodexSpark));
     }
 }

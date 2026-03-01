@@ -704,13 +704,13 @@ mod tests {
     fn settings_rows_show_default_fast_model_value() {
         // Arrange
         let mut manager = new_settings_manager();
-        manager.default_fast_model = AgentModel::Gpt52Codex;
+        manager.default_fast_model = AgentModel::Gpt53Codex;
 
         // Act
         let rows = manager.settings_rows();
 
         // Assert
-        assert_eq!(rows[1].1, AgentModel::Gpt52Codex.as_str());
+        assert_eq!(rows[1].1, AgentModel::Gpt53Codex.as_str());
     }
 
     #[test]

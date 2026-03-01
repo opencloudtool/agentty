@@ -1352,7 +1352,7 @@ mod tests {
             .await
             .expect("failed to persist default smart model");
         database
-            .upsert_setting("DefaultFastModel", AgentModel::Gpt52Codex.as_str())
+            .upsert_setting("DefaultFastModel", AgentModel::Gpt53Codex.as_str())
             .await
             .expect("failed to persist default fast model");
         database
@@ -1381,7 +1381,7 @@ mod tests {
         );
         assert_eq!(
             default_fast_model,
-            Some(AgentModel::Gpt52Codex.as_str().to_string())
+            Some(AgentModel::Gpt53Codex.as_str().to_string())
         );
         assert_eq!(
             default_review_model,
