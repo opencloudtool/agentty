@@ -214,10 +214,9 @@ mod tests {
     fn test_format_sync_success_message_includes_markdown_sections() {
         // Arrange
         let pulled_summary = "2 commits pulled";
-        let pulled_titles = "newly pulled commits:\n  - Add audit log indexing\n  - Fix merge \
-                             conflict prompt wording";
+        let pulled_titles = "  - Add audit log indexing\n  - Fix merge conflict prompt wording";
         let pushed_summary = "1 commit pushed";
-        let pushed_titles = "newly pushed commits:\n  - Polish sync popup alignment";
+        let pushed_titles = "  - Polish sync popup alignment";
         let conflict_summary = "conflicts fixed: src/lib.rs";
 
         // Act
@@ -231,13 +230,13 @@ mod tests {
 
         // Assert
         assert!(formatted_message.starts_with(
-            "Successfully synchronized with its upstream.\n\n## 1. 2 commits pulled\nnewly pulled \
-             commits:\n",
+            "Successfully synchronized with its upstream.\n\n## 1. 2 commits pulled\n  - Add \
+             audit log indexing\n",
         ));
-        assert!(formatted_message.contains("newly pulled commits:\n  - Add audit log indexing"));
-        assert!(formatted_message.contains(
-            "\n\n## 2. 1 commit pushed\nnewly pushed commits:\n  - Polish sync popup alignment",
-        ));
+        assert!(
+            formatted_message
+                .contains("\n\n## 2. 1 commit pushed\n  - Polish sync popup alignment",)
+        );
         assert!(formatted_message.contains("\n\n## 3. conflicts fixed: src/lib.rs"));
     }
 }

@@ -1241,13 +1241,11 @@ impl App {
             return String::new();
         }
 
-        let pulled_title_lines = pulled_commit_titles
+        pulled_commit_titles
             .iter()
             .map(|title| format!("  - {title}"))
             .collect::<Vec<String>>()
-            .join("\n");
-
-        format!("newly pulled commits:\n{pulled_title_lines}")
+            .join("\n")
     }
 
     /// Returns pushed commit titles formatted as an indented list.
@@ -1256,13 +1254,11 @@ impl App {
             return String::new();
         }
 
-        let pushed_title_lines = pushed_commit_titles
+        pushed_commit_titles
             .iter()
             .map(|title| format!("  - {title}"))
             .collect::<Vec<String>>()
-            .join("\n");
-
-        format!("newly pushed commits:\n{pushed_title_lines}")
+            .join("\n")
     }
 
     /// Returns sync failure copy with actionable guidance for auth failures.
@@ -1761,12 +1757,10 @@ mod tests {
             "Successfully synchronized with its upstream.\n",
             "\n",
             "## 1. 2 commits pulled\n",
-            "newly pulled commits:\n",
             "  - Add audit log indexing\n",
             "  - Fix merge conflict prompt wording\n",
             "\n",
             "## 2. 1 commit pushed\n",
-            "newly pushed commits:\n",
             "  - Polish sync popup alignment\n",
             "\n",
             "## 3. conflicts fixed: src/lib.rs"
