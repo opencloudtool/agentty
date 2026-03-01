@@ -43,8 +43,8 @@ pub(crate) fn setup_terminal() -> io::Result<TuiTerminal> {
     Terminal::new(backend)
 }
 
-/// Opens `nvim` in `working_dir` while temporarily suspending the ratatui
-/// terminal state.
+/// Opens `nvim` in read-only mode (`-R`) in `working_dir` while temporarily
+/// suspending the ratatui terminal state.
 ///
 /// This follows the ratatui spawn-editor recipe by leaving the alternate
 /// screen and disabling raw mode before launching the editor, then restoring
@@ -54,7 +54,7 @@ pub(crate) async fn open_nvim(
     event_reader_pause: &AtomicBool,
     working_dir: &Path,
 ) -> io::Result<()> {
-    open_external_editor(terminal, event_reader_pause, working_dir, "nvim").await
+    open_external_editor(terminal, event_reader_pause, working_dir, "nvim", &["-R"]).await
 }
 
 /// Opens one external full-screen editor process from the provided directory
@@ -64,11 +64,13 @@ pub(crate) async fn open_external_editor(
     event_reader_pause: &AtomicBool,
     working_dir: &Path,
     editor_binary: &str,
+    args: &[&str],
 ) -> io::Result<()> {
     let pause_guard = EventReaderPauseGuard::new(event_reader_pause);
     suspend_for_external_editor(terminal)?;
 
     let editor_status_result = tokio::process::Command::new(editor_binary)
+        .args(args)
         .current_dir(working_dir)
         .status()
         .await;
