@@ -12,6 +12,12 @@
   - When agent response finishes, all changes are auto-committed and status is set to `Review`.
   - While agent is preparing a response, status is `InProgress`.
 
+## Docs Sync
+
+When modifying module boundaries, runtime flow, trait-based external boundaries, or workspace crate ownership under this directory, update:
+
+- `docs/site/content/docs/contributing/design-architecture.md` — architecture map, change paths, and layer responsibilities.
+
 ## Directory Index
 
 - [app/](app/) - Application state and workflows split by concern (`session`, `project`, `task`).

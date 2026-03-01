@@ -32,3 +32,11 @@ cargo clippy -- -D warnings
 cargo fmt --all -- --check
 cargo shear
 ```
+
+## Architecture Documentation
+
+If your PR changes module boundaries, cross-layer control flow, trait-based external boundaries, or workspace crate ownership, update:
+
+- `docs/site/content/docs/contributing/design-architecture.md`
+
+See the [Design & Architecture](/docs/contributing/design-architecture/) page for the full architecture map and change-path recipes.
