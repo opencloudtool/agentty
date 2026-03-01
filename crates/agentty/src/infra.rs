@@ -7,6 +7,8 @@ pub mod app_server;
 pub mod app_server_router;
 /// Shared stdio JSON-RPC transport for app-server protocols.
 pub mod app_server_transport;
+/// Provider-agnostic agent channel abstraction for session turn execution.
+pub mod channel;
 pub mod codex_app_server;
 pub mod db;
 /// Gitignore-aware file indexing and fuzzy path filtering.

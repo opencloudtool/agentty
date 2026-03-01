@@ -708,7 +708,8 @@ mod tests {
         assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
     }
 
-    /// Verifies restored-context retries keep the user prompt while avoiding transcript replay.
+    /// Verifies restored-context retries keep the user prompt while avoiding
+    /// transcript replay.
     #[tokio::test]
     async fn run_turn_with_restart_retry_skips_replay_when_runtime_restores_context() {
         // Arrange

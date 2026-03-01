@@ -9,6 +9,8 @@ Implementations of external interfaces (Database, Git, System).
 - [agent/](agent/) - Provider-specific backend builders and response parsing modules.
 - [agent.rs](agent.rs) - Agent module root that wires provider modules under `agent/`.
 - [app_server.rs](app_server.rs) - Shared app-server trait and turn request/response event types.
+- [channel/](channel/) - Provider-agnostic `AgentChannel` trait and CLI/app-server adapters.
+- [channel.rs](channel.rs) - Channel module root with `AgentChannel` trait, types, and factory.
 - [app_server_router.rs](app_server_router.rs) - Routes app-server turn execution to the provider-specific client for each model.
 - [app_server_transport.rs](app_server_transport.rs) - Shared stdio JSON-RPC transport utilities for app-server protocols.
 - [codex_app_server.rs](codex_app_server.rs) - Persistent Codex app-server client and per-session turn execution.

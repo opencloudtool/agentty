@@ -2,7 +2,7 @@
 //! status persistence.
 
 use std::os::unix::process::ExitStatusExt as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,30 +41,6 @@ const OUTPUT_BATCH_INTERVAL: Duration = Duration::from_millis(50);
 const OUTPUT_BATCH_SIZE: usize = 1024; // 1KB
 /// Stateless helpers for session process execution and output handling.
 pub(crate) struct SessionTaskService;
-
-/// Inputs needed to execute one session command.
-pub(super) struct RunSessionTaskInput {
-    /// App event sender used for progress and status updates.
-    pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
-    /// Shared child pid slot for cancellation and status views.
-    pub(super) child_pid: Arc<Mutex<Option<u32>>>,
-    /// Prepared agent command to execute.
-    pub(super) cmd: Command,
-    /// Database handle used for output/status/stat persistence.
-    pub(super) db: Database,
-    /// Session worktree folder where the command runs.
-    pub(super) folder: PathBuf,
-    /// Git boundary used for post-run size/commit operations.
-    pub(super) git_client: Arc<dyn GitClient>,
-    /// Session identifier for persisted updates.
-    pub(super) id: String,
-    /// Shared output buffer for streamed and parsed content.
-    pub(super) output: Arc<Mutex<String>>,
-    /// Session model used for command parsing and follow-up operations.
-    pub(super) session_model: AgentModel,
-    /// Shared mutable lifecycle status.
-    pub(super) status: Arc<Mutex<Status>>,
-}
 
 /// Inputs needed to execute an agent-assisted edit task.
 pub(crate) struct RunAgentAssistTaskInput {
@@ -121,113 +97,6 @@ enum ActiveProgressMessageUpdate {
 }
 
 impl SessionTaskService {
-    /// Executes one agent command, captures output, persists stats, and
-    /// commits.
-    ///
-    /// # Errors
-    /// Returns an error when process spawning fails.
-    pub(super) async fn run_session_task(input: RunSessionTaskInput) -> Result<(), String> {
-        let RunSessionTaskInput {
-            app_event_tx,
-            child_pid,
-            cmd,
-            db,
-            folder,
-            git_client,
-            id,
-            output,
-            session_model,
-            status,
-        } = input;
-        let agent = session_model.kind();
-
-        let mut tokio_cmd = tokio::process::Command::from(cmd);
-        // Prevent the child process from inheriting the TUI's terminal on
-        // stdin. On macOS the child can otherwise disturb crossterm's raw-mode
-        // settings, causing the event reader to stall and the UI to freeze.
-        tokio_cmd.stdin(std::process::Stdio::null());
-
-        let mut error: Option<String> = None;
-
-        match tokio_cmd.spawn() {
-            Ok(mut child) => {
-                if let Some(pid) = child.id()
-                    && let Ok(mut guard) = child_pid.lock()
-                {
-                    *guard = Some(pid);
-                }
-
-                let captured =
-                    Self::capture_child_output(&mut child, agent, &app_event_tx, &db, &id, &output)
-                        .await;
-                let exit_status = child.wait().await.ok();
-                Self::clear_session_progress(&app_event_tx, &id);
-
-                if let Ok(mut guard) = child_pid.lock() {
-                    *guard = None;
-                }
-
-                let killed_by_signal = exit_status
-                    .as_ref()
-                    .is_some_and(|status| status.signal().is_some());
-
-                if killed_by_signal {
-                    let message = "\n[Stopped] Agent interrupted by user.\n";
-                    Self::append_session_output(&output, &db, &app_event_tx, &id, message).await;
-                } else {
-                    let parsed = crate::infra::agent::parse_response(
-                        agent,
-                        &captured.stdout_text,
-                        &captured.stderr_text,
-                    );
-                    if !captured.streamed_response_seen {
-                        Self::append_session_output(
-                            &output,
-                            &db,
-                            &app_event_tx,
-                            &id,
-                            &parsed.content,
-                        )
-                        .await;
-                    }
-
-                    let _ = db.update_session_stats(&id, &parsed.stats).await;
-                    let _ = db
-                        .upsert_session_usage(&id, session_model.as_str(), &parsed.stats)
-                        .await;
-                    {
-                        let folder = folder.clone();
-                        Self::handle_auto_commit(AssistContext {
-                            app_event_tx: app_event_tx.clone(),
-                            db: db.clone(),
-                            folder,
-                            git_client: Arc::clone(&git_client),
-                            id: id.clone(),
-                            output: Arc::clone(&output),
-                            session_model,
-                        })
-                        .await;
-                    }
-                }
-            }
-            Err(spawn_error) => {
-                let message = format!("Failed to spawn process: {spawn_error}\n");
-                Self::append_session_output(&output, &db, &app_event_tx, &id, &message).await;
-                Self::clear_session_progress(&app_event_tx, &id);
-                error = Some(message.trim().to_string());
-            }
-        }
-
-        Self::refresh_persisted_session_size(&db, git_client.as_ref(), &id, &folder).await;
-        let _ = Self::update_status(&status, &db, &app_event_tx, &id, Status::Review).await;
-
-        if let Some(error) = error {
-            return Err(error);
-        }
-
-        Ok(())
-    }
-
     /// Recomputes and persists one session size using the session worktree
     /// diff.
     pub(crate) async fn refresh_persisted_session_size(
@@ -900,7 +769,10 @@ impl SessionTaskService {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+    use std::path::PathBuf;
     use std::process::{Command, Stdio};
+    use std::sync::atomic::AtomicBool;
 
     use super::*;
     use crate::db::Database;
@@ -1532,5 +1404,134 @@ mod tests {
         let error_text = result.expect_err("expected non-zero exit to fail");
         assert!(error_text.contains("exit code 7"));
         assert!(error_text.contains("assist failed"));
+    }
+
+    #[tokio::test]
+    /// Verifies streaming response-content lines are routed to the output
+    /// buffer and database, and emit `SessionUpdated` events.
+    async fn test_capture_raw_output_routes_response_content_to_output_buffer_and_db() {
+        // Arrange
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "sess-resp",
+            "claude-opus-4-6",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let output = Arc::new(Mutex::new(String::new()));
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let raw_buffer = Arc::new(Mutex::new(String::new()));
+        let stream_context = StreamOutputContext {
+            active_progress_message: Arc::new(Mutex::new(None)),
+            agent: AgentKind::Claude,
+            app_event_tx,
+            db: db.clone(),
+            id: "sess-resp".to_string(),
+            non_response_stream_output_seen: Arc::new(AtomicBool::new(false)),
+            output: Arc::clone(&output),
+            streamed_response_seen: Arc::new(AtomicBool::new(false)),
+        };
+        // Claude result JSON line: response content
+        let response_line = "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"hello \
+                             world\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}\n";
+        let cursor = Cursor::new(response_line.as_bytes().to_vec());
+
+        // Act
+        SessionTaskService::capture_raw_output(cursor, &raw_buffer, Some(stream_context)).await;
+        let observed_events: Vec<AppEvent> =
+            std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect();
+
+        // Assert
+        let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
+        assert!(
+            output_text.contains("hello world"),
+            "response content should appear in output: {output_text}"
+        );
+        assert!(
+            observed_events
+                .iter()
+                .any(|event| matches!(event, AppEvent::SessionUpdated { .. })),
+            "should emit SessionUpdated when output is appended"
+        );
+        assert!(
+            !observed_events.iter().any(|event| matches!(
+                event,
+                AppEvent::SessionProgressUpdated {
+                    progress_message: Some(_),
+                    ..
+                }
+            )),
+            "should not emit progress events for response content"
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies streaming progress lines emit `SessionProgressUpdated` UI
+    /// events without appending content to the output buffer or database.
+    async fn test_capture_raw_output_routes_progress_lines_to_ui_event_only() {
+        // Arrange
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "sess-prog",
+            "claude-opus-4-6",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let output = Arc::new(Mutex::new(String::new()));
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let raw_buffer = Arc::new(Mutex::new(String::new()));
+        let stream_context = StreamOutputContext {
+            active_progress_message: Arc::new(Mutex::new(None)),
+            agent: AgentKind::Claude,
+            app_event_tx,
+            db: db.clone(),
+            id: "sess-prog".to_string(),
+            non_response_stream_output_seen: Arc::new(AtomicBool::new(false)),
+            output: Arc::clone(&output),
+            streamed_response_seen: Arc::new(AtomicBool::new(false)),
+        };
+        // Claude tool_use JSON line: progress indicator
+        let progress_line = "{\"type\":\"tool_use\",\"tool_name\":\"Bash\"}\n";
+        let cursor = Cursor::new(progress_line.as_bytes().to_vec());
+
+        // Act
+        SessionTaskService::capture_raw_output(cursor, &raw_buffer, Some(stream_context)).await;
+        let observed_events: Vec<AppEvent> =
+            std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect();
+
+        // Assert
+        let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
+        assert!(
+            output_text.is_empty(),
+            "progress lines should not appear in output buffer: {output_text}"
+        );
+        assert!(
+            observed_events.iter().any(|event| matches!(
+                event,
+                AppEvent::SessionProgressUpdated {
+                    progress_message: Some(_),
+                    ..
+                }
+            )),
+            "should emit SessionProgressUpdated for progress lines"
+        );
     }
 }

@@ -14,8 +14,8 @@ use crate::app::settings::SettingName;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::session::{SESSION_DATA_DIR, Session, Status};
-use crate::infra::agent::{AgentBackend, AgentCommandMode, BuildCommandRequest};
 use crate::infra::app_server::AppServerTurnRequest;
+use crate::infra::channel::TurnMode;
 use crate::ui::pages::session_list::grouped_session_indexes;
 
 /// Maximum stored length for generated session titles.
@@ -23,7 +23,6 @@ const GENERATED_SESSION_TITLE_MAX_CHARACTERS: usize = 72;
 
 /// Input bag for constructing a queued session command.
 struct BuildSessionCommandInput {
-    folder: PathBuf,
     is_first_message: bool,
     prompt: String,
     session_model: AgentModel,
@@ -300,27 +299,11 @@ impl SessionManager {
         .await;
 
         let operation_id = Uuid::new_v4().to_string();
-        let command = if crate::infra::agent::transport_mode(session_model.kind()).uses_app_server()
-        {
-            SessionCommand::StartPromptAppServer {
-                operation_id,
-                prompt: prompt.clone(),
-                session_model,
-            }
-        } else {
-            let backend = crate::infra::agent::create_backend(session_model.kind());
-            let command = backend
-                .build_command(BuildCommandRequest {
-                    folder: &folder,
-                    mode: AgentCommandMode::Start { prompt: &prompt },
-                    model: session_model.as_str(),
-                })
-                .map_err(|error| error.to_string())?;
-            SessionCommand::StartPrompt {
-                command,
-                operation_id,
-                session_model,
-            }
+        let command = SessionCommand::Run {
+            operation_id,
+            mode: TurnMode::Start,
+            prompt: prompt.clone(),
+            session_model,
         };
         self.enqueue_session_command(services, &persisted_session_id, command)
             .await?;
@@ -373,15 +356,35 @@ impl SessionManager {
             return;
         };
         let session_model = session.model;
-        let backend = crate::infra::agent::create_backend(session_model.kind());
-        self.reply_with_backend(
-            services,
-            session_id,
-            prompt,
-            backend.as_ref(),
-            session_model,
-        )
-        .await;
+        self.reply_impl(services, session_id, prompt, session_model)
+            .await;
+    }
+
+    /// Submits a follow-up prompt using a pre-built backend for deterministic
+    /// test execution.
+    ///
+    /// Creates a [`CliAgentChannel`] backed by the given [`AgentBackend`] and
+    /// registers it in the session-local channel map so the worker uses it
+    /// instead of the default factory. This allows tests to control spawned
+    /// process commands without relying on a real provider binary.
+    #[cfg(test)]
+    pub(crate) async fn reply_with_backend(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+        prompt: &str,
+        backend: std::sync::Arc<dyn crate::infra::agent::AgentBackend>,
+        session_model: AgentModel,
+    ) {
+        let channel: std::sync::Arc<dyn crate::infra::channel::AgentChannel> =
+            std::sync::Arc::new(crate::infra::channel::cli::CliAgentChannel::with_backend(
+                backend,
+                session_model.kind(),
+            ));
+        self.test_agent_channels
+            .insert(session_id.to_string(), channel);
+        self.reply_impl(services, session_id, prompt, session_model)
+            .await;
     }
 
     /// Updates and persists the model for a single session.
@@ -596,13 +599,16 @@ impl SessionManager {
         let _ = tokio::fs::remove_dir_all(cleanup.folder).await;
     }
 
-    /// Queues a prompt using the provided backend for a session.
-    pub(crate) async fn reply_with_backend(
+    /// Validates and queues a follow-up prompt for an existing session.
+    ///
+    /// Gathers reply context, appends the prompt line to session output, builds
+    /// a [`SessionCommand::Run`] with the appropriate [`TurnMode`], and
+    /// enqueues it on the session worker.
+    async fn reply_impl(
         &mut self,
         services: &AppServices,
         session_id: &str,
         prompt: &str,
-        backend: &dyn AgentBackend,
         session_model: AgentModel,
     ) {
         let Ok(session_index) = self.session_index_or_err(session_id) else {
@@ -669,31 +675,12 @@ impl SessionManager {
         )
         .await;
 
-        let command = Self::build_session_command(
-            backend,
-            BuildSessionCommandInput {
-                folder,
-                is_first_message,
-                prompt: prompt.to_string(),
-                session_model,
-                session_output,
-            },
-        );
-        let command = match command {
-            Ok(command) => command,
-            Err(error) => {
-                self.append_reply_command_build_error(
-                    services,
-                    &output,
-                    &app_event_tx,
-                    &persisted_session_id,
-                    &error,
-                )
-                .await;
-
-                return;
-            }
-        };
+        let command = Self::build_session_command(BuildSessionCommandInput {
+            is_first_message,
+            prompt: prompt.to_string(),
+            session_model,
+            session_output,
+        });
         self.enqueue_reply_command(
             services,
             &output,
@@ -754,26 +741,6 @@ impl SessionManager {
         )))
     }
 
-    /// Appends a reply error line when command construction fails.
-    async fn append_reply_command_build_error(
-        &self,
-        services: &AppServices,
-        output: &Arc<Mutex<String>>,
-        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
-        session_id: &str,
-        error: &str,
-    ) {
-        let error_line = format!("\n[Reply Error] {error}\n");
-        SessionTaskService::append_session_output(
-            output,
-            services.db(),
-            app_event_tx,
-            session_id,
-            &error_line,
-        )
-        .await;
-    }
-
     /// Persists first-message prompt/title metadata before queueing execution.
     ///
     /// This writes the initial prompt/title and schedules asynchronous title
@@ -820,69 +787,28 @@ impl SessionManager {
 
     /// Builds a queued command for starting or resuming a session interaction.
     ///
-    /// # Errors
-    /// Returns an error when provider command construction fails for
-    /// non-app-server models.
-    fn build_session_command(
-        backend: &dyn AgentBackend,
-        input: BuildSessionCommandInput,
-    ) -> Result<SessionCommand, String> {
+    /// Creates a [`SessionCommand::Run`] with [`TurnMode::Start`] for first
+    /// messages and [`TurnMode::Resume`] with optional transcript replay for
+    /// subsequent replies.
+    fn build_session_command(input: BuildSessionCommandInput) -> SessionCommand {
         let BuildSessionCommandInput {
-            folder,
             is_first_message,
             prompt,
             session_model,
             session_output,
         } = input;
         let operation_id = Uuid::new_v4().to_string();
-
-        if crate::infra::agent::transport_mode(session_model.kind()).uses_app_server() {
-            if is_first_message {
-                Ok(SessionCommand::StartPromptAppServer {
-                    operation_id,
-                    prompt,
-                    session_model,
-                })
-            } else {
-                Ok(SessionCommand::ReplyAppServer {
-                    operation_id,
-                    prompt,
-                    session_output,
-                    session_model,
-                })
-            }
+        let mode = if is_first_message {
+            TurnMode::Start
         } else {
-            let command = if is_first_message {
-                backend.build_command(BuildCommandRequest {
-                    folder: &folder,
-                    mode: AgentCommandMode::Start { prompt: &prompt },
-                    model: session_model.as_str(),
-                })
-            } else {
-                backend.build_command(BuildCommandRequest {
-                    folder: &folder,
-                    mode: AgentCommandMode::Resume {
-                        prompt: &prompt,
-                        session_output: session_output.as_deref(),
-                    },
-                    model: session_model.as_str(),
-                })
-            }
-            .map_err(|error| error.to_string())?;
+            TurnMode::Resume { session_output }
+        };
 
-            if is_first_message {
-                Ok(SessionCommand::StartPrompt {
-                    command,
-                    operation_id,
-                    session_model,
-                })
-            } else {
-                Ok(SessionCommand::Reply {
-                    command,
-                    operation_id,
-                    session_model,
-                })
-            }
+        SessionCommand::Run {
+            operation_id,
+            mode,
+            prompt,
+            session_model,
         }
     }
 

@@ -2,45 +2,39 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
 use super::SessionTaskService;
-use super::task::RunSessionTaskInput;
-use crate::app::task::TaskService;
+use crate::app::assist::AssistContext;
 use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::domain::agent::AgentModel;
-use crate::domain::session::Status;
-use crate::infra::app_server::AppServerClient;
+use crate::domain::session::{SessionStats, Status};
+use crate::infra::channel::{
+    AgentChannel, AgentError, TurnEvent, TurnMode, TurnRequest, TurnResult,
+};
 use crate::infra::db::Database;
 use crate::infra::git::GitClient;
 
 const RESTART_FAILURE_REASON: &str = "Interrupted by app restart";
 const CANCEL_BEFORE_EXECUTION_REASON: &str = "Session canceled before execution";
 
-/// Command variants serialized per session worker.
+/// Single command variant serialized per session worker.
+///
+/// Replaces the previous four-variant enum (`Reply`, `ReplyAppServer`,
+/// `StartPrompt`, `StartPromptAppServer`) with a single provider-agnostic
+/// variant. The underlying channel adapter handles transport-specific details.
 pub(super) enum SessionCommand {
-    ReplyAppServer {
+    /// Executes one agent turn with the given mode and prompt.
+    Run {
+        /// Persisted operation identifier.
         operation_id: String,
+        /// Whether this is a first-message start or a follow-up resume.
+        mode: TurnMode,
+        /// User prompt text.
         prompt: String,
-        session_output: Option<String>,
-        session_model: AgentModel,
-    },
-    Reply {
-        command: Command,
-        operation_id: String,
-        session_model: AgentModel,
-    },
-    StartPromptAppServer {
-        operation_id: String,
-        prompt: String,
-        session_model: AgentModel,
-    },
-    StartPrompt {
-        command: Command,
-        operation_id: String,
+        /// Session model used for stats and post-turn operations.
         session_model: AgentModel,
     },
 }
@@ -49,26 +43,31 @@ impl SessionCommand {
     /// Returns the persisted operation identifier for this command.
     fn operation_id(&self) -> &str {
         match self {
-            Self::Reply { operation_id, .. }
-            | Self::ReplyAppServer { operation_id, .. }
-            | Self::StartPrompt { operation_id, .. }
-            | Self::StartPromptAppServer { operation_id, .. } => operation_id,
+            Self::Run { operation_id, .. } => operation_id,
         }
     }
 
     /// Returns the operation kind persisted in the operations table.
     fn kind(&self) -> &'static str {
         match self {
-            Self::Reply { .. } | Self::ReplyAppServer { .. } => "reply",
-            Self::StartPrompt { .. } | Self::StartPromptAppServer { .. } => "start_prompt",
+            Self::Run {
+                mode: TurnMode::Start,
+                ..
+            } => "start_prompt",
+            Self::Run {
+                mode: TurnMode::Resume { .. },
+                ..
+            } => "reply",
         }
     }
 }
 
+/// Shared state threaded through all worker turn executions.
 struct SessionWorkerContext {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    /// Provider-agnostic agent channel for this session's worker.
+    channel: Arc<dyn AgentChannel>,
     child_pid: Arc<Mutex<Option<u32>>>,
-    app_server_client: Arc<dyn AppServerClient>,
     db: Database,
     folder: PathBuf,
     git_client: Arc<dyn GitClient>,
@@ -147,17 +146,39 @@ impl SessionManager {
             return Ok(sender.clone());
         }
 
+        // Extract all session data before any mutable borrows of self.
         let (session, handles) = self.session_and_handles_or_err(session_id)?;
+        let kind = session.model.kind();
+        let session_id_owned = session.id.clone();
+        let folder = session.folder.clone();
+        let child_pid = Arc::clone(&handles.child_pid);
+        let output = Arc::clone(&handles.output);
+        let status = Arc::clone(&handles.status);
+
+        // In tests, use a pre-registered mock channel when available; otherwise
+        // fall back to the production channel factory.
+        #[cfg(test)]
+        let channel = self
+            .test_agent_channels
+            .remove(session_id)
+            .unwrap_or_else(|| {
+                crate::infra::channel::create_agent_channel(kind, services.app_server_client())
+            });
+
+        #[cfg(not(test))]
+        let channel =
+            crate::infra::channel::create_agent_channel(kind, services.app_server_client());
+
         let context = SessionWorkerContext {
             app_event_tx: services.event_sender(),
-            child_pid: Arc::clone(&handles.child_pid),
-            app_server_client: services.app_server_client(),
+            channel,
+            child_pid,
             db: services.db().clone(),
-            folder: session.folder.clone(),
+            folder,
             git_client: services.git_client(),
-            output: Arc::clone(&handles.output),
-            session_id: session.id.clone(),
-            status: Arc::clone(&handles.status),
+            output,
+            session_id: session_id_owned,
+            status,
         };
         let (sender, receiver) = mpsc::unbounded_channel();
         self.workers.insert(session_id.to_string(), sender.clone());
@@ -200,8 +221,8 @@ impl SessionManager {
                 }
             }
 
-            context
-                .app_server_client
+            let _ = context
+                .channel
                 .shutdown_session(context.session_id.clone())
                 .await;
             if let Ok(mut guard) = context.child_pid.lock() {
@@ -210,90 +231,36 @@ impl SessionManager {
         });
     }
 
-    /// Executes one queued command with the transport required by its variant.
+    /// Executes the queued command through the session's agent channel.
     async fn execute_session_command(
         context: &SessionWorkerContext,
         command: SessionCommand,
     ) -> Result<(), String> {
-        match command {
-            SessionCommand::StartPrompt {
-                command,
-                session_model,
-                ..
-            } => Self::run_standard_session_command(context, command, session_model, false).await,
-            SessionCommand::StartPromptAppServer {
-                prompt,
-                session_model,
-                ..
-            } => {
-                Self::run_app_server_session_command(context, prompt, None, session_model, false)
-                    .await
-            }
-            SessionCommand::Reply {
-                command,
-                session_model,
-                ..
-            } => Self::run_standard_session_command(context, command, session_model, true).await,
-            SessionCommand::ReplyAppServer {
-                prompt,
-                session_output,
-                session_model,
-                ..
-            } => {
-                Self::run_app_server_session_command(
-                    context,
-                    prompt,
-                    session_output,
-                    session_model,
-                    true,
-                )
-                .await
-            }
-        }
-    }
-
-    /// Executes one non-app-server command using the existing CLI path.
-    async fn run_standard_session_command(
-        context: &SessionWorkerContext,
-        command: Command,
-        session_model: AgentModel,
-        update_in_progress_status: bool,
-    ) -> Result<(), String> {
-        if update_in_progress_status {
-            let _ = SessionTaskService::update_status(
-                &context.status,
-                &context.db,
-                &context.app_event_tx,
-                &context.session_id,
-                Status::InProgress,
-            )
-            .await;
-        }
-
-        SessionTaskService::run_session_task(RunSessionTaskInput {
-            app_event_tx: context.app_event_tx.clone(),
-            child_pid: Arc::clone(&context.child_pid),
-            cmd: command,
-            db: context.db.clone(),
-            folder: context.folder.clone(),
-            git_client: Arc::clone(&context.git_client),
-            id: context.session_id.clone(),
-            output: Arc::clone(&context.output),
+        let SessionCommand::Run {
+            mode,
+            prompt,
             session_model,
-            status: Arc::clone(&context.status),
-        })
-        .await
+            ..
+        } = command;
+
+        Self::run_channel_turn(context, mode, prompt, session_model).await
     }
 
-    /// Executes one app-server turn for a queued session command.
-    async fn run_app_server_session_command(
+    /// Executes one agent turn through the session channel and applies all
+    /// post-turn effects (stats, auto-commit, size refresh, status update).
+    ///
+    /// When `mode` is [`TurnMode::Resume`], the session is first transitioned
+    /// to `InProgress` (start turns set `InProgress` in the lifecycle before
+    /// enqueueing). Progress events update the UI indicator; `PidUpdate` events
+    /// update the shared PID slot used for cancellation. If the turn fails, the
+    /// error is appended to session output before transitioning to `Review`.
+    async fn run_channel_turn(
         context: &SessionWorkerContext,
+        mode: TurnMode,
         prompt: String,
-        session_output: Option<String>,
         session_model: AgentModel,
-        update_in_progress_status: bool,
     ) -> Result<(), String> {
-        if update_in_progress_status {
+        if matches!(mode, TurnMode::Resume { .. }) {
             let _ = SessionTaskService::update_status(
                 &context.status,
                 &context.db,
@@ -304,25 +271,59 @@ impl SessionManager {
             .await;
         }
 
-        // Start commands keep `Status::InProgress` set by the caller, while
-        // reply commands re-enter `InProgress` here.
-        TaskService::run_app_server_task(
-            context.app_server_client.clone(),
-            crate::app::task::RunAppServerTaskInput {
-                app_event_tx: context.app_event_tx.clone(),
-                child_pid: Arc::clone(&context.child_pid),
-                db: context.db.clone(),
-                folder: context.folder.clone(),
-                git_client: Arc::clone(&context.git_client),
-                id: context.session_id.clone(),
-                output: Arc::clone(&context.output),
-                prompt,
-                session_output,
-                session_model,
-                status: Arc::clone(&context.status),
-            },
+        let req = TurnRequest {
+            folder: context.folder.clone(),
+            live_session_output: Some(Arc::clone(&context.output)),
+            model: session_model.as_str().to_string(),
+            mode,
+            prompt,
+        };
+
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<TurnEvent>();
+
+        let consumer = tokio::spawn(consume_turn_events(
+            event_rx,
+            Arc::clone(&context.output),
+            context.db.clone(),
+            context.app_event_tx.clone(),
+            context.session_id.clone(),
+            Arc::clone(&context.child_pid),
+        ));
+
+        SessionTaskService::set_session_progress(
+            &context.app_event_tx,
+            &context.session_id,
+            Some("Thinking".to_string()),
+        );
+
+        let turn_result = context
+            .channel
+            .run_turn(context.session_id.clone(), req, event_tx)
+            .await;
+
+        let streamed_any_content = consumer.await.unwrap_or(false);
+        SessionTaskService::clear_session_progress(&context.app_event_tx, &context.session_id);
+
+        let result =
+            apply_turn_result(context, session_model, turn_result, streamed_any_content).await;
+
+        SessionTaskService::refresh_persisted_session_size(
+            &context.db,
+            context.git_client.as_ref(),
+            &context.session_id,
+            &context.folder,
         )
-        .await
+        .await;
+        let _ = SessionTaskService::update_status(
+            &context.status,
+            &context.db,
+            &context.app_event_tx,
+            &context.session_id,
+            Status::Review,
+        )
+        .await;
+
+        result
     }
 
     /// Returns whether a queued command should be skipped before execution.
@@ -357,51 +358,183 @@ impl SessionManager {
     }
 }
 
+/// Applies the turn result: appends un-streamed content, updates stats, and
+/// runs auto-commit. Returns `Ok(())` on success or `Err(description)` on
+/// turn failure after appending the error to session output.
+async fn apply_turn_result(
+    context: &SessionWorkerContext,
+    session_model: AgentModel,
+    turn_result: Result<TurnResult, AgentError>,
+    streamed_any_content: bool,
+) -> Result<(), String> {
+    match turn_result {
+        Ok(result) => {
+            if !streamed_any_content && !result.assistant_message.trim().is_empty() {
+                let message = format!("{}\n\n", result.assistant_message.trim_end());
+                SessionTaskService::append_session_output(
+                    &context.output,
+                    &context.db,
+                    &context.app_event_tx,
+                    &context.session_id,
+                    &message,
+                )
+                .await;
+            }
+
+            let stats = SessionStats {
+                input_tokens: result.input_tokens,
+                output_tokens: result.output_tokens,
+            };
+            let _ = context
+                .db
+                .update_session_stats(&context.session_id, &stats)
+                .await;
+            let _ = context
+                .db
+                .upsert_session_usage(&context.session_id, session_model.as_str(), &stats)
+                .await;
+
+            SessionTaskService::handle_auto_commit(AssistContext {
+                app_event_tx: context.app_event_tx.clone(),
+                db: context.db.clone(),
+                folder: context.folder.clone(),
+                git_client: Arc::clone(&context.git_client),
+                id: context.session_id.clone(),
+                output: Arc::clone(&context.output),
+                session_model,
+            })
+            .await;
+
+            Ok(())
+        }
+        Err(error) => {
+            let message = format!("\n{}\n", error.0.trim());
+            SessionTaskService::append_session_output(
+                &context.output,
+                &context.db,
+                &context.app_event_tx,
+                &context.session_id,
+                &message,
+            )
+            .await;
+
+            Err(error.0)
+        }
+    }
+}
+
+/// Consumes [`TurnEvent`]s from `event_rx` and applies their side effects.
+///
+/// - [`TurnEvent::AssistantDelta`]: appends text to the session output buffer
+///   and emits [`AppEvent::OutputAppended`].
+/// - [`TurnEvent::Progress`]: updates the UI progress indicator via
+///   [`SessionTaskService::set_session_progress`].
+/// - [`TurnEvent::PidUpdate`]: writes the new PID into `child_pid`.
+/// - [`TurnEvent::Completed`] / [`TurnEvent::Failed`]: reserved; ignored here
+///   because completion is signalled by `run_turn`'s return value.
+///
+/// Returns `true` when at least one non-empty [`TurnEvent::AssistantDelta`]
+/// was received so that callers can decide whether to append the final
+/// `TurnResult::assistant_message`.
+async fn consume_turn_events(
+    mut event_rx: mpsc::UnboundedReceiver<TurnEvent>,
+    output: Arc<Mutex<String>>,
+    db: Database,
+    app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    session_id: String,
+    child_pid: Arc<Mutex<Option<u32>>>,
+) -> bool {
+    let mut streamed_any_content = false;
+    let mut active_progress: Option<String> = None;
+
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            TurnEvent::AssistantDelta(text) => {
+                if text.trim().is_empty() {
+                    continue;
+                }
+
+                if active_progress.take().is_some() {
+                    SessionTaskService::set_session_progress(&app_event_tx, &session_id, None);
+                }
+
+                SessionTaskService::append_session_output(
+                    &output,
+                    &db,
+                    &app_event_tx,
+                    &session_id,
+                    &text,
+                )
+                .await;
+                streamed_any_content = true;
+            }
+            TurnEvent::Progress(progress) => {
+                if active_progress.as_deref() != Some(&progress) {
+                    active_progress = Some(progress.clone());
+                    SessionTaskService::set_session_progress(
+                        &app_event_tx,
+                        &session_id,
+                        Some(progress),
+                    );
+                }
+            }
+            TurnEvent::PidUpdate(pid) => {
+                if let Ok(mut guard) = child_pid.lock() {
+                    *guard = pid;
+                }
+            }
+            TurnEvent::Completed { .. } | TurnEvent::Failed(_) => {
+                // Completion is signalled by run_turn's return value; these
+                // variants are reserved for future use and ignored here.
+            }
+        }
+    }
+
+    if active_progress.take().is_some() {
+        SessionTaskService::set_session_progress(&app_event_tx, &session_id, None);
+    }
+
+    streamed_any_content
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use tempfile::tempdir;
 
     use super::*;
-    use crate::infra::app_server::MockAppServerClient;
+    use crate::infra::channel::MockAgentChannel;
+    use crate::infra::db::Database;
     use crate::infra::git::MockGitClient;
 
     #[test]
-    /// Ensures operation-kind mapping matches persisted operation labels.
+    /// Ensures `Start` mode maps to `start_prompt` and `Resume` maps to
+    /// `reply` in persisted operation labels.
     fn test_session_command_kind_values() {
         // Arrange
-        let reply_app_server_command = SessionCommand::ReplyAppServer {
-            operation_id: "a-app-server".to_string(),
+        let start_command = SessionCommand::Run {
+            operation_id: "op-start".to_string(),
+            mode: TurnMode::Start,
             prompt: "prompt".to_string(),
-            session_output: None,
-            session_model: AgentModel::Gpt53Codex,
+            session_model: AgentModel::ClaudeSonnet46,
         };
-        let reply_command = SessionCommand::Reply {
-            command: Command::new("echo"),
-            operation_id: "a".to_string(),
-            session_model: AgentModel::Gemini3FlashPreview,
-        };
-        let start_prompt_app_server_command = SessionCommand::StartPromptAppServer {
-            operation_id: "b-app-server".to_string(),
+        let resume_command = SessionCommand::Run {
+            operation_id: "op-resume".to_string(),
+            mode: TurnMode::Resume {
+                session_output: None,
+            },
             prompt: "prompt".to_string(),
-            session_model: AgentModel::Gpt53Codex,
-        };
-        let start_prompt_command = SessionCommand::StartPrompt {
-            command: Command::new("echo"),
-            operation_id: "b".to_string(),
-            session_model: AgentModel::Gemini3FlashPreview,
+            session_model: AgentModel::ClaudeSonnet46,
         };
 
         // Act
-        let reply_app_server_kind = reply_app_server_command.kind();
-        let reply_kind = reply_command.kind();
-        let start_prompt_app_server_kind = start_prompt_app_server_command.kind();
-        let start_prompt_kind = start_prompt_command.kind();
+        let start_kind = start_command.kind();
+        let resume_kind = resume_command.kind();
 
         // Assert
-        assert_eq!(reply_app_server_kind, "reply");
-        assert_eq!(reply_kind, "reply");
-        assert_eq!(start_prompt_app_server_kind, "start_prompt");
-        assert_eq!(start_prompt_kind, "start_prompt");
+        assert_eq!(start_kind, "start_prompt");
+        assert_eq!(resume_kind, "reply");
     }
 
     #[tokio::test]
@@ -464,10 +597,16 @@ mod tests {
         db.insert_session_operation("op-1", "sess1", "reply")
             .await
             .expect("failed to insert session operation");
+
+        let mut mock_channel = MockAgentChannel::new();
+        mock_channel
+            .expect_shutdown_session()
+            .returning(|_| Box::pin(async { Ok(()) }));
+
         let context = SessionWorkerContext {
             app_event_tx: mpsc::unbounded_channel().0,
+            channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
-            app_server_client: Arc::new(MockAppServerClient::new()),
             db: db.clone(),
             folder: base_dir.path().to_path_buf(),
             git_client: Arc::new(MockGitClient::new()),
@@ -514,10 +653,16 @@ mod tests {
         db.request_cancel_for_session_operations("sess1")
             .await
             .expect("failed to request cancel");
+
+        let mut mock_channel = MockAgentChannel::new();
+        mock_channel
+            .expect_shutdown_session()
+            .returning(|_| Box::pin(async { Ok(()) }));
+
         let context = SessionWorkerContext {
             app_event_tx: mpsc::unbounded_channel().0,
+            channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
-            app_server_client: Arc::new(MockAppServerClient::new()),
             db: db.clone(),
             folder: base_dir.path().to_path_buf(),
             git_client: Arc::new(MockGitClient::new()),

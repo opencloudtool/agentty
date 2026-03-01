@@ -61,6 +61,14 @@ pub struct SessionManager {
     state: SessionState,
     stats_activity: Vec<DailyActivity>,
     workers: HashMap<String, mpsc::UnboundedSender<crate::app::session::worker::SessionCommand>>,
+    /// Channels pre-registered for specific session workers in tests.
+    ///
+    /// Tests populate this map before enqueueing a command so that
+    /// `ensure_session_worker` uses the injected channel instead of the
+    /// default factory, enabling deterministic command execution without
+    /// spawning real provider processes.
+    #[cfg(test)]
+    pub(crate) test_agent_channels: HashMap<String, Arc<dyn crate::infra::channel::AgentChannel>>,
 }
 
 impl SessionManager {
@@ -89,6 +97,8 @@ impl SessionManager {
             state,
             stats_activity,
             workers: HashMap::new(),
+            #[cfg(test)]
+            test_agent_channels: HashMap::new(),
         }
     }
 
@@ -207,6 +217,7 @@ mod tests {
     use crate::infra::agent::AgentCommandMode;
     use crate::infra::agent::tests::MockAgentBackend;
     use crate::infra::app_server::MockAppServerClient;
+    use crate::infra::channel::{MockAgentChannel, TurnEvent, TurnMode, TurnResult};
     use crate::infra::db::Database;
     use crate::infra::git;
     use crate::ui::state::app_mode::AppMode;
@@ -398,7 +409,7 @@ mod tests {
                 &app.services,
                 &session_id,
                 prompt,
-                &start_backend,
+                Arc::new(start_backend),
                 AgentModel::ClaudeOpus46,
             )
             .await;
@@ -1117,7 +1128,7 @@ mod tests {
                 &app.services,
                 &session_id,
                 prompt,
-                &backend,
+                Arc::new(backend),
                 AgentModel::Gemini3FlashPreview,
             )
             .await;
@@ -2035,7 +2046,7 @@ FROM session
                 &app.services,
                 &session_id,
                 "compute size after turn",
-                &backend,
+                Arc::new(backend),
                 AgentModel::ClaudeOpus46,
             )
             .await;
@@ -2121,6 +2132,10 @@ FROM session
     }
 
     #[tokio::test]
+    /// Verifies end-to-end session execution for start and resume turns using
+    /// a single `MockAgentChannel`. The first turn must use `TurnMode::Start`
+    /// and produce output without `--resume`; the second must use
+    /// `TurnMode::Resume` and produce output with `--resume latest`.
     async fn test_spawn_integration() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
@@ -2128,20 +2143,6 @@ FROM session
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mut mock = MockAgentBackend::new();
-        mock.expect_build_command().returning(|request| {
-            assert!(matches!(request.mode, AgentCommandMode::Start { .. }));
-
-            let mut cmd = Command::new("echo");
-            cmd.arg("--prompt")
-                .arg(request.mode.prompt())
-                .arg("--model")
-                .arg(request.model)
-                .current_dir(request.folder)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
-            Ok(cmd)
-        });
         let mut app = App::new(
             dir.path().to_path_buf(),
             dir.path().to_path_buf(),
@@ -2151,21 +2152,64 @@ FROM session
         )
         .await;
 
+        // One channel handles both turns; a counter distinguishes them so the
+        // correct delta text is emitted and mode assertions are made per turn.
+        let turn_count = Arc::new(Mutex::new(0usize));
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let mut mock_channel = MockAgentChannel::new();
+        let turn_count_capture = Arc::clone(&turn_count);
+        let done_capture = done_tx.clone();
+        mock_channel
+            .expect_run_turn()
+            .returning(move |_, req, event_tx| {
+                let turn_index = {
+                    let mut count = turn_count_capture.lock().expect("lock poisoned");
+                    let current = *count;
+                    *count += 1;
+                    current
+                };
+                let delta_text = if turn_index == 0 {
+                    assert!(
+                        matches!(req.mode, TurnMode::Start),
+                        "expected TurnMode::Start on first turn"
+                    );
+                    format!("--prompt {}\n", req.prompt)
+                } else {
+                    assert!(
+                        matches!(req.mode, TurnMode::Resume { .. }),
+                        "expected TurnMode::Resume on second turn"
+                    );
+                    format!("--prompt {} --resume latest\n", req.prompt)
+                };
+                let _ = event_tx.send(TurnEvent::AssistantDelta(delta_text));
+                let done = done_capture.clone();
+                Box::pin(async move {
+                    let _ = done.send(());
+                    Ok(TurnResult {
+                        assistant_message: String::new(),
+                        context_reset: false,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    })
+                })
+            });
+        mock_channel
+            .expect_shutdown_session()
+            .returning(|_| Box::pin(async { Ok(()) }));
+
         // Act — create and start session (start command)
         let session_id = app
             .create_session()
             .await
             .expect("failed to create session");
         app.sessions
-            .reply_with_backend(
-                &app.services,
-                &session_id,
-                "SpawnInit",
-                &mock,
-                AgentModel::ClaudeSonnet46,
-            )
+            .test_agent_channels
+            .insert(session_id.clone(), Arc::new(mock_channel));
+        app.sessions
+            .reply(&app.services, &session_id, "SpawnInit")
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        done_rx.recv().await.expect("first turn completion signal");
+        wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Assert
         {
@@ -2179,34 +2223,12 @@ FROM session
         }
 
         // Act — reply (resume command)
-        let mut resume_mock = MockAgentBackend::new();
-        resume_mock.expect_build_command().returning(|request| {
-            assert!(matches!(request.mode, AgentCommandMode::Resume { .. }));
-            assert!(request.mode.session_output().is_none());
-
-            let mut cmd = Command::new("echo");
-            cmd.arg("--prompt")
-                .arg(request.mode.prompt())
-                .arg("--model")
-                .arg(request.model)
-                .arg("--resume")
-                .arg("latest")
-                .current_dir(request.folder)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
-            Ok(cmd)
-        });
         let session_id = app.sessions.sessions[0].id.clone();
         app.sessions
-            .reply_with_backend(
-                &app.services,
-                &session_id,
-                "SpawnReply",
-                &resume_mock,
-                AgentModel::ClaudeSonnet46,
-            )
+            .reply(&app.services, &session_id, "SpawnReply")
             .await;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        done_rx.recv().await.expect("second turn completion signal");
+        wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Assert
         {
@@ -2221,6 +2243,15 @@ FROM session
     }
 
     #[tokio::test]
+    /// Verifies that the first reply after a model switch replays the full
+    /// session transcript (`TurnMode::Resume { session_output: Some(...) }`)
+    /// and subsequent replies omit it (`session_output: None`).
+    ///
+    /// A completion channel (`done_tx`/`done_rx`) is used to signal from
+    /// inside the mock's async block so that `wait_for_status` always sees the
+    /// worker in `InProgress` and correctly polls until `Review`. Without this,
+    /// `wait_for_status` would return immediately because the initial status
+    /// is already `Review` before the worker runs.
     async fn test_reply_with_backend_replays_history_once_after_model_switch() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
@@ -2261,70 +2292,88 @@ FROM session
             }
         }
 
-        app.set_session_model(&session_id, AgentModel::Gpt53Codex)
+        // Persist the prompt so that `RefreshSessions` reloads from DB with the
+        // correct value. `update_status(Review)` emits `RefreshSessions`, which
+        // reloads sessions from DB; without persisting here, `session.prompt`
+        // would be reset to `""` causing the second reply to use `TurnMode::Start`.
+        app.services
+            .db()
+            .update_session_prompt(&session_id, "Initial prompt")
+            .await
+            .expect("failed to persist initial prompt");
+
+        app.set_session_model(&session_id, AgentModel::ClaudeSonnet46)
             .await
             .expect("failed to switch model");
 
-        // Act
-        let mut first_resume_mock = MockAgentBackend::new();
-        first_resume_mock
-            .expect_build_command()
-            .returning(|request| {
-                assert!(matches!(request.mode, AgentCommandMode::Resume { .. }));
+        // Shared state to capture session_output from each turn's TurnRequest.
+        let captured_session_outputs: Arc<Mutex<Vec<Option<String>>>> =
+            Arc::new(Mutex::new(Vec::new()));
 
-                let session_output = request
-                    .mode
-                    .session_output()
-                    .expect("expected session output");
-                assert!(session_output.contains("Initial prompt"));
-                assert!(session_output.contains("mock-start"));
+        // The done channel signals from inside the mock future so the test
+        // can wait on each turn completing before calling `wait_for_status`.
+        // This prevents `wait_for_status` from returning immediately when the
+        // session is already in `Review` before the worker processes the turn.
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
-                let mut cmd = Command::new("echo");
-                cmd.arg("--prompt")
-                    .arg(request.mode.prompt())
-                    .arg("history-replayed")
-                    .current_dir(request.folder)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null());
-                Ok(cmd)
-            });
+        // Register a MockAgentChannel that collects session_output values from
+        // Resume turns so they can be asserted synchronously after the test.
+        let mut mock_channel = MockAgentChannel::new();
+        let captured = Arc::clone(&captured_session_outputs);
+        let done_capture = done_tx.clone();
+        mock_channel.expect_run_turn().returning(move |_, req, _| {
+            if let TurnMode::Resume { session_output } = req.mode {
+                captured.lock().expect("lock poisoned").push(session_output);
+            }
+            let done = done_capture.clone();
+            Box::pin(async move {
+                let _ = done.send(());
+                Ok(TurnResult {
+                    assistant_message: String::new(),
+                    context_reset: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+            })
+        });
+        mock_channel
+            .expect_shutdown_session()
+            .returning(|_| Box::pin(async { Ok(()) }));
         app.sessions
-            .reply_with_backend(
-                &app.services,
-                &session_id,
-                "Switch reply",
-                &first_resume_mock,
-                AgentModel::Gpt53Codex,
-            )
+            .test_agent_channels
+            .insert(session_id.clone(), Arc::new(mock_channel));
+
+        // Act — first reply after model switch: history should be replayed.
+        app.sessions
+            .reply(&app.services, &session_id, "Switch reply")
             .await;
-        set_session_status_for_test(&mut app, &session_id, Status::Review);
+        done_rx.recv().await.expect("first turn completion signal");
+        wait_for_status(&mut app, &session_id, Status::Review).await;
+
+        // Act — second reply: no history replay expected.
+        app.sessions
+            .reply(&app.services, &session_id, "Second reply")
+            .await;
+        done_rx.recv().await.expect("second turn completion signal");
+        wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Assert
-        let mut second_resume_mock = MockAgentBackend::new();
-        second_resume_mock
-            .expect_build_command()
-            .returning(|request| {
-                assert!(matches!(request.mode, AgentCommandMode::Resume { .. }));
-                assert!(request.mode.session_output().is_none());
-
-                let mut cmd = Command::new("echo");
-                cmd.arg("--prompt")
-                    .arg(request.mode.prompt())
-                    .arg("history-not-replayed")
-                    .current_dir(request.folder)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null());
-                Ok(cmd)
-            });
-        app.sessions
-            .reply_with_backend(
-                &app.services,
-                &session_id,
-                "Second reply",
-                &second_resume_mock,
-                AgentModel::Gpt53Codex,
-            )
-            .await;
+        let outputs = captured_session_outputs
+            .lock()
+            .expect("lock poisoned")
+            .clone();
+        assert_eq!(outputs.len(), 2, "expected exactly two Resume turns");
+        let first_session_output = outputs[0]
+            .as_deref()
+            .expect("first reply should include session_output");
+        assert!(
+            first_session_output.contains("Initial prompt"),
+            "first reply should replay history containing 'Initial prompt'"
+        );
+        assert!(
+            outputs[1].is_none(),
+            "second reply should not replay history"
+        );
     }
 
     /// Ensures resumed review sessions replay persisted transcript output on
@@ -2357,7 +2406,7 @@ FROM session
                 &first_app.services,
                 &session_id,
                 "Initial prompt",
-                &start_backend,
+                Arc::new(start_backend),
                 AgentModel::ClaudeSonnet46,
             )
             .await;
@@ -2417,7 +2466,7 @@ FROM session
                 &resumed_app.services,
                 &session_id,
                 "Restart reply",
-                &resume_backend,
+                Arc::new(resume_backend),
                 AgentModel::ClaudeSonnet46,
             )
             .await;
@@ -2504,7 +2553,7 @@ FROM session
                 &app.services,
                 &session_id,
                 "AutoCommit",
-                &mock,
+                Arc::new(mock),
                 AgentModel::ClaudeSonnet46,
             )
             .await;
@@ -2636,7 +2685,7 @@ FROM session
                 &app.services,
                 &session_id,
                 "NoChanges",
-                &mock,
+                Arc::new(mock),
                 AgentModel::ClaudeOpus46,
             )
             .await;
