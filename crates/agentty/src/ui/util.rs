@@ -8,8 +8,9 @@
 
 pub use crate::ui::activity_heatmap::{
     activity_day_key, activity_day_key_local, activity_day_key_with_offset,
-    build_activity_heatmap_grid, build_heatmap_month_row, current_day_key_local,
-    current_day_key_utc, heatmap_intensity_level, heatmap_max_count, heatmap_month_markers,
+    build_activity_heatmap_grid, build_heatmap_month_row, build_visible_heatmap_month_row,
+    current_day_key_local, current_day_key_utc, heatmap_intensity_level, heatmap_max_count,
+    heatmap_month_markers, visible_heatmap_week_count,
 };
 pub use crate::ui::diff_util::{
     DiffLine, DiffLineKind, diff_line_change_totals, max_diff_line_number, parse_diff_lines,

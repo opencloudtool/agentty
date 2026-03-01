@@ -13,14 +13,17 @@ use crate::ui::Page;
 use crate::ui::pages::session_list::{model_column_width, project_column_width};
 use crate::ui::state::help_action;
 use crate::ui::util::{
-    build_activity_heatmap_grid, build_heatmap_month_row, current_day_key_local,
+    build_activity_heatmap_grid, build_visible_heatmap_month_row, current_day_key_local,
     format_duration_compact, format_token_count, heatmap_intensity_level, heatmap_max_count,
+    visible_heatmap_week_count,
 };
 
 const DAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const HEATMAP_CELL_WIDTH: usize = 2;
 const HEATMAP_DAY_LABEL_WIDTH: usize = 4;
 const HEATMAP_SECTION_HEIGHT: u16 = 11;
+const MIN_HEATMAP_PANEL_WIDTH: u16 = 20;
+const MIN_SUMMARY_SECTION_WIDTH: u16 = 26;
 const SUMMARY_SECTION_WIDTH: u16 = 44;
 const USAGE_BAR_WIDTH: usize = 20;
 const USAGE_SECTION_HEIGHT: u16 = 5;
@@ -56,6 +59,8 @@ impl<'a> StatsPage<'a> {
 }
 
 impl Page for StatsPage<'_> {
+    /// Renders the dashboard with a responsive top row that hides the summary
+    /// panel when the terminal is too narrow.
     fn render(&mut self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -73,16 +78,19 @@ impl Page for StatsPage<'_> {
             ])
             .split(main_area);
 
-        let top_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(0),
-                Constraint::Length(SUMMARY_SECTION_WIDTH),
-            ])
-            .split(main_chunks[0]);
+        let summary_width = Self::summary_section_width(main_chunks[0].width);
+        if summary_width == 0 {
+            self.render_heatmap(f, main_chunks[0]);
+        } else {
+            let top_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Length(summary_width)])
+                .split(main_chunks[0]);
 
-        self.render_heatmap(f, top_chunks[0]);
-        self.render_summary(f, top_chunks[1]);
+            self.render_heatmap(f, top_chunks[0]);
+            self.render_summary(f, top_chunks[1]);
+        }
+
         self.render_usage(f, main_chunks[1]);
         self.render_table(f, main_chunks[2]);
         self.render_footer(f, footer_area);
@@ -90,8 +98,22 @@ impl Page for StatsPage<'_> {
 }
 
 impl StatsPage<'_> {
+    /// Returns summary-panel width for the current terminal width.
+    ///
+    /// The summary is hidden when preserving a minimum heatmap width would
+    /// leave less than the summary minimum.
+    fn summary_section_width(total_width: u16) -> u16 {
+        let max_summary_width = total_width.saturating_sub(MIN_HEATMAP_PANEL_WIDTH);
+        if max_summary_width < MIN_SUMMARY_SECTION_WIDTH {
+            return 0;
+        }
+
+        SUMMARY_SECTION_WIDTH.min(max_summary_width)
+    }
+
+    /// Renders the activity heatmap with a width-aware week count.
     fn render_heatmap(&self, f: &mut Frame, area: Rect) {
-        let heatmap = Paragraph::new(self.build_heatmap_lines()).block(
+        let heatmap = Paragraph::new(self.build_heatmap_lines(area.width)).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Activity Heatmap (Last 53 Weeks)"),
@@ -230,14 +252,22 @@ impl StatsPage<'_> {
         usage_lines
     }
 
-    fn build_heatmap_lines(&self) -> Vec<Line<'static>> {
+    /// Builds heatmap lines and trims visible week columns for narrow widths.
+    fn build_heatmap_lines(&self, available_width: u16) -> Vec<Line<'static>> {
+        let content_width = usize::from(available_width.saturating_sub(2));
         let end_day_key = current_day_key_local();
         let activity = self.build_local_activity();
         let grid = build_activity_heatmap_grid(&activity, end_day_key);
         let max_count = heatmap_max_count(&grid);
+        let visible_week_count =
+            visible_heatmap_week_count(content_width, HEATMAP_DAY_LABEL_WIDTH, HEATMAP_CELL_WIDTH);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        let month_row =
-            build_heatmap_month_row(end_day_key, HEATMAP_DAY_LABEL_WIDTH, HEATMAP_CELL_WIDTH);
+        let month_row = build_visible_heatmap_month_row(
+            end_day_key,
+            HEATMAP_DAY_LABEL_WIDTH,
+            HEATMAP_CELL_WIDTH,
+            visible_week_count,
+        );
         lines.push(Line::from(Span::styled(
             month_row,
             Style::default().fg(Color::Gray),
@@ -249,7 +279,8 @@ impl StatsPage<'_> {
                 Style::default().fg(Color::Gray),
             )];
 
-            for cell_count in &grid[day_index] {
+            let first_visible_week = grid[day_index].len().saturating_sub(visible_week_count);
+            for cell_count in &grid[day_index][first_visible_week..] {
                 let intensity = heatmap_intensity_level(*cell_count, max_count);
                 spans.push(Span::styled(
                     "  ",
@@ -258,6 +289,15 @@ impl StatsPage<'_> {
             }
 
             lines.push(Line::from(spans));
+        }
+
+        if content_width < 24 {
+            lines.push(Line::from(Span::styled(
+                format!("Max/day: {max_count}"),
+                Style::default().fg(Color::Gray),
+            )));
+
+            return lines;
         }
 
         let mut legend = vec![Span::styled("Less ", Style::default().fg(Color::Gray))];
@@ -269,7 +309,9 @@ impl StatsPage<'_> {
             legend.push(Span::raw(" "));
         }
         legend.push(Span::styled("More", Style::default().fg(Color::Gray)));
-        legend.push(Span::raw(format!(" | Max/day: {max_count}")));
+        if content_width >= 36 {
+            legend.push(Span::raw(format!(" | Max/day: {max_count}")));
+        }
         lines.push(Line::from(legend));
 
         lines
@@ -575,7 +617,7 @@ mod tests {
         let page = StatsPage::new(&sessions, &activity, &all_time_usage, 0, None);
 
         // Act
-        let heatmap_lines = page.build_heatmap_lines();
+        let heatmap_lines = page.build_heatmap_lines(160);
         let rendered_text = heatmap_lines
             .into_iter()
             .map(|line| line.to_string())
@@ -584,6 +626,25 @@ mod tests {
 
         // Assert
         assert!(rendered_text.contains("Max/day: 50"));
+    }
+
+    #[test]
+    fn test_build_heatmap_lines_trims_visible_weeks_on_narrow_width() {
+        // Arrange
+        let sessions = vec![session_fixture()];
+        let activity = vec![DailyActivity {
+            day_key: current_day_key_local(),
+            session_count: 1,
+        }];
+        let all_time_usage: Vec<AllTimeModelUsage> = Vec::new();
+        let page = StatsPage::new(&sessions, &activity, &all_time_usage, 0, None);
+
+        // Act
+        let heatmap_lines = page.build_heatmap_lines(28);
+        let monday_row = &heatmap_lines[1];
+
+        // Assert
+        assert_eq!(monday_row.spans.len(), 12);
     }
 
     #[test]
@@ -640,6 +701,30 @@ mod tests {
         assert!(text.contains("Model stats (All time)"));
         assert!(text.contains("gpt-5.3-codex: 4.2k"));
         assert!(text.contains("claude-opus-4-6: 500"));
+    }
+
+    #[test]
+    fn test_render_hides_summary_panel_on_narrow_terminal() {
+        // Arrange
+        let sessions = vec![session_fixture()];
+        let activity: Vec<DailyActivity> = Vec::new();
+        let all_time_usage = all_time_usage_fixture();
+        let mut page = StatsPage::new(&sessions, &activity, &all_time_usage, 0, None);
+        let backend = ratatui::backend::TestBackend::new(40, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                crate::ui::Page::render(&mut page, frame, area);
+            })
+            .expect("failed to draw stats page");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Activity Heatmap"));
+        assert!(!text.contains("Session Stats"));
     }
 
     #[test]

@@ -132,6 +132,63 @@ pub fn build_heatmap_month_row(
     row_characters.into_iter().collect()
 }
 
+/// Returns how many trailing heatmap week columns fit in `available_width`.
+///
+/// The returned value is clamped between `1` and `53` so the heatmap always
+/// renders at least one data column.
+pub fn visible_heatmap_week_count(
+    available_width: usize,
+    day_label_width: usize,
+    cell_width: usize,
+) -> usize {
+    let safe_cell_width = cell_width.max(1);
+    let available_week_width = available_width.saturating_sub(day_label_width);
+    let visible_weeks = available_week_width / safe_cell_width;
+
+    visible_weeks.clamp(1, HEATMAP_WEEK_COUNT)
+}
+
+/// Builds the month-label row for the trailing `visible_week_count` weeks.
+///
+/// This is used by narrow layouts that cannot display the full 53-week grid.
+pub fn build_visible_heatmap_month_row(
+    end_day_key: i64,
+    day_label_width: usize,
+    cell_width: usize,
+    visible_week_count: usize,
+) -> String {
+    let normalized_visible_week_count = visible_week_count.clamp(1, HEATMAP_WEEK_COUNT);
+    let total_width = day_label_width + (normalized_visible_week_count * cell_width);
+    let first_visible_week_index = HEATMAP_WEEK_COUNT.saturating_sub(normalized_visible_week_count);
+    let mut row_characters = vec![' '; total_width];
+    let mut last_label_end = 0_usize;
+
+    for (week_index, month_label) in heatmap_month_markers(end_day_key) {
+        if week_index < first_visible_week_index {
+            continue;
+        }
+
+        let relative_week_index = week_index.saturating_sub(first_visible_week_index);
+        let label_start = day_label_width + (relative_week_index * cell_width);
+        if label_start < last_label_end {
+            continue;
+        }
+
+        for (label_offset, character) in month_label.chars().enumerate() {
+            let write_index = label_start + label_offset;
+            if write_index >= row_characters.len() {
+                break;
+            }
+
+            row_characters[write_index] = character;
+        }
+
+        last_label_end = label_start + month_label.len();
+    }
+
+    row_characters.into_iter().collect()
+}
+
 /// Returns an activity intensity level from `0` to `4` for one heatmap cell.
 pub fn heatmap_intensity_level(count: u32, max_count: u32) -> u8 {
     if count == 0 || max_count == 0 {
@@ -301,6 +358,32 @@ mod tests {
         // Assert
         assert!(month_row.starts_with("    Dec"));
         assert_eq!(month_row.chars().count(), 110);
+    }
+
+    #[test]
+    fn test_visible_heatmap_week_count_clamps_to_available_width() {
+        // Arrange
+        let available_width = 26_usize;
+
+        // Act
+        let visible_week_count = visible_heatmap_week_count(available_width, 4, 2);
+
+        // Assert
+        assert_eq!(visible_week_count, 11);
+    }
+
+    #[test]
+    fn test_build_visible_heatmap_month_row_uses_trailing_weeks() {
+        // Arrange
+        let end_day_key = 0_i64;
+
+        // Act
+        let month_row = build_visible_heatmap_month_row(end_day_key, 4, 2, 11);
+
+        // Assert
+        assert_eq!(month_row.chars().count(), 26);
+        assert!(month_row.contains("Dec"));
+        assert!(!month_row.trim().is_empty());
     }
 
     #[test]
