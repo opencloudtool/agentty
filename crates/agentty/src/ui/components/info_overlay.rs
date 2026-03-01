@@ -82,7 +82,7 @@ impl<'a> InfoOverlay<'a> {
                 Icon::current_spinner()
             )
         } else {
-            "OK  Press Enter, Esc, or Q to close.".to_string()
+            "OK".to_string()
         };
         let body_with_action = format!("{}\n\n{action_row}", self.message);
         let required_inner_lines = wrap_lines(&body_with_action, usize::from(inner_width)).len();
@@ -127,22 +127,11 @@ impl Component for InfoOverlay<'_> {
                 .fg(Color::Black)
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD);
-            let key_style = Style::default()
-                .fg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD);
-            let hint_style = Style::default().fg(Color::Gray);
 
             paragraph_lines.push(Line::from(""));
-            paragraph_lines.push(Line::from(vec![
-                Span::styled(" OK ", ok_style),
-                Span::styled("  Press ", hint_style),
-                Span::styled("Enter", key_style),
-                Span::styled(", ", hint_style),
-                Span::styled("Esc", key_style),
-                Span::styled(", or ", hint_style),
-                Span::styled("Q", key_style),
-                Span::styled(" to close.", hint_style),
-            ]));
+            paragraph_lines.push(
+                Line::from(vec![Span::styled(" OK ", ok_style)]).alignment(Alignment::Center),
+            );
         }
 
         let paragraph = Paragraph::new(paragraph_lines)
@@ -159,7 +148,8 @@ impl Component for InfoOverlay<'_> {
                         BODY_VERTICAL_PADDING,
                         BODY_VERTICAL_PADDING,
                     ))
-                    .title(Span::styled(title, title_style)),
+                    .title(Span::styled(title, title_style))
+                    .title_alignment(Alignment::Center),
             );
         let height = self.popup_height(area, width);
         let popup_area = Rect::new(
