@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.5] - 2026-03-01
+
+### Added
+
+- **UI:** Support opening nvim (`e` key) from session screens preserving terminal input flow.
+- **UI:** Add Cmd+Backspace current-line deletion in prompt.
+- **Settings:** Add default review model and separate default smart/fast model settings.
+- **Review:** Enforce read-only constraints for focused review assist and refine prompt structure.
+
+### Changed
+
+- **UI:** Show diff line-change totals in diff panel title.
+- **UI:** Center loading sync text in info overlay and show only OK action.
+- **Sync:** Improve sync completion details and info overlay presentation; show newly pulled commit titles.
+- **Settings:** Rename DevServer setting to OpenCommand.
+- **Session:** Session manager replays review history after restart.
+- **Tokens:** Read turn usage from thread token usage updates.
+- **Codex:** Adjust auto-compaction threshold by model.
+- **Docs:** Style docs tables with borders, hover states, and responsive scrolling.
+
+### Removed
+
+- **Backend:** Remove env-based backend selection (`AGENTTY_AGENT`).
+- **Startup:** Remove lock module from runtime startup.
+
+### Fixed
+
+- **Review:** Prevent runtime leaks and simplify focused review handling.
+
+### Contributors
+
+- @minev-dev
+- @andagaev
+
 ## [v0.4.4] - 2026-02-28
 
 ### Added
