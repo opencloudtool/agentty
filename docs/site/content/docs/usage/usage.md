@@ -44,6 +44,10 @@ New → InProgress → Review → Done
                          ↘ Rebasing → Review
 ```
 
+When the first prompt is submitted for a new session, Agentty stores that
+prompt as the initial title, then runs a background title refinement task using
+the configured **Default Fast Model**.
+
 ## Session Sizes
 
 Agentty classifies sessions by the number of changed lines in their diff:

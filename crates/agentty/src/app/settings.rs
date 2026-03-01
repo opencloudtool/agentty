@@ -47,6 +47,22 @@ pub(crate) async fn load_default_smart_model_setting(
     fallback_model
 }
 
+/// Loads the persisted fast-model default used by lightweight background
+/// workflows.
+///
+/// This prefers `DefaultFastModel` and falls back to the resolved smart-model
+/// default when the fast-model setting is missing.
+pub(crate) async fn load_default_fast_model_setting(
+    services: &AppServices,
+    fallback_model: AgentModel,
+) -> AgentModel {
+    if let Some(model) = load_model_setting(services, SettingName::DefaultFastModel).await {
+        return model;
+    }
+
+    load_default_smart_model_setting(services, fallback_model).await
+}
+
 /// Declares how a settings row is edited.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingControl {
@@ -133,9 +149,8 @@ impl SettingsManager {
         let default_smart_model =
             load_default_smart_model_setting(services, AgentKind::Gemini.default_model()).await;
 
-        let default_fast_model = load_model_setting(services, SettingName::DefaultFastModel)
-            .await
-            .unwrap_or(default_smart_model);
+        let default_fast_model =
+            load_default_fast_model_setting(services, default_smart_model).await;
 
         let default_review_model = load_model_setting(services, SettingName::DefaultReviewModel)
             .await

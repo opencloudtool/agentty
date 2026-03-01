@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use askama::Template;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -14,7 +15,11 @@ use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::session::{SESSION_DATA_DIR, Session, Status};
 use crate::infra::agent::{AgentBackend, AgentCommandMode, BuildCommandRequest};
+use crate::infra::app_server::AppServerTurnRequest;
 use crate::ui::pages::session_list::grouped_session_indexes;
+
+/// Maximum stored length for generated session titles.
+const GENERATED_SESSION_TITLE_MAX_CHARACTERS: usize = 72;
 
 /// Input bag for constructing a queued session command.
 struct BuildSessionCommandInput {
@@ -34,6 +39,19 @@ struct DeletedSessionCleanup {
     folder: PathBuf,
     has_git_branch: bool,
     working_dir: PathBuf,
+}
+
+/// JSON response shape used by model-generated session titles.
+#[derive(serde::Deserialize)]
+struct GeneratedSessionTitleResponse {
+    title: String,
+}
+
+/// Askama view model for rendering title-generation instruction prompts.
+#[derive(Template)]
+#[template(path = "session_title_generation_prompt.md", escape = "none")]
+struct SessionTitleGenerationPromptTemplate<'a> {
+    prompt: &'a str,
 }
 
 impl SessionManager {
@@ -205,6 +223,10 @@ impl SessionManager {
 
     /// Submits the first prompt for a blank session and starts the agent.
     ///
+    /// After enqueueing the session command, this also schedules a detached
+    /// fast-model task that can rewrite the initial prompt-based title with a
+    /// concise generated title.
+    ///
     /// # Errors
     /// Returns an error if the session is missing or prompt persistence fails.
     pub async fn start_session(
@@ -247,6 +269,16 @@ impl SessionManager {
             .db()
             .update_session_prompt(&persisted_session_id, &prompt)
             .await;
+
+        let title_model =
+            crate::app::settings::load_default_fast_model_setting(services, session_model).await;
+        Self::spawn_session_title_refresh_task(
+            services,
+            &persisted_session_id,
+            folder.as_path(),
+            &prompt,
+            title_model,
+        );
 
         let initial_output = format!(" › {prompt}\n\n");
         SessionTaskService::append_session_output(
@@ -600,11 +632,20 @@ impl SessionManager {
         if let Some(title) = title_to_save {
             self.persist_first_reply_metadata(
                 services,
-                &status,
-                &app_event_tx,
                 &persisted_session_id,
                 prompt,
                 &title,
+                folder.as_path(),
+                session_model,
+            )
+            .await;
+
+            let _ = SessionTaskService::update_status(
+                &status,
+                services.db(),
+                &app_event_tx,
+                &persisted_session_id,
+                Status::InProgress,
             )
             .await;
         }
@@ -723,28 +764,28 @@ impl SessionManager {
         .await;
     }
 
+    /// Persists first-message prompt/title metadata before queueing execution.
+    ///
+    /// This writes the initial prompt/title and schedules asynchronous title
+    /// refinement using the configured fast model.
     async fn persist_first_reply_metadata(
         &self,
         services: &AppServices,
-        status: &Arc<Mutex<Status>>,
-        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
         session_id: &str,
         prompt: &str,
         title: &str,
+        folder: &Path,
+        session_model: AgentModel,
     ) {
         let _ = services.db().update_session_title(session_id, title).await;
         let _ = services
             .db()
             .update_session_prompt(session_id, prompt)
             .await;
-        let _ = SessionTaskService::update_status(
-            status,
-            services.db(),
-            app_event_tx,
-            session_id,
-            Status::InProgress,
-        )
-        .await;
+
+        let title_model =
+            crate::app::settings::load_default_fast_model_setting(services, session_model).await;
+        Self::spawn_session_title_refresh_task(services, session_id, folder, prompt, title_model);
     }
 
     /// Appends the user reply marker line to session output.
@@ -876,6 +917,148 @@ impl SessionManager {
         }
     }
 
+    /// Spawns a detached fast-model turn that refines the first-message title.
+    ///
+    /// The generated title is persisted when parsing succeeds, then a
+    /// `RefreshSessions` event is emitted so list-mode snapshots pick up the
+    /// new title.
+    fn spawn_session_title_refresh_task(
+        services: &AppServices,
+        session_id: &str,
+        folder: &Path,
+        prompt: &str,
+        session_model: AgentModel,
+    ) {
+        if !crate::infra::agent::transport_mode(session_model.kind()).uses_app_server() {
+            return;
+        }
+
+        let app_server_client = services.app_server_client();
+        let app_event_tx = services.event_sender();
+        let db = services.db().clone();
+        let folder = folder.to_path_buf();
+        let prompt = prompt.to_string();
+        let persisted_session_id = session_id.to_string();
+
+        tokio::spawn(async move {
+            let Ok(title_generation_prompt) =
+                SessionManager::session_title_generation_prompt(&prompt)
+            else {
+                return;
+            };
+            let title_task_session_id = format!("session-title-{persisted_session_id}");
+            let request = AppServerTurnRequest {
+                live_session_output: None,
+                folder,
+                model: session_model.as_str().to_string(),
+                prompt: title_generation_prompt,
+                session_id: title_task_session_id.clone(),
+                session_output: None,
+            };
+            let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
+            let turn_result = app_server_client.run_turn(request, stream_tx).await;
+            app_server_client
+                .shutdown_session(title_task_session_id)
+                .await;
+
+            let Ok(turn_response) = turn_result else {
+                return;
+            };
+            let Some(generated_title) =
+                SessionManager::parse_generated_session_title(&turn_response.assistant_message)
+            else {
+                return;
+            };
+
+            if generated_title == prompt {
+                return;
+            }
+
+            if db
+                .update_session_title(&persisted_session_id, &generated_title)
+                .await
+                .is_ok()
+            {
+                let _ = app_event_tx.send(AppEvent::RefreshSessions);
+            }
+        });
+    }
+
+    /// Builds the title-generation instruction prompt from the user message.
+    ///
+    /// # Errors
+    /// Returns an error if Askama template rendering fails.
+    fn session_title_generation_prompt(prompt: &str) -> Result<String, String> {
+        let template = SessionTitleGenerationPromptTemplate { prompt };
+
+        template.render().map_err(|error| {
+            format!("Failed to render `session_title_generation_prompt.md`: {error}")
+        })
+    }
+
+    /// Parses model output into a normalized one-line session title.
+    fn parse_generated_session_title(content: &str) -> Option<String> {
+        let content = content.trim();
+        if content.is_empty() {
+            return None;
+        }
+
+        if let Ok(parsed_response) = serde_json::from_str::<GeneratedSessionTitleResponse>(content)
+        {
+            return Self::normalize_generated_session_title(&parsed_response.title);
+        }
+
+        if let Some(json) = Self::embedded_json_object(content)
+            && let Ok(parsed_response) = serde_json::from_str::<GeneratedSessionTitleResponse>(json)
+        {
+            return Self::normalize_generated_session_title(&parsed_response.title);
+        }
+
+        let first_line = content
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or(content);
+
+        Self::normalize_generated_session_title(first_line)
+    }
+
+    /// Returns the first embedded JSON object slice in a mixed model response.
+    fn embedded_json_object(content: &str) -> Option<&str> {
+        let json_start = content.find('{')?;
+        let json_end = content.rfind('}')?;
+        if json_end < json_start {
+            return None;
+        }
+
+        Some(&content[json_start..=json_end])
+    }
+
+    /// Normalizes one candidate title and applies storage-safe constraints.
+    fn normalize_generated_session_title(candidate: &str) -> Option<String> {
+        let mut title = candidate.trim().to_string();
+        if let Some((prefix, remainder)) = title.split_once(':')
+            && prefix.trim().eq_ignore_ascii_case("title")
+        {
+            title = remainder.trim().to_string();
+        }
+
+        title = title
+            .trim_matches(|ch| matches!(ch, '"' | '\'' | '`'))
+            .trim()
+            .to_string();
+
+        if title.is_empty() {
+            return None;
+        }
+
+        let truncated = title
+            .chars()
+            .take(GENERATED_SESSION_TITLE_MAX_CHARACTERS)
+            .collect::<String>();
+
+        Some(truncated)
+    }
+
     async fn resolve_default_session_model(&self, services: &AppServices) -> AgentModel {
         crate::app::settings::load_default_smart_model_setting(services, self.default_session_model)
             .await
@@ -957,5 +1140,81 @@ impl SessionManager {
         .await;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_title_generation_prompt_includes_request() {
+        // Arrange
+        let request_prompt = "Refactor session lifecycle updates";
+
+        // Act
+        let title_prompt = SessionManager::session_title_generation_prompt(request_prompt)
+            .expect("title generation prompt should render");
+
+        // Assert
+        assert!(title_prompt.contains("Generate a concise title"));
+        assert!(title_prompt.contains(request_prompt));
+    }
+
+    #[test]
+    fn test_parse_generated_session_title_prefers_json_title() {
+        // Arrange
+        let response_content = r#"{"title":"Refine session startup flow"}"#;
+
+        // Act
+        let parsed_title = SessionManager::parse_generated_session_title(response_content);
+
+        // Assert
+        assert_eq!(
+            parsed_title,
+            Some("Refine session startup flow".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_generated_session_title_reads_embedded_json_object() {
+        // Arrange
+        let response_content = "answer:\n{\"title\":\"Simplify prompt submit flow\"}\n";
+
+        // Act
+        let parsed_title = SessionManager::parse_generated_session_title(response_content);
+
+        // Assert
+        assert_eq!(
+            parsed_title,
+            Some("Simplify prompt submit flow".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_generated_session_title_falls_back_to_first_line() {
+        // Arrange
+        let response_content = "Title: \"Polish merge queue behavior\"\nextra details";
+
+        // Act
+        let parsed_title = SessionManager::parse_generated_session_title(response_content);
+
+        // Assert
+        assert_eq!(
+            parsed_title,
+            Some("Polish merge queue behavior".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_generated_session_title_returns_none_for_blank_response() {
+        // Arrange
+        let response_content = "   \n\n";
+
+        // Act
+        let parsed_title = SessionManager::parse_generated_session_title(response_content);
+
+        // Assert
+        assert_eq!(parsed_title, None);
     }
 }
