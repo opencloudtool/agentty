@@ -75,8 +75,12 @@ impl RealCodexAppServerClient {
         app_server::run_turn_with_restart_retry(
             sessions,
             request,
-            CodexSessionRuntime::matches_request,
-            |runtime| runtime.child.id(),
+            app_server::RuntimeInspector {
+                matches_request: CodexSessionRuntime::matches_request,
+                pid: |runtime| runtime.child.id(),
+                provider_conversation_id: CodexSessionRuntime::provider_conversation_id,
+                restored_context: CodexSessionRuntime::restored_context,
+            },
             |request| {
                 let request = request.clone();
 
@@ -122,14 +126,24 @@ impl RealCodexAppServerClient {
             latest_input_tokens: 0,
             folder: request.folder.clone(),
             model: request.model.clone(),
+            restored_context: false,
             stdin,
             stdout_lines: BufReader::new(stdout).lines(),
             thread_id: String::new(),
         };
 
         Self::initialize_runtime(&mut session).await?;
-        let thread_id = Self::start_thread(&mut session).await?;
+        let (thread_id, restored_context) =
+            if let Some(provider_conversation_id) = request.provider_conversation_id.as_deref() {
+                match Self::resume_thread(&mut session, provider_conversation_id).await {
+                    Ok(thread_id) => (thread_id, true),
+                    Err(_) => (Self::start_thread(&mut session).await?, false),
+                }
+            } else {
+                (Self::start_thread(&mut session).await?, false)
+            };
         session.thread_id = thread_id;
+        session.restored_context = restored_context;
 
         Ok(session)
     }
@@ -191,6 +205,35 @@ impl RealCodexAppServerClient {
             })
     }
 
+    /// Resumes one existing Codex thread and returns the active identifier.
+    async fn resume_thread(
+        session: &mut CodexSessionRuntime,
+        thread_id: &str,
+    ) -> Result<String, String> {
+        let thread_resume_request_id = format!("thread-resume-{}", uuid::Uuid::new_v4());
+        let thread_resume_payload =
+            Self::build_thread_resume_payload(&thread_resume_request_id, thread_id, &session.model);
+
+        write_json_line(&mut session.stdin, &thread_resume_payload).await?;
+        let response_line = app_server_transport::wait_for_response_line(
+            &mut session.stdout_lines,
+            &thread_resume_request_id,
+        )
+        .await?;
+        let response_value = serde_json::from_str::<Value>(&response_line)
+            .map_err(|error| format!("Failed to parse thread/resume response JSON: {error}"))?;
+
+        response_value
+            .get("result")
+            .and_then(|result| result.get("thread"))
+            .and_then(|thread| thread.get("id"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                "Codex app-server `thread/resume` response does not include a thread id".to_string()
+            })
+    }
+
     /// Builds one `thread/start` request payload for a runtime folder.
     ///
     /// Root `AGENTS.md` content is intentionally not forwarded through
@@ -203,16 +246,31 @@ impl RealCodexAppServerClient {
             "id": thread_start_id,
             "params": {
                 "model": model,
-                "modelProvider": Value::Null,
                 "cwd": folder.to_string_lossy(),
                 "approvalPolicy": Self::approval_policy(),
                 "sandbox": Self::thread_sandbox_mode(),
                 "config": Self::thread_config(),
-                "baseInstructions": Value::Null,
-                "developerInstructions": Value::Null,
-                "personality": Value::Null,
-                "ephemeral": Value::Null,
-                "mockExperimentalField": Value::Null,
+                "experimentalRawEvents": false,
+                "persistExtendedHistory": false
+            }
+        })
+    }
+
+    /// Builds one `thread/resume` request payload.
+    fn build_thread_resume_payload(
+        thread_resume_request_id: &str,
+        thread_id: &str,
+        model: &str,
+    ) -> Value {
+        serde_json::json!({
+            "method": "thread/resume",
+            "id": thread_resume_request_id,
+            "params": {
+                "threadId": thread_id,
+                "model": model,
+                "approvalPolicy": Self::approval_policy(),
+                "sandbox": Self::thread_sandbox_mode(),
+                "config": Self::thread_config(),
                 "experimentalRawEvents": false,
                 "persistExtendedHistory": false
             }
@@ -775,6 +833,7 @@ struct CodexSessionRuntime {
     latest_input_tokens: u64,
     folder: PathBuf,
     model: String,
+    restored_context: bool,
     stdin: tokio::process::ChildStdin,
     stdout_lines: Lines<BufReader<tokio::process::ChildStdout>>,
     thread_id: String,
@@ -784,6 +843,22 @@ impl CodexSessionRuntime {
     /// Returns whether the stored runtime configuration matches one request.
     fn matches_request(&self, request: &AppServerTurnRequest) -> bool {
         self.folder == request.folder && self.model == request.model
+    }
+
+    /// Returns whether the runtime was bootstrapped by resuming stored thread
+    /// context.
+    fn restored_context(&self) -> bool {
+        self.restored_context
+    }
+
+    /// Returns the active provider-native thread identifier, or `None` when
+    /// the runtime has not yet started a thread.
+    fn provider_conversation_id(&self) -> Option<String> {
+        if self.thread_id.is_empty() {
+            None
+        } else {
+            Some(self.thread_id.clone())
+        }
     }
 }
 
@@ -1629,6 +1704,40 @@ mod tests {
     }
 
     #[test]
+    fn build_thread_resume_payload_sets_thread_id_and_model() {
+        // Arrange
+        let thread_resume_request_id = "thread-resume-1";
+        let thread_id = "thread-123";
+
+        // Act
+        let payload = RealCodexAppServerClient::build_thread_resume_payload(
+            thread_resume_request_id,
+            thread_id,
+            "gpt-5.3-codex",
+        );
+
+        // Assert
+        assert_eq!(
+            payload.get("method").and_then(Value::as_str),
+            Some("thread/resume")
+        );
+        assert_eq!(
+            payload
+                .get("params")
+                .and_then(|params| params.get("threadId"))
+                .and_then(Value::as_str),
+            Some(thread_id)
+        );
+        assert_eq!(
+            payload
+                .get("params")
+                .and_then(|params| params.get("model"))
+                .and_then(Value::as_str),
+            Some("gpt-5.3-codex")
+        );
+    }
+
+    #[test]
     fn build_turn_start_payload_uses_thread_folder_as_cwd() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
@@ -2210,17 +2319,14 @@ mod tests {
         );
 
         // Assert
-        assert_eq!(
-            payload
-                .get("params")
-                .and_then(|params| params.get("baseInstructions")),
-            Some(&Value::Null)
+        let params = payload.get("params").expect("params should exist");
+        assert!(
+            params.get("baseInstructions").is_none(),
+            "baseInstructions should be omitted"
         );
-        assert_eq!(
-            payload
-                .get("params")
-                .and_then(|params| params.get("developerInstructions")),
-            Some(&Value::Null)
+        assert!(
+            params.get("developerInstructions").is_none(),
+            "developerInstructions should be omitted"
         );
     }
 

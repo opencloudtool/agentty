@@ -213,6 +213,8 @@ impl TaskService {
     ///
     /// Context resets are surfaced through app-server streaming progress and
     /// prompt replay; no additional reconnect banner is appended to output.
+    /// Successful turns also persist provider-native conversation identifiers
+    /// so future runtime restarts can attempt native context resume.
     ///
     /// # Errors
     /// Returns an error when app-server turn execution fails.
@@ -233,12 +235,18 @@ impl TaskService {
             session_model,
             status,
         } = input;
+        let provider_conversation_id = db
+            .get_session_provider_conversation_id(&id)
+            .await
+            .ok()
+            .flatten();
         let model = session_model.as_str().to_string();
         let request = AppServerTurnRequest {
             live_session_output: Some(Arc::clone(&output)),
             folder: folder.clone(),
             model,
             prompt,
+            provider_conversation_id,
             session_id: id.clone(),
             session_output,
         };
@@ -283,6 +291,12 @@ impl TaskService {
         if let Ok(mut guard) = child_pid.lock() {
             *guard = response.pid;
         }
+        let _ = db
+            .update_session_provider_conversation_id(
+                &id,
+                response.provider_conversation_id.as_deref(),
+            )
+            .await;
 
         if !streamed_any_content && !response.assistant_message.trim().is_empty() {
             let message = format!("{}\n\n", response.assistant_message.trim_end());
@@ -610,6 +624,7 @@ mod tests {
                         input_tokens: 9,
                         output_tokens: 7,
                         pid: Some(5150),
+                        provider_conversation_id: Some("provider-thread-123".to_string()),
                     })
                 })
             });
@@ -840,7 +855,87 @@ mod tests {
         assert_eq!(sessions[0].status, Status::Review.to_string());
         assert_eq!(sessions[0].input_tokens, 9);
         assert_eq!(sessions[0].output_tokens, 7);
+        let provider_conversation_id = db
+            .get_session_provider_conversation_id(session_id)
+            .await
+            .expect("failed to load provider conversation id");
+        assert_eq!(
+            provider_conversation_id,
+            Some("provider-thread-123".to_string())
+        );
         assert_success_status_events(&observed_events, session_id);
+    }
+
+    #[tokio::test]
+    /// Ensures app-server turn requests include persisted provider
+    /// conversation identifiers when available.
+    async fn test_run_app_server_task_passes_stored_provider_conversation_id() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let session_id = "session-id";
+        insert_test_session(&db, session_id, AgentModel::Gpt53Codex, "InProgress").await;
+        db.update_session_provider_conversation_id(session_id, Some("thread-stored"))
+            .await
+            .expect("failed to set provider conversation id");
+        let mut mock_app_server_client = MockAppServerClient::new();
+        mock_app_server_client
+            .expect_run_turn()
+            .times(1)
+            .returning(|request, _| {
+                assert_eq!(
+                    request.provider_conversation_id,
+                    Some("thread-stored".to_string())
+                );
+
+                Box::pin(async {
+                    Ok(AppServerTurnResponse {
+                        assistant_message: "response".to_string(),
+                        context_reset: false,
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        pid: Some(33),
+                        provider_conversation_id: Some("thread-stored".to_string()),
+                    })
+                })
+            });
+        let mut mock_git_client = MockGitClient::new();
+        mock_git_client
+            .expect_diff()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(String::new()) }));
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .returning(|_, _, _| Box::pin(async { Err("Nothing to commit".to_string()) }));
+        let child_pid = Arc::new(Mutex::new(None));
+        let output = Arc::new(Mutex::new(String::new()));
+        let status = Arc::new(Mutex::new(Status::InProgress));
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = TaskService::run_app_server_task(
+            Arc::new(mock_app_server_client),
+            RunAppServerTaskInput {
+                app_event_tx,
+                child_pid,
+                db: db.clone(),
+                folder: dir.path().to_path_buf(),
+                git_client: Arc::new(mock_git_client),
+                id: session_id.to_string(),
+                output,
+                prompt: "hello".to_string(),
+                session_output: Some("history".to_string()),
+                session_model: AgentModel::Gpt53Codex,
+                status,
+            },
+        )
+        .await;
+
+        // Assert
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -997,6 +1092,7 @@ mod tests {
                         input_tokens: 5,
                         output_tokens: 6,
                         pid: Some(5151),
+                        provider_conversation_id: Some("provider-thread-xyz".to_string()),
                     })
                 })
             });
@@ -1020,7 +1116,7 @@ mod tests {
             RunAppServerTaskInput {
                 app_event_tx,
                 child_pid: Arc::clone(&child_pid),
-                db,
+                db: db.clone(),
                 folder: dir.path().to_path_buf(),
                 git_client: Arc::new(mock_git_client),
                 id: session_id.to_string(),
@@ -1045,6 +1141,14 @@ mod tests {
             status.lock().map(|value| *value).ok(),
             Some(Status::Review),
             "status should return to Review after successful turn"
+        );
+        let provider_conversation_id = db
+            .get_session_provider_conversation_id(session_id)
+            .await
+            .expect("failed to load provider conversation id");
+        assert_eq!(
+            provider_conversation_id,
+            Some("provider-thread-xyz".to_string())
         );
     }
 

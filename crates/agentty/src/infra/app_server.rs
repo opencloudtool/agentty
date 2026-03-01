@@ -45,6 +45,9 @@ pub struct AppServerTurnRequest {
     pub folder: PathBuf,
     pub model: String,
     pub prompt: String,
+    /// Provider-native thread/session id used to resume context in a newly
+    /// started runtime.
+    pub provider_conversation_id: Option<String>,
     pub session_id: String,
     pub session_output: Option<String>,
 }
@@ -56,6 +59,8 @@ pub struct AppServerTurnResponse {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub pid: Option<u32>,
+    /// Provider-native thread/session id observed after the turn.
+    pub provider_conversation_id: Option<String>,
 }
 
 /// Shared runtime registry used by app-server providers.
@@ -166,6 +171,22 @@ pub trait AppServerClient: Send + Sync {
     fn shutdown_session(&self, session_id: String) -> AppServerFuture<()>;
 }
 
+/// Callbacks for inspecting runtime state during turn execution.
+///
+/// Bundles the query functions that [`run_turn_with_restart_retry`] uses to
+/// check whether the runtime matches the current request, whether it restored
+/// provider-native context, and to extract identifiers.
+pub struct RuntimeInspector<Runtime> {
+    /// Returns `true` when the existing runtime is compatible with the request.
+    pub matches_request: fn(&Runtime, &AppServerTurnRequest) -> bool,
+    /// Returns the OS process id of the runtime, when available.
+    pub pid: fn(&Runtime) -> Option<u32>,
+    /// Returns the provider-native conversation id, when available.
+    pub provider_conversation_id: fn(&Runtime) -> Option<String>,
+    /// Returns `true` when the runtime bootstrapped by restoring prior context.
+    pub restored_context: fn(&Runtime) -> bool,
+}
+
 /// Runs one app-server turn with restart-and-retry semantics.
 ///
 /// Runtime lifecycle details (`start`, per-turn execution, and shutdown) are
@@ -173,28 +194,21 @@ pub trait AppServerClient: Send + Sync {
 /// `sessions`, invalidates it when request shape changes, and retries once
 /// after restarting the runtime when the first attempt fails.
 ///
+/// Prompt transcript replay is only applied when a newly started runtime does
+/// not expose restored provider-native context for the session.
+///
 /// # Errors
 /// Returns an error when runtime startup/execution fails, retry fails, or the
 /// session registry lock is unavailable.
-pub async fn run_turn_with_restart_retry<
-    Runtime,
-    MatchesRequest,
-    RuntimePid,
-    StartRuntime,
-    RunTurn,
-    ShutdownRuntime,
->(
+pub async fn run_turn_with_restart_retry<Runtime, StartRuntime, RunTurn, ShutdownRuntime>(
     sessions: &AppServerSessionRegistry<Runtime>,
     request: AppServerTurnRequest,
-    matches_request: MatchesRequest,
-    runtime_pid: RuntimePid,
+    inspector: RuntimeInspector<Runtime>,
     mut start_runtime: StartRuntime,
     mut run_turn_with_runtime: RunTurn,
     mut shutdown_runtime: ShutdownRuntime,
 ) -> Result<AppServerTurnResponse, String>
 where
-    MatchesRequest: Fn(&Runtime, &AppServerTurnRequest) -> bool,
-    RuntimePid: Fn(&Runtime) -> Option<u32>,
     StartRuntime: FnMut(&AppServerTurnRequest) -> AppServerFuture<Result<Runtime, String>>,
     RunTurn:
         for<'scope> FnMut(
@@ -204,107 +218,147 @@ where
             -> BorrowedAppServerFuture<'scope, Result<(String, u64, u64), String>>,
     ShutdownRuntime: for<'scope> FnMut(&'scope mut Runtime) -> BorrowedAppServerFuture<'scope, ()>,
 {
-    let mut context_reset = false;
     let session_id = request.session_id.clone();
     let mut session_runtime = sessions.take_session(&session_id)?;
 
     if session_runtime
         .as_ref()
-        .is_some_and(|runtime| !matches_request(runtime, &request))
+        .is_some_and(|runtime| !(inspector.matches_request)(runtime, &request))
     {
         if let Some(runtime) = session_runtime.as_mut() {
             shutdown_runtime(runtime).await;
         }
 
         session_runtime = None;
-        context_reset = true;
     }
 
+    let had_existing_runtime = session_runtime.is_some();
     let mut session_runtime = match session_runtime {
         Some(existing_runtime) => existing_runtime,
         None => start_runtime(&request).await?,
     };
-    let first_attempt_session_output = read_latest_session_output(&request);
-    let first_attempt_prompt = match turn_prompt_for_runtime(
-        request.prompt.as_str(),
-        first_attempt_session_output.as_deref(),
-        context_reset,
-    ) {
-        Ok(first_attempt_prompt) => first_attempt_prompt,
-        Err(error) => {
-            shutdown_runtime(&mut session_runtime).await;
-
-            return Err(error);
-        }
+    let first_replays = needs_replay(had_existing_runtime, &request, &inspector, &session_runtime);
+    let first_prompt = match build_attempt_prompt(
+        &request,
+        first_replays,
+        &mut shutdown_runtime,
+        &mut session_runtime,
+    )
+    .await
+    {
+        Ok(prompt) => prompt,
+        Err(error) => return Err(error),
     };
-    let first_attempt = run_turn_with_runtime(&mut session_runtime, &first_attempt_prompt).await;
+    let first_attempt = run_turn_with_runtime(&mut session_runtime, &first_prompt).await;
     if let Ok((assistant_message, input_tokens, output_tokens)) = first_attempt {
-        let pid = runtime_pid(&session_runtime);
-        if let Err((error, mut leaked_runtime)) =
+        let pid = (inspector.pid)(&session_runtime);
+        let provider_conversation_id = (inspector.provider_conversation_id)(&session_runtime);
+        if let Err((error, mut leaked)) =
             sessions.store_session_or_recover(session_id, session_runtime)
         {
-            shutdown_runtime(&mut leaked_runtime).await;
+            shutdown_runtime(&mut leaked).await;
 
             return Err(error);
         }
 
         return Ok(AppServerTurnResponse {
             assistant_message,
-            context_reset,
+            context_reset: first_replays,
             input_tokens,
             output_tokens,
             pid,
+            provider_conversation_id,
         });
     }
 
-    let first_error = match first_attempt {
-        Ok(_) => "App-server turn failed".to_string(),
-        Err(error) => error,
-    };
+    let first_error = first_attempt
+        .err()
+        .unwrap_or_else(|| "App-server turn failed".to_string());
     shutdown_runtime(&mut session_runtime).await;
-
-    let mut restarted_runtime = start_runtime(&request).await?;
-    let retry_session_output = read_latest_session_output(&request);
-    let retry_attempt_prompt = match turn_prompt_for_runtime(
-        request.prompt.as_str(),
-        retry_session_output.as_deref(),
-        true,
-    ) {
-        Ok(retry_attempt_prompt) => retry_attempt_prompt,
-        Err(error) => {
-            shutdown_runtime(&mut restarted_runtime).await;
-
-            return Err(error);
-        }
+    let mut restarted = start_runtime(&request).await?;
+    let retry_replays = needs_replay(false, &request, &inspector, &restarted);
+    let retry_prompt = match build_attempt_prompt(
+        &request,
+        retry_replays,
+        &mut shutdown_runtime,
+        &mut restarted,
+    )
+    .await
+    {
+        Ok(prompt) => prompt,
+        Err(error) => return Err(error),
     };
-    let retry_attempt = run_turn_with_runtime(&mut restarted_runtime, &retry_attempt_prompt).await;
-    match retry_attempt {
+    match run_turn_with_runtime(&mut restarted, &retry_prompt).await {
         Ok((assistant_message, input_tokens, output_tokens)) => {
-            let pid = runtime_pid(&restarted_runtime);
-            if let Err((error, mut leaked_runtime)) =
-                sessions.store_session_or_recover(session_id, restarted_runtime)
+            let pid = (inspector.pid)(&restarted);
+            let provider_conversation_id = (inspector.provider_conversation_id)(&restarted);
+            if let Err((error, mut leaked)) =
+                sessions.store_session_or_recover(session_id, restarted)
             {
-                shutdown_runtime(&mut leaked_runtime).await;
+                shutdown_runtime(&mut leaked).await;
 
                 return Err(error);
             }
 
             Ok(AppServerTurnResponse {
                 assistant_message,
-                context_reset: true,
+                context_reset: retry_replays,
                 input_tokens,
                 output_tokens,
                 pid,
+                provider_conversation_id,
             })
         }
         Err(retry_error) => {
-            shutdown_runtime(&mut restarted_runtime).await;
+            shutdown_runtime(&mut restarted).await;
 
             Err(format!(
                 "{} app-server failed, then retry failed after restart: first error: \
                  {first_error}; retry error: {retry_error}",
                 sessions.provider_name()
             ))
+        }
+    }
+}
+
+/// Returns `true` when the attempt should replay prior session output as
+/// context for the runtime.
+fn needs_replay<Runtime>(
+    had_existing_runtime: bool,
+    request: &AppServerTurnRequest,
+    inspector: &RuntimeInspector<Runtime>,
+    runtime: &Runtime,
+) -> bool {
+    !had_existing_runtime
+        && read_latest_session_output(request)
+            .as_deref()
+            .is_some_and(|session_output| !session_output.trim().is_empty())
+        && !(inspector.restored_context)(runtime)
+}
+
+/// Prepares the prompt for one turn attempt, shutting down the runtime on
+/// failure.
+async fn build_attempt_prompt<Runtime, ShutdownRuntime>(
+    request: &AppServerTurnRequest,
+    replays_context: bool,
+    shutdown_runtime: &mut ShutdownRuntime,
+    runtime: &mut Runtime,
+) -> Result<String, String>
+where
+    ShutdownRuntime: for<'scope> FnMut(&'scope mut Runtime) -> BorrowedAppServerFuture<'scope, ()>,
+{
+    let session_output = read_latest_session_output(request);
+
+    match turn_prompt_for_runtime(
+        request.prompt.as_str(),
+        session_output.as_deref(),
+        replays_context,
+    ) {
+        Ok(prompt) => Ok(prompt),
+        Err(error) => {
+            shutdown_runtime(runtime).await;
+
+            Err(error)
         }
     }
 }
@@ -428,6 +482,7 @@ mod tests {
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
             prompt: "Do work".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
         };
@@ -448,6 +503,7 @@ mod tests {
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
             prompt: "Do work".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
         };
@@ -467,6 +523,7 @@ mod tests {
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
             prompt: "Do work".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
         };
@@ -486,6 +543,7 @@ mod tests {
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
             prompt: "Do work".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: None,
         };
@@ -507,6 +565,7 @@ mod tests {
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
             prompt: "Do work".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
         };
@@ -516,8 +575,12 @@ mod tests {
         let response = run_turn_with_restart_retry(
             &sessions,
             request,
-            |runtime: &TestRuntime, request: &AppServerTurnRequest| runtime.model == request.model,
-            |_runtime| Some(42),
+            RuntimeInspector {
+                matches_request: |runtime: &TestRuntime, request| runtime.model == request.model,
+                pid: |_runtime| Some(42),
+                provider_conversation_id: |_runtime| None,
+                restored_context: |_runtime| false,
+            },
             |request: &AppServerTurnRequest| {
                 let model = request.model.clone();
 
@@ -551,6 +614,7 @@ mod tests {
 
         // Assert
         assert!(response.context_reset);
+        assert_eq!(response.provider_conversation_id, None);
         let retry_prompt = captured_retry_prompt
             .lock()
             .map(|guard| guard.clone())
@@ -574,6 +638,7 @@ mod tests {
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
             prompt: "Do work".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("previous output".to_string()),
         };
@@ -585,8 +650,12 @@ mod tests {
         let response = run_turn_with_restart_retry(
             &sessions,
             request,
-            |runtime: &TestRuntime, request: &AppServerTurnRequest| runtime.model == request.model,
-            |_runtime| Some(42),
+            RuntimeInspector {
+                matches_request: |runtime: &TestRuntime, request| runtime.model == request.model,
+                pid: |_runtime| Some(42),
+                provider_conversation_id: |_runtime| None,
+                restored_context: |_runtime| false,
+            },
             {
                 let start_count = Arc::clone(&start_count);
                 move |request: &AppServerTurnRequest| {
@@ -633,8 +702,74 @@ mod tests {
         assert!(response.context_reset);
         assert_eq!((response.input_tokens, response.output_tokens), (7, 3));
         assert_eq!(response.pid, Some(42));
+        assert_eq!(response.provider_conversation_id, None);
         assert_eq!(start_count.load(Ordering::SeqCst), 2);
         assert_eq!(run_count.load(Ordering::SeqCst), 2);
         assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn run_turn_with_restart_retry_skips_replay_when_runtime_restores_context() {
+        // Arrange
+        let sessions = AppServerSessionRegistry::new("Test");
+        let request = AppServerTurnRequest {
+            live_session_output: None,
+            folder: PathBuf::from("/tmp"),
+            model: "model-a".to_string(),
+            prompt: "Do work".to_string(),
+            provider_conversation_id: Some("thread-123".to_string()),
+            session_id: "session-1".to_string(),
+            session_output: Some("previous output".to_string()),
+        };
+        let captured_prompt = Arc::new(Mutex::new(String::new()));
+
+        // Act
+        let response = run_turn_with_restart_retry(
+            &sessions,
+            request,
+            RuntimeInspector {
+                matches_request: |runtime: &TestRuntime, request| runtime.model == request.model,
+                pid: |_runtime| Some(24),
+                provider_conversation_id: |_runtime| Some("thread-123".to_string()),
+                restored_context: |_runtime| true,
+            },
+            |request: &AppServerTurnRequest| {
+                let model = request.model.clone();
+
+                Box::pin(async move { Ok(TestRuntime { model }) })
+            },
+            {
+                let captured_prompt = Arc::clone(&captured_prompt);
+                move |_runtime: &mut TestRuntime, prompt: &str| {
+                    let prompt = prompt.to_string();
+                    let captured_prompt = Arc::clone(&captured_prompt);
+
+                    Box::pin(async move {
+                        if let Ok(mut guard) = captured_prompt.lock() {
+                            *guard = prompt;
+                        }
+
+                        Ok(("done".to_string(), 1, 1))
+                    })
+                }
+            },
+            |_runtime: &mut TestRuntime| Box::pin(async {}),
+        )
+        .await
+        .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(response.assistant_message, "done");
+        assert!(!response.context_reset);
+        assert_eq!(
+            response.provider_conversation_id,
+            Some("thread-123".to_string())
+        );
+        assert_eq!(response.pid, Some(24));
+        let captured_prompt = captured_prompt
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        assert_eq!(captured_prompt, "Do work");
     }
 }

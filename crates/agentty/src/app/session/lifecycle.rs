@@ -389,6 +389,10 @@ impl SessionManager {
     /// When `LastUsedModelAsDefault` is enabled, this also persists the chosen
     /// session model as `DefaultSmartModel`.
     ///
+    /// When the model changes, this also clears any persisted provider-native
+    /// conversation identifier so incompatible runtimes do not attempt resume
+    /// with stale ids.
+    ///
     /// # Errors
     /// Returns an error if the session is missing or persistence fails.
     pub async fn set_session_model(
@@ -407,6 +411,12 @@ impl SessionManager {
             .db()
             .update_session_model(session_id, session_model.as_str())
             .await?;
+        if model_changed {
+            services
+                .db()
+                .update_session_provider_conversation_id(session_id, None)
+                .await?;
+        }
 
         if Self::should_persist_last_used_model_as_default(services).await? {
             services
@@ -952,6 +962,7 @@ impl SessionManager {
                 folder,
                 model: session_model.as_str().to_string(),
                 prompt: title_generation_prompt,
+                provider_conversation_id: None,
                 session_id: title_task_session_id.clone(),
                 session_output: None,
             };

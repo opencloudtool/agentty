@@ -97,6 +97,7 @@ mod tests {
                     input_tokens: 1,
                     output_tokens: 2,
                     pid: Some(111),
+                    provider_conversation_id: Some("thread-codex".to_string()),
                 })
             })
         });
@@ -112,6 +113,7 @@ mod tests {
             folder: std::env::temp_dir(),
             model: AgentModel::Gpt53Codex.as_str().to_string(),
             prompt: "prompt".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: None,
         };
@@ -140,6 +142,7 @@ mod tests {
                     input_tokens: 3,
                     output_tokens: 4,
                     pid: Some(222),
+                    provider_conversation_id: Some("thread-gemini".to_string()),
                 })
             })
         });
@@ -153,6 +156,7 @@ mod tests {
             folder: std::env::temp_dir(),
             model: AgentModel::Gemini3FlashPreview.as_str().to_string(),
             prompt: "prompt".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: None,
         };
@@ -184,6 +188,7 @@ mod tests {
             folder: std::env::temp_dir(),
             model: "unknown-model".to_string(),
             prompt: "prompt".to_string(),
+            provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: None,
         };

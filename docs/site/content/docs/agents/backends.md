@@ -30,6 +30,15 @@ POSIX paths. This keeps file references consistent in session output and reviews
 - Example: `crates/agentty/src/infra/agent/backend.rs:151`
 - Not allowed: absolute paths, `file://` URIs, or `../`-prefixed paths
 
+## Session Resume Behavior
+
+Agentty persists provider-native conversation identifiers for app-server
+backends and uses them to restore context after runtime restarts.
+
+- Codex app-server: resumes by stored `threadId` via `thread/resume`.
+- Gemini ACP: currently creates a fresh ACP `session/new` on runtime restart,
+  so Agentty falls back to transcript replay when needed.
+
 ## Selecting a Backend
 
 Choose the backend from the `/model` picker:

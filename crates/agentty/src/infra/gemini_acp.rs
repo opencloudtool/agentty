@@ -117,8 +117,12 @@ impl RealGeminiAcpClient {
         app_server::run_turn_with_restart_retry(
             sessions,
             request,
-            GeminiSessionRuntime::matches_request,
-            |runtime| runtime.child.id(),
+            app_server::RuntimeInspector {
+                matches_request: GeminiSessionRuntime::matches_request,
+                pid: |runtime| runtime.child.id(),
+                provider_conversation_id: GeminiSessionRuntime::provider_conversation_id,
+                restored_context: GeminiSessionRuntime::restored_context,
+            },
             |request| {
                 let request = request.clone();
 
@@ -169,6 +173,7 @@ impl RealGeminiAcpClient {
             child,
             folder: request.folder.clone(),
             model: request.model.clone(),
+            restored_context: false,
             session_id: String::new(),
             transport: GeminiStdioTransport::new(stdin, stdout),
         };
@@ -475,6 +480,7 @@ struct GeminiSessionRuntime {
     child: tokio::process::Child,
     folder: PathBuf,
     model: String,
+    restored_context: bool,
     session_id: String,
     transport: GeminiStdioTransport,
 }
@@ -483,6 +489,24 @@ impl GeminiSessionRuntime {
     /// Returns whether the runtime matches one incoming turn request.
     fn matches_request(&self, request: &AppServerTurnRequest) -> bool {
         self.folder == request.folder && self.model == request.model
+    }
+
+    /// Returns whether runtime startup restored prior provider context.
+    ///
+    /// Gemini ACP currently starts a new `session/new` runtime session on each
+    /// process bootstrap, so restarts rely on transcript replay.
+    fn restored_context(&self) -> bool {
+        self.restored_context
+    }
+
+    /// Returns the active provider-native Gemini ACP `sessionId`, or `None`
+    /// when the runtime has not yet started a session.
+    fn provider_conversation_id(&self) -> Option<String> {
+        if self.session_id.is_empty() {
+            None
+        } else {
+            Some(self.session_id.clone())
+        }
     }
 }
 

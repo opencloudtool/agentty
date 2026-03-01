@@ -706,6 +706,35 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Updates the persisted provider conversation identifier for a session.
+    ///
+    /// The identifier stores the provider-native thread/session id used to
+    /// resume app-server context without transcript replay after runtime
+    /// restart.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be updated.
+    pub async fn update_session_provider_conversation_id(
+        &self,
+        id: &str,
+        provider_conversation_id: Option<&str>,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET provider_conversation_id = ?
+WHERE id = ?
+",
+        )
+        .bind(provider_conversation_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to update session provider conversation id: {err}"))?;
+
+        Ok(())
+    }
+
     /// Appends text to the saved output for a session row.
     ///
     /// # Errors
@@ -764,6 +793,30 @@ WHERE id = ?
         .map_err(|err| format!("Failed to get base branch: {err}"))?;
 
         Ok(row.map(|row| row.get("base_branch")))
+    }
+
+    /// Returns the provider conversation identifier for a session, when
+    /// present.
+    ///
+    /// # Errors
+    /// Returns an error if the lookup query fails.
+    pub async fn get_session_provider_conversation_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<String>, String> {
+        let row = sqlx::query(
+            r"
+SELECT provider_conversation_id
+FROM session
+WHERE id = ?
+",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to get provider conversation id: {err}"))?;
+
+        Ok(row.and_then(|row| row.get("provider_conversation_id")))
     }
 
     /// Inserts a queued operation row for a session.
@@ -1334,6 +1387,44 @@ mod tests {
             default_review_model,
             Some(AgentModel::ClaudeOpus46.as_str().to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_session_provider_conversation_id_round_trip_and_clear() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert session");
+
+        // Act
+        database
+            .update_session_provider_conversation_id("session-a", Some("thread-123"))
+            .await
+            .expect("failed to set provider conversation id");
+        let stored_id = database
+            .get_session_provider_conversation_id("session-a")
+            .await
+            .expect("failed to load provider conversation id");
+        database
+            .update_session_provider_conversation_id("session-a", None)
+            .await
+            .expect("failed to clear provider conversation id");
+        let cleared_id = database
+            .get_session_provider_conversation_id("session-a")
+            .await
+            .expect("failed to load cleared provider conversation id");
+
+        // Assert
+        assert_eq!(stored_id, Some("thread-123".to_string()));
+        assert_eq!(cleared_id, None);
     }
 
     #[tokio::test]

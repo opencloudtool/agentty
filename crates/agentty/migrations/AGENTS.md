@@ -30,3 +30,4 @@ SQLite migrations for the `agentty` crate.
 - [024_drop_permission_mode_from_session.sql](024_drop_permission_mode_from_session.sql) - Drops `permission_mode` from `session`.
 - [025_add_project_metadata.sql](025_add_project_metadata.sql) - Adds `created_at`, `display_name`, `is_favorite`, `last_opened_at`, and `updated_at` columns to `project`.
 - [026_rename_devserver_setting_to_open_command.sql](026_rename_devserver_setting_to_open_command.sql) - Renames legacy `DevServer` setting records to `OpenCommand`.
+- [027_add_provider_conversation_id_to_session.sql](027_add_provider_conversation_id_to_session.sql) - Adds persisted provider-native conversation IDs to `session`.
