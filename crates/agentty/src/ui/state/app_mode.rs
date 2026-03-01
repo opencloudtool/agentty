@@ -76,8 +76,8 @@ pub enum AppMode {
         scroll_offset: u16,
         file_explorer_selected_index: usize,
     },
-    /// Displays the project file explorer with a preview for one session
-    /// worktree.
+    /// Displays the project file explorer with a preview rooted to either the
+    /// active project working directory or a session worktree.
     ProjectExplorer {
         /// Full gitignore-aware file index used to derive visible tree rows.
         all_entries: Vec<FileEntry>,
@@ -93,7 +93,8 @@ pub enum AppMode {
         scroll_offset: u16,
         /// Selected row index in `entries`.
         selected_index: usize,
-        /// Session identifier owning the worktree being explored.
+        /// Session identifier used to restore navigation context and, for
+        /// view-origin explorer mode, resolve the session worktree root.
         session_id: String,
     },
 
@@ -137,7 +138,8 @@ pub enum HelpContext {
         scroll_offset: u16,
         /// Selected row index in `entries`.
         selected_index: usize,
-        /// Session identifier owning the worktree being explored.
+        /// Session identifier used to restore navigation context and, for
+        /// view-origin explorer mode, resolve the session worktree root.
         session_id: String,
     },
 }

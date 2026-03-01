@@ -10,24 +10,27 @@ use crate::runtime::EventResult;
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode, HelpContext};
 
 const DIRECTORY_PREVIEW_PREFIX: &str = "Directory selected:";
-const EMPTY_PREVIEW_MESSAGE: &str = "No files found in this worktree.";
+const EMPTY_PREVIEW_MESSAGE: &str = "No files found in this location.";
 const PATH_SEPARATOR: char = '/';
 const ROOT_DIRECTORY_KEY: &str = "";
 
 /// Opens project explorer mode for `session_id` using gitignore-aware file
-/// indexing.
+/// indexing from the source-specific root directory.
+///
+/// When `return_to_list` is `true`, explorer rows come from the active project
+/// working directory. Otherwise rows come from the session worktree folder.
 pub(crate) async fn open_for_session(app: &mut App, session_id: &str, return_to_list: bool) {
-    let Some(session_folder) = session_folder(app, session_id) else {
+    let Some(explorer_root) = explorer_root_for_source(app, session_id, return_to_list) else {
         app.mode = AppMode::List;
 
         return;
     };
 
-    let all_entries = load_entries(session_folder.clone()).await;
+    let all_entries = load_entries(explorer_root.clone()).await;
     let expanded_directories = BTreeSet::new();
     let entries = build_visible_entries(&all_entries, &expanded_directories);
     let selected_index = initial_selected_index(&entries);
-    let preview = load_preview(session_folder, entries.get(selected_index).cloned()).await;
+    let preview = load_preview(explorer_root, entries.get(selected_index).cloned()).await;
 
     app.mode = AppMode::ProjectExplorer {
         all_entries,
@@ -78,11 +81,37 @@ fn session_folder(app: &App, session_id: &str) -> Option<PathBuf> {
     Some(app.sessions.sessions.get(session_index)?.folder.clone())
 }
 
-/// Loads project-explorer entries from `session_folder` while keeping terminal
+/// Returns the explorer root directory from mode source metadata.
+///
+/// List-origin explorers (`return_to_list = true`) use the active project's
+/// working directory. View-origin explorers use the selected session worktree.
+fn explorer_root_for_source(app: &App, session_id: &str, return_to_list: bool) -> Option<PathBuf> {
+    if return_to_list {
+        return Some(app.working_dir().to_path_buf());
+    }
+
+    session_folder(app, session_id)
+}
+
+/// Returns the active root directory for the current project explorer mode.
+fn project_explorer_root(app: &App) -> Option<PathBuf> {
+    let AppMode::ProjectExplorer {
+        return_to_list,
+        session_id,
+        ..
+    } = &app.mode
+    else {
+        return None;
+    };
+
+    explorer_root_for_source(app, session_id, *return_to_list)
+}
+
+/// Loads project-explorer entries from `explorer_root` while keeping terminal
 /// handling responsive.
-async fn load_entries(session_folder: PathBuf) -> Vec<FileEntry> {
+async fn load_entries(explorer_root: PathBuf) -> Vec<FileEntry> {
     tokio::task::spawn_blocking(move || {
-        file_index::list_files_for_explorer(session_folder.as_path(), None, None)
+        file_index::list_files_for_explorer(explorer_root.as_path(), None, None)
     })
     .await
     .unwrap_or_default()
@@ -188,14 +217,14 @@ fn initial_selected_index(entries: &[FileEntry]) -> usize {
 }
 
 /// Loads preview text for one selected project-explorer entry.
-async fn load_preview(session_folder: PathBuf, selected_entry: Option<FileEntry>) -> String {
-    tokio::task::spawn_blocking(move || build_preview(session_folder.as_path(), selected_entry))
+async fn load_preview(explorer_root: PathBuf, selected_entry: Option<FileEntry>) -> String {
+    tokio::task::spawn_blocking(move || build_preview(explorer_root.as_path(), selected_entry))
         .await
         .unwrap_or_else(|_| EMPTY_PREVIEW_MESSAGE.to_string())
 }
 
 /// Builds preview content for one selected entry.
-fn build_preview(session_folder: &Path, selected_entry: Option<FileEntry>) -> String {
+fn build_preview(explorer_root: &Path, selected_entry: Option<FileEntry>) -> String {
     let Some(entry) = selected_entry else {
         return EMPTY_PREVIEW_MESSAGE.to_string();
     };
@@ -204,7 +233,7 @@ fn build_preview(session_folder: &Path, selected_entry: Option<FileEntry>) -> St
         return format!("{DIRECTORY_PREVIEW_PREFIX} {}", entry.path);
     }
 
-    let path = session_folder.join(&entry.path);
+    let path = explorer_root.join(&entry.path);
 
     std::fs::read_to_string(path)
         .unwrap_or_else(|error| format!("Failed to read `{}`: {error}", entry.path))
@@ -285,14 +314,14 @@ async fn move_selection(app: &mut App, offset: isize) {
         return;
     };
 
-    let Some(session_folder) = session_folder(app, &session_id) else {
+    let Some(explorer_root) = project_explorer_root(app) else {
         app.mode = AppMode::List;
 
         return;
     };
 
     let selected_entry = project_explorer_entry_by_index(app, next_index);
-    let preview = load_preview(session_folder, selected_entry).await;
+    let preview = load_preview(explorer_root, selected_entry).await;
     apply_preview_and_selection(app, &session_id, next_index, preview);
 }
 
@@ -339,7 +368,7 @@ async fn activate_selected_entry(app: &mut App) {
         toggle_directory_expansion(app, selected_entry.path.as_str());
     }
 
-    let Some(session_folder) = session_folder(app, &session_id) else {
+    let Some(explorer_root) = project_explorer_root(app) else {
         app.mode = AppMode::List;
 
         return;
@@ -347,7 +376,7 @@ async fn activate_selected_entry(app: &mut App) {
 
     let selected_entry = project_explorer_selected_entry(app);
     let selected_index = project_explorer_selected_index(app).unwrap_or_default();
-    let preview = load_preview(session_folder, selected_entry).await;
+    let preview = load_preview(explorer_root, selected_entry).await;
     apply_preview_and_selection(app, &session_id, selected_index, preview);
 }
 
@@ -620,6 +649,63 @@ mod tests {
                 return_to_list: true,
                 ..
             } if session_id == &expected_session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_open_for_session_from_list_indexes_active_project_working_dir() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        std::fs::write(app.working_dir().join("main-root-only.txt"), "main")
+            .expect("failed to write active-project file");
+
+        // Act
+        open_for_session(&mut app, &session_id, true).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::ProjectExplorer { ref all_entries, .. }
+                if all_entries
+                    .iter()
+                    .any(|entry| entry.path == "main-root-only.txt")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_open_for_session_from_view_indexes_session_worktree() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        std::fs::write(app.working_dir().join("main-root-only.txt"), "main")
+            .expect("failed to write active-project file");
+        let session_index = app
+            .session_index_for_id(&session_id)
+            .expect("missing session");
+        let session_folder = app.sessions.sessions[session_index].folder.clone();
+        std::fs::write(session_folder.join("worktree-only.txt"), "worktree")
+            .expect("failed to write worktree file");
+
+        // Act
+        open_for_session(&mut app, &session_id, false).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::ProjectExplorer { ref all_entries, .. }
+                if all_entries
+                    .iter()
+                    .any(|entry| entry.path == "worktree-only.txt")
+                && !all_entries
+                    .iter()
+                    .any(|entry| entry.path == "main-root-only.txt")
         ));
     }
 
