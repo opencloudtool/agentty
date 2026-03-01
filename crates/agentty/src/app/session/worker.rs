@@ -72,6 +72,8 @@ struct SessionWorkerContext {
     folder: PathBuf,
     git_client: Arc<dyn GitClient>,
     output: Arc<Mutex<String>>,
+    /// Clarification questions parsed from the most recent agent response.
+    questions: Arc<Mutex<Vec<String>>>,
     session_id: String,
     status: Arc<Mutex<Status>>,
 }
@@ -153,6 +155,7 @@ impl SessionManager {
         let folder = session.folder.clone();
         let child_pid = Arc::clone(&handles.child_pid);
         let output = Arc::clone(&handles.output);
+        let questions = Arc::clone(&handles.questions);
         let status = Arc::clone(&handles.status);
 
         // In tests, use a pre-registered mock channel when available; otherwise
@@ -177,6 +180,7 @@ impl SessionManager {
             folder,
             git_client: services.git_client(),
             output,
+            questions,
             session_id: session_id_owned,
             status,
         };
@@ -409,6 +413,12 @@ async fn apply_turn_result(
                 )
                 .await;
 
+            let parsed_questions =
+                crate::infra::agent::question_parser::parse_questions(&result.assistant_message);
+            if let Ok(mut guard) = context.questions.lock() {
+                *guard = parsed_questions;
+            }
+
             SessionTaskService::handle_auto_commit(AssistContext {
                 app_event_tx: context.app_event_tx.clone(),
                 db: context.db.clone(),
@@ -423,6 +433,10 @@ async fn apply_turn_result(
             Ok(())
         }
         Err(error) => {
+            if let Ok(mut guard) = context.questions.lock() {
+                guard.clear();
+            }
+
             let message = format!("\n{}\n", error.0.trim());
             SessionTaskService::append_session_output(
                 &context.output,
@@ -626,6 +640,7 @@ mod tests {
             folder: base_dir.path().to_path_buf(),
             git_client: Arc::new(MockGitClient::new()),
             output: Arc::new(Mutex::new(String::new())),
+            questions: Arc::new(Mutex::new(Vec::new())),
             session_id: "sess1".to_string(),
             status: Arc::new(Mutex::new(Status::InProgress)),
         };
@@ -682,6 +697,7 @@ mod tests {
             folder: base_dir.path().to_path_buf(),
             git_client: Arc::new(MockGitClient::new()),
             output: Arc::new(Mutex::new(String::new())),
+            questions: Arc::new(Mutex::new(Vec::new())),
             session_id: "sess1".to_string(),
             status: Arc::new(Mutex::new(Status::InProgress)),
         };

@@ -8,6 +8,7 @@ Provider-specific command builders and response parsing helpers for agent CLI in
 - [claude.rs](claude.rs) - Claude CLI backend command construction.
 - [codex.rs](codex.rs) - Codex CLI backend command construction.
 - [gemini.rs](gemini.rs) - Gemini CLI backend command construction.
+- [question_parser.rs](question_parser.rs) - Structured question extraction from agent responses and answer formatting.
 - [response_parser.rs](response_parser.rs) - Provider-specific parsing for final and streaming output.
 - [AGENTS.md](AGENTS.md) - Local module guidance and directory index.
 - [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.

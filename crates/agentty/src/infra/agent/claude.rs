@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 use super::backend::{
     AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
-    prepend_repo_root_path_instructions,
+    prepend_question_instructions, prepend_repo_root_path_instructions,
 };
 
 /// Backend implementation for the Claude CLI.
@@ -32,6 +32,7 @@ impl AgentBackend for ClaudeBackend {
             } => build_resume_prompt(prompt, session_output)?,
         };
         let prompt = prepend_repo_root_path_instructions(&prompt)?;
+        let prompt = prepend_question_instructions(&prompt)?;
         let mut command = Command::new("claude");
 
         if matches!(mode, AgentCommandMode::Resume { .. }) {

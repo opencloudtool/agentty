@@ -8,6 +8,10 @@ use askama::Template;
 use crate::domain::agent::AgentKind;
 use crate::infra::agent::response_parser::ParsedResponse;
 
+/// Marker used to detect whether question instructions are already included
+/// in a prompt.
+const QUESTION_INSTRUCTIONS_MARKER: &str = "Clarification questions:";
+
 /// Marker used to detect whether repo-root path instructions are already
 /// included in a prompt.
 const REPO_ROOT_PATH_INSTRUCTIONS_MARKER: &str = "repository-root-relative POSIX paths";
@@ -100,6 +104,13 @@ impl Error for AgentBackendError {}
 struct ResumeWithSessionOutputPromptTemplate<'a> {
     prompt: &'a str,
     session_output: &'a str,
+}
+
+/// Askama view model for rendering clarification-question format instructions.
+#[derive(Template)]
+#[template(path = "question_instruction_prompt.md", escape = "none")]
+struct QuestionInstructionPromptTemplate<'a> {
+    prompt: &'a str,
 }
 
 /// Askama view model for rendering repo-root file path contract instructions.
@@ -201,6 +212,30 @@ pub(crate) fn prepend_repo_root_path_instructions(
     let rendered = template.render().map_err(|error| {
         AgentBackendError::CommandBuild(format!(
             "Failed to render `repo_root_path_prompt.md`: {error}"
+        ))
+    })?;
+
+    Ok(rendered.trim_end().to_string())
+}
+
+/// Prepends clarification-question format instructions to a prompt.
+///
+/// Tells agents to include a `**Questions**` section with numbered items when
+/// they need user clarification. If the prompt already contains the
+/// question-instruction marker, this function returns the prompt unchanged to
+/// avoid duplicated guidance.
+///
+/// # Errors
+/// Returns an error if Askama template rendering fails.
+pub(crate) fn prepend_question_instructions(prompt: &str) -> Result<String, AgentBackendError> {
+    if prompt.contains(QUESTION_INSTRUCTIONS_MARKER) {
+        return Ok(prompt.to_string());
+    }
+
+    let template = QuestionInstructionPromptTemplate { prompt };
+    let rendered = template.render().map_err(|error| {
+        AgentBackendError::CommandBuild(format!(
+            "Failed to render `question_instruction_prompt.md`: {error}"
         ))
     })?;
 
@@ -314,6 +349,37 @@ mod tests {
         // Act
         let rendered_prompt = prepend_repo_root_path_instructions(&prompt)
             .expect("path instruction prompt should render");
+
+        // Assert
+        assert_eq!(rendered_prompt, prompt);
+    }
+
+    #[test]
+    /// Ensures question instructions are prepended to plain prompts.
+    fn test_prepend_question_instructions_adds_instructions() {
+        // Arrange
+        let prompt = "Implement feature";
+
+        // Act
+        let rendered_prompt = prepend_question_instructions(prompt)
+            .expect("question instruction prompt should render");
+
+        // Assert
+        assert!(rendered_prompt.contains("Clarification questions:"));
+        assert!(rendered_prompt.contains("**Questions**"));
+        assert!(rendered_prompt.ends_with(prompt));
+    }
+
+    #[test]
+    /// Ensures question instructions are not duplicated when already present.
+    fn test_prepend_question_instructions_is_idempotent() {
+        // Arrange
+        let prompt = prepend_question_instructions("Implement feature")
+            .expect("question instruction prompt should render");
+
+        // Act
+        let rendered_prompt = prepend_question_instructions(&prompt)
+            .expect("question instruction prompt should render");
 
         // Assert
         assert_eq!(rendered_prompt, prompt);

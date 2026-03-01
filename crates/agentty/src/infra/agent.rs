@@ -11,6 +11,8 @@ mod claude;
 mod codex;
 #[path = "agent/gemini.rs"]
 mod gemini;
+#[path = "agent/question_parser.rs"]
+pub(crate) mod question_parser;
 #[path = "agent/response_parser.rs"]
 mod response_parser;
 
@@ -19,7 +21,8 @@ pub use backend::{
     create_backend, parse_response, transport_mode,
 };
 pub(crate) use backend::{
-    build_resume_prompt, parse_stream_output_line, prepend_repo_root_path_instructions,
+    build_resume_prompt, parse_stream_output_line, prepend_question_instructions,
+    prepend_repo_root_path_instructions,
 };
 pub use response_parser::ParsedResponse;
 pub(crate) use response_parser::{

@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 use super::backend::{
     AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
-    prepend_repo_root_path_instructions,
+    prepend_question_instructions, prepend_repo_root_path_instructions,
 };
 
 /// Backend implementation for the Gemini CLI.
@@ -35,6 +35,7 @@ impl AgentBackend for GeminiBackend {
             } => build_resume_prompt(prompt, session_output)?,
         };
         let prompt = prepend_repo_root_path_instructions(&prompt)?;
+        let prompt = prepend_question_instructions(&prompt)?;
         let mut command = Command::new("gemini");
         command
             .arg("--prompt")

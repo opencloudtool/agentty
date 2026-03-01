@@ -154,6 +154,8 @@ async fn handle_view_key(
             .await;
         }
         KeyCode::Enter if view_session_snapshot.is_action_allowed => {
+            let prefilled_input = build_question_answer_scaffold(app, &view_context.session_id);
+
             switch_view_to_prompt(
                 app,
                 view_context,
@@ -161,6 +163,7 @@ async fn handle_view_key(
                     &view_session_snapshot.session_output,
                 )),
                 pending_update.scroll_offset,
+                prefilled_input,
             );
         }
         KeyCode::Char('j') | KeyCode::Down => {
@@ -360,18 +363,45 @@ async fn open_external_editor_for_view_session(
     let _ = crate::runtime::terminal::open_nvim(terminal, event_reader_pause, session_folder).await;
 }
 
+/// Builds a numbered answer scaffold from pending questions, if any.
+///
+/// Returns [`None`] when no questions are pending, leaving the prompt empty.
+fn build_question_answer_scaffold(app: &App, session_id: &str) -> Option<String> {
+    let handles = app.sessions.session_handles_or_err(session_id).ok()?;
+    let questions = handles.questions.lock().ok()?;
+
+    if questions.is_empty() {
+        return None;
+    }
+
+    Some(crate::infra::agent::question_parser::build_answer_scaffold(
+        questions.len(),
+    ))
+}
+
+/// Switches the TUI mode from session view to the prompt input.
+///
+/// When `prefilled_input` is provided (e.g. a numbered answer scaffold for
+/// pending agent questions), the prompt input is pre-populated with that
+/// text. Otherwise the input starts empty.
 fn switch_view_to_prompt(
     app: &mut App,
     view_context: &ViewContext,
     history_state: PromptHistoryState,
     scroll_offset: Option<u16>,
+    prefilled_input: Option<String>,
 ) {
+    let input = match prefilled_input {
+        Some(text) => InputState::with_text(text),
+        None => InputState::new(),
+    };
+
     app.mode = AppMode::Prompt {
         at_mention_state: None,
         history_state,
         slash_state: PromptSlashState::new(),
         session_id: view_context.session_id.clone(),
-        input: InputState::new(),
+        input,
         scroll_offset,
     };
 }

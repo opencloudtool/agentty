@@ -648,11 +648,14 @@ impl SessionManager {
         let output = Arc::clone(&handles.output);
         let status = Arc::clone(&handles.status);
 
+        let effective_prompt = Self::consume_pending_questions(&handles.questions, prompt);
+        let effective_prompt = effective_prompt.as_deref().unwrap_or(prompt);
+
         if let Some(title) = title_to_save {
             self.persist_first_reply_metadata(
                 services,
                 &persisted_session_id,
-                prompt,
+                effective_prompt,
                 &title,
                 folder.as_path(),
                 session_model,
@@ -680,7 +683,7 @@ impl SessionManager {
 
         let command = Self::build_session_command(BuildSessionCommandInput {
             is_first_message,
-            prompt: prompt.to_string(),
+            prompt: effective_prompt.to_string(),
             session_model,
             session_output,
         });
@@ -742,6 +745,31 @@ impl SessionManager {
             session.id.clone(),
             title_to_save,
         )))
+    }
+
+    /// Formats a prompt with correlated question-answer pairs, if pending.
+    ///
+    /// Reads and clears the pending questions from the session handles. When
+    /// questions are present, the raw user answer is correlated with the
+    /// original questions into a structured follow-up prompt. Returns [`None`]
+    /// when no questions are pending, indicating the original prompt should be
+    /// used as-is.
+    fn consume_pending_questions(
+        questions: &Arc<Mutex<Vec<String>>>,
+        raw_answer: &str,
+    ) -> Option<String> {
+        let mut guard = questions.lock().ok()?;
+
+        if guard.is_empty() {
+            return None;
+        }
+
+        let formatted =
+            crate::infra::agent::question_parser::format_question_answers(&guard, raw_answer);
+
+        guard.clear();
+
+        formatted
     }
 
     /// Persists first-message prompt/title metadata before queueing execution.

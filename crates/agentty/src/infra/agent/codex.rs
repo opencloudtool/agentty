@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 
 use super::backend::{
     AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
-    prepend_repo_root_path_instructions,
+    prepend_question_instructions, prepend_repo_root_path_instructions,
 };
 
 /// Codex config override that forces high reasoning effort per invocation.
@@ -45,6 +45,7 @@ impl AgentBackend for CodexBackend {
         };
         let prompt = prepend_root_instructions_if_available(&prompt, folder);
         let prompt = prepend_repo_root_path_instructions(&prompt)?;
+        let prompt = prepend_question_instructions(&prompt)?;
 
         let mut command = Command::new("codex");
         command.arg("exec");
