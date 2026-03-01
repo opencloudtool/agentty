@@ -271,12 +271,20 @@ impl SessionManager {
             .await;
         }
 
+        let provider_conversation_id = context
+            .db
+            .get_session_provider_conversation_id(&context.session_id)
+            .await
+            .ok()
+            .flatten();
+
         let req = TurnRequest {
             folder: context.folder.clone(),
             live_session_output: Some(Arc::clone(&context.output)),
             model: session_model.as_str().to_string(),
             mode,
             prompt,
+            provider_conversation_id,
         };
 
         let (event_tx, event_rx) = mpsc::unbounded_channel::<TurnEvent>();
@@ -392,6 +400,13 @@ async fn apply_turn_result(
             let _ = context
                 .db
                 .upsert_session_usage(&context.session_id, session_model.as_str(), &stats)
+                .await;
+            let _ = context
+                .db
+                .update_session_provider_conversation_id(
+                    &context.session_id,
+                    result.provider_conversation_id.as_deref(),
+                )
                 .await;
 
             SessionTaskService::handle_auto_commit(AssistContext {

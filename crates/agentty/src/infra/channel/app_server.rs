@@ -70,7 +70,7 @@ impl AgentChannel for AppServerAgentChannel {
                 folder: req.folder,
                 model: req.model,
                 prompt: req.prompt,
-                provider_conversation_id: None,
+                provider_conversation_id: req.provider_conversation_id,
                 session_id,
                 session_output,
             };
@@ -109,12 +109,17 @@ impl AgentChannel for AppServerAgentChannel {
             let _ = bridge_handle.await;
 
             match turn_result {
-                Ok(response) => Ok(TurnResult {
-                    assistant_message: response.assistant_message,
-                    context_reset: response.context_reset,
-                    input_tokens: response.input_tokens,
-                    output_tokens: response.output_tokens,
-                }),
+                Ok(response) => {
+                    let _ = events.send(TurnEvent::PidUpdate(response.pid));
+
+                    Ok(TurnResult {
+                        assistant_message: response.assistant_message,
+                        context_reset: response.context_reset,
+                        input_tokens: response.input_tokens,
+                        output_tokens: response.output_tokens,
+                        provider_conversation_id: response.provider_conversation_id,
+                    })
+                }
                 Err(error) => Err(AgentError(error)),
             }
         })
@@ -150,6 +155,7 @@ mod tests {
             model: "gemini-3-flash-preview".to_string(),
             mode: TurnMode::Start,
             prompt: "Do something".to_string(),
+            provider_conversation_id: None,
         }
     }
 
@@ -263,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     /// Verifies whitespace-only `AssistantMessage` is not forwarded as an
-    /// event.
+    /// `AssistantDelta` event.
     async fn test_run_turn_skips_whitespace_only_assistant_messages() {
         // Arrange
         let mut mock_client = MockAppServerClient::new();
@@ -289,10 +295,12 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
-        assert!(
-            events_rx.try_recv().is_err(),
-            "no event should be emitted for whitespace-only messages"
-        );
+        while let Ok(event) = events_rx.try_recv() {
+            assert!(
+                !matches!(event, TurnEvent::AssistantDelta(_)),
+                "no AssistantDelta should be emitted for whitespace-only messages, got: {event:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -356,5 +364,62 @@ mod tests {
         assert!(result.context_reset);
         assert_eq!(result.input_tokens, 100);
         assert_eq!(result.output_tokens, 50);
+    }
+
+    #[tokio::test]
+    /// Verifies `provider_conversation_id` is forwarded from `TurnRequest` to
+    /// the underlying `AppServerTurnRequest` and propagated back from the
+    /// response into the returned `TurnResult`.
+    async fn test_run_turn_passes_and_returns_provider_conversation_id() {
+        // Arrange
+        let mut mock_client = MockAppServerClient::new();
+        mock_client
+            .expect_run_turn()
+            .returning(|request, _stream_tx| {
+                assert_eq!(
+                    request.provider_conversation_id,
+                    Some("thread-abc".to_string()),
+                    "request should carry the provider conversation id"
+                );
+
+                Box::pin(async {
+                    Ok(AppServerTurnResponse {
+                        assistant_message: "ok".to_string(),
+                        context_reset: false,
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        pid: Some(42),
+                        provider_conversation_id: Some("thread-xyz".to_string()),
+                    })
+                })
+            });
+        let channel = AppServerAgentChannel {
+            client: Arc::new(mock_client),
+        };
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let mut request = make_turn_request();
+        request.provider_conversation_id = Some("thread-abc".to_string());
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), request, events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(
+            result.provider_conversation_id,
+            Some("thread-xyz".to_string()),
+            "result should carry the provider conversation id from the response"
+        );
+
+        // Verify PID event was emitted from the response.
+        let mut pid_event_seen = false;
+        while let Ok(event) = events_rx.try_recv() {
+            if matches!(event, TurnEvent::PidUpdate(Some(42))) {
+                pid_event_seen = true;
+            }
+        }
+        assert!(pid_event_seen, "should emit PidUpdate from response pid");
     }
 }

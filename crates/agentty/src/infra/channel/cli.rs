@@ -96,24 +96,17 @@ impl AgentChannel for CliAgentChannel {
         let kind = self.kind;
 
         Box::pin(async move {
-            let command = build_result.map_err(|error| {
-                let message = format!("Failed to build command: {error}\n");
-                let _ = events.send(TurnEvent::AssistantDelta(message.clone()));
-
-                AgentError(message.trim_end().to_string())
-            })?;
+            let command = build_result
+                .map_err(|error| AgentError(format!("Failed to build command: {error}")))?;
 
             let mut tokio_cmd = tokio::process::Command::from(command);
             tokio_cmd.stdin(std::process::Stdio::null());
             tokio_cmd.stdout(std::process::Stdio::piped());
             tokio_cmd.stderr(std::process::Stdio::piped());
 
-            let mut child = tokio_cmd.spawn().map_err(|error| {
-                let message = format!("Failed to spawn process: {error}\n");
-                let _ = events.send(TurnEvent::AssistantDelta(message.clone()));
-
-                AgentError(message.trim_end().to_string())
-            })?;
+            let mut child = tokio_cmd
+                .spawn()
+                .map_err(|error| AgentError(format!("Failed to spawn process: {error}")))?;
 
             // Notify the consumer of the child PID so cancellation signals can
             // be sent while the process is running.
@@ -164,9 +157,6 @@ impl AgentChannel for CliAgentChannel {
                 .is_some_and(|status| status.signal().is_some());
 
             if killed_by_signal {
-                let message = "\n[Stopped] Agent interrupted by user.\n";
-                let _ = events.send(TurnEvent::AssistantDelta(message.to_string()));
-
                 return Err(AgentError(
                     "[Stopped] Agent interrupted by user.".to_string(),
                 ));
@@ -181,6 +171,7 @@ impl AgentChannel for CliAgentChannel {
                 context_reset: false,
                 input_tokens: parsed.stats.input_tokens,
                 output_tokens: parsed.stats.output_tokens,
+                provider_conversation_id: None,
             })
         })
     }
@@ -252,13 +243,15 @@ mod tests {
             model: "claude-sonnet-4-6".to_string(),
             mode: TurnMode::Start,
             prompt: "Write a test".to_string(),
+            provider_conversation_id: None,
         }
     }
 
     #[tokio::test]
-    /// Verifies spawn failure emits an `AssistantDelta` with the error text
-    /// and returns `Err`.
-    async fn test_run_turn_spawn_failure_emits_error_delta_and_returns_err() {
+    /// Verifies spawn failure returns `Err` with a descriptive message and
+    /// does not emit any `AssistantDelta` events (the worker appends the
+    /// error to session output once via `apply_turn_result`).
+    async fn test_run_turn_spawn_failure_returns_err_without_delta() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut mock_backend = MockAgentBackend::new();
@@ -281,17 +274,17 @@ mod tests {
             error_message.contains("Failed to spawn process"),
             "error was: {error_message}"
         );
-        let event = events_rx.try_recv().expect("should have received an event");
         assert!(
-            matches!(&event, TurnEvent::AssistantDelta(msg) if msg.contains("Failed to spawn")),
-            "unexpected event: {event:?}"
+            events_rx.try_recv().is_err(),
+            "no events should be emitted when the process never spawned"
         );
     }
 
     #[tokio::test]
-    /// Verifies kill-by-signal emits a `[Stopped]` `AssistantDelta` event and
-    /// returns `Err`.
-    async fn test_run_turn_kill_signal_emits_stopped_delta_and_returns_err() {
+    /// Verifies kill-by-signal returns `Err` with a `[Stopped]` message and
+    /// does not emit an `AssistantDelta` event (the worker appends the error
+    /// to session output once via `apply_turn_result`).
+    async fn test_run_turn_kill_signal_returns_err_without_stopped_delta() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut mock_backend = MockAgentBackend::new();
@@ -318,20 +311,13 @@ mod tests {
             "error was: {error_message}"
         );
 
-        // Drain `PidUpdate` events emitted when the process spawns and exits
-        // before asserting on the `[Stopped]` delta.
-        let delta_event = loop {
-            let event = events_rx
-                .try_recv()
-                .expect("expected at least one more event");
-            if !matches!(event, TurnEvent::PidUpdate(_)) {
-                break event;
-            }
-        };
-        assert!(
-            matches!(&delta_event, TurnEvent::AssistantDelta(msg) if msg.contains("[Stopped]")),
-            "unexpected event: {delta_event:?}"
-        );
+        // Drain `PidUpdate` events and verify no `AssistantDelta` was emitted.
+        while let Ok(event) = events_rx.try_recv() {
+            assert!(
+                matches!(event, TurnEvent::PidUpdate(_)),
+                "only PidUpdate events expected, got: {event:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -4,16 +4,16 @@ Provider-agnostic agent channel abstraction for session turn execution.
 
 ## Overview
 
-The `channel` module defines the [`AgentChannel`] trait and all supporting
+The `channel` module defines the \[`AgentChannel`\] trait and all supporting
 types used to drive a single agent session turn without coupling callers to a
 specific transport.
 
-- [`CliAgentChannel`] spawns a CLI subprocess per turn and streams its stdout
-  as [`TurnEvent`]s.
-- [`AppServerAgentChannel`] delegates to [`AppServerClient`] and bridges
-  [`AppServerStreamEvent`]s to [`TurnEvent`]s.
-- [`create_agent_channel`] selects the right implementation for a given
-  [`AgentKind`].
+- \[`CliAgentChannel`\] spawns a CLI subprocess per turn and streams its stdout
+  as \[`TurnEvent`\]s.
+- \[`AppServerAgentChannel`\] delegates to \[`AppServerClient`\] and bridges
+  \[`AppServerStreamEvent`\]s to \[`TurnEvent`\]s.
+- \[`create_agent_channel`\] selects the right implementation for a given
+  \[`AgentKind`\].
 
 ## Directory Index
 

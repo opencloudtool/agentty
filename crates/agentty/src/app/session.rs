@@ -2190,6 +2190,7 @@ FROM session
                         context_reset: false,
                         input_tokens: 0,
                         output_tokens: 0,
+                        provider_conversation_id: None,
                     })
                 })
             });
@@ -2333,6 +2334,7 @@ FROM session
                     context_reset: false,
                     input_tokens: 0,
                     output_tokens: 0,
+                    provider_conversation_id: None,
                 })
             })
         });

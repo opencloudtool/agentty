@@ -53,6 +53,11 @@ pub struct TurnRequest {
     pub mode: TurnMode,
     /// User prompt to send.
     pub prompt: String,
+    /// Provider-native conversation identifier loaded from persistence.
+    ///
+    /// When present, app-server channels forward this to the provider runtime
+    /// so it can attempt native context resume. CLI channels ignore this field.
+    pub provider_conversation_id: Option<String>,
 }
 
 /// Incremental event emitted during one agent turn.
@@ -96,6 +101,11 @@ pub struct TurnResult {
     pub input_tokens: u64,
     /// Output token count for the turn.
     pub output_tokens: u64,
+    /// Provider-native conversation identifier observed after the turn.
+    ///
+    /// App-server providers return this so the worker can persist it for
+    /// future runtime restarts. CLI channels always return `None`.
+    pub provider_conversation_id: Option<String>,
 }
 
 /// Opaque reference to an active agent session.

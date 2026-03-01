@@ -394,7 +394,8 @@ impl SessionManager {
     ///
     /// When the model changes, this also clears any persisted provider-native
     /// conversation identifier so incompatible runtimes do not attempt resume
-    /// with stale ids.
+    /// with stale ids, and drops the existing session worker so the next turn
+    /// creates a fresh worker with the correct [`AgentChannel`] type.
     ///
     /// # Errors
     /// Returns an error if the session is missing or persistence fails.
@@ -419,6 +420,8 @@ impl SessionManager {
                 .db()
                 .update_session_provider_conversation_id(session_id, None)
                 .await?;
+
+            self.clear_session_worker(session_id);
         }
 
         if Self::should_persist_last_used_model_as_default(services).await? {
