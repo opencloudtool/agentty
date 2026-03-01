@@ -57,10 +57,22 @@ impl<'a> DiffPage<'a> {
         total_added_lines: usize,
         total_removed_lines: usize,
     ) {
-        let title = format!(
-            " (+{total_added_lines} -{total_removed_lines}) Diff — {} ",
-            self.session.display_title()
-        );
+        let title = Line::from(vec![
+            Span::styled(" (", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("+{total_added_lines}"),
+                Style::default().fg(Color::Green),
+            ),
+            Span::styled(" ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("-{total_removed_lines}"),
+                Style::default().fg(Color::Red),
+            ),
+            Span::styled(
+                format!(") Diff — {} ", self.session.display_title()),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]);
 
         let max_num = max_diff_line_number(parsed);
         let gutter_width = if max_num == 0 {
@@ -139,11 +151,7 @@ impl<'a> DiffPage<'a> {
         }
 
         let paragraph = Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(Span::styled(title, Style::default().fg(Color::Yellow))),
-            )
+            .block(Block::default().borders(Borders::ALL).title(title))
             .scroll((self.scroll_offset, SCROLL_X_OFFSET));
 
         f.render_widget(paragraph, area);
