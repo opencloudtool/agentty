@@ -4,6 +4,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tokio::sync::mpsc;
 
+use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::permission::PermissionMode;
 use crate::infra::app_server::{
     self, AppServerClient, AppServerFuture, AppServerSessionRegistry, AppServerStreamEvent,
@@ -38,13 +39,16 @@ const AUTO_EDIT_POLICY: PermissionModePolicy = PermissionModePolicy {
     web_search_mode: "live",
 };
 
-/// Input token threshold above which proactive context compaction is triggered
-/// before starting the next turn.
+/// Proactive compaction threshold for Codex models with a 400k context window.
 ///
-/// Codex models typically have 128k-200k context windows. 120k leaves headroom
-/// for the current turn's input while triggering compaction early enough to
-/// avoid `ContextWindowExceeded` failures.
-const AUTO_COMPACT_INPUT_TOKEN_THRESHOLD: u64 = 120_000;
+/// [`AgentModel::Gpt52Codex`] and [`AgentModel::Gpt53Codex`] currently expose
+/// 400k context windows, so this keeps enough room for the active turn while
+/// delaying compaction.
+const AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_400K_CONTEXT: u64 = 300_000;
+
+/// Proactive compaction threshold for Codex Spark models with a 128k context
+/// window.
+const AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_128K_CONTEXT: u64 = 120_000;
 
 /// Production [`AppServerClient`] backed by `codex app-server` process
 /// instances.
@@ -217,11 +221,10 @@ impl RealCodexAppServerClient {
 
     /// Sends one turn prompt and waits for terminal completion notification.
     ///
-    /// Before executing the turn, proactive compaction is triggered when
-    /// cumulative input token usage exceeds
-    /// [`AUTO_COMPACT_INPUT_TOKEN_THRESHOLD`]. If the turn fails with a
-    /// `ContextWindowExceeded` error, reactive compaction is attempted and
-    /// the turn is retried once.
+    /// Before executing the turn, proactive compaction is triggered when the
+    /// model-specific cumulative input token threshold is reached. If the turn
+    /// fails with a `ContextWindowExceeded` error, reactive compaction is
+    /// attempted and the turn is retried once.
     ///
     /// Intermediate agent messages and progress updates are emitted through
     /// `stream_tx` as they arrive from the app-server event stream.
@@ -230,7 +233,9 @@ impl RealCodexAppServerClient {
         prompt: &str,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
     ) -> Result<(String, u64, u64), String> {
-        if session.latest_input_tokens >= AUTO_COMPACT_INPUT_TOKEN_THRESHOLD {
+        let auto_compact_threshold = Self::auto_compact_input_token_threshold(&session.model);
+
+        if session.latest_input_tokens >= auto_compact_threshold {
             let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(
                 "Compacting context".to_string(),
             ));
@@ -259,6 +264,24 @@ impl RealCodexAppServerClient {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Returns the proactive compaction threshold for one Codex model name.
+    ///
+    /// This parses through [`AgentModel`] via [`AgentKind::Codex`] so model
+    /// mapping remains centralized in the domain enum instead of local string
+    /// checks. It keeps larger-window Codex models from compacting too early
+    /// while preserving the tighter threshold required by Spark models.
+    fn auto_compact_input_token_threshold(model: &str) -> u64 {
+        let is_400k_context_model = matches!(
+            AgentKind::Codex.parse_model(model),
+            Some(AgentModel::Gpt52Codex | AgentModel::Gpt53Codex)
+        );
+        if is_400k_context_model {
+            return AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_400K_CONTEXT;
+        }
+
+        AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_128K_CONTEXT
     }
 
     /// Sends `thread/compact/start` and waits for compaction to complete.
@@ -678,9 +701,10 @@ struct CodexSessionRuntime {
     ///
     /// The app-server reports `input_tokens` as the total context size (full
     /// conversation history plus new input), not incremental tokens. This
-    /// value is compared against [`AUTO_COMPACT_INPUT_TOKEN_THRESHOLD`] to
-    /// trigger proactive compaction. Resets to zero after compaction or
-    /// runtime restart.
+    /// value is compared against the model-specific proactive compaction
+    /// threshold returned by
+    /// [`RealCodexAppServerClient::auto_compact_input_token_threshold`]. It
+    /// resets to zero after compaction or runtime restart.
     latest_input_tokens: u64,
     folder: PathBuf,
     model: String,
@@ -1017,6 +1041,55 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn auto_compact_input_token_threshold_uses_400k_limit_for_codex_models() {
+        // Arrange
+        let gpt_53_codex_model = AgentModel::Gpt53Codex.as_str();
+        let gpt_52_codex_model = AgentModel::Gpt52Codex.as_str();
+
+        // Act
+        let gpt_53_threshold =
+            RealCodexAppServerClient::auto_compact_input_token_threshold(gpt_53_codex_model);
+        let gpt_52_threshold =
+            RealCodexAppServerClient::auto_compact_input_token_threshold(gpt_52_codex_model);
+
+        // Assert
+        assert_eq!(
+            gpt_53_threshold,
+            AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_400K_CONTEXT
+        );
+        assert_eq!(
+            gpt_52_threshold,
+            AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_400K_CONTEXT
+        );
+    }
+
+    #[test]
+    fn auto_compact_input_token_threshold_uses_128k_limit_for_codex_spark() {
+        // Arrange
+        let gpt_53_codex_spark_model = AgentModel::Gpt53CodexSpark.as_str();
+
+        // Act
+        let threshold =
+            RealCodexAppServerClient::auto_compact_input_token_threshold(gpt_53_codex_spark_model);
+
+        // Assert
+        assert_eq!(threshold, AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_128K_CONTEXT);
+    }
+
+    #[test]
+    fn auto_compact_input_token_threshold_falls_back_to_128k_limit_for_unknown_models() {
+        // Arrange
+        let unknown_codex_model = "gpt-unknown-codex";
+
+        // Act
+        let threshold =
+            RealCodexAppServerClient::auto_compact_input_token_threshold(unknown_codex_model);
+
+        // Assert
+        assert_eq!(threshold, AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_128K_CONTEXT);
+    }
 
     #[test]
     fn extract_agent_message_returns_content_text_for_agent_message_item() {
