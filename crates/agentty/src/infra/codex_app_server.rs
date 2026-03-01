@@ -354,6 +354,15 @@ impl RealCodexAppServerClient {
     /// This is the raw turn execution loop without compaction logic. Callers
     /// wrap it with proactive and reactive compaction in
     /// [`Self::run_turn_with_runtime`].
+    ///
+    /// `turn/completed` events that report `status: "interrupted"` without an
+    /// error payload are treated as non-terminal handoffs so delegated/subagent
+    /// flows can continue to the next active turn.
+    ///
+    /// Some delegated turn chains do not emit an intermediate `turn/started`
+    /// notification. In that case, the loop adopts the delegated turn id from
+    /// the next `turn/completed` notification so terminal completion is still
+    /// observed.
     async fn execute_turn_event_loop(
         session: &mut CodexSessionRuntime,
         prompt: &str,
@@ -371,6 +380,7 @@ impl RealCodexAppServerClient {
 
         let mut assistant_messages = Vec::new();
         let mut active_turn_id: Option<String> = None;
+        let mut waiting_for_handoff_turn_completion = false;
         let mut latest_stream_usage: Option<(u64, u64)> = None;
         let mut completed_turn_usage: Option<(u64, u64)> = None;
 
@@ -402,6 +412,9 @@ impl RealCodexAppServerClient {
                         if active_turn_id.is_none() {
                             active_turn_id =
                                 extract_turn_id_from_turn_start_response(&response_value);
+                            if active_turn_id.is_some() {
+                                waiting_for_handoff_turn_completion = false;
+                            }
                         }
                         continue;
                     }
@@ -414,22 +427,17 @@ impl RealCodexAppServerClient {
                         continue;
                     }
 
-                    if active_turn_id.is_none() {
-                        active_turn_id =
-                            extract_turn_id_from_turn_started_notification(&response_value);
-                    }
+                    Self::update_active_turn_tracking_for_response(
+                        &response_value,
+                        &mut active_turn_id,
+                        &mut waiting_for_handoff_turn_completion,
+                    );
 
-                    if let Some(progress) = extract_item_started_progress(&response_value) {
-                        let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(progress));
-                    }
-
-                    if let Some(message) = extract_agent_message(&response_value) {
-                        let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
-                            is_delta: false,
-                            message: message.clone(),
-                        });
-                        assistant_messages.push(message);
-                    }
+                    Self::stream_turn_content_from_response(
+                        &response_value,
+                        &stream_tx,
+                        &mut assistant_messages,
+                    );
 
                     Self::update_turn_usage_from_response(
                         &response_value,
@@ -437,6 +445,16 @@ impl RealCodexAppServerClient {
                         &mut completed_turn_usage,
                         &mut latest_stream_usage,
                     );
+
+                    if is_interrupted_turn_completion_without_error(
+                        &response_value,
+                        active_turn_id.as_deref(),
+                    ) {
+                        active_turn_id = None;
+                        waiting_for_handoff_turn_completion = true;
+
+                        continue;
+                    }
 
                     if let Some(turn_result) =
                         parse_turn_completed(&response_value, active_turn_id.as_deref())
@@ -506,6 +524,55 @@ impl RealCodexAppServerClient {
         completed_turn_usage
             .or(latest_stream_usage)
             .unwrap_or((0, 0))
+    }
+
+    /// Updates active turn tracking from one response notification.
+    ///
+    /// Active turn id is first sourced from `turn/started`. During delegated
+    /// handoff waits, `turn/completed` can also provide the new active turn id
+    /// when no `turn/started` notification is emitted.
+    fn update_active_turn_tracking_for_response(
+        response_value: &Value,
+        active_turn_id: &mut Option<String>,
+        waiting_for_handoff_turn_completion: &mut bool,
+    ) {
+        if active_turn_id.is_some() {
+            return;
+        }
+
+        if let Some(turn_id) = extract_turn_id_from_turn_started_notification(response_value) {
+            *active_turn_id = Some(turn_id);
+            *waiting_for_handoff_turn_completion = false;
+
+            return;
+        }
+
+        if let Some(turn_id) = extract_handoff_turn_id_from_completion(
+            response_value,
+            active_turn_id.as_deref(),
+            *waiting_for_handoff_turn_completion,
+        ) {
+            *active_turn_id = Some(turn_id);
+        }
+    }
+
+    /// Streams progress updates and assistant message items for one response.
+    fn stream_turn_content_from_response(
+        response_value: &Value,
+        stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
+        assistant_messages: &mut Vec<String>,
+    ) {
+        if let Some(progress) = extract_item_started_progress(response_value) {
+            let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(progress));
+        }
+
+        if let Some(message) = extract_agent_message(response_value) {
+            let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
+                is_delta: false,
+                message: message.clone(),
+            });
+            assistant_messages.push(message);
+        }
     }
 
     /// Finalizes one parsed `turn/completed` result into the normalized turn
@@ -812,9 +879,13 @@ fn extract_agent_message(response_value: &Value) -> Option<String> {
 /// user turn.
 ///
 /// A terminal status is only treated as success when it is exactly
-/// `"completed"`. Any other terminal status (for example `"interrupted"` or
-/// `"unfinished"`) is mapped to an error so callers do not mistake an
-/// unfinished turn for a completed response.
+/// `"completed"`. Any other terminal status (for example `"interrupted"` with
+/// an error payload or `"unfinished"`) is mapped to an error so callers do not
+/// mistake an unfinished turn for a completed response.
+///
+/// `status: "interrupted"` with no error payload is handled before this parser
+/// by [`is_interrupted_turn_completion_without_error`] so delegated turn
+/// handoffs can continue.
 fn parse_turn_completed(
     response_value: &Value,
     expected_turn_id: Option<&str>,
@@ -848,6 +919,66 @@ fn parse_turn_completed(
                 format!("Codex app-server turn ended with non-completed status `{other}`")
             }))),
     }
+}
+
+/// Returns `true` when `turn/completed` indicates a delegated-turn handoff.
+///
+/// Codex can report `status: "interrupted"` with no turn error while handing
+/// execution to another turn (for example, subagent/delegated flows). This is
+/// not treated as terminal failure; callers should reset active turn tracking
+/// and keep consuming events.
+fn is_interrupted_turn_completion_without_error(
+    response_value: &Value,
+    expected_turn_id: Option<&str>,
+) -> bool {
+    if response_value.get("method").and_then(Value::as_str) != Some("turn/completed") {
+        return false;
+    }
+
+    let Some(expected_turn_id) = expected_turn_id else {
+        return false;
+    };
+
+    let Some(turn_id) = extract_turn_id_from_turn_completed_notification(response_value) else {
+        return false;
+    };
+    if turn_id != expected_turn_id {
+        return false;
+    }
+
+    let status = response_value
+        .get("params")
+        .and_then(|params| params.get("turn"))
+        .and_then(|turn| turn.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if status != "interrupted" {
+        return false;
+    }
+
+    extract_turn_completed_error_message(response_value).is_none()
+}
+
+/// Extracts a delegated turn id from `turn/completed` during handoff waits.
+///
+/// When a delegated flow emits `turn/completed` without a preceding
+/// `turn/started`, callers can adopt this turn id and continue normal
+/// completion parsing. The id is only extracted while waiting for a handoff
+/// completion and when no active turn id is currently tracked.
+fn extract_handoff_turn_id_from_completion(
+    response_value: &Value,
+    expected_turn_id: Option<&str>,
+    waiting_for_handoff_turn_completion: bool,
+) -> Option<String> {
+    if expected_turn_id.is_some() || !waiting_for_handoff_turn_completion {
+        return None;
+    }
+
+    if response_value.get("method").and_then(Value::as_str) != Some("turn/completed") {
+        return None;
+    }
+
+    extract_turn_id_from_turn_completed_notification(response_value).map(ToString::to_string)
 }
 
 /// Extracts an optional turn-level error message from `turn/completed`.
@@ -1174,6 +1305,94 @@ mod tests {
 
         // Assert
         assert_eq!(turn_result, Some(Err("turn interrupted".to_string())));
+    }
+
+    #[test]
+    fn interrupted_turn_completion_without_error_is_treated_as_handoff() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "active-turn",
+                    "status": "interrupted"
+                }
+            }
+        });
+
+        // Act
+        let is_handoff =
+            is_interrupted_turn_completion_without_error(&response_value, Some("active-turn"));
+
+        // Assert
+        assert!(is_handoff);
+    }
+
+    #[test]
+    fn interrupted_turn_completion_with_error_is_not_treated_as_handoff() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "active-turn",
+                    "status": "interrupted",
+                    "error": {"message": "turn interrupted"}
+                }
+            }
+        });
+
+        // Act
+        let is_handoff =
+            is_interrupted_turn_completion_without_error(&response_value, Some("active-turn"));
+
+        // Assert
+        assert!(!is_handoff);
+    }
+
+    #[test]
+    fn extract_handoff_turn_id_from_completion_returns_turn_id_when_waiting() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "delegate-turn",
+                    "status": "completed"
+                }
+            }
+        });
+
+        // Act
+        let delegated_turn_id =
+            extract_handoff_turn_id_from_completion(&response_value, None, true);
+
+        // Assert
+        assert_eq!(delegated_turn_id.as_deref(), Some("delegate-turn"));
+    }
+
+    #[test]
+    fn extract_handoff_turn_id_from_completion_returns_none_when_not_waiting_or_active() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "delegate-turn",
+                    "status": "completed"
+                }
+            }
+        });
+
+        // Act
+        let turn_id_without_wait =
+            extract_handoff_turn_id_from_completion(&response_value, None, false);
+        let turn_id_with_active_turn =
+            extract_handoff_turn_id_from_completion(&response_value, Some("active-turn"), true);
+
+        // Assert
+        assert_eq!(turn_id_without_wait, None);
+        assert_eq!(turn_id_with_active_turn, None);
     }
 
     #[test]
