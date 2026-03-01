@@ -18,7 +18,7 @@ Agentty organizes its interface into four tabs, accessible with `Tab`:
 | **Sessions** | List, create, and manage agent sessions. |
 | **Projects** | Switch between projects (git repositories). |
 | **Stats** | View usage statistics. |
-| **Settings** | Configure default smart/fast models and other preferences. |
+| **Settings** | Configure default smart/fast/review models and other preferences. |
 
 ## Session Lifecycle
 

@@ -333,6 +333,7 @@ mod tests {
         app.tabs.set(Tab::Settings);
         app.settings.next();
         app.settings.next();
+        app.settings.next();
 
         (app, base_dir)
     }

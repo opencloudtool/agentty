@@ -7,6 +7,7 @@ use crate::app::AppServices;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SettingName {
     DefaultFastModel,
+    DefaultReviewModel,
     DefaultSmartModel,
     OpenCommand,
     LastUsedModelAsDefault,
@@ -18,6 +19,7 @@ impl SettingName {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::DefaultFastModel => "DefaultFastModel",
+            Self::DefaultReviewModel => "DefaultReviewModel",
             Self::DefaultSmartModel => "DefaultSmartModel",
             Self::OpenCommand => "OpenCommand",
             Self::LastUsedModelAsDefault => "LastUsedModelAsDefault",
@@ -57,13 +59,15 @@ enum SettingControl {
 enum SettingRow {
     DefaultSmartModel,
     DefaultFastModel,
+    DefaultReviewModel,
     OpenCommand,
 }
 
 impl SettingRow {
-    const ALL: [Self; 3] = [
+    const ALL: [Self; 4] = [
         Self::DefaultSmartModel,
         Self::DefaultFastModel,
+        Self::DefaultReviewModel,
         Self::OpenCommand,
     ];
     const ROW_COUNT: usize = Self::ALL.len();
@@ -81,6 +85,7 @@ impl SettingRow {
         match self {
             Self::DefaultSmartModel => "Default Smart Model",
             Self::DefaultFastModel => "Default Fast Model",
+            Self::DefaultReviewModel => "Default Review Model",
             Self::OpenCommand => "Open Command",
         }
     }
@@ -88,7 +93,9 @@ impl SettingRow {
     /// Returns how this row is edited.
     fn control(self) -> SettingControl {
         match self {
-            Self::DefaultSmartModel | Self::DefaultFastModel => SettingControl::Selector,
+            Self::DefaultSmartModel | Self::DefaultFastModel | Self::DefaultReviewModel => {
+                SettingControl::Selector
+            }
             Self::OpenCommand => SettingControl::TextInput,
         }
     }
@@ -98,6 +105,7 @@ impl SettingRow {
         match self {
             Self::DefaultSmartModel => SettingName::DefaultSmartModel,
             Self::DefaultFastModel => SettingName::DefaultFastModel,
+            Self::DefaultReviewModel => SettingName::DefaultReviewModel,
             Self::OpenCommand => SettingName::OpenCommand,
         }
     }
@@ -107,6 +115,8 @@ impl SettingRow {
 pub struct SettingsManager {
     /// Default fast model used by fast-path workflows.
     pub default_fast_model: AgentModel,
+    /// Default model used by focused-review workflows.
+    pub default_review_model: AgentModel,
     /// Default smart model used when creating new sessions.
     pub default_smart_model: AgentModel,
     /// Optional command run in tmux when opening a session worktree.
@@ -124,6 +134,10 @@ impl SettingsManager {
             load_default_smart_model_setting(services, AgentKind::Gemini.default_model()).await;
 
         let default_fast_model = load_model_setting(services, SettingName::DefaultFastModel)
+            .await
+            .unwrap_or(default_smart_model);
+
+        let default_review_model = load_model_setting(services, SettingName::DefaultReviewModel)
             .await
             .unwrap_or(default_smart_model);
 
@@ -147,6 +161,7 @@ impl SettingsManager {
 
         Self {
             default_fast_model,
+            default_review_model,
             default_smart_model,
             open_command,
             table_state,
@@ -304,6 +319,7 @@ impl SettingsManager {
                 }
             }
             SettingRow::DefaultFastModel => self.default_fast_model.as_str().to_string(),
+            SettingRow::DefaultReviewModel => self.default_review_model.as_str().to_string(),
             SettingRow::OpenCommand => {
                 if self.is_editing_text_input_for(row) {
                     format!("{}|", self.open_command)
@@ -329,6 +345,9 @@ impl SettingsManager {
             SettingName::DefaultFastModel => {
                 self.cycle_default_fast_model_selector(services).await;
             }
+            SettingName::DefaultReviewModel => {
+                self.cycle_default_review_model_selector(services).await;
+            }
             SettingName::OpenCommand
             | SettingName::LastUsedModelAsDefault
             | SettingName::LongestSessionDurationSeconds => {}
@@ -349,6 +368,7 @@ impl SettingsManager {
                     .await;
             }
             SettingName::DefaultFastModel
+            | SettingName::DefaultReviewModel
             | SettingName::DefaultSmartModel
             | SettingName::LastUsedModelAsDefault
             | SettingName::LongestSessionDurationSeconds => {}
@@ -387,6 +407,13 @@ impl SettingsManager {
         self.persist_default_fast_model_setting(services).await;
     }
 
+    /// Cycles the review-model selector through all explicit models.
+    async fn cycle_default_review_model_selector(&mut self, services: &AppServices) {
+        self.default_review_model = next_model(self.default_review_model);
+
+        self.persist_default_review_model_setting(services).await;
+    }
+
     /// Persists smart-model selector values (`DefaultSmartModel` and
     /// `LastUsedModelAsDefault`).
     async fn persist_default_smart_model_settings(&self, services: &AppServices) {
@@ -415,6 +442,17 @@ impl SettingsManager {
             .upsert_setting(
                 SettingName::DefaultFastModel.as_str(),
                 self.default_fast_model.as_str(),
+            )
+            .await;
+    }
+
+    /// Persists the review-model selector value (`DefaultReviewModel`).
+    async fn persist_default_review_model_setting(&self, services: &AppServices) {
+        let _ = services
+            .db()
+            .upsert_setting(
+                SettingName::DefaultReviewModel.as_str(),
+                self.default_review_model.as_str(),
             )
             .await;
     }
@@ -476,6 +514,7 @@ mod tests {
 
         SettingsManager {
             default_fast_model: AgentKind::Gemini.default_model(),
+            default_review_model: AgentKind::Gemini.default_model(),
             default_smart_model: AgentKind::Gemini.default_model(),
             open_command: String::new(),
             table_state,
@@ -504,6 +543,17 @@ mod tests {
 
         // Assert
         assert_eq!(setting_name, "DefaultSmartModel");
+    }
+
+    #[test]
+    fn setting_name_as_str_returns_default_review_model() {
+        // Arrange
+
+        // Act
+        let setting_name = SettingName::DefaultReviewModel.as_str();
+
+        // Assert
+        assert_eq!(setting_name, "DefaultReviewModel");
     }
 
     #[test]
@@ -549,7 +599,7 @@ mod tests {
         manager.previous();
 
         // Assert
-        assert_eq!(manager.table_state.selected(), Some(2));
+        assert_eq!(manager.table_state.selected(), Some(3));
     }
 
     #[test]
@@ -565,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_rows_include_smart_fast_model_and_open_command() {
+    fn settings_rows_include_smart_fast_review_model_and_open_command() {
         // Arrange
         let manager = new_settings_manager();
 
@@ -573,10 +623,11 @@ mod tests {
         let rows = manager.settings_rows();
 
         // Assert
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].0, "Default Smart Model");
         assert_eq!(rows[1].0, "Default Fast Model");
-        assert_eq!(rows[2].0, "Open Command");
+        assert_eq!(rows[2].0, "Default Review Model");
+        assert_eq!(rows[3].0, "Open Command");
     }
 
     #[test]
@@ -604,7 +655,7 @@ mod tests {
         let rows = manager.settings_rows();
 
         // Assert
-        assert_eq!(rows[2].1, "<empty>");
+        assert_eq!(rows[3].1, "<empty>");
     }
 
     #[test]
@@ -618,7 +669,7 @@ mod tests {
         let rows = manager.settings_rows();
 
         // Assert
-        assert_eq!(rows[2].1, "http://localhost:5173|");
+        assert_eq!(rows[3].1, "http://localhost:5173|");
     }
 
     #[test]
@@ -645,5 +696,18 @@ mod tests {
 
         // Assert
         assert_eq!(rows[1].1, AgentModel::Gpt52Codex.as_str());
+    }
+
+    #[test]
+    fn settings_rows_show_default_review_model_value() {
+        // Arrange
+        let mut manager = new_settings_manager();
+        manager.default_review_model = AgentModel::ClaudeOpus46;
+
+        // Act
+        let rows = manager.settings_rows();
+
+        // Assert
+        assert_eq!(rows[2].1, AgentModel::ClaudeOpus46.as_str());
     }
 }

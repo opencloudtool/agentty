@@ -1285,6 +1285,56 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentModel;
+
+    #[tokio::test]
+    async fn test_setting_round_trip_supports_default_smart_fast_and_review_models() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+
+        database
+            .upsert_setting("DefaultSmartModel", AgentModel::Gemini31ProPreview.as_str())
+            .await
+            .expect("failed to persist default smart model");
+        database
+            .upsert_setting("DefaultFastModel", AgentModel::Gpt52Codex.as_str())
+            .await
+            .expect("failed to persist default fast model");
+        database
+            .upsert_setting("DefaultReviewModel", AgentModel::ClaudeOpus46.as_str())
+            .await
+            .expect("failed to persist default review model");
+
+        // Act
+        let default_smart_model = database
+            .get_setting("DefaultSmartModel")
+            .await
+            .expect("failed to load default smart model");
+        let default_fast_model = database
+            .get_setting("DefaultFastModel")
+            .await
+            .expect("failed to load default fast model");
+        let default_review_model = database
+            .get_setting("DefaultReviewModel")
+            .await
+            .expect("failed to load default review model");
+
+        // Assert
+        assert_eq!(
+            default_smart_model,
+            Some(AgentModel::Gemini31ProPreview.as_str().to_string())
+        );
+        assert_eq!(
+            default_fast_model,
+            Some(AgentModel::Gpt52Codex.as_str().to_string())
+        );
+        assert_eq!(
+            default_review_model,
+            Some(AgentModel::ClaudeOpus46.as_str().to_string())
+        );
+    }
 
     #[tokio::test]
     async fn test_load_all_time_model_usage_keeps_rows_for_deleted_sessions() {
