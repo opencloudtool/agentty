@@ -14,17 +14,6 @@ const EMPTY_PREVIEW_MESSAGE: &str = "No files found in this worktree.";
 const PATH_SEPARATOR: char = '/';
 const ROOT_DIRECTORY_KEY: &str = "";
 
-/// Snapshot of project-explorer mode state used for async-safe transitions.
-#[derive(Clone)]
-struct ProjectExplorerModeState {
-    all_entries: Vec<FileEntry>,
-    entries: Vec<FileEntry>,
-    expanded_directories: BTreeSet<String>,
-    return_to_list: bool,
-    selected_index: usize,
-    session_id: String,
-}
-
 /// Opens project explorer mode for `session_id` using gitignore-aware file
 /// indexing.
 pub(crate) async fn open_for_session(app: &mut App, session_id: &str, return_to_list: bool) {
@@ -292,112 +281,89 @@ fn project_explorer_origin(app: &App) -> Option<(bool, String)> {
 
 /// Updates selected index and refreshes preview content.
 async fn move_selection(app: &mut App, offset: isize) {
-    let Some(state) = project_explorer_mode_state(app) else {
+    let Some((session_id, next_index)) = next_selection_context(app, offset) else {
         return;
     };
 
-    let Some(next_state) = next_selection(&state, offset) else {
-        return;
-    };
-
-    let Some(session_folder) = session_folder(app, &next_state.session_id) else {
+    let Some(session_folder) = session_folder(app, &session_id) else {
         app.mode = AppMode::List;
 
         return;
     };
 
-    let preview = load_preview(
-        session_folder,
-        next_state.entries.get(next_state.selected_index).cloned(),
-    )
-    .await;
-
-    app.mode = AppMode::ProjectExplorer {
-        all_entries: next_state.all_entries,
-        entries: next_state.entries,
-        expanded_directories: next_state.expanded_directories,
-        preview,
-        return_to_list: next_state.return_to_list,
-        scroll_offset: 0,
-        selected_index: next_state.selected_index,
-        session_id: next_state.session_id,
-    };
+    let selected_entry = project_explorer_entry_by_index(app, next_index);
+    let preview = load_preview(session_folder, selected_entry).await;
+    apply_preview_and_selection(app, &session_id, next_index, preview);
 }
 
-/// Computes the next explorer selection target.
-fn next_selection(
-    state: &ProjectExplorerModeState,
-    offset: isize,
-) -> Option<ProjectExplorerModeState> {
-    if state.entries.is_empty() {
+/// Returns the next selection target for explorer navigation.
+fn next_selection_context(app: &App, offset: isize) -> Option<(String, usize)> {
+    let AppMode::ProjectExplorer {
+        entries,
+        selected_index,
+        session_id,
+        ..
+    } = &app.mode
+    else {
+        return None;
+    };
+
+    if entries.is_empty() {
         return None;
     }
 
-    let current_index = state.selected_index;
+    let current_index = *selected_index;
     let next_index = if offset.is_negative() {
         current_index.saturating_sub(offset.unsigned_abs())
     } else {
         current_index
             .saturating_add(offset.unsigned_abs())
-            .min(state.entries.len().saturating_sub(1))
+            .min(entries.len().saturating_sub(1))
     };
 
     if next_index == current_index {
         return None;
     }
 
-    let mut next_state = state.clone();
-    next_state.selected_index = next_index;
-
-    Some(next_state)
+    Some((session_id.clone(), next_index))
 }
 
 /// Activates the selected row: toggles directory expansion or refreshes file
 /// preview.
 async fn activate_selected_entry(app: &mut App) {
-    let Some(mut state) = project_explorer_mode_state(app) else {
-        return;
-    };
-
-    let Some(selected_entry) = selected_entry(&state) else {
+    let Some((session_id, selected_entry)) = selected_entry_context(app) else {
         return;
     };
 
     if selected_entry.is_dir {
-        state.expanded_directories =
-            toggled_directory_paths(&state.expanded_directories, selected_entry.path.as_str());
-        state.entries = build_visible_entries(&state.all_entries, &state.expanded_directories);
-        state.selected_index =
-            selected_index_for_entry_path(&state.entries, selected_entry.path.as_str());
+        toggle_directory_expansion(app, selected_entry.path.as_str());
     }
 
-    let Some(session_folder) = session_folder(app, &state.session_id) else {
+    let Some(session_folder) = session_folder(app, &session_id) else {
         app.mode = AppMode::List;
 
         return;
     };
 
-    let preview = load_preview(
-        session_folder,
-        state.entries.get(state.selected_index).cloned(),
-    )
-    .await;
-
-    app.mode = AppMode::ProjectExplorer {
-        all_entries: state.all_entries,
-        entries: state.entries,
-        expanded_directories: state.expanded_directories,
-        preview,
-        return_to_list: state.return_to_list,
-        scroll_offset: 0,
-        selected_index: state.selected_index,
-        session_id: state.session_id,
-    };
+    let selected_entry = project_explorer_selected_entry(app);
+    let selected_index = project_explorer_selected_index(app).unwrap_or_default();
+    let preview = load_preview(session_folder, selected_entry).await;
+    apply_preview_and_selection(app, &session_id, selected_index, preview);
 }
 
-/// Returns the selected row entry from current state.
-fn selected_entry(state: &ProjectExplorerModeState) -> Option<FileEntry> {
-    state.entries.get(state.selected_index).cloned()
+/// Returns selected-row context required before async preview loading.
+fn selected_entry_context(app: &App) -> Option<(String, FileEntry)> {
+    let AppMode::ProjectExplorer {
+        entries,
+        selected_index,
+        session_id,
+        ..
+    } = &app.mode
+    else {
+        return None;
+    };
+
+    Some((session_id.clone(), entries.get(*selected_index)?.clone()))
 }
 
 /// Returns the next expanded-directory set after toggling `directory_path`.
@@ -436,29 +402,75 @@ fn selected_index_for_entry_path(entries: &[FileEntry], target_path: &str) -> us
         .unwrap_or_default()
 }
 
-/// Returns a cloned snapshot of project explorer mode fields.
-fn project_explorer_mode_state(app: &App) -> Option<ProjectExplorerModeState> {
+/// Toggles one directory expansion state and rebuilds visible tree rows.
+fn toggle_directory_expansion(app: &mut App, directory_path: &str) {
     let AppMode::ProjectExplorer {
         all_entries,
         entries,
         expanded_directories,
-        return_to_list,
         selected_index,
-        session_id,
         ..
-    } = &app.mode
+    } = &mut app.mode
     else {
+        return;
+    };
+
+    *expanded_directories = toggled_directory_paths(expanded_directories, directory_path);
+    *entries = build_visible_entries(all_entries, expanded_directories);
+    *selected_index = selected_index_for_entry_path(entries, directory_path);
+}
+
+/// Returns the selected entry index for project explorer mode.
+fn project_explorer_selected_index(app: &App) -> Option<usize> {
+    let AppMode::ProjectExplorer { selected_index, .. } = &app.mode else {
         return None;
     };
 
-    Some(ProjectExplorerModeState {
-        all_entries: all_entries.clone(),
-        entries: entries.clone(),
-        expanded_directories: expanded_directories.clone(),
-        return_to_list: *return_to_list,
-        selected_index: *selected_index,
-        session_id: session_id.clone(),
-    })
+    Some(*selected_index)
+}
+
+/// Returns one visible entry by row index from project explorer mode.
+fn project_explorer_entry_by_index(app: &App, index: usize) -> Option<FileEntry> {
+    let AppMode::ProjectExplorer { entries, .. } = &app.mode else {
+        return None;
+    };
+
+    entries.get(index).cloned()
+}
+
+/// Returns the currently selected entry from project explorer mode.
+fn project_explorer_selected_entry(app: &App) -> Option<FileEntry> {
+    let selected_index = project_explorer_selected_index(app)?;
+
+    project_explorer_entry_by_index(app, selected_index)
+}
+
+/// Applies preview text and selection updates if explorer still targets
+/// `session_id`.
+fn apply_preview_and_selection(
+    app: &mut App,
+    session_id: &str,
+    selected_index: usize,
+    preview: String,
+) {
+    let AppMode::ProjectExplorer {
+        preview: current_preview,
+        scroll_offset,
+        selected_index: current_selected_index,
+        session_id: current_session_id,
+        ..
+    } = &mut app.mode
+    else {
+        return;
+    };
+
+    if current_session_id != session_id {
+        return;
+    }
+
+    *current_preview = preview;
+    *current_selected_index = selected_index;
+    *scroll_offset = 0;
 }
 
 /// Updates preview scroll position by `offset` lines.
