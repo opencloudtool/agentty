@@ -15,32 +15,27 @@ Required structure:
 
 ## Focused Review
 
-### Key Diff Points
+### High-Level Overview of Changes
 
-- Think like a human reviewer: first identify what changed, then explain why each change matters.
-- List only the most material changes from the diff (not every hunk).
-- For each bullet, include:
-  - what changed (file + behavior),
-  - project impact (runtime behavior, UX, reliability, maintainability, performance, security, or data correctness),
-  - risk level (`High`, `Medium`, or `Low`) with a short reason.
+- Summarize the most important changes in plain language.
+- Focus on what changed at the system or feature level rather than line-by-line edits.
 - If there are no material changes, write `- None`.
 
-### High Risk Changes
+### Changed Files and Why
 
-- Include only items from `Key Diff Points` that are truly high risk and could break behavior, data integrity, security, or reliability.
-- If none, write `- None`.
+- List only files with meaningful changes.
+- For each file, include:
+  - file path,
+  - what changed,
+  - why the change was made (intent/problem addressed).
+- If no meaningful files changed, write `- None`.
 
-### Critical Verification
+### Project Impact
 
-- Provide short, concrete checks/tests tied to the key diff points.
-- Prioritize checks that would catch the most damaging regressions first.
-- If none, write `- None`.
-
-### Follow-up Questions
-
-- List missing context/questions that would reduce uncertainty in the impact/risk assessment.
-- Ask only questions that would materially change approval confidence.
-- If none, write `- None`.
+- Explain how the changes affect the project overall.
+- Cover practical effects such as behavior, reliability, maintainability, performance, security, or developer workflow.
+- If impact is unclear, state the uncertainty briefly.
+- If there is no notable impact, write `- None`.
 
 Existing session summary context (may be empty):
 {{ session_summary }}
