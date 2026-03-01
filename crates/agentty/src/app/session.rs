@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::app::{AppServices, SessionState};
 use crate::domain::agent::AgentModel;
-use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session, Status};
+use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session};
 
 mod access;
 mod codex_usage;
@@ -20,6 +20,7 @@ mod lifecycle;
 mod load;
 mod merge;
 mod refresh;
+mod review;
 mod task;
 mod worker;
 
@@ -137,16 +138,6 @@ impl SessionManager {
         )
     }
 
-    /// Collects session ids that should replay persisted transcript output on
-    /// the next reply after app startup.
-    fn startup_history_replay_set(sessions: &[Session]) -> HashSet<String> {
-        sessions
-            .iter()
-            .filter(|session| session.status == Status::Review)
-            .map(|session| session.id.clone())
-            .collect()
-    }
-
     /// Applies reducer updates after session agent/model changes are
     /// persisted.
     ///
@@ -252,6 +243,7 @@ mod tests {
         }
     }
 
+    /// Builds a merge-focused mock git client for no-op merge scenarios.
     fn create_mock_git_client_for_successful_noop_merges(
         expected_merge_count: usize,
         repo_root: PathBuf,
@@ -293,64 +285,190 @@ mod tests {
         mock
     }
 
+    /// Builds a permissive mock git client for session tests.
+    ///
+    /// The mock returns successful defaults and performs lightweight
+    /// filesystem side effects for worktree creation/removal.
+    fn create_default_mock_git_client(repo_root: PathBuf) -> git::MockGitClient {
+        let mut mock = git::MockGitClient::new();
+        let find_repo_root = repo_root.clone();
+
+        mock.expect_detect_git_info()
+            .times(0..)
+            .returning(|_| Box::pin(async { Some("main".to_string()) }));
+        mock.expect_find_git_repo_root()
+            .times(0..)
+            .returning(move |_| {
+                let repo_root = find_repo_root.clone();
+                Box::pin(async move { Some(repo_root) })
+            });
+        mock.expect_create_worktree()
+            .times(0..)
+            .returning(|_, worktree_path, _, _| {
+                Box::pin(async move {
+                    tokio::fs::create_dir_all(&worktree_path)
+                        .await
+                        .map_err(|error| format!("Failed to create mock worktree directory: {error}"))?;
+                    tokio::fs::create_dir_all(worktree_path.join(SESSION_DATA_DIR))
+                        .await
+                        .map_err(|error| format!("Failed to create mock session data directory: {error}"))?;
+
+                    Ok(())
+                })
+            });
+        mock.expect_remove_worktree()
+            .times(0..)
+            .returning(|worktree_path| {
+                Box::pin(async move {
+                    let _ = tokio::fs::remove_dir_all(worktree_path).await;
+
+                    Ok(())
+                })
+            });
+        mock.expect_squash_merge_diff()
+            .times(0..)
+            .returning(|_, _, _| Box::pin(async { Ok(String::new()) }));
+        mock.expect_squash_merge()
+            .times(0..)
+            .returning(|_, _, _, _| Box::pin(async { Ok(git::SquashMergeOutcome::Committed) }));
+        mock.expect_rebase()
+            .times(0..)
+            .returning(|_, _| Box::pin(async { Ok(()) }));
+        mock.expect_rebase_start()
+            .times(0..)
+            .returning(|_, _| Box::pin(async { Ok(git::RebaseStepResult::Completed) }));
+        mock.expect_rebase_continue()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(git::RebaseStepResult::Completed) }));
+        mock.expect_abort_rebase()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock.expect_is_rebase_in_progress()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock.expect_has_unmerged_paths()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock.expect_list_staged_conflict_marker_files()
+            .times(0..)
+            .returning(|_, _| Box::pin(async { Ok(Vec::new()) }));
+        mock.expect_list_conflicted_files()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(Vec::new()) }));
+        mock.expect_commit_all()
+            .times(0..)
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+        mock.expect_commit_all_preserving_single_commit()
+            .times(0..)
+            .returning(|_, _, _| {
+                Box::pin(async { Err("Nothing to commit: no changes detected".to_string()) })
+            });
+        mock.expect_stage_all()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock.expect_head_short_hash()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok("abc1234".to_string()) }));
+        mock.expect_delete_branch()
+            .times(0..)
+            .returning(|_, _| Box::pin(async { Ok(()) }));
+        mock.expect_diff()
+            .times(0..)
+            .returning(|_, _| Box::pin(async { Ok(String::new()) }));
+        mock.expect_is_worktree_clean()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(true) }));
+        mock.expect_pull_rebase()
+            .times(0..)
+            .returning(|_| {
+                Box::pin(async { Err("No upstream branch configured for pull".to_string()) })
+            });
+        mock.expect_push_current_branch()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock.expect_fetch_remote()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock.expect_get_ahead_behind()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok((0, 0)) }));
+        mock.expect_list_upstream_commit_titles()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(Vec::new()) }));
+        mock.expect_list_local_commit_titles()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(Vec::new()) }));
+        mock.expect_repo_url()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok("https://example.invalid/repo.git".to_string()) }));
+        mock.expect_main_repo_root()
+            .times(0..)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Ok(repo_root) })
+            });
+
+        mock
+    }
+
+    /// Replaces app-level git dependencies with the provided mock client.
+    fn install_mock_git_client(app: &mut App, mock_git_client: git::MockGitClient) {
+        let mock_git_client: Arc<dyn crate::infra::git::GitClient> = Arc::new(mock_git_client);
+        let base_path = app.services.base_path().to_path_buf();
+        let db = app.services.db().clone();
+        let event_sender = app.services.event_sender();
+        let app_server_client = app.services.app_server_client();
+
+        app.services = crate::app::AppServices::new(
+            base_path,
+            db,
+            event_sender,
+            Arc::clone(&mock_git_client),
+            app_server_client,
+        );
+        app.sessions.git_client = mock_git_client;
+    }
+
+    /// Builds a test app with a caller-provided database and git context.
+    async fn new_test_app_with_db(
+        path: PathBuf,
+        working_dir: PathBuf,
+        git_branch: Option<String>,
+        db: Database,
+    ) -> App {
+        let mut app = App::new(path, working_dir.clone(), git_branch, db, mock_app_server()).await;
+        let mock_git_client = create_default_mock_git_client(working_dir);
+        install_mock_git_client(&mut app, mock_git_client);
+
+        app
+    }
+
+    /// Builds a test app rooted at `path` with no branch-specific git context.
     async fn new_test_app(path: PathBuf) -> App {
         let working_dir = PathBuf::from("/tmp/test");
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        App::new(path, working_dir, None, db, mock_app_server()).await
+
+        new_test_app_with_db(path, working_dir, None, db).await
     }
 
-    fn setup_test_git_repo(path: &Path) {
-        Command::new("git")
-            .args(["init"])
-            .current_dir(path)
-            .output()
-            .expect("git init failed");
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(path)
-            .output()
-            .expect("git config failed");
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(path)
-            .output()
-            .expect("git config failed");
-        Command::new("git")
-            .args(["config", "commit.gpgsign", "false"])
-            .current_dir(path)
-            .output()
-            .expect("git config failed");
-        std::fs::write(path.join("README.md"), "test").expect("write failed");
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(path)
-            .output()
-            .expect("git add failed");
-        Command::new("git")
-            .args(["commit", "-m", "Initial commit"])
-            .current_dir(path)
-            .output()
-            .expect("git commit failed");
-        Command::new("git")
-            .args(["branch", "-M", "main"])
-            .current_dir(path)
-            .output()
-            .expect("git branch failed");
-    }
-
+    /// Builds a test app rooted at `path` with mock git branch context.
     async fn new_test_app_with_git(path: &Path) -> App {
-        setup_test_git_repo(path);
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        App::new(
+        new_test_app_with_git_and_db(path, db).await
+    }
+
+    /// Builds a test app rooted at `path` with mock git branch context and a
+    /// caller-provided database handle.
+    async fn new_test_app_with_git_and_db(path: &Path, db: Database) -> App {
+        new_test_app_with_db(
             path.to_path_buf(),
             path.to_path_buf(),
             Some("main".to_string()),
             db,
-            mock_app_server(),
         )
         .await
     }
@@ -653,14 +771,9 @@ mod tests {
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let app = App::new(
-            dir.path().to_path_buf(),
-            working_dir,
-            Some("main".to_string()),
-            db,
-            mock_app_server(),
-        )
-        .await;
+        let app =
+            new_test_app_with_db(dir.path().to_path_buf(), working_dir, Some("main".to_string()), db)
+                .await;
 
         // Act
         let branch = app.git_branch();
@@ -927,18 +1040,10 @@ mod tests {
      {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mut app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db.clone(),
-            mock_app_server(),
-        )
-        .await;
+        let mut app = new_test_app_with_git_and_db(dir.path(), db.clone()).await;
         app.services
             .db()
             .upsert_setting(SettingName::LastUsedModelAsDefault.as_str(), "true")
@@ -960,14 +1065,7 @@ mod tests {
             .await
             .expect("failed to load setting");
         drop(app);
-        let mut restarted_app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db,
-            mock_app_server(),
-        )
-        .await;
+        let mut restarted_app = new_test_app_with_git_and_db(dir.path(), db).await;
         let second_session_id = restarted_app
             .create_session()
             .await
@@ -1329,12 +1427,11 @@ mod tests {
             .expect("failed to update output");
 
         // Act
-        let app = App::new(
+        let app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
             db,
-            mock_app_server(),
         )
         .await;
 
@@ -1352,7 +1449,6 @@ mod tests {
     {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
@@ -1384,43 +1480,18 @@ mod tests {
         )
         .await
         .expect("failed to upsert default smart model setting");
-        sqlx::query(
-            r"
-    UPDATE session
-    SET updated_at = ?
-    WHERE id = ?
-    ",
-        )
-        .bind(1_i64)
-        .bind("alpha0001")
-        .execute(db.pool())
-        .await
-        .expect("failed to update alpha0001 timestamp");
-        sqlx::query(
-            r"
-    UPDATE session
-    SET updated_at = ?
-    WHERE id = ?
-    ",
-        )
-        .bind(2_i64)
-        .bind("beta00002")
-        .execute(db.pool())
-        .await
-        .expect("failed to update beta00002 timestamp");
+        db.update_session_updated_at("alpha0001", 1_i64)
+            .await
+            .expect("failed to update alpha0001 timestamp");
+        db.update_session_updated_at("beta00002", 2_i64)
+            .await
+            .expect("failed to update beta00002 timestamp");
         for session_id in ["alpha0001", "beta00002"] {
             let session_dir = session_folder(dir.path(), session_id);
             let data_dir = session_dir.join(SESSION_DATA_DIR);
             std::fs::create_dir_all(&data_dir).expect("failed to create session data dir");
         }
-        let mut app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db,
-            mock_app_server(),
-        )
-        .await;
+        let mut app = new_test_app_with_git_and_db(dir.path(), db).await;
 
         // Act
         let created_session_id = app
@@ -1462,30 +1533,12 @@ mod tests {
         .await
         .expect("failed to insert beta0000");
 
-        sqlx::query(
-            r"
-    UPDATE session
-    SET updated_at = ?
-    WHERE id = ?
-    ",
-        )
-        .bind(1_i64)
-        .bind("alpha000")
-        .execute(db.pool())
-        .await
-        .expect("failed to update alpha000 timestamp");
-        sqlx::query(
-            r"
-    UPDATE session
-    SET updated_at = ?
-    WHERE id = ?
-    ",
-        )
-        .bind(2_i64)
-        .bind("beta0000")
-        .execute(db.pool())
-        .await
-        .expect("failed to update beta0000 timestamp");
+        db.update_session_updated_at("alpha000", 1_i64)
+            .await
+            .expect("failed to update alpha000 timestamp");
+        db.update_session_updated_at("beta0000", 2_i64)
+            .await
+            .expect("failed to update beta0000 timestamp");
 
         for session_id in ["alpha000", "beta0000"] {
             let session_dir = session_folder(dir.path(), session_id);
@@ -1494,12 +1547,11 @@ mod tests {
         }
 
         // Act
-        let app = App::new(
+        let app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
             db,
-            mock_app_server(),
         )
         .await;
 
@@ -1537,38 +1589,21 @@ mod tests {
         let day_key_one = 10_i64;
         let day_key_two = 11_i64;
 
-        sqlx::query("UPDATE session SET created_at = ? WHERE id = ?")
-            .bind(day_key_one * seconds_per_day + 10)
-            .bind("alpha000")
-            .execute(db.pool())
+        db.update_session_created_at("alpha000", day_key_one * seconds_per_day + 10)
             .await
             .expect("failed to update alpha000 created_at");
-        sqlx::query("UPDATE session SET created_at = ? WHERE id = ?")
-            .bind(day_key_one * seconds_per_day + 600)
-            .bind("beta0000")
-            .execute(db.pool())
+        db.update_session_created_at("beta0000", day_key_one * seconds_per_day + 600)
             .await
             .expect("failed to update beta0000 created_at");
-        sqlx::query("UPDATE session SET created_at = ? WHERE id = ?")
-            .bind(day_key_two * seconds_per_day + 50)
-            .bind("gamma000")
-            .execute(db.pool())
+        db.update_session_created_at("gamma000", day_key_two * seconds_per_day + 50)
             .await
             .expect("failed to update gamma000 created_at");
-        sqlx::query("DELETE FROM session_activity")
-            .execute(db.pool())
+        db.clear_session_activity()
             .await
             .expect("failed to clear session activity");
-        sqlx::query(
-            r"
-INSERT INTO session_activity (session_id, created_at)
-SELECT id, created_at
-FROM session
-",
-        )
-        .execute(db.pool())
-        .await
-        .expect("failed to backfill session activity from session rows");
+        db.backfill_session_activity_from_sessions()
+            .await
+            .expect("failed to backfill session activity from session rows");
         let working_dir = PathBuf::from("/tmp/test");
         let mut handles: HashMap<String, SessionHandles> = HashMap::new();
         let mut expected_activity_by_day: BTreeMap<i64, u32> = BTreeMap::new();
@@ -1665,37 +1700,22 @@ FROM session
         db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
             .await
             .expect("failed to insert beta0000");
-        sqlx::query(
-            r"
-    UPDATE session
-    SET updated_at = 1
-    WHERE id = 'alpha000'
-    ",
-        )
-        .execute(db.pool())
-        .await
-        .expect("failed to set alpha000 timestamp");
-        sqlx::query(
-            r"
-    UPDATE session
-    SET updated_at = 2
-    WHERE id = 'beta0000'
-    ",
-        )
-        .execute(db.pool())
-        .await
-        .expect("failed to set beta0000 timestamp");
+        db.update_session_updated_at("alpha000", 1)
+            .await
+            .expect("failed to set alpha000 timestamp");
+        db.update_session_updated_at("beta0000", 2)
+            .await
+            .expect("failed to set beta0000 timestamp");
         for session_id in ["alpha000", "beta0000"] {
             let session_dir = session_folder(dir.path(), session_id);
             let data_dir = session_dir.join(SESSION_DATA_DIR);
             std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
         }
-        let mut app = App::new(
+        let mut app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
             db,
-            mock_app_server(),
         )
         .await;
         app.sessions.table_state.select(Some(1));
@@ -1741,37 +1761,22 @@ FROM session
         db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
             .await
             .expect("failed to insert beta0000");
-        sqlx::query(
-            r"
-    UPDATE session
-    SET updated_at = 1
-    WHERE id = 'alpha000'
-    ",
-        )
-        .execute(db.pool())
-        .await
-        .expect("failed to set alpha000 timestamp");
-        sqlx::query(
-            r"
-    UPDATE session
-    SET updated_at = 2
-    WHERE id = 'beta0000'
-    ",
-        )
-        .execute(db.pool())
-        .await
-        .expect("failed to set beta0000 timestamp");
+        db.update_session_updated_at("alpha000", 1)
+            .await
+            .expect("failed to set alpha000 timestamp");
+        db.update_session_updated_at("beta0000", 2)
+            .await
+            .expect("failed to set beta0000 timestamp");
         for session_id in ["alpha000", "beta0000"] {
             let session_dir = session_folder(dir.path(), session_id);
             let data_dir = session_dir.join(SESSION_DATA_DIR);
             std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
         }
-        let mut app = App::new(
+        let mut app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
             db,
-            mock_app_server(),
         )
         .await;
         let selected_session_id = app.sessions.sessions[1].id.clone();
@@ -1822,12 +1827,11 @@ FROM session
         let session_dir = session_folder(dir.path(), "alpha000");
         let data_dir = session_dir.join(SESSION_DATA_DIR);
         std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-        let mut app = App::new(
+        let mut app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
             db,
-            mock_app_server(),
         )
         .await;
         let existing_limits = codex_usage_limits_fixture(42);
@@ -1874,12 +1878,11 @@ FROM session
         .expect("failed to insert");
 
         // Act
-        let app = App::new(
+        let app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
             db,
-            mock_app_server(),
         )
         .await;
 
@@ -1911,12 +1914,11 @@ FROM session
         .expect("failed to insert");
 
         // Act
-        let app = App::new(
+        let app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             None,
             db,
-            mock_app_server(),
         )
         .await;
 
@@ -2139,18 +2141,10 @@ FROM session
     async fn test_spawn_integration() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mut app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db,
-            mock_app_server(),
-        )
-        .await;
+        let mut app = new_test_app_with_git_and_db(dir.path(), db).await;
 
         // One channel handles both turns; a counter distinguishes them so the
         // correct delta text is emitted and mode assertions are made per turn.
@@ -2211,6 +2205,7 @@ FROM session
             .await;
         done_rx.recv().await.expect("first turn completion signal");
         wait_for_status(&mut app, &session_id, Status::Review).await;
+        wait_for_output_contains(&mut app, &session_id, "SpawnInit", 200).await;
 
         // Assert
         {
@@ -2229,6 +2224,7 @@ FROM session
             .reply(&app.services, &session_id, "SpawnReply")
             .await;
         done_rx.recv().await.expect("second turn completion signal");
+        wait_for_output_contains(&mut app, &session_id, "--resume", 200).await;
         wait_for_status(&mut app, &session_id, Status::Review).await;
 
         // Assert
@@ -2256,18 +2252,10 @@ FROM session
     async fn test_reply_with_backend_replays_history_once_after_model_switch() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mut app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db,
-            mock_app_server(),
-        )
-        .await;
+        let mut app = new_test_app_with_git_and_db(dir.path(), db).await;
 
         let session_id = app
             .create_session()
@@ -2384,19 +2372,11 @@ FROM session
     async fn test_reply_with_backend_replays_history_after_app_restart_for_review_session() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
 
-        let mut first_app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db.clone(),
-            mock_app_server(),
-        )
-        .await;
+        let mut first_app = new_test_app_with_git_and_db(dir.path(), db.clone()).await;
         let session_id = first_app
             .create_session()
             .await
@@ -2425,14 +2405,7 @@ FROM session
         assert!(first_run_output.contains("mock-start"));
         drop(first_app);
 
-        let mut resumed_app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db,
-            mock_app_server(),
-        )
-        .await;
+        let mut resumed_app = new_test_app_with_git_and_db(dir.path(), db).await;
         let resumed_session = resumed_app
             .sessions
             .sessions
@@ -2491,14 +2464,7 @@ FROM session
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mut app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db,
-            mock_app_server(),
-        )
-        .await;
+        let mut app = new_test_app_with_git_and_db(dir.path(), db).await;
         let repo_root = dir.path().to_path_buf();
         let mut mock_git_client = git::MockGitClient::new();
         mock_git_client
@@ -2524,16 +2490,7 @@ FROM session
             .expect_head_short_hash()
             .times(1)
             .returning(|_| Box::pin(async { Ok("abc1234".to_string()) }));
-        let base_path = app.services.base_path().to_path_buf();
-        let db = app.services.db().clone();
-        let event_sender = app.services.event_sender();
-        app.services = crate::app::AppServices::new(
-            base_path,
-            db,
-            event_sender,
-            Arc::new(mock_git_client),
-            mock_app_server(),
-        );
+        install_mock_git_client(&mut app, mock_git_client);
 
         // Create a session that writes a file so commit_all has something to commit
         let mut mock = MockAgentBackend::new();
@@ -2576,97 +2533,94 @@ FROM session
     async fn test_commit_changes_amends_existing_session_commit() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app_with_git(dir.path()).await;
-        app.create_session()
-            .await
-            .expect("failed to create session worktree");
-        let session_folder = app.sessions.sessions[0].folder.clone();
+        let session_folder = dir.path().join("session-worktree");
+        std::fs::create_dir_all(&session_folder).expect("failed to create session worktree");
+        let mut mock_git_client = git::MockGitClient::new();
+        let mut sequence = mockall::Sequence::new();
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .withf(|_, commit_message, no_verify| {
+                commit_message == COMMIT_MESSAGE && !*no_verify
+            })
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+        mock_git_client
+            .expect_head_short_hash()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok("abc1234".to_string()) }));
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .withf(|_, commit_message, no_verify| {
+                commit_message == COMMIT_MESSAGE && !*no_verify
+            })
+            .in_sequence(&mut sequence)
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+        mock_git_client
+            .expect_head_short_hash()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok("def5678".to_string()) }));
 
         // Act
         std::fs::write(session_folder.join("session-amend.txt"), "first change")
             .expect("failed to write first change");
-        let first_hash = SessionManager::commit_changes(&session_folder, false)
-            .await
-            .expect("failed to create first session commit");
-
-        let first_count_output = Command::new("git")
-            .args(["rev-list", "--count", "HEAD"])
-            .current_dir(&session_folder)
-            .output()
-            .expect("failed to read first commit count");
-        assert!(
-            first_count_output.status.success(),
-            "failed to read first commit count: {}",
-            String::from_utf8_lossy(&first_count_output.stderr)
-        );
-        let first_count = String::from_utf8_lossy(&first_count_output.stdout)
-            .trim()
-            .parse::<usize>()
-            .expect("failed to parse first commit count");
-
+        let first_hash =
+            SessionManager::commit_changes_with_client_for_test(&mock_git_client, &session_folder, false)
+                .await
+                .expect("failed to create first session commit");
         std::fs::write(session_folder.join("session-amend.txt"), "second change")
             .expect("failed to write second change");
-        let second_hash = SessionManager::commit_changes(&session_folder, false)
-            .await
-            .expect("failed to amend session commit");
-
-        let second_count_output = Command::new("git")
-            .args(["rev-list", "--count", "HEAD"])
-            .current_dir(&session_folder)
-            .output()
-            .expect("failed to read second commit count");
-        assert!(
-            second_count_output.status.success(),
-            "failed to read second commit count: {}",
-            String::from_utf8_lossy(&second_count_output.stderr)
-        );
-        let second_count = String::from_utf8_lossy(&second_count_output.stdout)
-            .trim()
-            .parse::<usize>()
-            .expect("failed to parse second commit count");
-
-        let head_message_output = Command::new("git")
-            .args(["log", "-1", "--pretty=%B"])
-            .current_dir(&session_folder)
-            .output()
-            .expect("failed to read session commit message");
-        assert!(
-            head_message_output.status.success(),
-            "failed to read session commit message: {}",
-            String::from_utf8_lossy(&head_message_output.stderr)
-        );
-        let head_message = String::from_utf8_lossy(&head_message_output.stdout)
-            .trim()
-            .to_string();
+        let second_hash =
+            SessionManager::commit_changes_with_client_for_test(&mock_git_client, &session_folder, false)
+                .await
+                .expect("failed to amend session commit");
 
         // Assert
         assert_ne!(
             first_hash, second_hash,
             "amending should rewrite the session commit hash"
         );
-        assert_eq!(
-            first_count, second_count,
-            "session worktree should keep one evolving session commit"
-        );
-        assert_eq!(head_message, COMMIT_MESSAGE);
     }
 
     #[tokio::test]
     async fn test_spawn_session_task_skips_commit_when_nothing_to_commit() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
-        let db = Database::open_in_memory()
-            .await
-            .expect("failed to open in-memory db");
-        let mut app = App::new(
-            dir.path().to_path_buf(),
-            dir.path().to_path_buf(),
-            Some("main".to_string()),
-            db,
-            mock_app_server(),
-        )
-        .await;
+        let mut app = new_test_app_with_git(dir.path()).await;
+        let repo_root = dir.path().to_path_buf();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_find_git_repo_root()
+            .times(1)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Some(repo_root) })
+            });
+        mock_git_client
+            .expect_create_worktree()
+            .times(1)
+            .returning(|_, worktree_path, _, _| {
+                Box::pin(async move {
+                    tokio::fs::create_dir_all(&worktree_path)
+                        .await
+                        .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
+                    tokio::fs::create_dir_all(worktree_path.join(SESSION_DATA_DIR))
+                        .await
+                        .map_err(|error| format!("Failed to create mock worktree data dir: {error}"))?;
+
+                    Ok(())
+                })
+            });
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .returning(|_, _, _| {
+                Box::pin(async { Err("Nothing to commit: no changes detected".to_string()) })
+            });
+        install_mock_git_client(&mut app, mock_git_client);
 
         // Agent that produces no file changes
         let mut mock = MockAgentBackend::new();
@@ -2767,14 +2721,19 @@ FROM session
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mut app = App::new(
+        let mut app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             Some("main".to_string()),
             db,
-            mock_app_server(),
         )
         .await;
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_find_git_repo_root()
+            .times(1)
+            .returning(|_| Box::pin(async { None }));
+        install_mock_git_client(&mut app, mock_git_client);
 
         // Act
         let result = app.create_session().await;
@@ -2795,14 +2754,27 @@ FROM session
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mut app = App::new(
+        let mut app = new_test_app_with_db(
             dir.path().to_path_buf(),
             PathBuf::from("/tmp/test"),
             Some("main".to_string()),
             db,
-            mock_app_server(),
         )
         .await;
+        let repo_root = dir.path().to_path_buf();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_find_git_repo_root()
+            .times(1)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Some(repo_root) })
+            });
+        mock_git_client
+            .expect_create_worktree()
+            .times(1)
+            .returning(|_, _, _, _| Box::pin(async { Err("mock create_worktree failed".to_string()) }));
+        install_mock_git_client(&mut app, mock_git_client);
 
         // Act
         let result = app.create_session().await;
@@ -3061,29 +3033,56 @@ FROM session
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
+        let repo_root = dir.path().to_path_buf();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_find_git_repo_root()
+            .times(1)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Some(repo_root) })
+            });
+        mock_git_client
+            .expect_create_worktree()
+            .times(1)
+            .returning(|_, worktree_path, _, _| {
+                Box::pin(async move {
+                    tokio::fs::create_dir_all(&worktree_path)
+                        .await
+                        .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
+                    tokio::fs::create_dir_all(worktree_path.join(SESSION_DATA_DIR))
+                        .await
+                        .map_err(|error| format!("Failed to create mock worktree data dir: {error}"))?;
+
+                    Ok(())
+                })
+            });
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .returning(|_, _, _| {
+                Box::pin(async { Err("Nothing to commit: no changes detected".to_string()) })
+            });
+        mock_git_client
+            .expect_is_rebase_in_progress()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock_git_client
+            .expect_rebase_start()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(git::RebaseStepResult::Completed) }));
+        install_mock_git_client(&mut app, mock_git_client);
+
         let session_id = app
             .create_session()
             .await
             .expect("failed to create session");
-        let session_folder = app.sessions.sessions[0].folder.clone();
         app.sessions.sessions[0].status = Status::Review;
         if let Some(handles) = app.sessions.handles.get(&session_id)
             && let Ok(mut session_status) = handles.status.lock()
         {
             *session_status = Status::Review;
         }
-        std::fs::write(dir.path().join("main-only.txt"), "main change")
-            .expect("failed to write main change");
-        Command::new("git")
-            .args(["add", "main-only.txt"])
-            .current_dir(dir.path())
-            .output()
-            .expect("failed to stage main change");
-        Command::new("git")
-            .args(["commit", "-m", "main update"])
-            .current_dir(dir.path())
-            .output()
-            .expect("failed to commit main change");
 
         // Act
         let result = app.rebase_session(&session_id).await;
@@ -3091,26 +3090,6 @@ FROM session
         // Assert
         assert!(result.is_ok(), "rebase should succeed: {:?}", result.err());
         wait_for_output_contains(&mut app, &session_id, "[Rebase] Successfully rebased", 200).await;
-
-        let base_head_output = Command::new("git")
-            .args(["rev-parse", "main"])
-            .current_dir(dir.path())
-            .output()
-            .expect("failed to resolve base head");
-        let base_head = String::from_utf8_lossy(&base_head_output.stdout)
-            .trim()
-            .to_string();
-
-        let session_head_output = Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(session_folder)
-            .output()
-            .expect("failed to resolve session head");
-        let session_head = String::from_utf8_lossy(&session_head_output.stdout)
-            .trim()
-            .to_string();
-
-        assert_eq!(session_head, base_head);
     }
 
     #[tokio::test]
@@ -3118,6 +3097,49 @@ FROM session
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
+        let repo_root = dir.path().to_path_buf();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_find_git_repo_root()
+            .times(1)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Some(repo_root) })
+            });
+        mock_git_client
+            .expect_create_worktree()
+            .times(1)
+            .returning(|_, worktree_path, _, _| {
+                Box::pin(async move {
+                    tokio::fs::create_dir_all(&worktree_path)
+                        .await
+                        .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
+                    tokio::fs::create_dir_all(worktree_path.join(SESSION_DATA_DIR))
+                        .await
+                        .map_err(|error| format!("Failed to create mock worktree data dir: {error}"))?;
+
+                    Ok(())
+                })
+            });
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .withf(|_, _, no_verify| *no_verify)
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+        mock_git_client
+            .expect_head_short_hash()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok("cafe123".to_string()) }));
+        mock_git_client
+            .expect_is_rebase_in_progress()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock_git_client
+            .expect_rebase_start()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(git::RebaseStepResult::Completed) }));
+        install_mock_git_client(&mut app, mock_git_client);
+
         let session_id = app
             .create_session()
             .await
@@ -3140,17 +3162,7 @@ FROM session
         // Assert
         assert!(result.is_ok(), "rebase should succeed: {:?}", result.err());
         wait_for_output_contains(&mut app, &session_id, "[Rebase] Successfully rebased", 200).await;
-
-        // Verify worktree is clean
-        let status_output = Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&session_folder)
-            .output()
-            .expect("failed to check status");
-        assert!(
-            status_output.stdout.is_empty(),
-            "worktree should be clean after auto-commit"
-        );
+        wait_for_output_contains(&mut app, &session_id, "[Commit] committed with hash", 200).await;
         app.refresh_sessions_now().await;
     }
 
@@ -3165,14 +3177,25 @@ FROM session
             Some("develop".to_string()),
             dir.path().to_path_buf(),
         );
-        std::fs::write(dir.path().join("README.md"), "dirty develop")
-            .expect("failed to write file");
+        let repo_root = dir.path().to_path_buf();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_find_git_repo_root()
+            .times(1)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Some(repo_root) })
+            });
+        mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
 
         // Act
         let result = SessionManager::sync_main_for_project(
             app.projects.git_branch().map(str::to_string),
             app.projects.working_dir().to_path_buf(),
-            app.services.git_client(),
+            Arc::new(mock_git_client),
             AgentModel::Gemini3FlashPreview,
         )
         .await;
@@ -3191,13 +3214,25 @@ FROM session
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let app = new_test_app_with_git(dir.path()).await;
-        std::fs::write(dir.path().join("README.md"), "dirty main").expect("failed to write file");
+        let repo_root = dir.path().to_path_buf();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_find_git_repo_root()
+            .times(1)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Some(repo_root) })
+            });
+        mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
 
         // Act
         let result = SessionManager::sync_main_for_project(
             app.projects.git_branch().map(str::to_string),
             app.projects.working_dir().to_path_buf(),
-            app.services.git_client(),
+            Arc::new(mock_git_client),
             AgentModel::Gemini3FlashPreview,
         )
         .await;
@@ -3235,68 +3270,59 @@ FROM session
     async fn test_sync_main_pushes_local_commits_to_remote() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
-        let remote_dir = tempdir().expect("failed to create remote temp dir");
-        Command::new("git")
-            .args(["init", "--bare"])
-            .arg(remote_dir.path())
-            .output()
-            .expect("failed to init bare remote");
-        let remote_url = remote_dir
-            .path()
-            .to_str()
-            .expect("remote path invalid")
-            .to_string();
-        Command::new("git")
-            .args(["remote", "add", "origin", &remote_url])
-            .current_dir(dir.path())
-            .output()
-            .expect("failed to add remote");
-        Command::new("git")
-            .args(["push", "-u", "origin", "main"])
-            .current_dir(dir.path())
-            .output()
-            .expect("failed to push initial commit");
+        let repo_root = dir.path().to_path_buf();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_find_git_repo_root()
+            .times(1)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Some(repo_root) })
+            });
+        mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(true) }));
+        let mut ahead_behind_calls = 0_u8;
+        mock_git_client.expect_get_ahead_behind().times(2).returning(move |_| {
+            ahead_behind_calls = ahead_behind_calls.saturating_add(1);
+            let value = if ahead_behind_calls == 1 { (1, 2) } else { (0, 0) };
 
-        std::fs::write(dir.path().join("README.md"), "local change")
-            .expect("failed to write local change");
-        Command::new("git")
-            .args(["add", "README.md"])
-            .current_dir(dir.path())
-            .output()
-            .expect("git add failed");
-        Command::new("git")
-            .args(["commit", "-m", "local work"])
-            .current_dir(dir.path())
-            .output()
-            .expect("git commit failed");
-
-        let local_head_output = Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(dir.path())
-            .output()
-            .expect("git rev-parse failed");
-        let local_head = String::from_utf8_lossy(&local_head_output.stdout)
-            .trim()
-            .to_string();
-        let remote_head_before = std::fs::read_to_string(remote_dir.path().join("refs/heads/main"))
-            .expect("failed to read remote head");
-        assert_ne!(remote_head_before.trim(), local_head);
+            Box::pin(async move { Ok(value) })
+        });
+        mock_git_client
+            .expect_list_upstream_commit_titles()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(vec!["remote fix".to_string()]) }));
+        mock_git_client
+            .expect_pull_rebase()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(git::PullRebaseResult::Completed) }));
+        mock_git_client
+            .expect_list_local_commit_titles()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(vec!["local work".to_string()]) }));
+        mock_git_client
+            .expect_push_current_branch()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(()) }));
 
         // Act
         let result = SessionManager::sync_main_for_project(
             Some("main".to_string()),
             dir.path().to_path_buf(),
-            Arc::new(git::RealGitClient),
+            Arc::new(mock_git_client),
             AgentModel::Gemini3FlashPreview,
         )
         .await;
 
         // Assert
-        assert!(result.is_ok());
-        let remote_head_after = std::fs::read_to_string(remote_dir.path().join("refs/heads/main"))
-            .expect("failed to read remote head after sync");
-        assert_eq!(remote_head_after.trim(), local_head);
+        let outcome = result.expect("sync should succeed");
+        assert_eq!(outcome.pulled_commits, Some(2));
+        assert_eq!(outcome.pushed_commits, Some(0));
+        assert_eq!(outcome.pulled_commit_titles, vec!["remote fix".to_string()]);
+        assert_eq!(outcome.pushed_commit_titles, vec!["local work".to_string()]);
+        assert!(outcome.resolved_conflict_files.is_empty());
     }
 
     #[tokio::test]
@@ -3317,16 +3343,7 @@ FROM session
             .expect_create_worktree()
             .times(1)
             .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
-        let base_path = app.services.base_path().to_path_buf();
-        let db = app.services.db().clone();
-        let event_sender = app.services.event_sender();
-        app.services = crate::app::AppServices::new(
-            base_path,
-            db,
-            event_sender,
-            Arc::new(mock_git_client),
-            mock_app_server(),
-        );
+        install_mock_git_client(&mut app, mock_git_client);
         let session_id = app
             .create_session()
             .await
@@ -3409,26 +3426,39 @@ FROM session
     async fn test_cleanup_merged_session_worktree_without_repo_hint() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        setup_test_git_repo(dir.path());
         let worktree_folder = dir.path().join("merged-worktree");
         let branch_name = "agentty/cleanup123";
-        git::create_worktree(
-            dir.path().to_path_buf(),
-            worktree_folder.clone(),
-            branch_name.to_string(),
-            "main".to_string(),
-        )
-        .await
-        .expect("failed to create worktree");
+        std::fs::create_dir_all(&worktree_folder).expect("failed to create worktree folder");
         assert!(
             worktree_folder.exists(),
             "worktree should exist before cleanup"
         );
+        let repo_root = dir.path().to_path_buf();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_main_repo_root()
+            .times(1)
+            .returning(move |_| {
+                let repo_root = repo_root.clone();
+                Box::pin(async move { Ok(repo_root) })
+            });
+        mock_git_client.expect_remove_worktree().times(1).returning(|worktree_path| {
+            Box::pin(async move {
+                let _ = tokio::fs::remove_dir_all(worktree_path).await;
+
+                Ok(())
+            })
+        });
+        mock_git_client
+            .expect_delete_branch()
+            .times(1)
+            .withf(|_, branch| branch == "agentty/cleanup123")
+            .returning(|_, _| Box::pin(async { Ok(()) }));
 
         // Act
         let result = SessionManager::cleanup_merged_session_worktree(
             worktree_folder.clone(),
-            Arc::new(git::RealGitClient),
+            Arc::new(mock_git_client),
             branch_name.to_string(),
             None,
         )
@@ -3439,17 +3469,6 @@ FROM session
         assert!(
             !worktree_folder.exists(),
             "worktree should be removed after cleanup"
-        );
-
-        let branch_output = Command::new("git")
-            .args(["branch", "--list", branch_name])
-            .current_dir(dir.path())
-            .output()
-            .expect("failed to list branches");
-        let branches = String::from_utf8_lossy(&branch_output.stdout);
-        assert!(
-            branches.trim().is_empty(),
-            "branch should be removed after cleanup"
         );
     }
 

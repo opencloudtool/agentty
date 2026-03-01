@@ -1629,21 +1629,17 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Commits all changes in a session worktree using a fixed message.
+    /// Commits all changes using a caller-provided git client.
     ///
-    /// The first commit in a session worktree is created normally. Subsequent
-    /// commits with the same fixed message amend `HEAD` so the worktree keeps
-    /// a single evolving session commit.
-    ///
-    /// When `no_verify` is `true`, pre-commit and commit-msg hooks are
-    /// skipped. Use this for defensive commits (e.g., before rebase) where the
-    /// session code was already validated by hooks during the normal
-    /// auto-commit flow.
+    /// This test-only helper keeps high-level session tests isolated from
+    /// shelling out to real git commands.
     #[cfg(test)]
-    pub(crate) async fn commit_changes(folder: &Path, no_verify: bool) -> Result<String, String> {
-        let git_client = git::RealGitClient;
-
-        Self::commit_changes_with_git_client(&git_client, folder, no_verify).await
+    pub(crate) async fn commit_changes_with_client_for_test(
+        git_client: &dyn GitClient,
+        folder: &Path,
+        no_verify: bool,
+    ) -> Result<String, String> {
+        Self::commit_changes_with_git_client(git_client, folder, no_verify).await
     }
 
     /// Commits all changes in a session worktree using the provided git client.

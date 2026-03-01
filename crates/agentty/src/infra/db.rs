@@ -566,6 +566,88 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Overrides the `updated_at` timestamp for one session row.
+    ///
+    /// This is primarily used by deterministic ordering tests.
+    ///
+    /// # Errors
+    /// Returns an error if the timestamp update fails.
+    pub async fn update_session_updated_at(&self, id: &str, updated_at: i64) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET updated_at = ?
+WHERE id = ?
+",
+        )
+        .bind(updated_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to update session updated_at: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Overrides the `created_at` timestamp for one session row.
+    ///
+    /// This is primarily used by activity aggregation tests.
+    ///
+    /// # Errors
+    /// Returns an error if the timestamp update fails.
+    pub async fn update_session_created_at(&self, id: &str, created_at: i64) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET created_at = ?
+WHERE id = ?
+",
+        )
+        .bind(created_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to update session created_at: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Deletes all rows from `session_activity`.
+    ///
+    /// # Errors
+    /// Returns an error if deleting activity rows fails.
+    pub async fn clear_session_activity(&self) -> Result<(), String> {
+        sqlx::query(
+            r"
+DELETE FROM session_activity
+",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to clear session activity: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Rebuilds `session_activity` rows from current `session.created_at`.
+    ///
+    /// # Errors
+    /// Returns an error if backfilling activity rows fails.
+    pub async fn backfill_session_activity_from_sessions(&self) -> Result<(), String> {
+        sqlx::query(
+            r"
+INSERT INTO session_activity (session_id, created_at)
+SELECT id, created_at
+FROM session
+",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to backfill session activity: {err}"))?;
+
+        Ok(())
+    }
+
     /// Updates the size bucket for a session row.
     ///
     /// The update is skipped when the stored value already matches `size`.

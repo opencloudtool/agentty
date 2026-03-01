@@ -440,7 +440,7 @@ impl SessionManager {
         });
 
         if model_changed {
-            self.pending_history_replay.insert(session_id.to_string());
+            self.mark_history_replay_pending(session_id);
         }
 
         Ok(())
@@ -563,7 +563,7 @@ impl SessionManager {
 
         let session = self.sessions.remove(selected_index);
         self.handles.remove(&session.id);
-        self.pending_history_replay.remove(&session.id);
+        self.clear_history_replay_pending(&session.id);
         self.persist_deleted_session_duration(services, &session)
             .await;
 
@@ -617,7 +617,7 @@ impl SessionManager {
         let Ok(session_index) = self.session_index_or_err(session_id) else {
             return;
         };
-        let should_replay_history = self.pending_history_replay.contains(session_id);
+        let should_replay_history = self.should_replay_history(session_id);
         let (folder, session_output, is_first_message, persisted_session_id, title_to_save) =
             match self.prepare_reply_context(
                 session_index,
@@ -636,7 +636,7 @@ impl SessionManager {
             };
 
         if should_replay_history {
-            self.pending_history_replay.remove(&persisted_session_id);
+            self.clear_history_replay_pending(&persisted_session_id);
         }
 
         let app_event_tx = services.event_sender();

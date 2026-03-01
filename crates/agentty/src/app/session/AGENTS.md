@@ -11,8 +11,8 @@ Session domain workflows for app-level orchestration.
 
 - Session workflow responsibilities are split by concern to keep implementations focused and testable.
 - `access.rs` centralizes session and handle lookups plus canonical lookup errors.
-- Lifecycle, refresh, loading, Codex usage-limit loading, and merge/rebase logic are isolated into dedicated files.
-- Tests live alongside session module code (no standalone `test.rs` file).
+- Lifecycle, refresh, loading, review replay, Codex usage-limit loading, and merge/rebase logic are isolated into dedicated files.
+- Session tests remain with their corresponding source modules (for example `session.rs`) instead of a standalone `test.rs`.
 
 ## Directory Index
 
@@ -21,6 +21,7 @@ Session domain workflows for app-level orchestration.
 - [lifecycle.rs](lifecycle.rs) - Session creation, prompt/reply, history, and deletion workflows.
 - [load.rs](load.rs) - Session snapshot loading and derived size persistence.
 - [merge.rs](merge.rs) - Merge/rebase workflows and worktree cleanup helpers.
+- [review.rs](review.rs) - Review-session transcript replay tracking helpers.
 - [refresh.rs](refresh.rs) - Periodic refresh scheduling and list-state restoration.
 - [task.rs](task.rs) - Session process execution, streaming output capture, and status persistence helpers.
 - [worker.rs](worker.rs) - Per-session command queue and worker execution orchestration.
