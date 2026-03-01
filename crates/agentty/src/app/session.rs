@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::app::{AppServices, SessionState};
 use crate::domain::agent::AgentModel;
-use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session};
+use crate::domain::session::{AllTimeModelUsage, CodexUsageLimits, DailyActivity, Session, Status};
 
 mod access;
 mod codex_usage;
@@ -65,6 +65,9 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Creates a session manager from persisted snapshot state and defaults.
+    ///
+    /// Review sessions are marked for one-time transcript replay so the next
+    /// reply can rehydrate provider context after app restart.
     pub(crate) fn new(
         all_time_model_usage: Vec<AllTimeModelUsage>,
         codex_usage_limits: Option<CodexUsageLimits>,
@@ -74,13 +77,15 @@ impl SessionManager {
         state: SessionState,
         stats_activity: Vec<DailyActivity>,
     ) -> Self {
+        let pending_history_replay = Self::startup_history_replay_set(&state.sessions);
+
         Self {
             all_time_model_usage,
             codex_usage_limits,
             default_session_model: defaults.model,
             git_client,
             longest_session_duration_seconds,
-            pending_history_replay: HashSet::new(),
+            pending_history_replay,
             state,
             stats_activity,
             workers: HashMap::new(),
@@ -120,6 +125,16 @@ impl SessionManager {
             self.codex_usage_limits,
             &mut self.state.table_state,
         )
+    }
+
+    /// Collects session ids that should replay persisted transcript output on
+    /// the next reply after app startup.
+    fn startup_history_replay_set(sessions: &[Session]) -> HashSet<String> {
+        sessions
+            .iter()
+            .filter(|session| session.status == Status::Review)
+            .map(|session| session.id.clone())
+            .collect()
     }
 
     /// Applies reducer updates after session agent/model changes are
@@ -2310,6 +2325,112 @@ FROM session
                 AgentModel::Gpt53Codex,
             )
             .await;
+    }
+
+    /// Ensures resumed review sessions replay persisted transcript output on
+    /// the first reply after app restart.
+    #[tokio::test]
+    async fn test_reply_with_backend_replays_history_after_app_restart_for_review_session() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+
+        let mut first_app = App::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            Some("main".to_string()),
+            db.clone(),
+            mock_app_server(),
+        )
+        .await;
+        let session_id = first_app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        let start_backend = create_mock_backend();
+        first_app
+            .sessions
+            .reply_with_backend(
+                &first_app.services,
+                &session_id,
+                "Initial prompt",
+                &start_backend,
+                AgentModel::ClaudeSonnet46,
+            )
+            .await;
+        wait_for_status(&mut first_app, &session_id, Status::Review).await;
+        first_app.sessions.sync_from_handles();
+        let first_run_output = first_app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.output.clone())
+            .expect("missing persisted session");
+        assert!(first_run_output.contains("Initial prompt"));
+        assert!(first_run_output.contains("mock-start"));
+        drop(first_app);
+
+        let mut resumed_app = App::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            Some("main".to_string()),
+            db,
+            mock_app_server(),
+        )
+        .await;
+        let resumed_session = resumed_app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing resumed session");
+        assert_eq!(resumed_session.status, Status::Review);
+
+        // Act
+        let mut resume_backend = MockAgentBackend::new();
+        resume_backend.expect_build_command().returning(|request| {
+            assert!(matches!(request.mode, AgentCommandMode::Resume { .. }));
+
+            let session_output = request
+                .mode
+                .session_output()
+                .expect("expected replayed session output after restart");
+            assert!(session_output.contains("Initial prompt"));
+            assert!(session_output.contains("mock-start"));
+
+            let mut cmd = Command::new("echo");
+            cmd.arg("--prompt")
+                .arg(request.mode.prompt())
+                .arg("replayed-after-restart")
+                .current_dir(request.folder)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            Ok(cmd)
+        });
+        resumed_app
+            .sessions
+            .reply_with_backend(
+                &resumed_app.services,
+                &session_id,
+                "Restart reply",
+                &resume_backend,
+                AgentModel::ClaudeSonnet46,
+            )
+            .await;
+
+        // Assert
+        wait_for_output_contains(
+            &mut resumed_app,
+            &session_id,
+            "replayed-after-restart",
+            2000,
+        )
+        .await;
+        wait_for_status(&mut resumed_app, &session_id, Status::Review).await;
     }
 
     #[tokio::test]
