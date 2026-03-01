@@ -2060,7 +2060,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_prompt_for_runtime_returns_original_prompt_without_context_reset() {
+    fn turn_prompt_for_runtime_adds_repo_root_path_instructions_without_context_reset() {
         // Arrange
         let prompt = "Implement feature";
         let session_output = Some("prior context");
@@ -2070,11 +2070,12 @@ mod tests {
             .expect("turn prompt should render");
 
         // Assert
-        assert_eq!(turn_prompt, prompt);
+        assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
+        assert!(turn_prompt.ends_with(prompt));
     }
 
     #[test]
-    fn turn_prompt_for_runtime_replays_session_output_after_context_reset() {
+    fn turn_prompt_for_runtime_replays_session_output_after_context_reset_with_path_instructions() {
         // Arrange
         let prompt = "Implement feature";
         let session_output = Some("assistant: proposed plan");
@@ -2084,6 +2085,7 @@ mod tests {
             .expect("turn prompt should render");
 
         // Assert
+        assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
         assert!(turn_prompt.contains("Continue this session using the full transcript below."));
         assert!(turn_prompt.contains("assistant: proposed plan"));
         assert!(turn_prompt.contains(prompt));

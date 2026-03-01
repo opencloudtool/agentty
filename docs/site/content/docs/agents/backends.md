@@ -21,6 +21,15 @@ installed and available on your `PATH`.
 | Claude | `claude` | Anthropic Claude Code agent. |
 | Codex | `codex` | OpenAI Codex CLI agent. |
 
+## File Path Output Format
+
+Agentty prompts all backends to reference files using repository-root-relative
+POSIX paths. This keeps file references consistent in session output and reviews.
+
+- Allowed forms: `path`, `path:line`, `path:line:column`
+- Example: `crates/agentty/src/infra/agent/backend.rs:151`
+- Not allowed: absolute paths, `file://` URIs, or `../`-prefixed paths
+
 ## Selecting a Backend
 
 Choose the backend from the `/model` picker:

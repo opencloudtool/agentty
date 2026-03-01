@@ -3,6 +3,7 @@ use std::process::{Command, Stdio};
 
 use super::backend::{
     AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
+    prepend_repo_root_path_instructions,
 };
 
 /// Backend implementation for the Claude CLI.
@@ -30,6 +31,7 @@ impl AgentBackend for ClaudeBackend {
                 session_output,
             } => build_resume_prompt(prompt, session_output)?,
         };
+        let prompt = prepend_repo_root_path_instructions(&prompt)?;
         let mut command = Command::new("claude");
 
         if matches!(mode, AgentCommandMode::Resume { .. }) {
@@ -81,5 +83,31 @@ mod tests {
         assert!(debug_command.contains("--allowedTools"));
         assert!(debug_command.contains("Edit,Bash"));
         assert!(!debug_command.contains("--permission-mode"));
+    }
+
+    #[test]
+    /// Verifies Claude prompts include repo-root-relative path guidance.
+    fn test_claude_command_includes_repo_root_path_instructions() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let backend = ClaudeBackend;
+
+        // Act
+        let command = AgentBackend::build_command(
+            &backend,
+            BuildCommandRequest {
+                folder: temp_directory.path(),
+                mode: AgentCommandMode::Start {
+                    prompt: "Plan prompt",
+                },
+                model: "claude-sonnet-4-6",
+            },
+        )
+        .expect("command should build");
+        let debug_command = format!("{command:?}");
+
+        // Assert
+        assert!(debug_command.contains("repository-root-relative POSIX paths"));
+        assert!(debug_command.contains("Paths must be relative to the repository root."));
     }
 }

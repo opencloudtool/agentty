@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 
 use super::backend::{
     AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
+    prepend_repo_root_path_instructions,
 };
 
 /// Codex config override that forces high reasoning effort per invocation.
@@ -43,6 +44,7 @@ impl AgentBackend for CodexBackend {
             } => build_resume_prompt(prompt, session_output)?,
         };
         let prompt = prepend_root_instructions_if_available(&prompt, folder);
+        let prompt = prepend_repo_root_path_instructions(&prompt)?;
 
         let mut command = Command::new("codex");
         command.arg("exec");
@@ -209,5 +211,31 @@ mod tests {
                 || debug_command.contains("User prompt:\\nContinue edits")
         );
         assert!(!debug_command.contains("Continue this session using the full transcript below."));
+    }
+
+    #[test]
+    /// Verifies Codex prompts include repo-root-relative path guidance.
+    fn build_command_includes_repo_root_path_instructions() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let backend = CodexBackend;
+
+        // Act
+        let command = AgentBackend::build_command(
+            &backend,
+            BuildCommandRequest {
+                folder: temp_directory.path(),
+                mode: AgentCommandMode::Start {
+                    prompt: "Run checks",
+                },
+                model: "gpt-5.3-codex",
+            },
+        )
+        .expect("command should build");
+        let debug_command = format!("{command:?}");
+
+        // Assert
+        assert!(debug_command.contains("repository-root-relative POSIX paths"));
+        assert!(debug_command.contains("Paths must be relative to the repository root."));
     }
 }

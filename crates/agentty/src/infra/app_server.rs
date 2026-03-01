@@ -331,6 +331,9 @@ fn read_latest_session_output(request: &AppServerTurnRequest) -> Option<String> 
 
 /// Returns the turn prompt, replaying session output after context reset.
 ///
+/// The returned prompt always includes repo-root-relative file path guidance so
+/// assistant responses use consistent path references across providers.
+///
 /// # Errors
 /// Returns an error when Askama prompt rendering fails after a context reset.
 pub fn turn_prompt_for_runtime(
@@ -338,11 +341,14 @@ pub fn turn_prompt_for_runtime(
     session_output: Option<&str>,
     context_reset: bool,
 ) -> Result<String, String> {
-    if !context_reset {
-        return Ok(prompt.to_string());
-    }
+    let turn_prompt = if context_reset {
+        crate::infra::agent::build_resume_prompt(prompt, session_output)
+            .map_err(|error| error.to_string())?
+    } else {
+        prompt.to_string()
+    };
 
-    crate::infra::agent::build_resume_prompt(prompt, session_output)
+    crate::infra::agent::prepend_repo_root_path_instructions(&turn_prompt)
         .map_err(|error| error.to_string())
 }
 
@@ -384,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_prompt_for_runtime_returns_original_prompt_without_context_reset() {
+    fn turn_prompt_for_runtime_adds_repo_root_path_instructions_without_context_reset() {
         // Arrange
         let prompt = "Implement feature";
 
@@ -393,11 +399,12 @@ mod tests {
             .expect("turn prompt should render");
 
         // Assert
-        assert_eq!(turn_prompt, prompt);
+        assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
+        assert!(turn_prompt.ends_with(prompt));
     }
 
     #[test]
-    fn turn_prompt_for_runtime_replays_session_output_after_context_reset() {
+    fn turn_prompt_for_runtime_replays_session_output_after_context_reset_with_path_instructions() {
         // Arrange
         let prompt = "Implement feature";
 
@@ -406,6 +413,7 @@ mod tests {
             .expect("turn prompt should render");
 
         // Assert
+        assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
         assert!(turn_prompt.contains("Continue this session using the full transcript below."));
         assert!(turn_prompt.contains("assistant: proposed plan"));
         assert!(turn_prompt.contains(prompt));

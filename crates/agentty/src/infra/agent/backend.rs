@@ -8,6 +8,10 @@ use askama::Template;
 use crate::domain::agent::AgentKind;
 use crate::infra::agent::response_parser::ParsedResponse;
 
+/// Marker used to detect whether repo-root path instructions are already
+/// included in a prompt.
+const REPO_ROOT_PATH_INSTRUCTIONS_MARKER: &str = "repository-root-relative POSIX paths";
+
 /// Transport runtime used to execute turns for one backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentTransport {
@@ -98,6 +102,13 @@ struct ResumeWithSessionOutputPromptTemplate<'a> {
     session_output: &'a str,
 }
 
+/// Askama view model for rendering repo-root file path contract instructions.
+#[derive(Template)]
+#[template(path = "repo_root_path_prompt.md", escape = "none")]
+struct RepoRootPathPromptTemplate<'a> {
+    prompt: &'a str,
+}
+
 /// Builds and configures external agent CLI commands.
 #[cfg_attr(test, mockall::automock)]
 pub trait AgentBackend: Send + Sync {
@@ -166,6 +177,30 @@ pub(crate) fn build_resume_prompt(
     let rendered = template.render().map_err(|error| {
         AgentBackendError::CommandBuild(format!(
             "Failed to render `resume_with_session_output_prompt.md`: {error}"
+        ))
+    })?;
+
+    Ok(rendered.trim_end().to_string())
+}
+
+/// Prepends mandatory repo-root-relative file path instructions to a prompt.
+///
+/// If the prompt already contains the path-instruction marker, this function
+/// returns the prompt unchanged to avoid duplicated guidance.
+///
+/// # Errors
+/// Returns an error if Askama template rendering fails.
+pub(crate) fn prepend_repo_root_path_instructions(
+    prompt: &str,
+) -> Result<String, AgentBackendError> {
+    if prompt.contains(REPO_ROOT_PATH_INSTRUCTIONS_MARKER) {
+        return Ok(prompt.to_string());
+    }
+
+    let template = RepoRootPathPromptTemplate { prompt };
+    let rendered = template.render().map_err(|error| {
+        AgentBackendError::CommandBuild(format!(
+            "Failed to render `repo_root_path_prompt.md`: {error}"
         ))
     })?;
 
@@ -251,6 +286,37 @@ mod tests {
 
         // Assert
         assert_eq!(resume_prompt, prompt);
+    }
+
+    #[test]
+    /// Ensures repo-root path instructions are prepended to plain prompts.
+    fn test_prepend_repo_root_path_instructions_adds_contract() {
+        // Arrange
+        let prompt = "Implement feature";
+
+        // Act
+        let rendered_prompt = prepend_repo_root_path_instructions(prompt)
+            .expect("path instruction prompt should render");
+
+        // Assert
+        assert!(rendered_prompt.contains("repository-root-relative POSIX paths"));
+        assert!(rendered_prompt.contains("Paths must be relative to the repository root."));
+        assert!(rendered_prompt.ends_with(prompt));
+    }
+
+    #[test]
+    /// Ensures path instructions are not duplicated when already present.
+    fn test_prepend_repo_root_path_instructions_is_idempotent() {
+        // Arrange
+        let prompt = prepend_repo_root_path_instructions("Implement feature")
+            .expect("path instruction prompt should render");
+
+        // Act
+        let rendered_prompt = prepend_repo_root_path_instructions(&prompt)
+            .expect("path instruction prompt should render");
+
+        // Assert
+        assert_eq!(rendered_prompt, prompt);
     }
 
     #[test]

@@ -3,6 +3,7 @@ use std::process::{Command, Stdio};
 
 use super::backend::{
     AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
+    prepend_repo_root_path_instructions,
 };
 
 /// Backend implementation for the Gemini CLI.
@@ -33,6 +34,7 @@ impl AgentBackend for GeminiBackend {
                 session_output,
             } => build_resume_prompt(prompt, session_output)?,
         };
+        let prompt = prepend_repo_root_path_instructions(&prompt)?;
         let mut command = Command::new("gemini");
         command
             .arg("--prompt")
@@ -77,5 +79,31 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    /// Verifies Gemini prompts include repo-root-relative path guidance.
+    fn test_gemini_command_includes_repo_root_path_instructions() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let backend = GeminiBackend;
+
+        // Act
+        let command = AgentBackend::build_command(
+            &backend,
+            BuildCommandRequest {
+                folder: temp_directory.path(),
+                mode: AgentCommandMode::Start {
+                    prompt: "Plan prompt",
+                },
+                model: "gemini-3-flash-preview",
+            },
+        )
+        .expect("command should build");
+        let debug_command = format!("{command:?}");
+
+        // Assert
+        assert!(debug_command.contains("repository-root-relative POSIX paths"));
+        assert!(debug_command.contains("Paths must be relative to the repository root."));
     }
 }
