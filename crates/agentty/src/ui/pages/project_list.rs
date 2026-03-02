@@ -9,17 +9,25 @@ use crate::ui::Page;
 use crate::ui::state::help_action;
 
 const ROW_HIGHLIGHT_SYMBOL: &str = ">> ";
+const ACTIVE_PROJECT_MARKER: &str = "* ";
 
 /// Projects tab renderer showing saved repositories and quick metadata.
 pub struct ProjectListPage<'a> {
+    /// Identifier for the currently active project.
+    pub active_project_id: i64,
     pub projects: &'a [ProjectListItem],
     pub table_state: &'a mut TableState,
 }
 
 impl<'a> ProjectListPage<'a> {
-    /// Creates a project-list page renderer.
-    pub fn new(projects: &'a [ProjectListItem], table_state: &'a mut TableState) -> Self {
+    /// Creates a project-list page renderer with active-project highlighting.
+    pub fn new(
+        projects: &'a [ProjectListItem],
+        table_state: &'a mut TableState,
+        active_project_id: i64,
+    ) -> Self {
         Self {
+            active_project_id,
             projects,
             table_state,
         }
@@ -41,7 +49,11 @@ impl Page for ProjectListPage<'_> {
             .style(Style::default().bg(Color::Gray).fg(Color::Black))
             .height(1)
             .bottom_margin(1);
-        let rows = self.projects.iter().map(render_project_row);
+        let active_project_id = self.active_project_id;
+        let rows = self
+            .projects
+            .iter()
+            .map(|project_item| render_project_row(project_item, active_project_id));
         let table = Table::new(
             rows,
             [
@@ -67,8 +79,9 @@ impl Page for ProjectListPage<'_> {
 }
 
 /// Renders one project metadata row.
-fn render_project_row(project_item: &ProjectListItem) -> Row<'static> {
-    let (title, branch, session_count, last_opened, path) = project_row_values(project_item);
+fn render_project_row(project_item: &ProjectListItem, active_project_id: i64) -> Row<'static> {
+    let (title, branch, session_count, last_opened, path) =
+        project_row_values(project_item, active_project_id);
 
     Row::new(vec![
         Cell::from(title),
@@ -77,23 +90,41 @@ fn render_project_row(project_item: &ProjectListItem) -> Row<'static> {
         Cell::from(last_opened),
         Cell::from(path),
     ])
+    .style(project_row_style(project_item, active_project_id))
 }
 
 /// Returns all project row display values for reuse and testing.
-fn project_row_values(project_item: &ProjectListItem) -> (String, String, String, String, String) {
+fn project_row_values(
+    project_item: &ProjectListItem,
+    active_project_id: i64,
+) -> (String, String, String, String, String) {
     let project = &project_item.project;
+    let title = project_title(project_item, active_project_id);
     let branch = project.git_branch.as_deref().unwrap_or("-");
     let session_count = project_item.session_count.to_string();
     let last_opened = format_last_opened(project.last_opened_at);
     let path = project.path.to_string_lossy().to_string();
 
-    (
-        project.display_label(),
-        branch.to_string(),
-        session_count,
-        last_opened,
-        path,
-    )
+    (title, branch.to_string(), session_count, last_opened, path)
+}
+
+/// Returns style for one project row, emphasizing the active project.
+fn project_row_style(project_item: &ProjectListItem, active_project_id: i64) -> Style {
+    if project_item.project.id == active_project_id {
+        return Style::default().fg(Color::LightCyan);
+    }
+
+    Style::default()
+}
+
+/// Returns the visible project title, marking the active project in the list.
+fn project_title(project_item: &ProjectListItem, active_project_id: i64) -> String {
+    let display_label = project_item.project.display_label();
+    if project_item.project.id == active_project_id {
+        return format!("{ACTIVE_PROJECT_MARKER}{display_label}");
+    }
+
+    display_label
 }
 
 /// Formats the project last-opened timestamp for table display.
@@ -150,11 +181,36 @@ mod tests {
         };
 
         // Act
-        let values = project_row_values(&project_item);
+        let values = project_row_values(&project_item, 99);
 
         // Assert
         assert_eq!(values.0, "agentty");
         assert_eq!(values.2, "3");
         assert_eq!(values.3, "2023-11-14");
+    }
+
+    #[test]
+    fn test_project_row_values_mark_active_project_title() {
+        // Arrange
+        let project_item = ProjectListItem {
+            last_session_updated_at: Some(20),
+            project: Project {
+                created_at: 1,
+                display_name: Some("agentty".to_string()),
+                git_branch: Some("main".to_string()),
+                id: 42,
+                is_favorite: true,
+                last_opened_at: Some(1_700_000_000),
+                path: PathBuf::from("/tmp/agentty"),
+                updated_at: 2,
+            },
+            session_count: 3,
+        };
+
+        // Act
+        let values = project_row_values(&project_item, 42);
+
+        // Assert
+        assert_eq!(values.0, "* agentty");
     }
 }

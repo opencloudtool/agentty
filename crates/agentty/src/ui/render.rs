@@ -26,6 +26,8 @@ pub trait Component {
 
 /// Immutable data required to draw a single UI frame.
 pub struct RenderContext<'a> {
+    /// Identifier of the currently active project.
+    pub active_project_id: i64,
     pub all_time_model_usage: &'a [AllTimeModelUsage],
     pub codex_usage_limits: Option<CodexUsageLimits>,
     pub current_tab: Tab,

@@ -94,6 +94,10 @@ Agentty classifies sessions by the number of changed lines in their diff:
 | `Tab` | Switch tab |
 | `?` | Help |
 
+<a id="usage-project-list-active-highlight"></a>
+The currently active project is highlighted in the table with a `* ` prefix and
+accented row text, even while cursor selection moves to other rows.
+
 ### Settings
 
 | Key | Action |

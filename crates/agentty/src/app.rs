@@ -322,6 +322,7 @@ impl App {
     /// Renders a complete UI frame by assembling a [`ui::RenderContext`] from
     /// current app state and dispatching to the UI render pipeline.
     pub fn draw(&mut self, frame: &mut Frame) {
+        let active_project_id = self.projects.active_project_id();
         let current_tab = self.tabs.current();
         let working_dir = self.projects.working_dir().to_path_buf();
         let git_branch = self.projects.git_branch().map(str::to_string);
@@ -344,6 +345,7 @@ impl App {
         ui::render(
             frame,
             ui::RenderContext {
+                active_project_id,
                 all_time_model_usage,
                 codex_usage_limits,
                 current_tab,

@@ -13,6 +13,8 @@ use crate::ui::{Component, Page, RenderContext, components, overlays, pages};
 
 /// Shared borrowed data required to render list-page backgrounds.
 pub(crate) struct ListBackgroundRenderContext<'a> {
+    /// Identifier for the currently active project in the project list tab.
+    pub(crate) active_project_id: i64,
     pub(crate) all_time_model_usage: &'a [AllTimeModelUsage],
     pub(crate) codex_usage_limits: Option<CodexUsageLimits>,
     pub(crate) current_tab: Tab,
@@ -27,6 +29,8 @@ pub(crate) struct ListBackgroundRenderContext<'a> {
 
 /// Shared mutable routing data reused across app modes in `route_frame`.
 struct RouteSharedContext<'a> {
+    /// Identifier for the active project shared across list-mode renders.
+    active_project_id: i64,
     all_time_model_usage: &'a [AllTimeModelUsage],
     codex_usage_limits: Option<CodexUsageLimits>,
     current_tab: Tab,
@@ -44,6 +48,7 @@ impl RouteSharedContext<'_> {
     /// of the tabbed list content.
     fn list_background(&mut self) -> ListBackgroundRenderContext<'_> {
         ListBackgroundRenderContext {
+            active_project_id: self.active_project_id,
             all_time_model_usage: self.all_time_model_usage,
             codex_usage_limits: self.codex_usage_limits,
             current_tab: self.current_tab,
@@ -77,6 +82,7 @@ struct RouteAuxContext<'a> {
 /// Routes the content-area render path by active `AppMode`.
 pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
     let RenderContext {
+        active_project_id,
         all_time_model_usage,
         codex_usage_limits,
         current_tab,
@@ -93,6 +99,7 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
     } = context;
 
     let mut shared = RouteSharedContext {
+        active_project_id,
         all_time_model_usage,
         codex_usage_limits,
         current_tab,
@@ -273,6 +280,7 @@ pub(crate) fn render_list_background(
     context: ListBackgroundRenderContext<'_>,
 ) {
     let ListBackgroundRenderContext {
+        active_project_id,
         all_time_model_usage,
         codex_usage_limits,
         current_tab,
@@ -293,8 +301,12 @@ pub(crate) fn render_list_background(
 
     match current_tab {
         Tab::Projects => {
-            pages::project_list::ProjectListPage::new(projects, project_table_state)
-                .render(f, chunks[1]);
+            pages::project_list::ProjectListPage::new(
+                projects,
+                project_table_state,
+                active_project_id,
+            )
+            .render(f, chunks[1]);
         }
         Tab::Sessions => {
             pages::session_list::SessionListPage::new(sessions, table_state).render(f, chunks[1]);
