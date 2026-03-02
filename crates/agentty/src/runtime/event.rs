@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use crate::app::{App, AppEvent};
 use crate::runtime::{EventResult, TuiTerminal, key_handler, mode};
 use crate::ui::state::app_mode::AppMode;
+use crate::{Sleeper, ThreadSleeper};
 
 /// Reads terminal events from an underlying event backend.
 #[cfg_attr(test, mockall::automock)]
@@ -32,18 +33,45 @@ impl EventSource for CrosstermEventSource {
     }
 }
 
+/// Spawns the terminal event reader thread with production dependencies.
 pub(crate) fn spawn_event_reader(
     event_tx: mpsc::UnboundedSender<Event>,
     shutdown: Arc<AtomicBool>,
     event_reader_pause: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     let event_source: Arc<dyn EventSource> = Arc::new(CrosstermEventSource);
+    let sleeper: Arc<dyn Sleeper> = Arc::new(ThreadSleeper);
 
-    spawn_event_reader_with_source(event_source, event_tx, shutdown, event_reader_pause)
+    spawn_event_reader_with_source(
+        event_source,
+        sleeper,
+        event_tx,
+        shutdown,
+        event_reader_pause,
+    )
 }
 
+/// Spawns the terminal event reader with injected dependencies.
 fn spawn_event_reader_with_source(
     event_source: Arc<dyn EventSource>,
+    sleeper: Arc<dyn Sleeper>,
+    event_tx: mpsc::UnboundedSender<Event>,
+    shutdown: Arc<AtomicBool>,
+    event_reader_pause: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    spawn_event_reader_with_dependencies(
+        event_source,
+        sleeper,
+        event_tx,
+        shutdown,
+        event_reader_pause,
+    )
+}
+
+/// Spawns the terminal event reader with injectable dependencies for tests.
+fn spawn_event_reader_with_dependencies(
+    event_source: Arc<dyn EventSource>,
+    sleeper: Arc<dyn Sleeper>,
     event_tx: mpsc::UnboundedSender<Event>,
     shutdown: Arc<AtomicBool>,
     event_reader_pause: Arc<AtomicBool>,
@@ -55,7 +83,7 @@ fn spawn_event_reader_with_source(
             }
 
             if event_reader_pause.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(50));
+                sleeper.sleep(Duration::from_millis(50));
                 continue;
             }
 
@@ -166,6 +194,7 @@ mod tests {
     use mockall::predicate::eq;
 
     use super::*;
+    use crate::MockSleeper;
 
     #[tokio::test]
     async fn test_spawn_event_reader_with_source_forwards_event_to_channel() {
@@ -195,13 +224,21 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_| Err(io::Error::new(ErrorKind::Interrupted, "stop")));
         let event_source: Arc<dyn EventSource> = Arc::new(mock_source);
+        let mut mock_sleeper = MockSleeper::new();
+        mock_sleeper.expect_sleep().times(0);
+        let sleeper: Arc<dyn Sleeper> = Arc::new(mock_sleeper);
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let shutdown = Arc::new(AtomicBool::new(false));
         let event_reader_pause = Arc::new(AtomicBool::new(false));
 
         // Act
-        let join_handle =
-            spawn_event_reader_with_source(event_source, event_tx, shutdown, event_reader_pause);
+        let join_handle = spawn_event_reader_with_source(
+            event_source,
+            sleeper,
+            event_tx,
+            shutdown,
+            event_reader_pause,
+        );
         let received_event = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
             .await
             .expect("timed out waiting for event")
@@ -230,14 +267,22 @@ mod tests {
             )))
         });
         let event_source: Arc<dyn EventSource> = Arc::new(mock_source);
+        let mut mock_sleeper = MockSleeper::new();
+        mock_sleeper.expect_sleep().times(0);
+        let sleeper: Arc<dyn Sleeper> = Arc::new(mock_sleeper);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         drop(event_rx);
         let shutdown = Arc::new(AtomicBool::new(false));
         let event_reader_pause = Arc::new(AtomicBool::new(false));
 
         // Act
-        let join_handle =
-            spawn_event_reader_with_source(event_source, event_tx, shutdown, event_reader_pause);
+        let join_handle = spawn_event_reader_with_source(
+            event_source,
+            sleeper,
+            event_tx,
+            shutdown,
+            event_reader_pause,
+        );
         let join_result = join_handle.join();
 
         // Assert
@@ -263,13 +308,21 @@ mod tests {
             .returning(|_| Err(io::Error::new(ErrorKind::Interrupted, "stop")));
         mock_source.expect_read().times(0);
         let event_source: Arc<dyn EventSource> = Arc::new(mock_source);
+        let mut mock_sleeper = MockSleeper::new();
+        mock_sleeper.expect_sleep().times(0);
+        let sleeper: Arc<dyn Sleeper> = Arc::new(mock_sleeper);
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let shutdown = Arc::new(AtomicBool::new(false));
         let event_reader_pause = Arc::new(AtomicBool::new(false));
 
         // Act
-        let join_handle =
-            spawn_event_reader_with_source(event_source, event_tx, shutdown, event_reader_pause);
+        let join_handle = spawn_event_reader_with_source(
+            event_source,
+            sleeper,
+            event_tx,
+            shutdown,
+            event_reader_pause,
+        );
         let join_result = join_handle.join();
         let queued_event = event_rx.try_recv();
 
@@ -285,17 +338,29 @@ mod tests {
         mock_source.expect_poll().times(0);
         mock_source.expect_read().times(0);
         let event_source: Arc<dyn EventSource> = Arc::new(mock_source);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_signal = Arc::clone(&shutdown);
+        let mut mock_sleeper = MockSleeper::new();
+        mock_sleeper
+            .expect_sleep()
+            .with(eq(Duration::from_millis(50)))
+            .times(1)
+            .return_once(move |_| {
+                shutdown_signal.store(true, Ordering::Relaxed);
+            });
+        let sleeper: Arc<dyn Sleeper> = Arc::new(mock_sleeper);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         drop(event_rx);
-        let shutdown = Arc::new(AtomicBool::new(false));
         let event_reader_pause = Arc::new(AtomicBool::new(true));
-        let shutdown_signal = Arc::clone(&shutdown);
 
         // Act
-        let join_handle =
-            spawn_event_reader_with_source(event_source, event_tx, shutdown, event_reader_pause);
-        std::thread::sleep(Duration::from_millis(120));
-        shutdown_signal.store(true, Ordering::Relaxed);
+        let join_handle = spawn_event_reader_with_source(
+            event_source,
+            sleeper,
+            event_tx,
+            shutdown,
+            event_reader_pause,
+        );
         let join_result = join_handle.join();
 
         // Assert

@@ -9,9 +9,36 @@ use super::repo::{
     command_output_detail, resolve_git_dir, run_git_command_output_sync,
     run_git_command_output_with_env_sync, run_git_command_sync,
 };
+use crate::{Sleeper, ThreadSleeper};
 
 const GIT_INDEX_LOCK_RETRY_ATTEMPTS: usize = 5;
 const GIT_INDEX_LOCK_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// Executes git commands for rebase operations.
+#[cfg_attr(test, mockall::automock)]
+trait GitCommandRunner: Send + Sync {
+    /// Runs a git command in `repo_path` with environment overrides.
+    fn run_git_command_output_with_env<'argument>(
+        &self,
+        repo_path: &Path,
+        args: &[&'argument str],
+        environment: &[(&'argument str, &'argument str)],
+    ) -> Result<Output, String>;
+}
+
+/// Git command runner backed by process execution.
+struct ProcessGitCommandRunner;
+
+impl GitCommandRunner for ProcessGitCommandRunner {
+    fn run_git_command_output_with_env<'argument>(
+        &self,
+        repo_path: &Path,
+        args: &[&'argument str],
+        environment: &[(&'argument str, &'argument str)],
+    ) -> Result<Output, String> {
+        run_git_command_output_with_env_sync(repo_path, args, environment)
+    }
+}
 
 /// Result of attempting a rebase step.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -300,8 +327,30 @@ pub(super) fn run_git_command_with_index_lock_retry(
     args: &[&str],
     environment: &[(&str, &str)],
 ) -> Result<Output, String> {
+    let command_runner = ProcessGitCommandRunner;
+    let sleeper = ThreadSleeper;
+
+    run_git_command_with_index_lock_retry_with_dependencies(
+        repo_path,
+        args,
+        environment,
+        &command_runner,
+        &sleeper,
+    )
+}
+
+/// Runs a git command with retries using injected command and sleep
+/// dependencies.
+fn run_git_command_with_index_lock_retry_with_dependencies(
+    repo_path: &Path,
+    args: &[&str],
+    environment: &[(&str, &str)],
+    command_runner: &dyn GitCommandRunner,
+    sleeper: &dyn Sleeper,
+) -> Result<Output, String> {
     for attempt in 0..GIT_INDEX_LOCK_RETRY_ATTEMPTS {
-        let output = run_git_command_output_with_env_sync(repo_path, args, environment)?;
+        let output =
+            command_runner.run_git_command_output_with_env(repo_path, args, environment)?;
         if output.status.success() {
             return Ok(output);
         }
@@ -312,7 +361,7 @@ pub(super) fn run_git_command_with_index_lock_retry(
             return Ok(output);
         }
 
-        std::thread::sleep(GIT_INDEX_LOCK_RETRY_DELAY);
+        sleeper.sleep(GIT_INDEX_LOCK_RETRY_DELAY);
     }
 
     unreachable!("index lock retry loop should always return an output")
@@ -392,4 +441,113 @@ fn is_git_index_lock_error(detail: &str) -> bool {
         && (normalized_detail.contains("file exists")
             || normalized_detail.contains("unable to create")
             || normalized_detail.contains("another git process"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Command, Output};
+
+    use mockall::predicate::eq;
+
+    use super::*;
+    use crate::MockSleeper;
+
+    #[test]
+    fn test_run_git_command_with_index_lock_retry_retries_and_sleeps_before_success() {
+        // Arrange
+        let mut command_runner = MockGitCommandRunner::new();
+        let mut sleeper = MockSleeper::new();
+        let repo_path = Path::new(".");
+        let args = ["rebase", "main"];
+        let environment: [(&str, &str); 0] = [];
+
+        command_runner
+            .expect_run_git_command_output_with_env()
+            .times(1)
+            .returning(|_, _, _| Ok(git_index_lock_output()));
+        command_runner
+            .expect_run_git_command_output_with_env()
+            .times(1)
+            .returning(|_, _, _| Ok(success_output()));
+
+        sleeper
+            .expect_sleep()
+            .with(eq(GIT_INDEX_LOCK_RETRY_DELAY))
+            .times(1)
+            .return_once(|_| {});
+
+        // Act
+        let output = run_git_command_with_index_lock_retry_with_dependencies(
+            repo_path,
+            &args,
+            &environment,
+            &command_runner,
+            &sleeper,
+        )
+        .expect("retry helper should return command output");
+
+        // Assert
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn test_run_git_command_with_index_lock_retry_does_not_sleep_for_non_lock_errors() {
+        // Arrange
+        let mut command_runner = MockGitCommandRunner::new();
+        let mut sleeper = MockSleeper::new();
+        let repo_path = Path::new(".");
+        let args = ["rebase", "main"];
+        let environment: [(&str, &str); 0] = [];
+
+        command_runner
+            .expect_run_git_command_output_with_env()
+            .times(1)
+            .returning(|_, _, _| Ok(non_lock_failure_output()));
+        sleeper.expect_sleep().times(0);
+
+        // Act
+        let output = run_git_command_with_index_lock_retry_with_dependencies(
+            repo_path,
+            &args,
+            &environment,
+            &command_runner,
+            &sleeper,
+        )
+        .expect("retry helper should return command output");
+
+        // Assert
+        assert!(!output.status.success());
+    }
+
+    /// Returns a successful git command output.
+    fn success_output() -> Output {
+        Command::new("git")
+            .arg("--version")
+            .output()
+            .expect("failed to run git --version")
+    }
+
+    /// Returns a failing git command output that matches index lock contention.
+    fn git_index_lock_output() -> Output {
+        let mut output = Command::new("git")
+            .arg("definitely-invalid-subcommand")
+            .output()
+            .expect("failed to run git invalid command");
+        output.stdout = vec![];
+        output.stderr = b"fatal: Unable to create '.git/index.lock': File exists.".to_vec();
+
+        output
+    }
+
+    /// Returns a failing git command output that is unrelated to index locking.
+    fn non_lock_failure_output() -> Output {
+        let mut output = Command::new("git")
+            .arg("definitely-invalid-subcommand")
+            .output()
+            .expect("failed to run git invalid command");
+        output.stdout = vec![];
+        output.stderr = b"fatal: not a git repository".to_vec();
+
+        output
+    }
 }
