@@ -917,6 +917,20 @@ fn extract_turn_id_from_turn_start_response(response_value: &Value) -> Option<St
         .map(ToString::to_string)
         .or_else(|| {
             result
+                .get("turn")
+                .and_then(|turn| turn.get("turnId"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            result
+                .get("turn")
+                .and_then(|turn| turn.get("turn_id"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            result
                 .get("turnId")
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
@@ -930,17 +944,47 @@ fn extract_turn_id_from_turn_start_response(response_value: &Value) -> Option<St
 }
 
 /// Extracts the active turn id from one `turn/started` notification payload.
+///
+/// Supports nested `params.turn.id` and flat `params.turnId` /
+/// `params.turn_id` shapes.
 fn extract_turn_id_from_turn_started_notification(response_value: &Value) -> Option<String> {
     if response_value.get("method").and_then(Value::as_str) != Some("turn/started") {
         return None;
     }
 
-    response_value
-        .get("params")
-        .and_then(|params| params.get("turn"))
+    let params = response_value.get("params")?;
+
+    params
+        .get("turn")
         .and_then(|turn| turn.get("id"))
         .and_then(Value::as_str)
         .map(ToString::to_string)
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|turn| turn.get("turnId"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|turn| turn.get("turn_id"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            params
+                .get("turnId")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            params
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
 }
 
 /// Extracted assistant message payload from one `item/completed` line.
@@ -1153,7 +1197,8 @@ fn is_context_window_exceeded_error(error_message: &str) -> bool {
 
 /// Extracts one turn id from a `turn/completed` notification payload.
 ///
-/// Supports nested `params.turn.id` and legacy flat `params.turnId` /
+/// Supports nested `params.turn.id`, `params.turn.turnId`,
+/// `params.turn.turn_id`, and legacy flat `params.turnId` /
 /// `params.turn_id` shapes.
 fn extract_turn_id_from_turn_completed_notification(response_value: &Value) -> Option<&str> {
     let params = response_value.get("params")?;
@@ -1162,6 +1207,18 @@ fn extract_turn_id_from_turn_completed_notification(response_value: &Value) -> O
         .get("turn")
         .and_then(|turn| turn.get("id"))
         .and_then(Value::as_str)
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|turn| turn.get("turnId"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|turn| turn.get("turn_id"))
+                .and_then(Value::as_str)
+        })
         .or_else(|| params.get("turnId").and_then(Value::as_str))
         .or_else(|| params.get("turn_id").and_then(Value::as_str))
 }
@@ -1819,6 +1876,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_turn_completed_accepts_matching_nested_flat_turn_id_fields() {
+        // Arrange
+        let camel_case_response = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "turnId": "active-turn",
+                    "status": "completed"
+                }
+            }
+        });
+        let snake_case_response = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "turn_id": "active-turn",
+                    "status": "completed"
+                }
+            }
+        });
+
+        // Act
+        let camel_case_result = parse_turn_completed(&camel_case_response, Some("active-turn"));
+        let snake_case_result = parse_turn_completed(&snake_case_response, Some("active-turn"));
+
+        // Assert
+        assert_eq!(camel_case_result, Some(Ok(())));
+        assert_eq!(snake_case_result, Some(Ok(())));
+    }
+
+    #[test]
     fn build_thread_start_payload_uses_thread_folder_as_cwd() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
@@ -1985,6 +2073,35 @@ mod tests {
     }
 
     #[test]
+    fn extract_turn_id_from_turn_start_response_supports_nested_flat_turn_fields() {
+        // Arrange
+        let camel_case_response = serde_json::json!({
+            "id": "turn-start-123",
+            "result": {
+                "turn": {
+                    "turnId": "turn-camel"
+                }
+            }
+        });
+        let snake_case_response = serde_json::json!({
+            "id": "turn-start-123",
+            "result": {
+                "turn": {
+                    "turn_id": "turn-snake"
+                }
+            }
+        });
+
+        // Act
+        let camel_case_turn_id = extract_turn_id_from_turn_start_response(&camel_case_response);
+        let snake_case_turn_id = extract_turn_id_from_turn_start_response(&snake_case_response);
+
+        // Assert
+        assert_eq!(camel_case_turn_id.as_deref(), Some("turn-camel"));
+        assert_eq!(snake_case_turn_id.as_deref(), Some("turn-snake"));
+    }
+
+    #[test]
     fn extract_turn_id_from_turn_started_notification_returns_turn_id() {
         // Arrange
         let response_value = serde_json::json!({
@@ -2001,6 +2118,64 @@ mod tests {
 
         // Assert
         assert_eq!(turn_id.as_deref(), Some("turn-789"));
+    }
+
+    #[test]
+    fn extract_turn_id_from_turn_started_notification_supports_flat_fields() {
+        // Arrange
+        let camel_case_response = serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "turnId": "turn-camel"
+            }
+        });
+        let snake_case_response = serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "turn_id": "turn-snake"
+            }
+        });
+
+        // Act
+        let camel_case_turn_id =
+            extract_turn_id_from_turn_started_notification(&camel_case_response);
+        let snake_case_turn_id =
+            extract_turn_id_from_turn_started_notification(&snake_case_response);
+
+        // Assert
+        assert_eq!(camel_case_turn_id.as_deref(), Some("turn-camel"));
+        assert_eq!(snake_case_turn_id.as_deref(), Some("turn-snake"));
+    }
+
+    #[test]
+    fn extract_turn_id_from_turn_started_notification_supports_nested_flat_turn_fields() {
+        // Arrange
+        let camel_case_response = serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "turn": {
+                    "turnId": "turn-camel"
+                }
+            }
+        });
+        let snake_case_response = serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "turn": {
+                    "turn_id": "turn-snake"
+                }
+            }
+        });
+
+        // Act
+        let camel_case_turn_id =
+            extract_turn_id_from_turn_started_notification(&camel_case_response);
+        let snake_case_turn_id =
+            extract_turn_id_from_turn_started_notification(&snake_case_response);
+
+        // Assert
+        assert_eq!(camel_case_turn_id.as_deref(), Some("turn-camel"));
+        assert_eq!(snake_case_turn_id.as_deref(), Some("turn-snake"));
     }
 
     #[test]
