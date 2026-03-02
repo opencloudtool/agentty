@@ -3675,7 +3675,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stop_session_errors_when_no_pid() {
+    /// Verifies `stop_session` still succeeds when no process PID is
+    /// registered yet.
+    async fn test_stop_session_succeeds_when_no_pid() {
         // Arrange
         let base_dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(base_dir.path()).await;
@@ -3692,11 +3694,7 @@ mod tests {
         let result = app.stop_session(&session_id).await;
 
         // Assert
-        assert!(result.is_err());
-        assert_eq!(
-            result.expect_err("expected error"),
-            "No running agent process"
-        );
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

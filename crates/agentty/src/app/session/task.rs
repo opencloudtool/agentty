@@ -860,6 +860,7 @@ mod tests {
         let output = Arc::new(Mutex::new(String::new()));
         let context = AssistContext {
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             db: Database::open_in_memory()
                 .await
                 .expect("failed to open in-memory db"),
@@ -896,6 +897,7 @@ mod tests {
         let output = Arc::new(Mutex::new(String::new()));
         let context = AssistContext {
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             db: Database::open_in_memory()
                 .await
                 .expect("failed to open in-memory db"),
@@ -931,6 +933,7 @@ mod tests {
         let output = Arc::new(Mutex::new(String::new()));
         let context = AssistContext {
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             db: Database::open_in_memory()
                 .await
                 .expect("failed to open in-memory db"),
@@ -988,6 +991,7 @@ mod tests {
         let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
             agent: AgentKind::Claude,
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             cmd: command,
             db: database.clone(),
             id: "session-id".to_string(),
@@ -1051,6 +1055,7 @@ mod tests {
         let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
             agent: AgentKind::Codex,
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             cmd: command,
             db: database.clone(),
             id: "session-id".to_string(),
@@ -1117,6 +1122,7 @@ mod tests {
         let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
             agent: AgentKind::Codex,
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             cmd: command,
             db: database,
             id: "session-id".to_string(),
@@ -1177,6 +1183,7 @@ mod tests {
         let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
             agent: AgentKind::Claude,
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             cmd: command,
             db: database.clone(),
             id: "session-id".to_string(),
@@ -1248,6 +1255,7 @@ mod tests {
         let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
             agent: AgentKind::Gemini,
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             cmd: command,
             db: database.clone(),
             id: "session-id".to_string(),
@@ -1316,6 +1324,7 @@ mod tests {
         let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
             agent: AgentKind::Codex,
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             cmd: command,
             db: database,
             id: "session-id".to_string(),
@@ -1406,6 +1415,7 @@ mod tests {
         let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
             agent: AgentKind::Claude,
             app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
             cmd: command,
             db: database,
             id: "session-id".to_string(),

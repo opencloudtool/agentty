@@ -315,7 +315,7 @@ impl SessionManager {
     ///
     /// # Errors
     /// Returns an error if the session is not found, not in `InProgress`
-    /// status, or the agent process is not running.
+    /// status, or the PID value cannot be converted for signaling.
     pub async fn stop_session(
         &self,
         services: &AppServices,
