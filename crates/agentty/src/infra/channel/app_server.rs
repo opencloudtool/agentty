@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::infra::agent::protocol::parse_agent_response;
 use crate::infra::app_server::{AppServerClient, AppServerStreamEvent, AppServerTurnRequest};
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnMode,
@@ -113,7 +114,7 @@ impl AgentChannel for AppServerAgentChannel {
                     let _ = events.send(TurnEvent::PidUpdate(response.pid));
 
                     Ok(TurnResult {
-                        assistant_message: response.assistant_message,
+                        assistant_message: parse_agent_response(&response.assistant_message),
                         context_reset: response.context_reset,
                         input_tokens: response.input_tokens,
                         output_tokens: response.output_tokens,
@@ -360,7 +361,7 @@ mod tests {
             .expect("turn should succeed");
 
         // Assert
-        assert_eq!(result.assistant_message, "Result");
+        assert_eq!(result.assistant_message.text, "Result");
         assert!(result.context_reset);
         assert_eq!(result.input_tokens, 100);
         assert_eq!(result.output_tokens, 50);

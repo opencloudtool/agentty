@@ -817,6 +817,30 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Replaces the full output for a session row.
+    ///
+    /// Used by the protocol metadata stripping pass to remove the
+    /// `---agentty-meta---` block after turn completion.
+    ///
+    /// # Errors
+    /// Returns an error if the output update fails.
+    pub async fn replace_session_output(&self, id: &str, output: &str) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET output = ?
+WHERE id = ?
+",
+        )
+        .bind(output)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to replace session output: {err}"))?;
+
+        Ok(())
+    }
+
     /// Appends text to the saved output for a session row.
     ///
     /// # Errors

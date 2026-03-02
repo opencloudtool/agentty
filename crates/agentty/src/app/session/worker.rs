@@ -381,8 +381,8 @@ async fn apply_turn_result(
 ) -> Result<(), String> {
     match turn_result {
         Ok(result) => {
-            if !streamed_any_content && !result.assistant_message.trim().is_empty() {
-                let message = format!("{}\n\n", result.assistant_message.trim_end());
+            if !streamed_any_content && !result.assistant_message.text.trim().is_empty() {
+                let message = format!("{}\n\n", result.assistant_message.text.trim_end());
                 SessionTaskService::append_session_output(
                     &context.output,
                     &context.db,
@@ -413,11 +413,21 @@ async fn apply_turn_result(
                 )
                 .await;
 
-            let parsed_questions =
-                crate::infra::agent::question_parser::parse_questions(&result.assistant_message);
+            // Use structured questions from protocol metadata when available;
+            // fall back to legacy heading-based parsing for backward
+            // compatibility with agents that do not follow the protocol.
+            let parsed_questions = if result.assistant_message.meta.questions.is_empty() {
+                crate::infra::agent::question_parser::parse_questions(
+                    &result.assistant_message.text,
+                )
+            } else {
+                result.assistant_message.meta.questions.clone()
+            };
             if let Ok(mut guard) = context.questions.lock() {
                 *guard = parsed_questions;
             }
+
+            strip_protocol_metadata(context).await;
 
             SessionTaskService::handle_auto_commit(AssistContext {
                 app_event_tx: context.app_event_tx.clone(),
@@ -449,6 +459,45 @@ async fn apply_turn_result(
 
             Err(error.0)
         }
+    }
+}
+
+/// Strips the `---agentty-meta---` delimiter and trailing JSON block from
+/// the streamed session output buffer and persisted database output.
+///
+/// During streaming, the protocol metadata block is appended as raw text.
+/// This function removes it after the turn completes so the metadata is
+/// not displayed to the user.
+async fn strip_protocol_metadata(context: &SessionWorkerContext) {
+    let delimiter = crate::infra::agent::protocol::METADATA_DELIMITER;
+
+    let truncated = if let Ok(mut guard) = context.output.lock() {
+        if let Some(pos) = guard.rfind(delimiter) {
+            guard.truncate(pos);
+            let trimmed = guard.trim_end().to_string();
+            *guard = trimmed;
+
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if truncated {
+        let cleaned_output = context
+            .output
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let _ = context
+            .db
+            .replace_session_output(&context.session_id, &cleaned_output)
+            .await;
+        let _ = context.app_event_tx.send(AppEvent::SessionUpdated {
+            session_id: context.session_id.clone(),
+        });
     }
 }
 

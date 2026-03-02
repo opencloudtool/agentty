@@ -291,6 +291,16 @@ mod tests {
     /// filesystem side effects for worktree creation/removal.
     fn create_default_mock_git_client(repo_root: PathBuf) -> git::MockGitClient {
         let mut mock = git::MockGitClient::new();
+
+        setup_mock_worktree_expectations(&mut mock, repo_root);
+        setup_mock_merge_and_rebase_expectations(&mut mock);
+        setup_mock_commit_and_branch_expectations(&mut mock);
+
+        mock
+    }
+
+    /// Configures worktree, repo discovery, and remote expectations.
+    fn setup_mock_worktree_expectations(mock: &mut git::MockGitClient, repo_root: PathBuf) {
         let find_repo_root = repo_root.clone();
 
         mock.expect_detect_git_info()
@@ -329,6 +339,35 @@ mod tests {
                     Ok(())
                 })
             });
+        mock.expect_pull_rebase().times(0..).returning(|_| {
+            Box::pin(async { Err("No upstream branch configured for pull".to_string()) })
+        });
+        mock.expect_push_current_branch()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock.expect_fetch_remote()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock.expect_get_ahead_behind()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok((0, 0)) }));
+        mock.expect_list_upstream_commit_titles()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(Vec::new()) }));
+        mock.expect_list_local_commit_titles()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(Vec::new()) }));
+        mock.expect_repo_url()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok("https://example.invalid/repo.git".to_string()) }));
+        mock.expect_main_repo_root().times(0..).returning(move |_| {
+            let repo_root = repo_root.clone();
+            Box::pin(async move { Ok(repo_root) })
+        });
+    }
+
+    /// Configures merge, rebase, and conflict resolution expectations.
+    fn setup_mock_merge_and_rebase_expectations(mock: &mut git::MockGitClient) {
         mock.expect_squash_merge_diff()
             .times(0..)
             .returning(|_, _, _| Box::pin(async { Ok(String::new()) }));
@@ -359,6 +398,10 @@ mod tests {
         mock.expect_list_conflicted_files()
             .times(0..)
             .returning(|_| Box::pin(async { Ok(Vec::new()) }));
+    }
+
+    /// Configures commit, staging, and branch operation expectations.
+    fn setup_mock_commit_and_branch_expectations(mock: &mut git::MockGitClient) {
         mock.expect_commit_all()
             .times(0..)
             .returning(|_, _, _| Box::pin(async { Ok(()) }));
@@ -382,33 +425,6 @@ mod tests {
         mock.expect_is_worktree_clean()
             .times(0..)
             .returning(|_| Box::pin(async { Ok(true) }));
-        mock.expect_pull_rebase().times(0..).returning(|_| {
-            Box::pin(async { Err("No upstream branch configured for pull".to_string()) })
-        });
-        mock.expect_push_current_branch()
-            .times(0..)
-            .returning(|_| Box::pin(async { Ok(()) }));
-        mock.expect_fetch_remote()
-            .times(0..)
-            .returning(|_| Box::pin(async { Ok(()) }));
-        mock.expect_get_ahead_behind()
-            .times(0..)
-            .returning(|_| Box::pin(async { Ok((0, 0)) }));
-        mock.expect_list_upstream_commit_titles()
-            .times(0..)
-            .returning(|_| Box::pin(async { Ok(Vec::new()) }));
-        mock.expect_list_local_commit_titles()
-            .times(0..)
-            .returning(|_| Box::pin(async { Ok(Vec::new()) }));
-        mock.expect_repo_url()
-            .times(0..)
-            .returning(|_| Box::pin(async { Ok("https://example.invalid/repo.git".to_string()) }));
-        mock.expect_main_repo_root().times(0..).returning(move |_| {
-            let repo_root = repo_root.clone();
-            Box::pin(async move { Ok(repo_root) })
-        });
-
-        mock
     }
 
     /// Replaces app-level git dependencies with the provided mock client.
@@ -2184,7 +2200,7 @@ mod tests {
                 Box::pin(async move {
                     let _ = done.send(());
                     Ok(TurnResult {
-                        assistant_message: String::new(),
+                        assistant_message: crate::infra::agent::AgentResponse::plain(""),
                         context_reset: false,
                         input_tokens: 0,
                         output_tokens: 0,
@@ -2322,7 +2338,7 @@ mod tests {
             Box::pin(async move {
                 let _ = done.send(());
                 Ok(TurnResult {
-                    assistant_message: String::new(),
+                    assistant_message: crate::infra::agent::AgentResponse::plain(""),
                     context_reset: false,
                     input_tokens: 0,
                     output_tokens: 0,

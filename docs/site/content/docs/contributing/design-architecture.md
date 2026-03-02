@@ -141,6 +141,7 @@ instead of replaying the full transcript.
 | — `claude.rs` | Claude backend implementation. |
 | — `codex.rs` | Codex backend implementation. |
 | — `gemini.rs` | Gemini backend implementation. |
+| — `protocol.rs` | Structured agent communication protocol types (`AgentResponse`, `AgentResponseMeta`, `AgentResponseKind`) and parsing. |
 | — `response_parser.rs` | Streaming response parsing. |
 | `crates/agentty/src/infra/app_server.rs` | `AppServerClient` trait and shared request/response stream types. |
 | `crates/agentty/src/infra/app_server_router.rs` | `RoutingAppServerClient` — provider routing for app-server models (Codex/Gemini). |

@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::domain::agent::AgentKind;
+use crate::infra::agent::AgentResponse;
 use crate::infra::app_server::AppServerClient;
 use crate::infra::channel::app_server::AppServerAgentChannel;
 use crate::infra::channel::cli::CliAgentChannel;
@@ -93,8 +94,8 @@ pub enum TurnEvent {
 /// Normalized result returned when one agent turn completes successfully.
 #[derive(Debug)]
 pub struct TurnResult {
-    /// Full assistant message text for the turn.
-    pub assistant_message: String,
+    /// Parsed agent response containing display text and structured metadata.
+    pub assistant_message: AgentResponse,
     /// Whether the provider reset its context to complete this turn.
     pub context_reset: bool,
     /// Input token count for the turn.

@@ -8,9 +8,9 @@ use askama::Template;
 use crate::domain::agent::AgentKind;
 use crate::infra::agent::response_parser::ParsedResponse;
 
-/// Marker used to detect whether question instructions are already included
+/// Marker used to detect whether protocol instructions are already included
 /// in a prompt.
-const QUESTION_INSTRUCTIONS_MARKER: &str = "Clarification questions:";
+const PROTOCOL_INSTRUCTIONS_MARKER: &str = "Structured response protocol:";
 
 /// Marker used to detect whether repo-root path instructions are already
 /// included in a prompt.
@@ -106,10 +106,11 @@ struct ResumeWithSessionOutputPromptTemplate<'a> {
     session_output: &'a str,
 }
 
-/// Askama view model for rendering clarification-question format instructions.
+/// Askama view model for rendering the structured response protocol
+/// instructions.
 #[derive(Template)]
-#[template(path = "question_instruction_prompt.md", escape = "none")]
-struct QuestionInstructionPromptTemplate<'a> {
+#[template(path = "protocol_instruction_prompt.md", escape = "none")]
+struct ProtocolInstructionPromptTemplate<'a> {
     prompt: &'a str,
 }
 
@@ -218,24 +219,24 @@ pub(crate) fn prepend_repo_root_path_instructions(
     Ok(rendered.trim_end().to_string())
 }
 
-/// Prepends clarification-question format instructions to a prompt.
+/// Prepends structured response protocol instructions to a prompt.
 ///
-/// Tells agents to include a `**Questions**` section with numbered items when
-/// they need user clarification. If the prompt already contains the
-/// question-instruction marker, this function returns the prompt unchanged to
-/// avoid duplicated guidance.
+/// Tells agents to append a `---agentty-meta---` delimiter followed by a
+/// JSON metadata block when they need clarification or are presenting a
+/// plan. If the prompt already contains the protocol marker, this function
+/// returns the prompt unchanged to avoid duplicated guidance.
 ///
 /// # Errors
 /// Returns an error if Askama template rendering fails.
 pub(crate) fn prepend_question_instructions(prompt: &str) -> Result<String, AgentBackendError> {
-    if prompt.contains(QUESTION_INSTRUCTIONS_MARKER) {
+    if prompt.contains(PROTOCOL_INSTRUCTIONS_MARKER) {
         return Ok(prompt.to_string());
     }
 
-    let template = QuestionInstructionPromptTemplate { prompt };
+    let template = ProtocolInstructionPromptTemplate { prompt };
     let rendered = template.render().map_err(|error| {
         AgentBackendError::CommandBuild(format!(
-            "Failed to render `question_instruction_prompt.md`: {error}"
+            "Failed to render `protocol_instruction_prompt.md`: {error}"
         ))
     })?;
 
@@ -355,31 +356,31 @@ mod tests {
     }
 
     #[test]
-    /// Ensures question instructions are prepended to plain prompts.
-    fn test_prepend_question_instructions_adds_instructions() {
+    /// Ensures protocol instructions are prepended to plain prompts.
+    fn test_prepend_question_instructions_adds_protocol_instructions() {
         // Arrange
         let prompt = "Implement feature";
 
         // Act
         let rendered_prompt = prepend_question_instructions(prompt)
-            .expect("question instruction prompt should render");
+            .expect("protocol instruction prompt should render");
 
         // Assert
-        assert!(rendered_prompt.contains("Clarification questions:"));
-        assert!(rendered_prompt.contains("**Questions**"));
+        assert!(rendered_prompt.contains("Structured response protocol:"));
+        assert!(rendered_prompt.contains("---agentty-meta---"));
         assert!(rendered_prompt.ends_with(prompt));
     }
 
     #[test]
-    /// Ensures question instructions are not duplicated when already present.
+    /// Ensures protocol instructions are not duplicated when already present.
     fn test_prepend_question_instructions_is_idempotent() {
         // Arrange
         let prompt = prepend_question_instructions("Implement feature")
-            .expect("question instruction prompt should render");
+            .expect("protocol instruction prompt should render");
 
         // Act
         let rendered_prompt = prepend_question_instructions(&prompt)
-            .expect("question instruction prompt should render");
+            .expect("protocol instruction prompt should render");
 
         // Assert
         assert_eq!(rendered_prompt, prompt);

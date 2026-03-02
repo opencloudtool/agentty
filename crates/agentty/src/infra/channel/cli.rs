@@ -10,6 +10,7 @@ use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::mpsc;
 
 use crate::domain::agent::AgentKind;
+use crate::infra::agent::protocol::parse_agent_response;
 use crate::infra::agent::{AgentBackend, AgentCommandMode, BuildCommandRequest};
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnMode,
@@ -167,7 +168,7 @@ impl AgentChannel for CliAgentChannel {
             let parsed = crate::infra::agent::parse_response(kind, &stdout_text, &stderr_text);
 
             Ok(TurnResult {
-                assistant_message: parsed.content,
+                assistant_message: parse_agent_response(&parsed.content),
                 context_reset: false,
                 input_tokens: parsed.stats.input_tokens,
                 output_tokens: parsed.stats.output_tokens,
