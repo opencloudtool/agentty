@@ -25,6 +25,12 @@ pub enum AppServerStreamEvent {
     AssistantMessage {
         /// Text payload emitted by the provider.
         message: String,
+        /// Optional provider phase label for this assistant item.
+        ///
+        /// Codex `item/completed` agent messages may include `phase` values
+        /// (for example, from multi-phase prompting flows). Providers that do
+        /// not expose phases set this to `None`.
+        phase: Option<String>,
         /// Whether `message` is a partial delta chunk that should be appended
         /// inline without paragraph spacing.
         is_delta: bool,

@@ -437,6 +437,7 @@ impl RealGeminiAcpClient {
         let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
             is_delta: true,
             message: chunk,
+            phase: None,
         });
     }
 
@@ -1050,6 +1051,7 @@ mod tests {
             Some(AppServerStreamEvent::AssistantMessage {
                 is_delta: true,
                 message: "Chunk text".to_string(),
+                phase: None,
             })
         );
     }
@@ -1387,6 +1389,7 @@ mod tests {
             Some(AppServerStreamEvent::AssistantMessage {
                 is_delta: true,
                 message: "Hello from Gemini".to_string(),
+                phase: None,
             })
         );
     }

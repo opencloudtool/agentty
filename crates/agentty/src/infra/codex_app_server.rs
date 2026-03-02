@@ -437,6 +437,7 @@ impl RealCodexAppServerClient {
 
         let mut assistant_messages = Vec::new();
         let mut active_turn_id: Option<String> = None;
+        let mut active_phase: Option<String> = None;
         let mut waiting_for_handoff_turn_completion = false;
         let mut latest_stream_usage: Option<(u64, u64)> = None;
         let mut completed_turn_usage: Option<(u64, u64)> = None;
@@ -494,6 +495,7 @@ impl RealCodexAppServerClient {
                         &response_value,
                         &stream_tx,
                         &mut assistant_messages,
+                        &mut active_phase,
                     );
 
                     Self::update_turn_usage_from_response(
@@ -614,22 +616,48 @@ impl RealCodexAppServerClient {
     }
 
     /// Streams progress updates and assistant message items for one response.
+    ///
+    /// When an assistant message includes an optional `phase` label, the phase
+    /// is forwarded to stream consumers and surfaced as a progress update when
+    /// it changes from the previous value.
     fn stream_turn_content_from_response(
         response_value: &Value,
         stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
         assistant_messages: &mut Vec<String>,
+        active_phase: &mut Option<String>,
     ) {
         if let Some(progress) = extract_item_started_progress(response_value) {
             let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(progress));
         }
 
-        if let Some(message) = extract_agent_message(response_value) {
+        if let Some(agent_message) = extract_agent_message(response_value) {
+            if let Some(phase) = agent_message.phase.as_deref() {
+                Self::emit_phase_progress_update(stream_tx, active_phase, phase);
+            }
+
             let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
                 is_delta: false,
-                message: message.clone(),
+                message: agent_message.message.clone(),
+                phase: agent_message.phase.clone(),
             });
-            assistant_messages.push(message);
+            assistant_messages.push(agent_message.message);
         }
+    }
+
+    /// Emits a phase progress event when an assistant item reports a new phase.
+    fn emit_phase_progress_update(
+        stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
+        active_phase: &mut Option<String>,
+        phase: &str,
+    ) {
+        if active_phase.as_deref() == Some(phase) {
+            return;
+        }
+
+        *active_phase = Some(phase.to_string());
+        let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(format!(
+            "Phase: {phase}"
+        )));
     }
 
     /// Finalizes one parsed `turn/completed` result into the normalized turn
@@ -656,6 +684,7 @@ impl RealCodexAppServerClient {
                 let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
                     is_delta: false,
                     message: streamed_error,
+                    phase: None,
                 });
 
                 Err(error)
@@ -898,16 +927,32 @@ fn extract_turn_id_from_turn_started_notification(response_value: &Value) -> Opt
         .map(ToString::to_string)
 }
 
+/// Extracted assistant message payload from one `item/completed` line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExtractedAgentMessage {
+    /// Message text extracted from Codex `agentMessage` content.
+    message: String,
+    /// Optional phase label emitted by Codex for the assistant item.
+    phase: Option<String>,
+}
+
 /// Extracts completed assistant message text from an `item/completed` line.
 ///
 /// Synthetic completion status lines (for example `Command completed`) are
 /// ignored so only real assistant messages are streamed to chat output.
-fn extract_agent_message(response_value: &Value) -> Option<String> {
+///
+/// When available, the assistant item `phase` is preserved so callers can
+/// propagate phase transitions without changing visible assistant text.
+fn extract_agent_message(response_value: &Value) -> Option<ExtractedAgentMessage> {
     if response_value.get("method").and_then(Value::as_str) != Some("item/completed") {
         return None;
     }
 
     let item = response_value.get("params")?.get("item")?;
+    let phase = item
+        .get("phase")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
     let item_type = item.get("type")?.as_str()?.to_ascii_lowercase();
     if !(item_type == "agentmessage" || item_type == "agent_message") {
         return None;
@@ -918,7 +963,10 @@ fn extract_agent_message(response_value: &Value) -> Option<String> {
             return None;
         }
 
-        return Some(item_text.to_string());
+        return Some(ExtractedAgentMessage {
+            message: item_text.to_string(),
+            phase,
+        });
     }
 
     let content = item.get("content")?.as_array()?;
@@ -939,7 +987,7 @@ fn extract_agent_message(response_value: &Value) -> Option<String> {
         return None;
     }
 
-    Some(message)
+    Some(ExtractedAgentMessage { message, phase })
 }
 
 /// Parses `turn/completed` notifications and maps failures to user errors.
@@ -1309,7 +1357,40 @@ mod tests {
         let message = extract_agent_message(&response_value);
 
         // Assert
-        assert_eq!(message, Some("Line 1\n\nLine 2".to_string()));
+        assert_eq!(
+            message,
+            Some(ExtractedAgentMessage {
+                message: "Line 1\n\nLine 2".to_string(),
+                phase: None,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_agent_message_preserves_phase_for_agent_message_item() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "agentMessage",
+                    "phase": "draft",
+                    "text": "Draft response"
+                }
+            }
+        });
+
+        // Act
+        let message = extract_agent_message(&response_value);
+
+        // Assert
+        assert_eq!(
+            message,
+            Some(ExtractedAgentMessage {
+                message: "Draft response".to_string(),
+                phase: Some("draft".to_string()),
+            })
+        );
     }
 
     #[test]
@@ -1569,8 +1650,66 @@ mod tests {
             Some(AppServerStreamEvent::AssistantMessage {
                 is_delta: false,
                 message: "[Codex app-server] turn interrupted".to_string(),
+                phase: None,
             })
         );
+    }
+
+    #[test]
+    fn stream_turn_content_from_response_emits_phase_progress_once_per_phase() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "agentMessage",
+                    "phase": "final",
+                    "text": "Final answer"
+                }
+            }
+        });
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+        let mut assistant_messages = Vec::new();
+        let mut active_phase = None;
+
+        // Act
+        RealCodexAppServerClient::stream_turn_content_from_response(
+            &response_value,
+            &stream_tx,
+            &mut assistant_messages,
+            &mut active_phase,
+        );
+        RealCodexAppServerClient::stream_turn_content_from_response(
+            &response_value,
+            &stream_tx,
+            &mut assistant_messages,
+            &mut active_phase,
+        );
+
+        // Assert
+        assert_eq!(
+            stream_rx.try_recv().ok(),
+            Some(AppServerStreamEvent::ProgressUpdate(
+                "Phase: final".to_string()
+            ))
+        );
+        assert_eq!(
+            stream_rx.try_recv().ok(),
+            Some(AppServerStreamEvent::AssistantMessage {
+                is_delta: false,
+                message: "Final answer".to_string(),
+                phase: Some("final".to_string()),
+            })
+        );
+        assert_eq!(
+            stream_rx.try_recv().ok(),
+            Some(AppServerStreamEvent::AssistantMessage {
+                is_delta: false,
+                message: "Final answer".to_string(),
+                phase: Some("final".to_string()),
+            })
+        );
+        assert_eq!(stream_rx.try_recv().ok(), None);
     }
 
     #[test]

@@ -47,8 +47,9 @@ impl AgentChannel for AppServerAgentChannel {
     ///
     /// [`AppServerStreamEvent::AssistantMessage`] events are forwarded as
     /// [`TurnEvent::AssistantDelta`] (formatting adjusted based on the
-    /// `is_delta` flag). [`AppServerStreamEvent::ProgressUpdate`] events are
-    /// forwarded as [`TurnEvent::Progress`].
+    /// `is_delta` flag). Provider phase metadata is accepted but not surfaced
+    /// in [`TurnEvent`] yet. [`AppServerStreamEvent::ProgressUpdate`] events
+    /// are forwarded as [`TurnEvent::Progress`].
     ///
     /// # Errors
     /// Returns [`AgentError`] when [`AppServerClient::run_turn`] fails.
@@ -84,7 +85,11 @@ impl AgentChannel for AppServerAgentChannel {
                 tokio::spawn(async move {
                     while let Some(event) = stream_rx.recv().await {
                         match event {
-                            AppServerStreamEvent::AssistantMessage { message, is_delta } => {
+                            AppServerStreamEvent::AssistantMessage {
+                                message,
+                                phase: _phase,
+                                is_delta,
+                            } => {
                                 let trimmed = message.trim_end();
                                 if trimmed.trim().is_empty() {
                                     continue;
@@ -182,6 +187,7 @@ mod tests {
             .returning(|_request, stream_tx| {
                 let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
                     message: "Hello world".to_string(),
+                    phase: None,
                     is_delta: true,
                 });
 
@@ -214,6 +220,7 @@ mod tests {
             .returning(|_request, stream_tx| {
                 let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
                     message: "Full paragraph   ".to_string(),
+                    phase: None,
                     is_delta: false,
                 });
 
@@ -279,6 +286,7 @@ mod tests {
             .returning(|_request, stream_tx| {
                 let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
                     message: "   \n  ".to_string(),
+                    phase: None,
                     is_delta: true,
                 });
 
