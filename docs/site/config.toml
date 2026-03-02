@@ -11,6 +11,7 @@ ignored_content = ["**/AGENTS.md", "**/CLAUDE.md", "**/GEMINI.md"]
 [markdown]
 render_emoji = true
 external_links_target_blank = true
+insert_anchor_links = "right"
 
 [markdown.highlighting]
 style = "inline"
