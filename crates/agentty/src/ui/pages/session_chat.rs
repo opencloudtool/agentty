@@ -341,12 +341,14 @@ impl<'a> SessionChatPage<'a> {
     /// Returns the static help text shown in the bottom panel for a given
     /// session in view mode.
     ///
-    /// `InProgress`, `Rebasing`, `Merging`, and `Queued` sessions keep
-    /// worktree access but hide edit and diff shortcuts, `Review` sessions
-    /// expose review shortcuts with read-only assist generation (`m` opens
-    /// merge confirmation before queueing), and
-    /// `Done` sessions expose only read-only shortcuts. `Canceled` sessions
-    /// expose only `back`, `scroll`, and `help`.
+    /// `InProgress` sessions keep worktree access and expose the stop shortcut
+    /// while hiding edit and diff actions. `Rebasing` sessions keep worktree
+    /// access but hide stop, edit, and diff shortcuts. `Merging` and `Queued`
+    /// sessions hide worktree and stop shortcuts while the merge queue is
+    /// active. `Review` sessions expose review shortcuts with read-only assist
+    /// generation (`m` opens merge confirmation before queueing), and `Done`
+    /// sessions expose only read-only shortcuts. `Canceled` sessions expose
+    /// only `back`, `scroll`, and `help`.
     fn view_help_text(
         session: &Session,
         done_session_output_mode: DoneSessionOutputMode,
@@ -363,8 +365,10 @@ impl<'a> SessionChatPage<'a> {
 
         let session_state = match session.status {
             Status::Done => ViewSessionState::Done,
-            Status::InProgress | Status::Rebasing | Status::Merging | Status::Queued => {
-                ViewSessionState::InProgress
+            Status::InProgress => ViewSessionState::InProgress,
+            Status::Rebasing => ViewSessionState::Rebasing,
+            Status::Merging | Status::Queued => {
+                ViewSessionState::MergeQueue
             }
             Status::Review => ViewSessionState::Review,
             _ => ViewSessionState::Interactive,
@@ -724,21 +728,48 @@ mod tests {
     }
 
     #[test]
-    fn test_view_help_text_rebasing_matches_in_progress_actions() {
+    fn test_view_help_text_rebasing_hides_stop_and_keeps_open() {
         // Arrange
-        let mut in_progress_session = session_fixture();
-        in_progress_session.status = Status::InProgress;
-        let mut rebasing_session = session_fixture();
-        rebasing_session.status = Status::Rebasing;
+        let mut session = session_fixture();
+        session.status = Status::Rebasing;
 
         // Act
-        let in_progress_help_text =
-            SessionChatPage::view_help_text(&in_progress_session, DoneSessionOutputMode::Summary);
-        let rebasing_help_text =
-            SessionChatPage::view_help_text(&rebasing_session, DoneSessionOutputMode::Summary);
+        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
-        assert_eq!(rebasing_help_text, in_progress_help_text);
+        assert!(help_text.contains("q: back"));
+        assert!(help_text.contains("j/k: scroll"));
+        assert!(help_text.contains("o: open"));
+        assert!(help_text.contains("e: nvim"));
+        assert!(!help_text.contains("Ctrl+c: stop"));
+        assert!(!help_text.contains("Enter: reply"));
+        assert!(!help_text.contains("d: diff"));
+    }
+
+    #[test]
+    fn test_view_help_text_merge_queue_statuses_hide_open_nvim_and_stop() {
+        // Arrange
+        let merge_queue_statuses = [Status::Queued, Status::Merging];
+
+        // Act
+        let help_texts: Vec<String> = merge_queue_statuses
+            .iter()
+            .map(|session_status| {
+                let mut session = session_fixture();
+                session.status = *session_status;
+
+                SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary)
+            })
+            .collect();
+
+        // Assert
+        for help_text in help_texts {
+            assert!(help_text.contains("q: back"));
+            assert!(help_text.contains("j/k: scroll"));
+            assert!(!help_text.contains("o: open"));
+            assert!(!help_text.contains("e: nvim"));
+            assert!(!help_text.contains("Ctrl+c: stop"));
+        }
     }
 
     #[test]

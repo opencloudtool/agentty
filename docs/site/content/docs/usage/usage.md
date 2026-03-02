@@ -25,18 +25,18 @@ Agentty organizes its interface into four tabs, accessible with `Tab`:
 ## Session Lifecycle
 
 <a id="usage-session-lifecycle"></a>
-Each session moves through a series of states:
+Session statuses and what you can do in each state:
 
-| Status | Description |
-|--------|-------------|
-| **New** | Session created, prompt not yet sent. |
-| **InProgress** | Agent is actively working. |
-| **Review** | Agent finished; changes ready for review. |
-| **Queued** | Session is waiting in the merge queue. |
-| **Rebasing** | Worktree branch is being rebased onto the base branch. |
-| **Merging** | Changes are being merged into the base branch. |
-| **Done** | Session completed and merged. |
-| **Canceled** | Session was canceled by the user. |
+| Status | Description | Available actions |
+|--------|-------------|-------------------|
+| **New** | Session created, prompt not yet sent. | `Enter` reply, `m` queue merge, `r` rebase, `o` open worktree, `e` open `nvim`, scroll, help |
+| **InProgress** | Agent is actively working. | `Ctrl+c` stop, `o` open worktree, `e` open `nvim`, scroll, help |
+| **Review** | Agent finished; changes are ready for review. | `Enter` reply, `m` queue merge, `r` rebase, `o` open worktree, `e` open `nvim`, `d` diff, `f` focused review, `Shift+Tab` permission mode, scroll, help |
+| **Queued** | Session is waiting in the merge queue. | read-only view (`q`, scroll, help) |
+| **Rebasing** | Worktree branch is rebasing onto the base branch. | `o` open worktree, `e` open `nvim`, scroll, help |
+| **Merging** | Changes are being merged into the base branch. | read-only view (`q`, scroll, help) |
+| **Done** | Session completed and merged. | `t` toggle summary/output, scroll, help |
+| **Canceled** | Session was canceled by the user. | read-only view (`q`, scroll, help) |
 
 ### Typical Transitions
 
@@ -141,7 +141,7 @@ state:
 | `?` | Help |
 
 <a id="usage-additional-keys"></a>
-Additional state-specific keys:
+Additional notes:
 
 - **Open command behavior**: `o` runs the configured `Open Command` as
   `exec <command>` unless it already starts with `exec`, so the tmux window

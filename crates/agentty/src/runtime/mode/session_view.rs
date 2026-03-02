@@ -65,7 +65,7 @@ struct ViewKeyContext<'a> {
 struct ViewSessionSnapshot {
     can_open_worktree: bool,
     is_action_allowed: bool,
-    is_in_progress: bool,
+    can_stop_session: bool,
     session_folder: PathBuf,
     session_output: String,
     session_summary: Option<String>,
@@ -80,8 +80,9 @@ const REVIEW_LOADING_MESSAGE_PREFIX: &str = "Preparing review with agent help";
 const REVIEW_NO_DIFF_MESSAGE: &str = "No diff changes found for review.";
 
 /// Processes view-mode key presses and keeps shortcut availability aligned with
-/// session status (`o`/`e` disabled for `Done`/`Canceled`, diff/review
-/// only for `Review`).
+/// session status (`o`/`e` disabled for `Done`/`Canceled`/`Merging`/`Queued`,
+/// `Ctrl+c` enabled only for `InProgress`, and diff/review only for
+/// `Review`).
 pub(crate) async fn handle(
     app: &mut App,
     terminal: &mut TuiTerminal,
@@ -184,7 +185,7 @@ async fn handle_view_key(
         KeyCode::Char('G') => pending_update.scroll_offset = None,
         KeyCode::Char('c')
             if key.modifiers.contains(event::KeyModifiers::CONTROL)
-                && view_session_snapshot.is_in_progress =>
+                && view_session_snapshot.can_stop_session =>
         {
             stop_view_session(app, &view_context.session_id).await;
         }
@@ -314,10 +315,7 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
         can_open_worktree: is_view_worktree_open_allowed(session_status)
             && can_open_session_worktree(session_status),
         is_action_allowed: is_view_action_allowed(session_status),
-        is_in_progress: matches!(
-            session_status,
-            Status::InProgress | Status::Rebasing | Status::Merging | Status::Queued
-        ),
+        can_stop_session: is_view_stop_allowed(session_status),
         session_folder: session.folder.clone(),
         session_output: session.output.clone(),
         session_summary: session.summary.clone(),
@@ -362,7 +360,10 @@ fn is_done_output_toggle_key(status: Status, key: KeyEvent) -> bool {
 
 /// Returns whether `o` and `e` can access the session worktree.
 fn is_view_worktree_open_allowed(status: Status) -> bool {
-    !matches!(status, Status::Done | Status::Canceled)
+    !matches!(
+        status,
+        Status::Done | Status::Canceled | Status::Merging | Status::Queued
+    )
 }
 
 /// Returns whether non-navigation view shortcuts are available.
@@ -378,6 +379,11 @@ fn is_view_action_allowed(status: Status) -> bool {
             | Status::Queued
             | Status::Canceled
     )
+}
+
+/// Returns whether `Ctrl+c` can stop session execution in view mode.
+fn is_view_stop_allowed(status: Status) -> bool {
+    status == Status::InProgress
 }
 
 /// Returns whether the `d` shortcut can open the diff view.
@@ -447,15 +453,20 @@ fn switch_view_to_prompt(
 /// Returns whether worktree-dependent shortcuts (`o` and `e`) are enabled for
 /// the provided session status.
 fn can_open_session_worktree(status: Status) -> bool {
-    !matches!(status, Status::Done | Status::Canceled)
+    !matches!(
+        status,
+        Status::Done | Status::Canceled | Status::Merging | Status::Queued
+    )
 }
 
 /// Maps session status to view help session state.
 fn view_session_state(status: Status) -> ViewSessionState {
     match status {
         Status::Done => ViewSessionState::Done,
-        Status::InProgress | Status::Rebasing | Status::Merging | Status::Queued => {
-            ViewSessionState::InProgress
+        Status::InProgress => ViewSessionState::InProgress,
+        Status::Rebasing => ViewSessionState::Rebasing,
+        Status::Merging | Status::Queued => {
+            ViewSessionState::MergeQueue
         }
         Status::Review => ViewSessionState::Review,
         _ => ViewSessionState::Interactive,
@@ -891,6 +902,21 @@ mod tests {
     }
 
     #[test]
+    fn test_is_view_worktree_open_allowed_returns_false_for_merge_queue_statuses() {
+        // Arrange
+        let merge_queue_statuses = [Status::Queued, Status::Merging];
+
+        // Act
+        let can_open_for_statuses: Vec<bool> = merge_queue_statuses
+            .iter()
+            .map(|status| is_view_worktree_open_allowed(*status))
+            .collect();
+
+        // Assert
+        assert!(can_open_for_statuses.iter().all(|can_open| !can_open));
+    }
+
+    #[test]
     fn test_is_view_action_allowed_only_for_non_done_non_in_progress_status() {
         // Arrange
         let canceled_status = Status::Canceled;
@@ -909,6 +935,27 @@ mod tests {
         assert!(review_allowed);
         assert!(!in_progress_allowed);
         assert!(!done_allowed);
+    }
+
+    #[test]
+    fn test_is_view_stop_allowed_only_for_in_progress() {
+        // Arrange
+        let in_progress_status = Status::InProgress;
+        let rebasing_status = Status::Rebasing;
+        let queued_status = Status::Queued;
+        let merging_status = Status::Merging;
+
+        // Act
+        let in_progress_allowed = is_view_stop_allowed(in_progress_status);
+        let rebasing_allowed = is_view_stop_allowed(rebasing_status);
+        let queued_allowed = is_view_stop_allowed(queued_status);
+        let merging_allowed = is_view_stop_allowed(merging_status);
+
+        // Assert
+        assert!(in_progress_allowed);
+        assert!(!rebasing_allowed);
+        assert!(!queued_allowed);
+        assert!(!merging_allowed);
     }
 
     #[test]
@@ -1492,6 +1539,18 @@ mod tests {
     }
 
     #[test]
+    fn test_can_open_session_worktree_disables_queued_state() {
+        // Arrange
+        let status = Status::Queued;
+
+        // Act
+        let result = can_open_session_worktree(status);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
     fn test_can_open_session_worktree_enables_review_state() {
         // Arrange
         let status = Status::Review;
@@ -1501,5 +1560,36 @@ mod tests {
 
         // Assert
         assert!(result);
+    }
+
+    #[test]
+    fn test_view_session_state_maps_merge_queue_statuses() {
+        // Arrange
+        let merge_queue_statuses = [Status::Queued, Status::Merging];
+
+        // Act
+        let mapped_states: Vec<ViewSessionState> = merge_queue_statuses
+            .iter()
+            .map(|status| view_session_state(*status))
+            .collect();
+
+        // Assert
+        assert!(
+            mapped_states
+                .iter()
+                .all(|state| *state == ViewSessionState::MergeQueue)
+        );
+    }
+
+    #[test]
+    fn test_view_session_state_maps_rebasing_status() {
+        // Arrange
+        let status = Status::Rebasing;
+
+        // Act
+        let state = view_session_state(status);
+
+        // Assert
+        assert_eq!(state, ViewSessionState::Rebasing);
     }
 }

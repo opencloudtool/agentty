@@ -31,6 +31,12 @@ pub enum ViewSessionState {
     /// Session is currently running; open-worktree and stop are available but
     /// edit and diff shortcuts are hidden.
     InProgress,
+    /// Session is rebasing; open-worktree remains available, while edit, diff,
+    /// and stop shortcuts are hidden.
+    Rebasing,
+    /// Session is in merge-queue processing; only read-only navigation
+    /// shortcuts are available.
+    MergeQueue,
     /// Session is ready for review; full edit shortcuts, including diff, are
     /// available.
     Review,
@@ -168,7 +174,13 @@ pub(crate) fn stats_footer_actions() -> Vec<HelpAction> {
 /// These entries are used by the help overlay and include all available
 /// actions.
 pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
-    let can_open_worktree = state.session_state != ViewSessionState::Done;
+    let can_open_worktree = matches!(
+        state.session_state,
+        ViewSessionState::Interactive
+            | ViewSessionState::InProgress
+            | ViewSessionState::Rebasing
+            | ViewSessionState::Review
+    );
     let can_edit_session = matches!(
         state.session_state,
         ViewSessionState::Interactive | ViewSessionState::Review
@@ -229,7 +241,13 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
 /// Interactive and review sessions include merge and rebase controls directly
 /// in the footer to keep those actions discoverable without opening help.
 pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
-    let can_open_worktree = state.session_state != ViewSessionState::Done;
+    let can_open_worktree = matches!(
+        state.session_state,
+        ViewSessionState::Interactive
+            | ViewSessionState::InProgress
+            | ViewSessionState::Rebasing
+            | ViewSessionState::Review
+    );
     let can_edit_session = matches!(
         state.session_state,
         ViewSessionState::Interactive | ViewSessionState::Review
@@ -372,6 +390,42 @@ mod tests {
     }
 
     #[test]
+    fn test_view_actions_rebasing_shows_open_without_stop() {
+        // Arrange
+        let state = ViewHelpState {
+            session_state: ViewSessionState::Rebasing,
+        };
+
+        // Act
+        let actions = view_actions(state);
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "Enter"));
+        assert!(actions.iter().any(|action| action.key == "o"));
+        assert!(actions.iter().any(|action| action.key == "e"));
+        assert!(!actions.iter().any(|action| action.key == "Ctrl+c"));
+        assert!(!actions.iter().any(|action| action.key == "d"));
+    }
+
+    #[test]
+    fn test_view_actions_merge_queue_hides_open_nvim_and_stop() {
+        // Arrange
+        let state = ViewHelpState {
+            session_state: ViewSessionState::MergeQueue,
+        };
+
+        // Act
+        let actions = view_actions(state);
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "Enter"));
+        assert!(!actions.iter().any(|action| action.key == "o"));
+        assert!(!actions.iter().any(|action| action.key == "e"));
+        assert!(!actions.iter().any(|action| action.key == "Ctrl+c"));
+        assert!(!actions.iter().any(|action| action.key == "d"));
+    }
+
+    #[test]
     fn test_view_actions_review_shows_diff() {
         // Arrange
         let state = ViewHelpState {
@@ -441,6 +495,42 @@ mod tests {
         assert!(actions.iter().any(|action| action.key == "f"));
         assert!(actions.iter().any(|action| action.key == "m"));
         assert!(actions.iter().any(|action| action.key == "r"));
+    }
+
+    #[test]
+    fn test_view_footer_actions_rebasing_shows_open_without_stop() {
+        // Arrange
+        let state = ViewHelpState {
+            session_state: ViewSessionState::Rebasing,
+        };
+
+        // Act
+        let actions = view_footer_actions(state);
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "o"));
+        assert!(actions.iter().any(|action| action.key == "e"));
+        assert!(!actions.iter().any(|action| action.key == "Ctrl+c"));
+        assert!(!actions.iter().any(|action| action.key == "Enter"));
+    }
+
+    #[test]
+    fn test_view_footer_actions_merge_queue_hides_open_nvim_and_stop() {
+        // Arrange
+        let state = ViewHelpState {
+            session_state: ViewSessionState::MergeQueue,
+        };
+
+        // Act
+        let actions = view_footer_actions(state);
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "Enter"));
+        assert!(!actions.iter().any(|action| action.key == "o"));
+        assert!(!actions.iter().any(|action| action.key == "e"));
+        assert!(!actions.iter().any(|action| action.key == "Ctrl+c"));
+        assert!(actions.iter().any(|action| action.key == "q"));
+        assert!(actions.iter().any(|action| action.key == "j/k"));
     }
 
     #[test]
