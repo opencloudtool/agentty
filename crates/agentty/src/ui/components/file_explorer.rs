@@ -111,6 +111,39 @@ impl FileExplorer {
         self
     }
 
+    /// Returns the next selected index for a file list of `item_count` items.
+    ///
+    /// Selection wraps to the first item when moving forward from the last
+    /// item. When `item_count` is zero, `current_index` is returned unchanged.
+    pub fn next_selected_index(current_index: usize, item_count: usize) -> usize {
+        if item_count == 0 {
+            return current_index;
+        }
+
+        let normalized_index = Self::normalize_selected_index(current_index, item_count);
+
+        (normalized_index + 1) % item_count
+    }
+
+    /// Returns the previous selected index for a file list of `item_count`
+    /// items.
+    ///
+    /// Selection wraps to the last item when moving backward from the first
+    /// item. When `item_count` is zero, `current_index` is returned unchanged.
+    pub fn previous_selected_index(current_index: usize, item_count: usize) -> usize {
+        if item_count == 0 {
+            return current_index;
+        }
+
+        let normalized_index = Self::normalize_selected_index(current_index, item_count);
+
+        if normalized_index == 0 {
+            item_count - 1
+        } else {
+            normalized_index - 1
+        }
+    }
+
     /// Returns the number of items (files and folders) in the explorer list.
     pub fn count_items(parsed_lines: &[DiffLine<'_>]) -> usize {
         let (lines, _) = Self::build_tree(parsed_lines);
@@ -198,6 +231,11 @@ impl FileExplorer {
         }
 
         (file_list_lines, items)
+    }
+
+    /// Clamps `current_index` to a valid list index for `item_count` items.
+    fn normalize_selected_index(current_index: usize, item_count: usize) -> usize {
+        current_index.min(item_count.saturating_sub(1))
     }
 
     /// Checks whether a `diff --git` header line matches the given tree item.
@@ -391,6 +429,32 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].spans[0].content, EXPECTED_SRC_FOLDER_LINE);
         assert_eq!(lines[1].spans[0].content, EXPECTED_MAIN_FILE_LINE);
+    }
+
+    #[test]
+    fn test_next_selected_index_wraps_from_last_to_first() {
+        // Arrange
+        let current_index = 1;
+        let item_count = 2;
+
+        // Act
+        let next_index = FileExplorer::next_selected_index(current_index, item_count);
+
+        // Assert
+        assert_eq!(next_index, 0);
+    }
+
+    #[test]
+    fn test_previous_selected_index_wraps_from_first_to_last() {
+        // Arrange
+        let current_index = 0;
+        let item_count = 2;
+
+        // Act
+        let previous_index = FileExplorer::previous_selected_index(current_index, item_count);
+
+        // Assert
+        assert_eq!(previous_index, 1);
     }
 
     #[test]

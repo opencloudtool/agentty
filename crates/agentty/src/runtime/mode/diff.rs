@@ -7,6 +7,9 @@ use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode, HelpContext};
 use crate::ui::util::parse_diff_lines;
 
 /// Handles key input while the app is in `AppMode::Diff`.
+///
+/// File selection via `j`/`k` wraps around between the first and last file
+/// explorer entries.
 pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {
     if key.code == KeyCode::Char('?') {
         let mode = std::mem::replace(&mut app.mode, AppMode::List);
@@ -53,9 +56,8 @@ pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {
             KeyCode::Char('j') if is_plain_char_key(key, 'j') => {
                 let parsed = parse_diff_lines(diff);
                 let count = FileExplorer::count_items(&parsed);
-                let new_index = file_explorer_selected_index
-                    .saturating_add(1)
-                    .min(count.saturating_sub(1));
+                let new_index =
+                    FileExplorer::next_selected_index(*file_explorer_selected_index, count);
 
                 if *file_explorer_selected_index != new_index {
                     *file_explorer_selected_index = new_index;
@@ -63,7 +65,10 @@ pub(crate) fn handle(app: &mut App, key: KeyEvent) -> EventResult {
                 }
             }
             KeyCode::Char('k') if is_plain_char_key(key, 'k') => {
-                let new_index = file_explorer_selected_index.saturating_sub(1);
+                let parsed = parse_diff_lines(diff);
+                let count = FileExplorer::count_items(&parsed);
+                let new_index =
+                    FileExplorer::previous_selected_index(*file_explorer_selected_index, count);
 
                 if *file_explorer_selected_index != new_index {
                     *file_explorer_selected_index = new_index;
@@ -321,6 +326,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_j_wraps_file_selection_from_last_to_first() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::Diff {
+            session_id: "session-id".to_string(),
+            diff: "diff --git a/src/main.rs b/src/main.rs\n+added".to_string(),
+            scroll_offset: 10,
+            file_explorer_selected_index: 1,
+        };
+
+        // Act
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Diff {
+                scroll_offset: 0,
+                file_explorer_selected_index: 0,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn test_handle_k_resets_scroll_offset() {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
@@ -343,6 +376,34 @@ mod tests {
             AppMode::Diff {
                 scroll_offset: 0,
                 file_explorer_selected_index: 0,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_k_wraps_file_selection_from_first_to_last() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::Diff {
+            session_id: "session-id".to_string(),
+            diff: "diff --git a/src/main.rs b/src/main.rs\n+added".to_string(),
+            scroll_offset: 10,
+            file_explorer_selected_index: 0,
+        };
+
+        // Act
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Diff {
+                scroll_offset: 0,
+                file_explorer_selected_index: 1,
                 ..
             }
         ));
