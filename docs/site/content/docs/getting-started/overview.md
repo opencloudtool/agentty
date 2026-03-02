@@ -4,15 +4,18 @@ description = "Understand how Agentty organizes AI agent sessions and workflows.
 weight = 0
 +++
 
+<a id="overview-introduction"></a>
 `agentty` is a terminal-first Agentic Development Environment (ADE), designed for building software alongside AI agents.
 This project is built using `agentty` itself, including the docs and docs-site you are reading.
 
+<a id="overview-ai-sessions"></a>
 It runs AI coding agents in dedicated AI sessions.
 
 <!-- more -->
 
 ## What Agentty Provides
 
+<a id="overview-operational-lift"></a>
 When you start a session, Agentty does the operational heavy lifting for workflow safety:
 
 - Spawns a clean worktree branch for every session.
@@ -28,6 +31,7 @@ When you start a session, Agentty does the operational heavy lifting for workflo
 
 ## Worktree Isolation
 
+<a id="overview-worktree-isolation"></a>
 Every session runs in its own [git worktree](https://git-scm.com/docs/git-worktree),
 created automatically when the session starts:
 
@@ -39,6 +43,7 @@ created automatically when the session starts:
 - If worktree creation fails (e.g., git is not installed or permissions are
   insufficient), session creation fails atomically and displays an error.
 
+<a id="overview-worktree-cleanup"></a>
 Worktrees are stored under `~/.agentty/wt/` and are cleaned up automatically
 when you delete a session.
 

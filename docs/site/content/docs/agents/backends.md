@@ -4,6 +4,7 @@ description = "Supported agent backends, available models, and how to configure 
 weight = 1
 +++
 
+<a id="backends-introduction"></a>
 Agentty delegates coding work to external AI agent CLIs. Each backend is a
 standalone CLI tool that Agentty launches in an isolated worktree. This page
 covers the supported backends, available models, and configuration options.
@@ -12,6 +13,7 @@ covers the supported backends, available models, and configuration options.
 
 ## Supported Backends
 
+<a id="backends-supported-backends"></a>
 Agentty supports three agent backends. Each requires its respective CLI to be
 installed and available on your `PATH`.
 
@@ -23,6 +25,7 @@ installed and available on your `PATH`.
 
 ## File Path Output Format
 
+<a id="backends-path-output-format"></a>
 Agentty prompts all backends to reference files using repository-root-relative
 POSIX paths. This keeps file references consistent in session output and reviews.
 
@@ -32,6 +35,7 @@ POSIX paths. This keeps file references consistent in session output and reviews
 
 ## Session Resume Behavior
 
+<a id="backends-session-resume"></a>
 Agentty persists provider-native conversation identifiers for app-server
 backends and uses them to restore context after runtime restarts.
 
@@ -41,6 +45,7 @@ backends and uses them to restore context after runtime restarts.
 
 ## Selecting a Backend
 
+<a id="backends-selecting-a-backend"></a>
 Choose the backend from the `/model` picker:
 
 ```bash
@@ -48,12 +53,14 @@ Choose the backend from the `/model` picker:
 /model
 ```
 
+<a id="backends-persistent-defaults"></a>
 For persistent defaults, choose a default model in the **Settings** tab
 (`Tab` to navigate, `Enter` to edit). The selected model determines which
 backend is used for new sessions.
 
 ## Available Models
 
+<a id="backends-available-models"></a>
 Each backend offers multiple models with different trade-offs between speed,
 quality, and cost.
 
@@ -81,9 +88,11 @@ quality, and cost.
 
 ## Switching Models
 
+<a id="backends-switching-models"></a>
 You can switch the model for the current session using the `/model` slash
 command in the prompt input. This opens a two-step picker: first choose the
 backend, then choose one of its models.
 
+<a id="backends-switching-default-model"></a>
 To change the **default model** persistently, use the **Settings** tab
 (`Tab` to navigate to it, `Enter` to edit).

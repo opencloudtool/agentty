@@ -4,6 +4,7 @@ description = "Session lifecycle, keybinding reference, and slash commands."
 weight = 1
 +++
 
+<a id="usage-introduction"></a>
 This page covers the Agentty interface layout, session lifecycle, keybinding
 reference, and slash commands.
 
@@ -11,6 +12,7 @@ reference, and slash commands.
 
 ## Interface Layout
 
+<a id="usage-interface-layout"></a>
 Agentty organizes its interface into four tabs, accessible with `Tab`:
 
 | Tab | Purpose |
@@ -22,6 +24,7 @@ Agentty organizes its interface into four tabs, accessible with `Tab`:
 
 ## Session Lifecycle
 
+<a id="usage-session-lifecycle"></a>
 Each session moves through a series of states:
 
 | Status | Description |
@@ -44,12 +47,14 @@ New → InProgress → Review → Done
                          ↘ Rebasing → Review
 ```
 
+<a id="usage-title-refinement"></a>
 When the first prompt is submitted for a new session, Agentty stores that
 prompt as the initial title, then runs a background title refinement task using
 the configured **Default Fast Model**.
 
 ## Session Sizes
 
+<a id="usage-session-size"></a>
 Agentty classifies sessions by the number of changed lines in their diff:
 
 | Size | Changed Lines |
@@ -101,6 +106,7 @@ Agentty classifies sessions by the number of changed lines in their diff:
 
 ### Session View
 
+<a id="usage-session-view-actions"></a>
 Available actions depend on the session state. The full set in **Review**
 state:
 
@@ -122,6 +128,7 @@ state:
 | `Ctrl+u` | Half page up |
 | `?` | Help |
 
+<a id="usage-additional-keys"></a>
 Additional state-specific keys:
 
 - **Open command behavior**: `o` runs the configured `Open Command` as
@@ -142,6 +149,7 @@ Additional state-specific keys:
 | `Up` / `Down` | Scroll selected file |
 | `?` | Help |
 
+<a id="usage-diff-totals"></a>
 The diff panel title shows aggregate line-change totals as `+added` and
 `-removed` counts for the current session diff.
 
@@ -159,6 +167,7 @@ The diff panel title shows aggregate line-change totals as `+added` and
 
 ## Slash Commands
 
+<a id="usage-slash-commands"></a>
 Type these in the prompt input to access special actions:
 
 | Command | Description |
@@ -168,5 +177,6 @@ Type these in the prompt input to access special actions:
 
 ## Data Location
 
+<a id="usage-data-location"></a>
 Agentty stores its data in `~/.agentty/`. This includes the SQLite database,
 session logs, and worktree checkouts (under `~/.agentty/wt/`).

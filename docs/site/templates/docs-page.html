@@ -38,25 +38,29 @@
     {% block extra_scripts %}
         <script>
 (function () {
-  /** Attach a copy button to every fenced code block in .docs-content. */
-  document.querySelectorAll('.docs-content pre').forEach(function (pre) {
-    var btn = document.createElement('button');
-    btn.className = 'docs-copy-btn';
-    btn.textContent = 'copy';
-    btn.title = 'Copy to clipboard';
-    btn.setAttribute('aria-label', 'Copy code');
+  /** Attach a copy button to every fenced code block in `.docs-content`. */
+  function attachCodeCopyButtons() {
+    document.querySelectorAll('.docs-content pre').forEach(function (pre) {
+      var btn = document.createElement('button');
+      btn.className = 'docs-copy-btn';
+      btn.textContent = 'copy';
+      btn.title = 'Copy to clipboard';
+      btn.setAttribute('aria-label', 'Copy code');
 
-    btn.addEventListener('click', function () {
-      var code = pre.querySelector('code');
-      var text = code ? code.innerText : pre.innerText;
-      navigator.clipboard.writeText(text).then(function () {
-        btn.textContent = 'copied!';
-        setTimeout(function () { btn.textContent = 'copy'; }, 2000);
+      btn.addEventListener('click', function () {
+        var code = pre.querySelector('code');
+        var text = code ? code.innerText : pre.innerText;
+        navigator.clipboard.writeText(text).then(function () {
+          btn.textContent = 'copied!';
+          setTimeout(function () { btn.textContent = 'copy'; }, 2000);
+        });
       });
-    });
 
-    pre.appendChild(btn);
-  });
+      pre.appendChild(btn);
+    });
+  }
+
+  attachCodeCopyButtons();
 })();
         </script>
     {% endblock extra_scripts %}

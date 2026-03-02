@@ -4,12 +4,14 @@ description = "Install Agentty, launch your first session, and review generated 
 weight = 1
 +++
 
+<a id="installation-introduction"></a>
 `agentty` is a terminal-first environment for running AI coding agents in isolated git worktrees.
 
 <!-- more -->
 
 ## Install
 
+<a id="installation-options"></a>
 Use one of these installation options:
 
 ### Shell installer
@@ -44,4 +46,5 @@ npx agentty
 
 ## Review Changes
 
+<a id="installation-review-changes"></a>
 Inside `agentty`, open the diff view (`d`) to inspect the generated `git diff` before you keep or discard edits.

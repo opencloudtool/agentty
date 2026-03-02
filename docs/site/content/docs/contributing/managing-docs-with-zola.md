@@ -4,6 +4,7 @@ description = "Recommended structure and front-matter conventions for maintainin
 weight = 1
 +++
 
+<a id="managing-docs-introduction"></a>
 Use these conventions to keep Agentty documentation maintainable as it grows.
 
 <!-- more -->
@@ -13,6 +14,7 @@ Use these conventions to keep Agentty documentation maintainable as it grows.
 - Keep documentation under the `content/docs/` section.
 - Keep the section directory named `docs` so its canonical route remains `/docs/`.
 - When moving or renaming pages, add `aliases` in page front matter to preserve old links.
+- For paragraph-level deep links, add explicit HTML anchors in content (for example, `<a id="some-paragraph-id"></a>` before the paragraph).
 
 ## Use Section Metadata Deliberately
 

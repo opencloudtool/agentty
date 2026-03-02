@@ -12,4 +12,5 @@ aliases = ["/documentation/"]
 redirect_to = "docs/getting-started/overview/"
 +++
 
+<a id="docs-overview"></a>
 Browse setup and workflow guides for `agentty`.

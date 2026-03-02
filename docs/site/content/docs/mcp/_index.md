@@ -5,4 +5,5 @@ weight = 4
 sort_by = "weight"
 +++
 
+<a id="mcp-overview"></a>
 Model Context Protocol setup guides for AI-assisted development with `agentty`.

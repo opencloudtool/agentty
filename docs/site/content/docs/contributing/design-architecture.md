@@ -4,6 +4,7 @@ description = "Architecture map and change-path guidance for contributors workin
 weight = 2
 +++
 
+<a id="architecture-introduction"></a>
 This guide maps Agentty's architecture to concrete paths so contributors can
 change the right module on the first pass.
 
@@ -11,6 +12,7 @@ change the right module on the first pass.
 
 ## Architecture Goals
 
+<a id="architecture-goals"></a>
 Agentty is structured around clear boundaries:
 
 - Keep domain logic independent from infrastructure and UI.
@@ -29,6 +31,7 @@ Agentty is structured around clear boundaries:
 
 ## Runtime Flow (Top to Bottom)
 
+<a id="architecture-runtime-flow"></a>
 The main runtime path is:
 
 ```text
@@ -49,11 +52,13 @@ main.rs
                  └─ ui::router (mode-to-page dispatch)
 ```
 
+<a id="architecture-runtime-flow-notes"></a>
 This flow keeps UI and key handling thin while `app/` owns state transitions and
 workflow orchestration.
 
 ## Agent Channel Architecture
 
+<a id="architecture-agent-channel"></a>
 Agent turns are executed through the provider-agnostic `AgentChannel` trait,
 which decouples session workers from transport details:
 
@@ -64,6 +69,7 @@ app/session/worker.rs
        └─ AppServerAgentChannel  (Codex/Gemini: delegates to AppServerClient)
 ```
 
+<a id="architecture-key-types"></a>
 **Key types** (all in `infra/channel.rs`):
 
 | Type | Purpose |
@@ -73,6 +79,7 @@ app/session/worker.rs
 | `TurnResult` | Normalized output: `assistant_message`, token counts, `provider_conversation_id`. |
 | `TurnMode` | `Start` (fresh turn) or `Resume` (with optional session output replay). |
 
+<a id="architecture-provider-conversation-id-flow"></a>
 **Provider conversation ID flow**: app-server providers return a
 `provider_conversation_id` after each turn. Session workers persist this to the
 database so a future runtime restart can resume the provider's native context
@@ -236,6 +243,7 @@ instead of replaying the full transcript.
 
 ## Testability and Boundaries
 
+<a id="architecture-testability-boundaries"></a>
 Agentty intentionally uses trait boundaries around external systems so
 orchestration can be unit-tested with mocks. All traits below use
 `#[cfg_attr(test, mockall::automock)]`:
@@ -248,6 +256,7 @@ orchestration can be unit-tested with mocks. All traits below use
 | `AppServerClient` | `infra/app_server.rs` | App-server RPC execution (provider routing, JSON-RPC transport). |
 | `EventSource` | `runtime/event.rs` | Terminal event polling for deterministic event-loop tests. |
 
+<a id="architecture-boundary-testing-guidance"></a>
 When adding higher-level flows involving multiple external commands, prefer
 injectable trait boundaries and `mockall`-based tests over flaky end-to-end
 shell-heavy tests.
