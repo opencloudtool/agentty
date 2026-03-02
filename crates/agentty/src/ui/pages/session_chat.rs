@@ -718,6 +718,7 @@ mod tests {
         assert!(help_text.contains("Ctrl+c: stop"));
         assert!(help_text.contains("j/k: scroll"));
         assert!(help_text.contains("o: open"));
+        assert!(help_text.contains("e: open editor"));
         assert!(!help_text.contains("d: diff"));
         assert!(!help_text.contains("Enter: reply"));
     }

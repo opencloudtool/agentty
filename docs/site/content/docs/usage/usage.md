@@ -79,7 +79,7 @@ Agentty classifies sessions by the number of changed lines in their diff:
 | `d` | Delete session |
 | `c` | Cancel session |
 | `Enter` | Open session |
-| `e` | Open `nvim` (active project root) |
+| `e` | Open editor (active project root) |
 | `j` / `k` | Navigate sessions |
 | `Tab` | Switch tab |
 | `?` | Help |
@@ -127,7 +127,7 @@ state:
 | `q` | Back to list |
 | `Enter` | Reply to agent |
 | `o` | Open worktree in tmux |
-| `e` | Open `nvim` (session worktree) |
+| `e` | Open editor (session worktree) |
 | `d` | Show diff |
 | `f` | Show review (read-only) |
 | `m` | Queue merge (confirmation popup) |
