@@ -194,6 +194,7 @@ When adding, removing, or changing user-facing features (agent backends, models,
 | `docs/site/content/docs/contributing/design-architecture.md` | Architecture map, module boundaries, runtime flow, and change-path recipes. |
 
 Update `docs/site/content/docs/contributing/design-architecture.md` whenever you change:
+
 - Module boundaries (`app`, `domain`, `infra`, `runtime`, `ui`) or add/remove/rename modules.
 - Runtime or control flow between layers (event loop, mode dispatch, app orchestration).
 - Trait-based external boundaries (`GitClient`, `AppServerClient`, `EventSource`).

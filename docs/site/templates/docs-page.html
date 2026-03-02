@@ -20,6 +20,18 @@
             {{ self::render_docs_nav(section_path=subsection_path, current_permalink=current_permalink, nested=true) }}
         {% endfor %}
     {% endmacro render_docs_nav %}
+    {% macro render_page_toc(items, nested=false) %}
+        {% if items | length > 0 %}
+            <ul class="docs-outline-list {% if nested %}docs-outline-list--nested{% endif %}">
+                {% for heading in items %}
+                    <li class="docs-outline-item">
+                        <a class="docs-outline-link" href="{{ heading.permalink | safe }}">{{ heading.title }}</a>
+                        {% if heading.children | length > 0 %}{{ self::render_page_toc(items=heading.children, nested=true) }}{% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    {% endmacro render_page_toc %}
     {% block title %}
         {{ page.title }} | {{ config.title }} Docs
     {% endblock title %}
@@ -27,10 +39,10 @@
         {{ page.permalink }}
     {% endblock canonical %}
     {% block page_width_class %}
-        site-container-wide
+        site-container-full
     {% endblock page_width_class %}
     {% block main_width_class %}
-        site-container-wide
+        site-container-full
     {% endblock main_width_class %}
     {% block main_extra_classes %}
         docs-layout
@@ -151,11 +163,20 @@
         </script>
     {% endblock extra_scripts %}
     {% block content %}
-        <aside class="docs-sidebar">
+        <aside class="docs-sidebar docs-sidebar--global">
+            <h2 class="docs-sidebar-title">Documentation</h2>
             {{ self::render_docs_nav(section_path="docs/_index.md", current_permalink=page.permalink) }}
         </aside>
         <article class="docs-content-wrapper">
             <h1 class="docs-page-title">{{ page.title }}</h1>
             <div class="docs-content">{{ page.content | safe }}</div>
         </article>
+        <aside class="docs-sidebar docs-sidebar--page">
+            <h2 class="docs-sidebar-title">On this page</h2>
+            {% if page.toc and page.toc | length > 0 %}
+                {{ self::render_page_toc(items=page.toc) }}
+            {% else %}
+                <p class="docs-outline-empty">No headings in this document.</p>
+            {% endif %}
+        </aside>
     {% endblock content %}
