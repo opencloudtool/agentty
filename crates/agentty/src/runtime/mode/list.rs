@@ -222,13 +222,12 @@ async fn open_new_session_prompt(app: &mut App) -> io::Result<()> {
 mod tests {
     use std::path::Path;
     use std::process::Command;
-    use std::time::Duration;
 
     use crossterm::event::KeyModifiers;
     use tempfile::tempdir;
-    use tokio::time::sleep;
 
     use super::*;
+    use crate::app::{AppEvent, MockSyncMainRunner, SyncMainOutcome, SyncSessionStartError};
     use crate::db::Database;
 
     /// Returns a mock app-server client wrapped in `Arc` for test injection.
@@ -321,27 +320,21 @@ mod tests {
         (app, base_dir)
     }
 
-    /// Waits until sync popup transitions from loading to final state.
-    async fn wait_for_sync_popup_result(app: &mut App) {
-        let mut sync_finished = false;
-        for _ in 0..200 {
-            app.process_pending_app_events().await;
-
-            if matches!(
-                app.mode,
-                AppMode::SyncBlockedPopup {
-                    is_loading: false,
-                    ..
-                }
-            ) {
-                sync_finished = true;
-                break;
-            }
-
-            sleep(Duration::from_millis(10)).await;
-        }
-
-        assert!(sync_finished, "timed out waiting for sync popup result");
+    /// Replaces sync background execution with one immediate completion event.
+    fn mock_sync_main_completion(
+        app: &mut App,
+        result: Result<SyncMainOutcome, SyncSessionStartError>,
+    ) {
+        let mut mock_sync_main_runner = MockSyncMainRunner::new();
+        mock_sync_main_runner
+            .expect_start_sync_main()
+            .times(1)
+            .returning(move |app_event_tx, _, _, _, _| {
+                let _ = app_event_tx.send(AppEvent::SyncMainCompleted {
+                    result: result.clone(),
+                });
+            });
+        app.sync_main_runner = std::sync::Arc::new(mock_sync_main_runner);
     }
 
     #[tokio::test]
@@ -821,12 +814,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_sync_key_shows_failure_when_upstream_is_missing() {
         // Arrange
-        let (mut app, base_dir) = new_test_app_with_git().await;
-        Command::new("git")
-            .args(["checkout", "-b", "feature"])
-            .current_dir(base_dir.path())
-            .output()
-            .expect("failed to switch branch");
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        mock_sync_main_completion(
+            &mut app,
+            Err(SyncSessionStartError::Other("missing upstream".to_string())),
+        );
 
         // Act
         let event_result = handle(
@@ -848,7 +840,7 @@ mod tests {
         ));
 
         // Act
-        wait_for_sync_popup_result(&mut app).await;
+        app.process_pending_app_events().await;
 
         // Assert
         assert!(matches!(
@@ -864,12 +856,11 @@ mod tests {
     #[tokio::test]
     async fn test_handle_sync_key_is_case_insensitive() {
         // Arrange
-        let (mut app, base_dir) = new_test_app_with_git().await;
-        Command::new("git")
-            .args(["checkout", "-b", "feature"])
-            .current_dir(base_dir.path())
-            .output()
-            .expect("failed to switch branch");
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        mock_sync_main_completion(
+            &mut app,
+            Err(SyncSessionStartError::Other("missing upstream".to_string())),
+        );
 
         // Act
         let event_result = handle(
@@ -891,7 +882,7 @@ mod tests {
         ));
 
         // Act
-        wait_for_sync_popup_result(&mut app).await;
+        app.process_pending_app_events().await;
 
         // Assert
         assert!(matches!(
@@ -908,6 +899,12 @@ mod tests {
     async fn test_handle_sync_key_uses_project_name_and_branch_in_popup_message() {
         // Arrange
         let (mut app, base_dir) = new_test_app_with_git().await;
+        mock_sync_main_completion(
+            &mut app,
+            Err(SyncSessionStartError::MainHasUncommittedChanges {
+                default_branch: "develop".to_string(),
+            }),
+        );
         let expected_project_name = base_dir
             .path()
             .file_name()
@@ -920,8 +917,6 @@ mod tests {
             Some("develop".to_string()),
             base_dir.path().to_path_buf(),
         );
-        std::fs::write(base_dir.path().join("README.md"), "dirty develop")
-            .expect("failed to write");
 
         // Act
         let event_result = handle(
@@ -943,7 +938,7 @@ mod tests {
         ));
 
         // Act
-        wait_for_sync_popup_result(&mut app).await;
+        app.process_pending_app_events().await;
 
         // Assert
         assert!(matches!(
@@ -964,8 +959,13 @@ mod tests {
     #[tokio::test]
     async fn test_handle_sync_key_opens_popup_when_main_has_uncommitted_changes() {
         // Arrange
-        let (mut app, base_dir) = new_test_app_with_git().await;
-        std::fs::write(base_dir.path().join("README.md"), "dirty main").expect("failed to write");
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        mock_sync_main_completion(
+            &mut app,
+            Err(SyncSessionStartError::MainHasUncommittedChanges {
+                default_branch: "main".to_string(),
+            }),
+        );
 
         // Act
         let event_result = handle(
@@ -987,7 +987,7 @@ mod tests {
         ));
 
         // Act
-        wait_for_sync_popup_result(&mut app).await;
+        app.process_pending_app_events().await;
 
         // Assert
         assert!(matches!(

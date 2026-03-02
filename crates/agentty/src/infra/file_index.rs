@@ -224,11 +224,62 @@ fn basename_match_bonus(path: &str, query: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+    use std::{fs, io};
 
     use tempfile::TempDir;
 
     use super::*;
+
+    /// Git boundary used by file-index tests that need repository
+    /// initialization.
+    #[cfg_attr(test, mockall::automock)]
+    trait GitFileIndexClient: Send + Sync {
+        /// Initializes a git repository in `repo_root`.
+        ///
+        /// # Errors
+        /// Returns an error when `git init` cannot be executed or fails.
+        fn init_repository(&self, repo_root: &Path) -> io::Result<()>;
+    }
+
+    /// [`GitFileIndexClient`] implementation backed by real git subprocesses.
+    struct RealGitFileIndexClient;
+
+    impl RealGitFileIndexClient {
+        /// Builds an `io::Error` for failed `git init` command execution.
+        fn git_init_failed_error(output: &std::process::Output) -> io::Error {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.is_empty() {
+                return io::Error::other("`git init -q` failed");
+            }
+
+            io::Error::other(format!("`git init -q` failed: {stderr}"))
+        }
+    }
+
+    impl GitFileIndexClient for RealGitFileIndexClient {
+        fn init_repository(&self, repo_root: &Path) -> io::Result<()> {
+            let output = Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(repo_root)
+                .output()?;
+            if !output.status.success() {
+                return Err(Self::git_init_failed_error(&output));
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Initializes one temporary git repository for `.gitignore` tests.
+    fn initialize_test_repository(repo_root: &Path) {
+        let git_file_index_client = RealGitFileIndexClient;
+
+        git_file_index_client
+            .init_repository(repo_root)
+            .expect("test expectation should hold");
+    }
 
     #[test]
     fn test_list_files_empty_directory() {
@@ -278,11 +329,7 @@ mod tests {
     fn test_list_files_respects_gitignore() {
         // Arrange
         let temp_dir = TempDir::new().expect("test expectation should hold");
-        std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("test expectation should hold");
+        initialize_test_repository(temp_dir.path());
         fs::write(temp_dir.path().join(".gitignore"), "ignored.txt\n")
             .expect("test expectation should hold");
         fs::write(temp_dir.path().join("kept.txt"), "").expect("test expectation should hold");
@@ -301,11 +348,7 @@ mod tests {
     fn test_list_files_includes_non_ignored_dotfiles() {
         // Arrange
         let temp_dir = TempDir::new().expect("test expectation should hold");
-        std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(temp_dir.path())
-            .output()
-            .expect("test expectation should hold");
+        initialize_test_repository(temp_dir.path());
         fs::write(temp_dir.path().join(".gitignore"), ".ignored-dotfile\n")
             .expect("test expectation should hold");
         fs::write(temp_dir.path().join(".visible-dotfile"), "")

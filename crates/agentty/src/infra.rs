@@ -16,4 +16,6 @@ pub mod file_index;
 /// Gemini ACP-backed app-server client implementation.
 pub mod gemini_acp;
 pub mod git;
+/// Tmux process boundary used by app orchestration.
+pub mod tmux;
 pub mod version;

@@ -149,6 +149,7 @@ instead of replaying the full transcript.
 | `crates/agentty/src/infra/codex_app_server.rs` | Codex app-server transport/session integration. |
 | `crates/agentty/src/infra/gemini_acp.rs` | Gemini ACP transport/session integration. |
 | `crates/agentty/src/infra/file_index.rs` | Gitignore-aware file indexing and fuzzy filtering for `@` mentions in prompts. |
+| `crates/agentty/src/infra/tmux.rs` | `TmuxClient` trait and tmux subprocess adapter used by `App` worktree-open orchestration. |
 | `crates/agentty/src/infra/version.rs` | Version checking infrastructure. |
 
 ### Runtime Layer (`runtime/`)
@@ -156,7 +157,7 @@ instead of replaying the full transcript.
 | Path | What lives here |
 |------|------------------|
 | `crates/agentty/src/runtime.rs` | Terminal lifecycle, event/render loop orchestration, `TerminalGuard`. |
-| `crates/agentty/src/runtime/terminal.rs` | Terminal setup and cleanup guard. |
+| `crates/agentty/src/runtime/terminal.rs` | Terminal setup/cleanup plus `EditorLauncher` trait boundary for external editor subprocesses. |
 | `crates/agentty/src/runtime/event.rs` | `EventSource` trait, event reader spawn, tick processing, and app-event integration. |
 | `crates/agentty/src/runtime/key_handler.rs` | Mode dispatch for key events. |
 | `crates/agentty/src/runtime/mode/` | Key handlers for each `AppMode`: |
@@ -252,10 +253,12 @@ orchestration can be unit-tested with mocks. All traits below use
 | Trait | Module | Boundary |
 |-------|--------|----------|
 | `GitClient` | `infra/git.rs` | Git/process operations (worktree, merge, rebase, diff, push, pull). |
+| `TmuxClient` | `infra/tmux.rs` | Tmux subprocess operations for opening session worktrees and dispatching open commands. |
 | `AgentChannel` | `infra/channel.rs` | Provider-agnostic turn execution (session init, run turn, shutdown). |
 | `AgentBackend` | `infra/agent/backend.rs` | Per-provider CLI command construction and one-time setup. |
 | `AppServerClient` | `infra/app_server.rs` | App-server RPC execution (provider routing, JSON-RPC transport). |
 | `EventSource` | `runtime/event.rs` | Terminal event polling for deterministic event-loop tests. |
+| `EditorLauncher` | `runtime/terminal.rs` | External editor process launch boundary used by runtime key handlers. |
 
 <a id="architecture-boundary-testing-guidance"></a>
 When adding higher-level flows involving multiple external commands, prefer

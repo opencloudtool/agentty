@@ -20,6 +20,7 @@ use crate::domain::session::{CodexUsageLimits, Session, Status};
 use crate::infra::db::Database;
 use crate::infra::file_index::FileEntry;
 use crate::infra::git::{GitClient, RealGitClient, detect_git_info};
+use crate::infra::tmux::{RealTmuxClient, TmuxClient};
 use crate::runtime::mode::sync_blocked;
 use crate::ui;
 use crate::ui::state::app_mode::AppMode;
@@ -148,6 +149,54 @@ struct FocusedReviewUpdate {
     result: Result<String, String>,
 }
 
+/// Starts project sync work and emits completion events for list-mode popups.
+#[cfg_attr(test, mockall::automock)]
+pub(crate) trait SyncMainRunner: Send + Sync {
+    /// Starts sync for one project and emits one
+    /// [`AppEvent::SyncMainCompleted`] when work finishes.
+    fn start_sync_main(
+        &self,
+        app_event_tx: mpsc::UnboundedSender<AppEvent>,
+        default_branch: Option<String>,
+        git_client: Arc<dyn GitClient>,
+        session_model: AgentModel,
+        working_dir: PathBuf,
+    );
+}
+
+/// Production [`SyncMainRunner`] that executes sync in one spawned task.
+pub(crate) struct TokioSyncMainRunner;
+
+impl SyncMainRunner for TokioSyncMainRunner {
+    fn start_sync_main(
+        &self,
+        app_event_tx: mpsc::UnboundedSender<AppEvent>,
+        default_branch: Option<String>,
+        git_client: Arc<dyn GitClient>,
+        session_model: AgentModel,
+        working_dir: PathBuf,
+    ) {
+        tokio::spawn(async move {
+            let result = SessionManager::sync_main_for_project(
+                default_branch,
+                working_dir,
+                git_client,
+                session_model,
+            )
+            .await;
+            let _ = app_event_tx.send(AppEvent::SyncMainCompleted { result });
+        });
+    }
+}
+
+/// External clients used to compose [`App`] startup dependencies.
+struct AppClients {
+    app_server_client: Arc<dyn crate::infra::app_server::AppServerClient>,
+    git_client: Arc<dyn GitClient>,
+    sync_main_runner: Arc<dyn SyncMainRunner>,
+    tmux_client: Arc<dyn TmuxClient>,
+}
+
 // SessionState definition moved to session_state.rs
 
 /// Stores application state and coordinates session/project workflows.
@@ -163,6 +212,8 @@ pub struct App {
     latest_available_version: Option<String>,
     merge_queue: MergeQueue,
     session_progress_messages: HashMap<String, String>,
+    pub(crate) sync_main_runner: Arc<dyn SyncMainRunner>,
+    tmux_client: Arc<dyn TmuxClient>,
 }
 
 impl App {
@@ -175,14 +226,30 @@ impl App {
         db: Database,
         app_server_client: Arc<dyn crate::infra::app_server::AppServerClient>,
     ) -> Self {
+        let clients = AppClients {
+            app_server_client,
+            git_client: Arc::new(RealGitClient),
+            sync_main_runner: Arc::new(TokioSyncMainRunner),
+            tmux_client: Arc::new(RealTmuxClient),
+        };
+
+        Self::new_with_clients(base_path, working_dir, git_branch, db, clients).await
+    }
+
+    /// Builds app state from persisted data with explicit external clients.
+    async fn new_with_clients(
+        base_path: PathBuf,
+        working_dir: PathBuf,
+        git_branch: Option<String>,
+        db: Database,
+        clients: AppClients,
+    ) -> Self {
         let current_project_id = db
             .upsert_project(&working_dir.to_string_lossy(), git_branch.as_deref())
             .await
             .unwrap_or(0);
 
         let _ = db.backfill_session_project(current_project_id).await;
-
-        let git_client: Arc<dyn GitClient> = Arc::new(RealGitClient);
         let (
             active_project_id,
             startup_working_dir,
@@ -191,7 +258,7 @@ impl App {
             active_project_name,
         ) = Self::load_startup_project_context(
             &db,
-            &git_client,
+            &clients.git_client,
             working_dir.as_path(),
             git_branch,
             current_project_id,
@@ -223,8 +290,8 @@ impl App {
             base_path,
             db.clone(),
             event_tx.clone(),
-            git_client,
-            app_server_client,
+            Arc::clone(&clients.git_client),
+            Arc::clone(&clients.app_server_client),
         );
         let projects = ProjectManager::new(
             active_project_id,
@@ -273,6 +340,8 @@ impl App {
             latest_available_version: None,
             merge_queue: MergeQueue::default(),
             session_progress_messages: HashMap::new(),
+            sync_main_runner: clients.sync_main_runner,
+            tmux_client: clients.tmux_client,
         }
     }
 
@@ -593,7 +662,11 @@ impl App {
             return;
         };
 
-        let Some(window_id) = Self::open_tmux_window_for_folder(&session.folder).await else {
+        let Some(window_id) = self
+            .tmux_client
+            .open_window_for_folder(session.folder.clone())
+            .await
+        else {
             return;
         };
 
@@ -602,7 +675,9 @@ impl App {
             return;
         };
 
-        Self::run_tmux_command_in_window(&window_id, &open_command).await;
+        self.tmux_client
+            .run_command_in_window(window_id, open_command)
+            .await;
     }
 
     /// Appends output text to a session stream and persists it.
@@ -664,16 +739,13 @@ impl App {
         let _permission_mode = PermissionMode::default();
         let session_model = self.sessions.default_session_model();
 
-        tokio::spawn(async move {
-            let result = SessionManager::sync_main_for_project(
-                default_branch,
-                working_dir,
-                git_client,
-                session_model,
-            )
-            .await;
-            let _ = app_event_tx.send(AppEvent::SyncMainCompleted { result });
-        });
+        self.sync_main_runner.start_sync_main(
+            app_event_tx,
+            default_branch,
+            git_client,
+            session_model,
+            working_dir,
+        );
     }
 
     /// Starts focused-review assist generation for one session using the
@@ -1101,27 +1173,6 @@ impl App {
         });
     }
 
-    /// Opens a new tmux window in the provided folder and returns its window
-    /// id.
-    async fn open_tmux_window_for_folder(session_folder: &Path) -> Option<String> {
-        let output = tokio::process::Command::new("tmux")
-            .arg("new-window")
-            .arg("-P")
-            .arg("-F")
-            .arg("#{window_id}")
-            .arg("-c")
-            .arg(session_folder)
-            .output()
-            .await
-            .ok()?;
-
-        if !output.status.success() {
-            return None;
-        }
-
-        Self::parse_tmux_window_id(&output.stdout)
-    }
-
     /// Returns the normalized open command to execute when configured.
     ///
     /// Commands are trimmed without modifying the configured executable or
@@ -1133,43 +1184,6 @@ impl App {
         }
 
         Some(command.to_string())
-    }
-
-    /// Sends the provided command and Enter key to a tmux window.
-    async fn run_tmux_command_in_window(window_id: &str, command: &str) {
-        let send_literal_output = tokio::process::Command::new("tmux")
-            .arg("send-keys")
-            .arg("-t")
-            .arg(window_id)
-            .arg("-l")
-            .arg(command)
-            .output()
-            .await;
-
-        let Ok(send_literal_output) = send_literal_output else {
-            return;
-        };
-        if !send_literal_output.status.success() {
-            return;
-        }
-
-        let _ = tokio::process::Command::new("tmux")
-            .arg("send-keys")
-            .arg("-t")
-            .arg(window_id)
-            .arg("C-m")
-            .output()
-            .await;
-    }
-
-    /// Parses a tmux window id from command output bytes.
-    fn parse_tmux_window_id(stdout: &[u8]) -> Option<String> {
-        let window_id = std::str::from_utf8(stdout).ok()?.trim();
-        if window_id.is_empty() {
-            return None;
-        }
-
-        Some(window_id.to_string())
     }
 
     /// Builds final sync popup mode from background sync completion result.
@@ -1660,12 +1674,75 @@ impl AppEventBatch {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
 
+    use mockall::predicate::eq;
     use tempfile::tempdir;
 
     use super::*;
-    use crate::domain::session::{CodexUsageLimitWindow, CodexUsageLimits};
+    use crate::domain::agent::AgentModel;
+    use crate::domain::session::{
+        CodexUsageLimitWindow, CodexUsageLimits, Session, SessionSize, SessionStats, Status,
+    };
+    use crate::infra::db::Database;
     use crate::infra::file_index::FileEntry;
+    use crate::infra::tmux::MockTmuxClient;
+
+    /// Builds one mock app-server client wrapped in `Arc`.
+    fn mock_app_server() -> Arc<dyn crate::infra::app_server::AppServerClient> {
+        Arc::new(crate::infra::app_server::MockAppServerClient::new())
+    }
+
+    /// Builds one deterministic session snapshot rooted at `session_folder`.
+    fn test_session(session_folder: PathBuf) -> Session {
+        Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: session_folder,
+            id: "session-1".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            project_name: "test-project".to_string(),
+            prompt: "test prompt".to_string(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::Review,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        }
+    }
+
+    /// Builds a test app with one selected session and configurable open
+    /// command.
+    async fn new_test_app_with_selected_session(
+        session_folder: PathBuf,
+        open_command: &str,
+    ) -> App {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+
+        // Act
+        let mut app = App::new(
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            mock_app_server(),
+        )
+        .await;
+        app.settings.open_command = open_command.to_string();
+        app.sessions.sessions.push(test_session(session_folder));
+        app.sessions.table_state.select(Some(0));
+
+        // Assert
+        app
+    }
 
     #[test]
     fn open_command_to_run_returns_none_for_empty_input() {
@@ -1703,28 +1780,51 @@ mod tests {
         assert_eq!(command, Some("exec nvim .".to_string()));
     }
 
-    #[test]
-    fn parse_tmux_window_id_returns_none_for_invalid_utf8() {
+    #[tokio::test]
+    async fn open_session_worktree_in_tmux_runs_configured_open_command_when_window_opens() {
         // Arrange
-        let stdout = [0x80];
+        let session_folder = PathBuf::from("/tmp/session-open-command");
+        let mut app =
+            new_test_app_with_selected_session(session_folder.clone(), "  npm run dev  ").await;
+        let mut mock_tmux_client = MockTmuxClient::new();
+        mock_tmux_client
+            .expect_open_window_for_folder()
+            .with(eq(session_folder))
+            .times(1)
+            .returning(|_| Box::pin(async { Some("@42".to_string()) }));
+        mock_tmux_client
+            .expect_run_command_in_window()
+            .with(eq("@42".to_string()), eq("npm run dev".to_string()))
+            .times(1)
+            .returning(|_, _| Box::pin(async {}));
+        app.tmux_client = Arc::new(mock_tmux_client);
 
         // Act
-        let window_id = App::parse_tmux_window_id(&stdout);
+        app.open_session_worktree_in_tmux().await;
 
         // Assert
-        assert_eq!(window_id, None);
+        // Expectations are validated by `mockall`.
     }
 
-    #[test]
-    fn parse_tmux_window_id_trims_newline_and_returns_window_id() {
+    #[tokio::test]
+    async fn open_session_worktree_in_tmux_skips_open_command_when_setting_is_blank() {
         // Arrange
-        let stdout = b"@42\n";
+        let session_folder = PathBuf::from("/tmp/session-empty-open-command");
+        let mut app = new_test_app_with_selected_session(session_folder.clone(), "   ").await;
+        let mut mock_tmux_client = MockTmuxClient::new();
+        mock_tmux_client
+            .expect_open_window_for_folder()
+            .with(eq(session_folder))
+            .times(1)
+            .returning(|_| Box::pin(async { Some("@42".to_string()) }));
+        mock_tmux_client.expect_run_command_in_window().times(0);
+        app.tmux_client = Arc::new(mock_tmux_client);
 
         // Act
-        let window_id = App::parse_tmux_window_id(stdout);
+        app.open_session_worktree_in_tmux().await;
 
         // Assert
-        assert_eq!(window_id, Some("@42".to_string()));
+        // Expectations are validated by `mockall`.
     }
 
     #[test]
