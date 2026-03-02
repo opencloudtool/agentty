@@ -106,7 +106,7 @@ instead of replaying the full transcript.
 | `crates/agentty/src/app/session_state.rs` | `SessionState` — per-session runtime state container. |
 | `crates/agentty/src/app/settings.rs` | `SettingsManager` — settings management and persistence. |
 | `crates/agentty/src/app/tab.rs` | `TabManager` — top-level tab definitions and tab selection state. |
-| `crates/agentty/src/app/task.rs` | App-scoped background tasks (git status polling, version checks, focused review assists, app-server turns). |
+| `crates/agentty/src/app/task.rs` | App-scoped background tasks (git status polling, version checks, review assists, app-server turns). |
 | `crates/agentty/src/app/session/` | Session-specific orchestration split by concern: |
 | — `access.rs` | Session lookup helpers. |
 | — `lifecycle.rs` | Session creation, prompt/reply workflows. |

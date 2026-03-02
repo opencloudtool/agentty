@@ -131,7 +131,7 @@ impl SettingRow {
 pub struct SettingsManager {
     /// Default fast model used by fast-path workflows.
     pub default_fast_model: AgentModel,
-    /// Default model used by focused-review workflows.
+    /// Default model used by review workflows.
     pub default_review_model: AgentModel,
     /// Default smart model used when creating new sessions.
     pub default_smart_model: AgentModel,

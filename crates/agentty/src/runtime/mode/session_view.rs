@@ -73,14 +73,14 @@ struct ViewSessionSnapshot {
     session_status: Status,
 }
 
-/// Prefix for the focused-review loading status while assist output is being
+/// Prefix for the review loading status while assist output is being
 /// prepared.
-const FOCUSED_REVIEW_LOADING_MESSAGE_PREFIX: &str = "Preparing focused review with agent help";
-/// Fallback copy used when no changes exist for focused review.
-const FOCUSED_REVIEW_NO_DIFF_MESSAGE: &str = "No diff changes found for focused review.";
+const REVIEW_LOADING_MESSAGE_PREFIX: &str = "Preparing review with agent help";
+/// Fallback copy used when no changes exist for review.
+const REVIEW_NO_DIFF_MESSAGE: &str = "No diff changes found for review.";
 
 /// Processes view-mode key presses and keeps shortcut availability aligned with
-/// session status (`o`/`e` disabled for `Done`/`Canceled`, diff/focused review
+/// session status (`o`/`e` disabled for `Done`/`Canceled`, diff/review
 /// only for `Review`).
 pub(crate) async fn handle(
     app: &mut App,
@@ -262,7 +262,7 @@ fn confirmation_view_mode(view_context: &ViewContext) -> ConfirmationViewMode {
     }
 }
 
-/// Applies focused-review output toggles into the mutable pending view state.
+/// Applies review output toggles into the mutable pending view state.
 async fn toggle_focused_review_for_pending(
     app: &mut App,
     view_context: &ViewContext,
@@ -281,7 +281,7 @@ async fn toggle_focused_review_for_pending(
     .await;
 }
 
-/// Toggles focused-review output and resets scroll to the bottom-aligned mode.
+/// Toggles review output and resets scroll to the bottom-aligned mode.
 async fn toggle_focused_review(
     app: &mut App,
     view_context: &ViewContext,
@@ -326,7 +326,7 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
     })
 }
 
-/// Applies in-place updates for active view output mode, focused-review
+/// Applies in-place updates for active view output mode, review
 /// status/text, and scroll position.
 fn apply_view_scroll_and_output_mode(
     app: &mut App,
@@ -385,7 +385,7 @@ fn is_view_diff_allowed(status: Status) -> bool {
     status == Status::Review
 }
 
-/// Returns whether the `f` shortcut can open focused review content.
+/// Returns whether the `f` shortcut can open review content.
 fn is_view_focused_review_allowed(status: Status) -> bool {
     status == Status::Review
 }
@@ -631,9 +631,9 @@ fn half_page_scroll_step(metrics: ViewMetrics) -> u16 {
     metrics.view_height / 2
 }
 
-/// Toggles focused-review mode and optionally starts focused-review assist.
+/// Toggles review mode and optionally starts review assist.
 ///
-/// When focused-review content is missing, this loads diff text and either
+/// When review content is missing, this loads diff text and either
 /// starts async assist generation or stores the diff directly when assist is
 /// not applicable.
 async fn toggle_focused_review_output_mode(
@@ -690,39 +690,39 @@ async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) {
     };
 }
 
-/// Loads unified diff text for focused-review mode and falls back to a
+/// Loads unified diff text for review mode and falls back to a
 /// user-facing message when loading fails.
 async fn focused_review_diff_for_view_session(app: &App, view_context: &ViewContext) -> String {
     let diff = load_view_session_diff(app, view_context).await;
     if diff.trim().is_empty() {
-        return FOCUSED_REVIEW_NO_DIFF_MESSAGE.to_string();
+        return REVIEW_NO_DIFF_MESSAGE.to_string();
     }
 
     diff
 }
 
-/// Returns whether focused-review assist should run for the current diff text.
+/// Returns whether review assist should run for the current diff text.
 fn should_request_focused_review_assist(diff: &str) -> bool {
     let trimmed_diff = diff.trim();
-    if trimmed_diff.is_empty() || trimmed_diff == FOCUSED_REVIEW_NO_DIFF_MESSAGE {
+    if trimmed_diff.is_empty() || trimmed_diff == REVIEW_NO_DIFF_MESSAGE {
         return false;
     }
 
     !trimmed_diff.starts_with("Failed to run git diff:")
 }
 
-/// Returns whether a focused-review status line indicates assist is still
+/// Returns whether a review status line indicates assist is still
 /// loading.
 fn is_focused_review_loading_status_message(status_message: &str) -> bool {
-    status_message.starts_with(FOCUSED_REVIEW_LOADING_MESSAGE_PREFIX)
+    status_message.starts_with(REVIEW_LOADING_MESSAGE_PREFIX)
 }
 
-/// Returns the configured model used for focused-review assist generation.
+/// Returns the configured model used for review assist generation.
 fn focused_review_assist_model(app: &App) -> AgentModel {
     app.settings.default_review_model
 }
 
-/// Returns the status line shown while focused-review assist is pending.
+/// Returns the status line shown while review assist is pending.
 fn focused_review_initial_status_message(diff: &str, review_model: AgentModel) -> Option<String> {
     if should_request_focused_review_assist(diff) {
         return Some(focused_review_loading_message(review_model));
@@ -731,10 +731,10 @@ fn focused_review_initial_status_message(diff: &str, review_model: AgentModel) -
     None
 }
 
-/// Formats the focused-review loading status line with the active model name.
+/// Formats the review loading status line with the active model name.
 fn focused_review_loading_message(review_model: AgentModel) -> String {
     format!(
-        "{FOCUSED_REVIEW_LOADING_MESSAGE_PREFIX} with model {}...",
+        "{REVIEW_LOADING_MESSAGE_PREFIX} with model {}...",
         review_model.as_str(),
     )
 }
@@ -1244,7 +1244,7 @@ mod tests {
     #[test]
     fn test_is_focused_review_loading_status_message_rejects_unrelated_message() {
         // Arrange
-        let status_message = "Focused review complete.";
+        let status_message = "Review complete.";
 
         // Act
         let is_loading = is_focused_review_loading_status_message(status_message);
@@ -1283,7 +1283,7 @@ mod tests {
         let focused_review_diff = focused_review_diff_for_view_session(&app, &context).await;
 
         // Assert
-        assert_eq!(focused_review_diff, FOCUSED_REVIEW_NO_DIFF_MESSAGE);
+        assert_eq!(focused_review_diff, REVIEW_NO_DIFF_MESSAGE);
     }
 
     #[tokio::test]
@@ -1320,7 +1320,7 @@ mod tests {
         let session_folder = app.sessions.sessions[0].folder.clone();
         std::fs::write(
             session_folder.join("README.md"),
-            "focused review test content\n",
+            "review test content\n",
         )
         .expect("failed to update readme");
         let context = ViewContext {

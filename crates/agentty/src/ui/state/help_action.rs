@@ -194,9 +194,9 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
 
     if can_show_focused_review {
         actions.push(HelpAction::new(
-            "focused review",
+            "review",
             "f",
-            "Show focused review",
+            "Show review",
         ));
     }
 
@@ -251,9 +251,9 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
 
     if can_show_focused_review {
         actions.push(HelpAction::new(
-            "focused review",
+            "review",
             "f",
-            "Show focused review",
+            "Show review",
         ));
     }
 

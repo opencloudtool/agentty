@@ -97,12 +97,12 @@ pub(crate) enum AppEvent {
     SyncMainCompleted {
         result: Result<SyncMainOutcome, SyncSessionStartError>,
     },
-    /// Indicates focused-review assist output became available for a session.
+    /// Indicates review assist output became available for a session.
     FocusedReviewPrepared {
         review_text: String,
         session_id: String,
     },
-    /// Indicates focused-review assist failed for a session.
+    /// Indicates review assist failed for a session.
     FocusedReviewPreparationFailed { error: String, session_id: String },
     /// Indicates that a session handle snapshot changed in-memory.
     SessionUpdated { session_id: String },
@@ -130,7 +130,7 @@ struct SyncPopupContext {
     project_name: String,
 }
 
-/// Aggregated focused-review assist output keyed by session.
+/// Aggregated review assist output keyed by session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FocusedReviewUpdate {
     result: Result<String, String>,
@@ -762,10 +762,10 @@ impl App {
         );
     }
 
-    /// Starts focused-review assist generation for one session using the
+    /// Starts review assist generation for one session using the
     /// current diff text and the configured default review model.
     ///
-    /// The focused-review assist prompt enforces read-only review constraints
+    /// The review assist prompt enforces read-only review constraints
     /// and allows only internet lookup and non-editing verification commands.
     pub(crate) fn start_focused_review_assist(
         &self,
@@ -947,7 +947,7 @@ impl App {
         }
     }
 
-    /// Applies focused-review assist updates for all sessions in the batch.
+    /// Applies review assist updates for all sessions in the batch.
     fn apply_focused_review_updates(
         &mut self,
         focused_review_updates: HashMap<String, FocusedReviewUpdate>,
@@ -957,7 +957,7 @@ impl App {
         }
     }
 
-    /// Applies focused-review assist output to the active view/help mode when
+    /// Applies review assist output to the active view/help mode when
     /// session identifiers still match.
     fn apply_focused_review_update(
         &mut self,
@@ -1005,7 +1005,7 @@ impl App {
         }
     }
 
-    /// Applies one focused-review assist result to render-state fields.
+    /// Applies one review assist result to render-state fields.
     fn apply_focused_review_result(
         focused_review_status_message: &mut Option<String>,
         focused_review_text: &mut Option<String>,
@@ -1018,7 +1018,7 @@ impl App {
             }
             Err(error) => {
                 *focused_review_status_message = Some(format!(
-                    "Focused review assist unavailable: {}",
+                    "Review assist unavailable: {}",
                     error.trim()
                 ));
                 *focused_review_text = None;

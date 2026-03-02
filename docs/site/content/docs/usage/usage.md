@@ -122,7 +122,7 @@ state:
 | `o` | Open worktree in tmux |
 | `e` | Open `nvim` (session worktree) |
 | `d` | Show diff |
-| `f` | Show focused review (read-only) |
+| `f` | Show review (read-only) |
 | `m` | Queue merge (confirmation popup) |
 | `r` | Rebase |
 | `Shift+Tab` | Toggle permission mode |
@@ -141,7 +141,7 @@ Additional state-specific keys:
   exits when that command ends.
 - **InProgress**: `Ctrl+c` stops the agent.
 - **Done**: `t` toggles between summary and full output.
-- **Focused review**: Runs in read-only review mode. It can use internet lookup
+- **Review**: Runs in read-only review mode. It can use internet lookup
   and non-editing verification commands, but it should not edit files or
   mutate git/workspace state.
 

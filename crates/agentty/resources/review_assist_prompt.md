@@ -1,4 +1,4 @@
-You are preparing focused review text for a Git diff shown in a terminal UI.
+You are preparing review text for a Git diff shown in a terminal UI.
 
 Return Markdown only. Do not use code fences. Keep it concise and practical.
 When referencing files, use repository-root-relative POSIX paths only.
@@ -16,7 +16,7 @@ Execution constraints (mandatory):
 
 Required structure:
 
-## Focused Review
+## Review
 
 ### High-Level Overview of Changes
 

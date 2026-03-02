@@ -150,12 +150,12 @@ pub fn wrap_diff_content(content: &str, max_width: usize) -> Vec<&str> {
     chunks
 }
 
-const DEFAULT_FOCUSED_REVIEW_COMMENT: &str =
+const DEFAULT_REVIEW_COMMENT: &str =
     "Agent summary unavailable; review the highlighted changes.";
 const MAX_AGENT_COMMENT_COUNT: usize = 3;
-const MAX_FOCUSED_REVIEW_HIGHLIGHT_COUNT: usize = 8;
-const MAX_FOCUSED_REVIEW_FALLBACK_COUNT: usize = 5;
-const MAX_FOCUSED_REVIEW_SNIPPET_WIDTH: usize = 96;
+const MAX_REVIEW_HIGHLIGHT_COUNT: usize = 8;
+const MAX_REVIEW_FALLBACK_COUNT: usize = 5;
+const MAX_REVIEW_SNIPPET_WIDTH: usize = 96;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FocusedReviewHighlight {
@@ -168,14 +168,14 @@ struct FocusedReviewHighlight {
     snippet: String,
 }
 
-/// Builds focused-review markdown using concise agent comments and critical
+/// Builds review markdown using concise agent comments and critical
 /// diff highlights.
 pub fn build_focused_review_text(diff: &str, summary: Option<&str>) -> String {
     let agent_comments = focused_review_agent_comments(summary);
     let highlights = focused_review_highlights(diff);
 
     let mut lines = vec![
-        "## Focused Review".to_string(),
+        "## Review".to_string(),
         String::new(),
         "### Agent Comments".to_string(),
     ];
@@ -216,13 +216,13 @@ fn focused_review_agent_comments(summary: Option<&str>) -> Vec<String> {
         .collect::<Vec<_>>();
 
     if comments.is_empty() {
-        comments.push(DEFAULT_FOCUSED_REVIEW_COMMENT.to_string());
+        comments.push(DEFAULT_REVIEW_COMMENT.to_string());
     }
 
     comments
 }
 
-/// Returns scored focused-review highlights from unified diff text.
+/// Returns scored review highlights from unified diff text.
 fn focused_review_highlights(diff: &str) -> Vec<FocusedReviewHighlight> {
     let mut highlights = Vec::new();
     let mut fallback_highlights = Vec::new();
@@ -297,7 +297,7 @@ fn focused_review_highlights(diff: &str) -> Vec<FocusedReviewHighlight> {
     }
 
     if highlights.is_empty() {
-        fallback_highlights.truncate(MAX_FOCUSED_REVIEW_FALLBACK_COUNT);
+        fallback_highlights.truncate(MAX_REVIEW_FALLBACK_COUNT);
 
         return fallback_highlights;
     }
@@ -308,13 +308,13 @@ fn focused_review_highlights(diff: &str) -> Vec<FocusedReviewHighlight> {
             .cmp(&left.score)
             .then(left.order.cmp(&right.order))
     });
-    highlights.truncate(MAX_FOCUSED_REVIEW_HIGHLIGHT_COUNT);
+    highlights.truncate(MAX_REVIEW_HIGHLIGHT_COUNT);
     highlights.sort_by_key(|highlight| highlight.order);
 
     highlights
 }
 
-/// Builds one markdown list item for a focused-review highlight.
+/// Builds one markdown list item for a review highlight.
 fn focused_review_highlight_markdown(highlight: &FocusedReviewHighlight) -> String {
     let location = highlight
         .line_number
@@ -465,7 +465,7 @@ fn parse_diff_file_path(line: &str) -> Option<String> {
     Some(rhs.to_string())
 }
 
-/// Returns a clean one-line snippet for focused-review output.
+/// Returns a clean one-line snippet for review output.
 fn focused_review_snippet(content: &str) -> String {
     let collapsed = content
         .split_whitespace()
@@ -478,13 +478,13 @@ fn focused_review_snippet(content: &str) -> String {
     }
 
     let char_count = collapsed.chars().count();
-    if char_count <= MAX_FOCUSED_REVIEW_SNIPPET_WIDTH {
+    if char_count <= MAX_REVIEW_SNIPPET_WIDTH {
         return collapsed;
     }
 
     let truncated = collapsed
         .chars()
-        .take(MAX_FOCUSED_REVIEW_SNIPPET_WIDTH.saturating_sub(3))
+        .take(MAX_REVIEW_SNIPPET_WIDTH.saturating_sub(3))
         .collect::<String>();
 
     format!("{truncated}...")
@@ -750,7 +750,7 @@ diff --git a/src/auth.rs b/src/auth.rs
         let focused_review = build_focused_review_text(diff, summary);
 
         // Assert
-        assert!(focused_review.contains("## Focused Review"));
+        assert!(focused_review.contains("## Review"));
         assert!(focused_review.contains("- Tighten merge access"));
         assert!(focused_review.contains("Authorization or security-sensitive logic changed."));
         assert!(focused_review.contains("Runtime safety or error handling changed."));
@@ -770,7 +770,7 @@ diff --git a/src/main.rs b/src/main.rs
         let focused_review = build_focused_review_text(diff, None);
 
         // Assert
-        assert!(focused_review.contains(DEFAULT_FOCUSED_REVIEW_COMMENT));
+        assert!(focused_review.contains(DEFAULT_REVIEW_COMMENT));
         assert!(focused_review.contains("General code change; inspect full diff for context."));
         assert!(focused_review.contains("src/main.rs"));
     }

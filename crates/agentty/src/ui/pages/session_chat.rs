@@ -49,7 +49,7 @@ impl<'a> SessionChatPage<'a> {
     /// width.
     ///
     /// This mirrors the exact wrapping and footer line rules used during
-    /// rendering, including focused-review text, so scroll math can stay in
+    /// rendering, including review text, so scroll math can stay in
     /// sync with what users see.
     pub(crate) fn rendered_output_line_count(
         session: &Session,
@@ -86,7 +86,7 @@ impl<'a> SessionChatPage<'a> {
         }
     }
 
-    /// Returns focused-review status text for the active view mode.
+    /// Returns review status text for the active view mode.
     fn focused_review_status_message(&self) -> Option<&str> {
         match self.mode {
             AppMode::View {
@@ -102,7 +102,7 @@ impl<'a> SessionChatPage<'a> {
         }
     }
 
-    /// Returns focused-review assist text for the active view mode.
+    /// Returns review assist text for the active view mode.
     fn focused_review_text(&self) -> Option<&str> {
         match self.mode {
             AppMode::View {
@@ -343,8 +343,8 @@ impl<'a> SessionChatPage<'a> {
     ///
     /// `InProgress`, `Rebasing`, `Merging`, and `Queued` sessions keep
     /// worktree access but hide edit and diff shortcuts, `Review` sessions
-    /// expose focused-review shortcuts with read-only assist generation (`m`
-    /// opens merge confirmation before queueing), and
+    /// expose review shortcuts with read-only assist generation (`m` opens
+    /// merge confirmation before queueing), and
     /// `Done` sessions expose only read-only shortcuts. `Canceled` sessions
     /// expose only `back`, `scroll`, and `help`.
     fn view_help_text(
@@ -780,7 +780,7 @@ mod tests {
 
         // Assert
         assert!(!help_text.contains("d: diff"));
-        assert!(help_text.contains("f: focused review"));
+        assert!(help_text.contains("f: review"));
         assert!(help_text.contains("Enter: reply"));
     }
 

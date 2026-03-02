@@ -7,7 +7,7 @@ Static resources embedded into the binary at compile time.
 - [plan_mode.md](plan_mode.md) - Plan mode instructions written to session worktrees.
 - [plan_mode_prompt.md](plan_mode_prompt.md) - Prompt template that wraps user input for `Plan` permission mode.
 - [auto_commit_assist_prompt.md](auto_commit_assist_prompt.md) - Prompt template for agent-assisted auto-commit error recovery.
-- [focused_review_assist_prompt.md](focused_review_assist_prompt.md) - Prompt template for focused-review assist text generation.
+- [review_assist_prompt.md](review_assist_prompt.md) - Prompt template for review assist text generation.
 - [rebase_assist_prompt.md](rebase_assist_prompt.md) - Prompt template for agent-assisted rebase conflict resolution.
 - [protocol_instruction_prompt.md](protocol_instruction_prompt.md) - Prompt template that instructs agents to use the structured `---agentty-meta---` response protocol for questions and plans.
 - [repo_root_path_prompt.md](repo_root_path_prompt.md) - Prompt template that prepends repository-root-relative file path output requirements.

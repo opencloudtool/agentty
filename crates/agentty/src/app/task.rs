@@ -17,7 +17,7 @@ use crate::infra::git::GitClient;
 /// session execution.
 pub(super) struct TaskService;
 
-/// Inputs needed to generate focused-review assist text in the background.
+/// Inputs needed to generate review assist text in the background.
 pub(super) struct FocusedReviewAssistTaskInput {
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     pub(super) focused_review_diff: String,
@@ -27,9 +27,9 @@ pub(super) struct FocusedReviewAssistTaskInput {
     pub(super) session_summary: Option<String>,
 }
 
-/// Askama view model for rendering focused-review assist prompts.
+/// Askama view model for rendering review assist prompts.
 #[derive(Template)]
-#[template(path = "focused_review_assist_prompt.md", escape = "none")]
+#[template(path = "review_assist_prompt.md", escape = "none")]
 struct FocusedReviewAssistPromptTemplate<'a> {
     focused_review_diff: &'a str,
     session_summary: &'a str,
@@ -117,7 +117,7 @@ impl TaskService {
         });
     }
 
-    /// Spawns one background focused-review assist generation task and emits
+    /// Spawns one background review assist generation task and emits
     /// an event with either final review text or a failure description.
     pub(super) fn spawn_focused_review_assist_task(input: FocusedReviewAssistTaskInput) {
         let FocusedReviewAssistTaskInput {
@@ -149,7 +149,7 @@ impl TaskService {
         });
     }
 
-    /// Generates focused-review assist text by running one model command with
+    /// Generates review assist text by running one model command with
     /// read-only review constraints and parsing the final assistant response
     /// content.
     async fn focused_review_assist_text(
@@ -176,7 +176,7 @@ impl TaskService {
         let command_output = tokio_command
             .output()
             .await
-            .map_err(|error| format!("Failed to execute focused review assist command: {error}"))?;
+            .map_err(|error| format!("Failed to execute review assist command: {error}"))?;
 
         let stdout_text = String::from_utf8_lossy(&command_output.stdout).into_owned();
         let stderr_text = String::from_utf8_lossy(&command_output.stderr).into_owned();
@@ -192,13 +192,13 @@ impl TaskService {
             crate::infra::agent::parse_response(review_model.kind(), &stdout_text, &stderr_text);
         let focused_review_text = parsed.content.trim();
         if focused_review_text.is_empty() {
-            return Err("Focused review assist returned empty output".to_string());
+            return Err("Review assist returned empty output".to_string());
         }
 
         Ok(focused_review_text.to_string())
     }
 
-    /// Renders the focused-review assist prompt from the markdown template.
+    /// Renders the review assist prompt from the markdown template.
     ///
     /// # Errors
     /// Returns an error when Askama template rendering fails.
@@ -213,10 +213,10 @@ impl TaskService {
 
         template
             .render()
-            .map_err(|error| format!("Failed to render `focused_review_assist_prompt.md`: {error}"))
+            .map_err(|error| format!("Failed to render `review_assist_prompt.md`: {error}"))
     }
 
-    /// Formats a focused-review assist process failure with normalized output
+    /// Formats a review assist process failure with normalized output
     /// details for UI display.
     fn format_focused_review_assist_exit_error(
         exit_code: Option<i32>,
@@ -226,10 +226,10 @@ impl TaskService {
         let exit_code = exit_code.map_or_else(|| "unknown".to_string(), |code| code.to_string());
         let output_detail = Self::focused_review_assist_output_detail(stdout, stderr);
 
-        format!("Focused review assist failed with exit code {exit_code}: {output_detail}")
+        format!("Review assist failed with exit code {exit_code}: {output_detail}")
     }
 
-    /// Formats stdout/stderr details for focused-review assist failures.
+    /// Formats stdout/stderr details for review assist failures.
     fn focused_review_assist_output_detail(stdout: &str, stderr: &str) -> String {
         let trimmed_stdout = stdout.trim();
         let trimmed_stderr = stderr.trim();
@@ -252,7 +252,7 @@ mod tests {
     use super::*;
 
     #[test]
-    /// Ensures focused-review prompt rendering includes read-only constraints
+    /// Ensures review prompt rendering includes read-only constraints
     /// while keeping internet and non-editing verification options available.
     fn test_focused_review_assist_prompt_enforces_read_only_constraints() {
         // Arrange
@@ -262,7 +262,7 @@ mod tests {
         // Act
         let prompt =
             TaskService::focused_review_assist_prompt(focused_review_diff, session_summary)
-                .expect("focused review prompt should render");
+                .expect("review prompt should render");
 
         // Assert
         assert!(prompt.contains("You are in read-only review mode."));

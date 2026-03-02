@@ -9,7 +9,7 @@ pub enum DoneSessionOutputMode {
     Summary,
     /// Renders the full captured session output stream.
     Output,
-    /// Renders a concise focused-review view with critical diff highlights.
+    /// Renders a concise review view with critical diff highlights.
     FocusedReview,
 }
 
@@ -99,10 +99,10 @@ pub enum AppMode {
     View {
         /// Selected content view for the session output panel.
         done_session_output_mode: DoneSessionOutputMode,
-        /// Optional status line shown while focused-review text is loading or
+        /// Optional status line shown while review text is loading or
         /// unavailable.
         focused_review_status_message: Option<String>,
-        /// Agent-assisted focused-review text for the active session.
+        /// Agent-assisted review text for the active session.
         focused_review_text: Option<String>,
         session_id: String,
         scroll_offset: Option<u16>,
@@ -273,7 +273,7 @@ mod tests {
         // Arrange
         let context = HelpContext::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
-            focused_review_status_message: Some("Preparing focused review...".to_string()),
+            focused_review_status_message: Some("Preparing review...".to_string()),
             focused_review_text: Some("Ready".to_string()),
             session_id: "session-id".to_string(),
             session_state: ViewSessionState::InProgress,
@@ -293,7 +293,7 @@ mod tests {
                 scroll_offset: Some(4),
                 ..
             } if session_id == "session-id"
-                && focused_review_status_message == "Preparing focused review..."
+                && focused_review_status_message == "Preparing review..."
                 && focused_review_text == "Ready"
         ));
     }
