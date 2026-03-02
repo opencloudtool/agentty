@@ -10,6 +10,23 @@ cd agentty
 cargo run # Builds and runs the 'agentty' binary
 ```
 
+## Tooling Setup
+
+### Install `uv`
+
+Install `uv` using the official instructions:
+https://docs.astral.sh/uv/getting-started/installation/
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Install `pre-commit`
+
+```sh
+uv tool install pre-commit
+```
+
 ## Website
 
 `agentty.xyz` is a Zola site stored in `docs/site/` and deployed through GitHub Pages.
