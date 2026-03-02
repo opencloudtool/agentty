@@ -557,6 +557,38 @@ impl App {
             .await;
     }
 
+    /// Starts a background refresh of one session's diff-based size.
+    ///
+    /// This keeps key handlers responsive by avoiding synchronous git-diff work
+    /// on the foreground path. When the background refresh finishes, a
+    /// [`AppEvent::RefreshSessions`] event is emitted so list snapshots pick up
+    /// the new persisted size.
+    pub(crate) fn refresh_session_size_in_background(&self, session_id: &str) {
+        let Some(session_index) = self.session_index_for_id(session_id) else {
+            return;
+        };
+        let Some(session) = self.sessions.sessions.get(session_index) else {
+            return;
+        };
+
+        let base_branch = session.base_branch.clone();
+        let folder = session.folder.clone();
+        let session_id = session.id.clone();
+        let database = self.services.db().clone();
+        let git_client = self.services.git_client();
+        let app_event_tx = self.services.event_sender();
+
+        tokio::spawn(async move {
+            let computed_size =
+                SessionManager::session_size_for_folder(git_client.as_ref(), &folder, &base_branch)
+                    .await;
+            let _ = database
+                .update_session_size(&session_id, &computed_size.to_string())
+                .await;
+            let _ = app_event_tx.send(AppEvent::RefreshSessions);
+        });
+    }
+
     /// Submits a follow-up prompt for an existing session.
     pub async fn reply(&mut self, session_id: &str, prompt: &str) {
         self.sessions
