@@ -107,7 +107,8 @@ impl RealCodexAppServerClient {
             .current_dir(&request.folder)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
 
         let mut child = command
             .spawn()
@@ -126,7 +127,7 @@ impl RealCodexAppServerClient {
             folder: request.folder.clone(),
             model: request.model.clone(),
             restored_context: false,
-            stdin,
+            stdin: Some(stdin),
             stdout_lines: BufReader::new(stdout).lines(),
             thread_id: String::new(),
         };
@@ -165,7 +166,7 @@ impl RealCodexAppServerClient {
                 }
             }
         });
-        write_json_line(&mut session.stdin, &initialize_payload).await?;
+        write_json_line(Self::runtime_stdin(session)?, &initialize_payload).await?;
         app_server_transport::wait_for_response_line(&mut session.stdout_lines, &initialize_id)
             .await?;
 
@@ -173,7 +174,7 @@ impl RealCodexAppServerClient {
             "method": "initialized",
             "params": {}
         });
-        write_json_line(&mut session.stdin, &runtime_initialized_payload).await?;
+        write_json_line(Self::runtime_stdin(session)?, &runtime_initialized_payload).await?;
 
         Ok(())
     }
@@ -184,7 +185,7 @@ impl RealCodexAppServerClient {
         let thread_start_payload =
             Self::build_thread_start_payload(&session.folder, &session.model, &thread_start_id);
 
-        write_json_line(&mut session.stdin, &thread_start_payload).await?;
+        write_json_line(Self::runtime_stdin(session)?, &thread_start_payload).await?;
         let response_line = app_server_transport::wait_for_response_line(
             &mut session.stdout_lines,
             &thread_start_id,
@@ -213,7 +214,7 @@ impl RealCodexAppServerClient {
         let thread_resume_payload =
             Self::build_thread_resume_payload(&thread_resume_request_id, thread_id, &session.model);
 
-        write_json_line(&mut session.stdin, &thread_resume_payload).await?;
+        write_json_line(Self::runtime_stdin(session)?, &thread_resume_payload).await?;
         let response_line = app_server_transport::wait_for_response_line(
             &mut session.stdout_lines,
             &thread_resume_request_id,
@@ -357,7 +358,7 @@ impl RealCodexAppServerClient {
             }
         });
 
-        write_json_line(&mut session.stdin, &compact_payload).await?;
+        write_json_line(Self::runtime_stdin(session)?, &compact_payload).await?;
         app_server_transport::wait_for_response_line(&mut session.stdout_lines, &compact_id)
             .await?;
 
@@ -433,7 +434,7 @@ impl RealCodexAppServerClient {
             prompt,
             &turn_start_id,
         );
-        write_json_line(&mut session.stdin, &turn_start_payload).await?;
+        write_json_line(Self::runtime_stdin(session)?, &turn_start_payload).await?;
 
         let mut assistant_messages = Vec::new();
         let mut active_turn_id: Option<String> = None;
@@ -480,7 +481,7 @@ impl RealCodexAppServerClient {
                     if let Some(approval_response) =
                         Self::build_pre_action_approval_response(&response_value)
                     {
-                        write_json_line(&mut session.stdin, &approval_response).await?;
+                        write_json_line(Self::runtime_stdin(session)?, &approval_response).await?;
 
                         continue;
                     }
@@ -812,8 +813,23 @@ impl RealCodexAppServerClient {
         }))
     }
 
+    /// Returns a mutable stdin handle for one active Codex runtime.
+    ///
+    /// Runtime shutdown takes ownership of `stdin` so callers can signal EOF
+    /// before waiting for child process exit. This accessor returns a clear
+    /// error when writes are attempted after shutdown has already started.
+    fn runtime_stdin(
+        session: &mut CodexSessionRuntime,
+    ) -> Result<&mut tokio::process::ChildStdin, String> {
+        session
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "Codex app-server stdin is unavailable".to_string())
+    }
+
     /// Terminates one runtime process and waits for process exit.
     async fn shutdown_runtime(session: &mut CodexSessionRuntime) {
+        drop(session.stdin.take());
         app_server_transport::shutdown_child(&mut session.child).await;
     }
 }
@@ -862,7 +878,7 @@ struct CodexSessionRuntime {
     folder: PathBuf,
     model: String,
     restored_context: bool,
-    stdin: tokio::process::ChildStdin,
+    stdin: Option<tokio::process::ChildStdin>,
     stdout_lines: Lines<BufReader<tokio::process::ChildStdout>>,
     thread_id: String,
 }

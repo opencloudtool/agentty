@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 
 use askama::Template;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
 use super::access::SESSION_NOT_FOUND_ERROR;
@@ -15,14 +14,12 @@ use crate::app::settings::SettingName;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::session::{SESSION_DATA_DIR, Session, Status};
-use crate::infra::app_server::AppServerTurnRequest;
+use crate::infra::agent::{AgentCommandMode, BuildCommandRequest};
 use crate::infra::channel::TurnMode;
 use crate::ui::pages::session_list::grouped_session_indexes;
 
 /// Maximum stored length for generated session titles.
 const GENERATED_SESSION_TITLE_MAX_CHARACTERS: usize = 72;
-/// Debounce window before running detached session-title generation.
-const SESSION_TITLE_REFRESH_DEBOUNCE_DELAY: Duration = Duration::from_secs(5);
 
 /// Input bag for constructing a queued session command.
 struct BuildSessionCommandInput {
@@ -43,13 +40,13 @@ struct DeletedSessionCleanup {
     working_dir: PathBuf,
 }
 
-/// JSON response shape used by model-generated session titles.
+/// JSON response shape used by one-shot model-generated session titles.
 #[derive(serde::Deserialize)]
 struct GeneratedSessionTitleResponse {
     title: String,
 }
 
-/// Askama view model for rendering title-generation instruction prompts.
+/// Askama view model for rendering one-shot title-generation prompts.
 #[derive(Template)]
 #[template(path = "session_title_generation_prompt.md", escape = "none")]
 struct SessionTitleGenerationPromptTemplate<'a> {
@@ -225,9 +222,9 @@ impl SessionManager {
 
     /// Submits the first prompt for a blank session and starts the agent.
     ///
-    /// After enqueueing the session command, this also schedules a detached
-    /// fast-model task that can rewrite the initial prompt-based title with a
-    /// concise generated title.
+    /// The first prompt is persisted as both session prompt and session title.
+    /// A detached one-shot title-generation task may replace that initial
+    /// title once.
     ///
     /// # Errors
     /// Returns an error if the session is missing or prompt persistence fails.
@@ -274,7 +271,7 @@ impl SessionManager {
 
         let title_model =
             crate::app::settings::load_default_fast_model_setting(services, session_model).await;
-        Self::spawn_session_title_refresh_task(
+        Self::spawn_session_title_generation_task(
             services,
             &persisted_session_id,
             folder.as_path(),
@@ -777,8 +774,8 @@ impl SessionManager {
 
     /// Persists first-message prompt/title metadata before queueing execution.
     ///
-    /// This writes the initial prompt/title and schedules asynchronous title
-    /// refinement using the configured fast model.
+    /// This writes the initial prompt/title, then starts one detached
+    /// generation task that may replace the title once.
     async fn persist_first_reply_metadata(
         &self,
         services: &AppServices,
@@ -796,7 +793,7 @@ impl SessionManager {
 
         let title_model =
             crate::app::settings::load_default_fast_model_setting(services, session_model).await;
-        Self::spawn_session_title_refresh_task(services, session_id, folder, prompt, title_model);
+        Self::spawn_session_title_generation_task(services, session_id, folder, prompt, title_model);
     }
 
     /// Appends the user reply marker line to session output.
@@ -887,24 +884,18 @@ impl SessionManager {
         }
     }
 
-    /// Spawns a detached fast-model turn that refines the first-message title.
+    /// Spawns one detached model command that generates a session title once.
     ///
     /// The generated title is persisted when parsing succeeds, then a
     /// `RefreshSessions` event is emitted so list-mode snapshots pick up the
-    /// new title. A short debounce is applied before this detached turn runs
-    /// to reduce startup contention with the primary session turn.
-    fn spawn_session_title_refresh_task(
+    /// new title.
+    fn spawn_session_title_generation_task(
         services: &AppServices,
         session_id: &str,
         folder: &Path,
         prompt: &str,
         session_model: AgentModel,
     ) {
-        if !crate::infra::agent::transport_mode(session_model.kind()).uses_app_server() {
-            return;
-        }
-
-        let app_server_client = services.app_server_client();
         let app_event_tx = services.event_sender();
         let db = services.db().clone();
         let folder = folder.to_path_buf();
@@ -912,34 +903,24 @@ impl SessionManager {
         let persisted_session_id = session_id.to_string();
 
         tokio::spawn(async move {
-            sleep(SESSION_TITLE_REFRESH_DEBOUNCE_DELAY).await;
-
             let Ok(title_generation_prompt) =
                 SessionManager::session_title_generation_prompt(&prompt)
             else {
                 return;
             };
-            let title_task_session_id = format!("session-title-{persisted_session_id}");
-            let request = AppServerTurnRequest {
-                live_session_output: None,
-                folder,
-                model: session_model.as_str().to_string(),
-                prompt: title_generation_prompt,
-                provider_conversation_id: None,
-                session_id: title_task_session_id.clone(),
-                session_output: None,
-            };
-            let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
-            let turn_result = app_server_client.run_turn(request, stream_tx).await;
-            app_server_client
-                .shutdown_session(title_task_session_id)
-                .await;
 
-            let Ok(turn_response) = turn_result else {
+            let Some(title_response) = SessionManager::run_title_generation_command(
+                folder.as_path(),
+                &title_generation_prompt,
+                session_model,
+            )
+            .await
+            else {
                 return;
             };
+
             let Some(generated_title) =
-                SessionManager::parse_generated_session_title(&turn_response.assistant_message)
+                SessionManager::parse_generated_session_title(&title_response)
             else {
                 return;
             };
@@ -956,6 +937,36 @@ impl SessionManager {
                 let _ = app_event_tx.send(AppEvent::RefreshSessions);
             }
         });
+    }
+
+    /// Executes one detached title-generation command and returns parsed
+    /// content.
+    async fn run_title_generation_command(
+        folder: &Path,
+        prompt: &str,
+        model: AgentModel,
+    ) -> Option<String> {
+        let backend = crate::infra::agent::create_backend(model.kind());
+        let command = backend
+            .build_command(BuildCommandRequest {
+                folder,
+                mode: AgentCommandMode::Start { prompt },
+                model: model.as_str(),
+            })
+            .ok()?;
+        let mut tokio_command = tokio::process::Command::from(command);
+        tokio_command.stdin(std::process::Stdio::null());
+        let command_output = tokio_command.output().await.ok()?;
+        if !command_output.status.success() {
+            return None;
+        }
+
+        let stdout_text = String::from_utf8_lossy(&command_output.stdout).into_owned();
+        let stderr_text = String::from_utf8_lossy(&command_output.stderr).into_owned();
+        let parsed_response =
+            crate::infra::agent::parse_response(model.kind(), &stdout_text, &stderr_text);
+
+        Some(parsed_response.content)
     }
 
     /// Builds the title-generation instruction prompt from the user message.
@@ -1118,24 +1129,131 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use ratatui::widgets::TableState;
+
     use super::*;
+    use crate::app::SessionState;
+    use crate::domain::session::{SessionHandles, SessionSize, SessionStats};
 
-    #[test]
-    /// Ensures title generation uses a fixed five-second debounce window.
-    fn test_session_title_refresh_debounce_delay_is_five_seconds() {
-        // Arrange
-        let expected_delay = Duration::from_secs(5);
+    /// Builds a session manager with one session for reply-context tests.
+    fn session_manager_with_one_session(session: Session) -> SessionManager {
+        let mut handles = HashMap::new();
+        handles.insert(
+            session.id.clone(),
+            SessionHandles::new(session.output.clone(), session.status),
+        );
 
-        // Act
-        let actual_delay = SESSION_TITLE_REFRESH_DEBOUNCE_DELAY;
+        let state = SessionState::new(
+            handles,
+            vec![session],
+            TableState::default(),
+            Arc::new(crate::app::session::RealClock),
+            1,
+            0,
+        );
 
-        // Assert
-        assert_eq!(actual_delay, expected_delay);
+        SessionManager::new(
+            Vec::new(),
+            crate::app::session::SessionDefaults {
+                model: AgentModel::Gpt53Codex,
+            },
+            Arc::new(crate::infra::git::MockGitClient::new()),
+            0,
+            state,
+            Vec::new(),
+        )
+    }
+
+    /// Builds a minimal in-memory session snapshot for lifecycle unit tests.
+    fn test_session(
+        prompt: &str,
+        status: Status,
+        title: Option<&str>,
+        output: &str,
+    ) -> Session {
+        Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::from("/tmp/session"),
+            id: "session-id".to_string(),
+            model: AgentModel::ClaudeSonnet46,
+            output: output.to_string(),
+            project_name: "project".to_string(),
+            prompt: prompt.to_string(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status,
+            summary: None,
+            title: title.map(ToString::to_string),
+            updated_at: 0,
+        }
     }
 
     #[test]
-    /// Ensures title-generation prompt rendering includes commit-style,
-    /// high-level title guidance and the original user request.
+    /// Ensures first replies persist the full prompt as the one-time title.
+    fn test_prepare_reply_context_first_message_sets_title_from_prompt() {
+        // Arrange
+        let prompt = "Implement optimistic retry path";
+        let session = test_session("", Status::New, None, "");
+        let mut session_manager = session_manager_with_one_session(session);
+
+        // Act
+        let context = session_manager
+            .prepare_reply_context(0, prompt, AgentModel::ClaudeSonnet46, false)
+            .expect("reply context should be available")
+            .expect("session should produce reply context");
+
+        // Assert
+        assert_eq!(context.0, PathBuf::from("/tmp/session"));
+        assert_eq!(context.1, None);
+        assert!(context.2);
+        assert_eq!(context.3, "session-id");
+        assert_eq!(context.4, Some(prompt.to_string()));
+        assert_eq!(session_manager.sessions[0].prompt, prompt);
+        assert_eq!(session_manager.sessions[0].title, Some(prompt.to_string()));
+    }
+
+    #[test]
+    /// Ensures follow-up replies keep the existing title unchanged.
+    fn test_prepare_reply_context_follow_up_keeps_existing_title() {
+        // Arrange
+        let session = test_session(
+            "Initial prompt",
+            Status::Review,
+            Some("Initial prompt"),
+            "existing output",
+        );
+        let mut session_manager = session_manager_with_one_session(session);
+
+        // Act
+        let context = session_manager
+            .prepare_reply_context(
+                0,
+                "Follow-up prompt",
+                AgentModel::ClaudeSonnet46,
+                false,
+            )
+            .expect("reply context should be available")
+            .expect("session should produce reply context");
+
+        // Assert
+        assert_eq!(context.0, PathBuf::from("/tmp/session"));
+        assert_eq!(context.1, None);
+        assert!(!context.2);
+        assert_eq!(context.3, "session-id");
+        assert_eq!(context.4, None);
+        assert_eq!(session_manager.sessions[0].prompt, "Initial prompt");
+        assert_eq!(
+            session_manager.sessions[0].title,
+            Some("Initial prompt".to_string())
+        );
+    }
+
+    #[test]
+    /// Ensures title-generation prompt rendering includes session request text.
     fn test_session_title_generation_prompt_includes_request() {
         // Arrange
         let request_prompt = "Refactor session lifecycle updates";
@@ -1153,6 +1271,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures strict JSON responses are parsed into normalized titles.
     fn test_parse_generated_session_title_prefers_json_title() {
         // Arrange
         let response_content = r#"{"title":"Refine session startup flow"}"#;
@@ -1168,36 +1287,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_generated_session_title_reads_embedded_json_object() {
-        // Arrange
-        let response_content = "answer:\n{\"title\":\"Simplify prompt submit flow\"}\n";
-
-        // Act
-        let parsed_title = SessionManager::parse_generated_session_title(response_content);
-
-        // Assert
-        assert_eq!(
-            parsed_title,
-            Some("Simplify prompt submit flow".to_string())
-        );
-    }
-
-    #[test]
+    /// Ensures non-JSON freeform responses are ignored for title updates.
     fn test_parse_generated_session_title_returns_none_for_freeform_response() {
         // Arrange
         let response_content = "Title: \"Polish merge queue behavior\"\nextra details";
-
-        // Act
-        let parsed_title = SessionManager::parse_generated_session_title(response_content);
-
-        // Assert
-        assert_eq!(parsed_title, None);
-    }
-
-    #[test]
-    fn test_parse_generated_session_title_returns_none_for_blank_response() {
-        // Arrange
-        let response_content = "   \n\n";
 
         // Act
         let parsed_title = SessionManager::parse_generated_session_title(response_content);

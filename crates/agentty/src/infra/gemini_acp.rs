@@ -48,7 +48,7 @@ trait GeminiRuntimeTransport {
 
 /// Production ACP transport backed by Gemini child process stdio streams.
 struct GeminiStdioTransport {
-    stdin: tokio::process::ChildStdin,
+    stdin: Option<tokio::process::ChildStdin>,
     stdout_lines: Lines<BufReader<tokio::process::ChildStdout>>,
 }
 
@@ -56,7 +56,7 @@ impl GeminiStdioTransport {
     /// Creates a stdio transport over the provided child pipes.
     fn new(stdin: tokio::process::ChildStdin, stdout: tokio::process::ChildStdout) -> Self {
         Self {
-            stdin,
+            stdin: Some(stdin),
             stdout_lines: BufReader::new(stdout).lines(),
         }
     }
@@ -64,7 +64,14 @@ impl GeminiStdioTransport {
 
 impl GeminiRuntimeTransport for GeminiStdioTransport {
     fn write_json_line(&mut self, payload: Value) -> GeminiTransportFuture<'_, Result<(), String>> {
-        Box::pin(async move { write_json_line(&mut self.stdin, &payload).await })
+        Box::pin(async move {
+            let stdin = self
+                .stdin
+                .as_mut()
+                .ok_or_else(|| "Gemini ACP stdin is unavailable".to_string())?;
+
+            write_json_line(stdin, &payload).await
+        })
     }
 
     fn wait_for_response_line(
@@ -156,7 +163,8 @@ impl RealGeminiAcpClient {
             .current_dir(&request.folder)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
 
         let mut child = command
             .spawn()
@@ -443,6 +451,7 @@ impl RealGeminiAcpClient {
 
     /// Terminates one Gemini ACP runtime process.
     async fn shutdown_runtime(session: &mut GeminiSessionRuntime) {
+        drop(session.transport.stdin.take());
         app_server_transport::shutdown_child(&mut session.child).await;
     }
 }

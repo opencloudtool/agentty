@@ -249,8 +249,6 @@ impl TaskService {
 
 #[cfg(test)]
 mod tests {
-    use tokio::sync::mpsc;
-
     use super::*;
 
     #[test]

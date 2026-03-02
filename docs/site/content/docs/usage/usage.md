@@ -49,8 +49,9 @@ New → InProgress → Review → Done
 
 <a id="usage-title-refinement"></a>
 When the first prompt is submitted for a new session, Agentty stores that
-prompt as the initial title, then runs a background title refinement task using
-the configured **Default Fast Model**.
+prompt as the initial title and starts one background title-generation task
+using the configured **Default Fast Model**. That generation runs only once
+for session initiation; Agentty does not continuously refresh titles.
 
 ## Session Sizes
 
