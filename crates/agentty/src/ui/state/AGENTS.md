@@ -12,4 +12,4 @@ State management for UI components and modes.
 
 ## Docs
 
-Help action changes require updating `docs/site/content/docs/usage/usage.md`.
+Help action changes require updating `docs/site/content/docs/usage/keybindings.md`.

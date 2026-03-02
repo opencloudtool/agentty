@@ -194,7 +194,8 @@ When adding, removing, or changing user-facing features (agent backends, models,
 | Doc Page | Covers |
 |----------|--------|
 | `docs/site/content/docs/agents/backends.md` | Agent backends and models. |
-| `docs/site/content/docs/usage/usage.md` | Keybindings, session lifecycle, and workflow. |
+| `docs/site/content/docs/usage/workflow.md` | Session lifecycle, workflow, slash commands, and data location. |
+| `docs/site/content/docs/usage/keybindings.md` | Keybindings across lists, session view, diff mode, and prompt input. |
 | `docs/site/content/docs/getting-started/overview.md` | High-level concepts and worktree isolation. |
 | `docs/site/content/docs/contributing/design-architecture.md` | Architecture map, module boundaries, runtime flow, and change-path recipes. |
 

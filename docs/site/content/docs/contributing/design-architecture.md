@@ -212,7 +212,7 @@ instead of replaying the full transcript.
 1. Update orchestration in `crates/agentty/src/app/session/` (`lifecycle.rs`, `worker.rs`, `task.rs`, etc.).
 1. Keep persistence in `crates/agentty/src/infra/db.rs`.
 1. Keep git operations behind `GitClient` in `crates/agentty/src/infra/git.rs`.
-1. Update docs when lifecycle/status behavior changes: `docs/site/content/docs/usage/usage.md`.
+1. Update docs when lifecycle/status behavior changes: `docs/site/content/docs/usage/workflow.md`.
 
 ### Add a New Agent Backend or Model
 
@@ -228,7 +228,7 @@ instead of replaying the full transcript.
 1. Update the handler in `crates/agentty/src/runtime/mode/`.
 1. If a new mode/state is needed, extend `crates/agentty/src/ui/state/app_mode.rs`.
 1. If help content changes, update `crates/agentty/src/ui/state/help_action.rs` as needed.
-1. Update `docs/site/content/docs/usage/usage.md`.
+1. Update `docs/site/content/docs/usage/keybindings.md`.
 
 ### Add or Change Database Schema
 

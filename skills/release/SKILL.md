@@ -34,7 +34,8 @@ This skill guides you through the process of releasing a new version of the proj
      `git diff <previous_tag>..HEAD -- crates/agentty/src/domain/agent.rs crates/agentty/src/domain/session.rs crates/agentty/src/ui/state/help_action.rs`
    - If any of those files changed, verify the corresponding doc pages are up to date:
      - `docs/site/content/docs/agents/backends.md` — agent backends and models.
-     - `docs/site/content/docs/usage/usage.md` — keybindings, session lifecycle, and workflow.
+     - `docs/site/content/docs/usage/workflow.md` — session lifecycle and workflow.
+     - `docs/site/content/docs/usage/keybindings.md` — keybindings.
    - Run `zola check --root docs/site` to verify no broken internal links.
 
 1. **Changelog**

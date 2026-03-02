@@ -52,7 +52,7 @@ when you delete a session.
 | Concept | Description |
 |---------|-------------|
 | **Agent** | An external AI CLI backend (Gemini, Claude, or Codex) that performs coding work. See [Agents & Models](@/docs/agents/backends.md). |
-| **Session** | An isolated unit of work: one prompt, one worktree branch, one reviewable diff. See [Workflow & Keybindings](@/docs/usage/usage.md). |
+| **Session** | An isolated unit of work: one prompt, one worktree branch, one reviewable diff. See [Workflow](@/docs/usage/workflow.md) and [Keybindings](@/docs/usage/keybindings.md). |
 | **Project** | A git repository registered in Agentty. Switch between projects with the Projects tab. |
 | **Diff view** | Press `d` in a review-state session to see exactly what the agent changed. |
 
@@ -60,4 +60,5 @@ when you delete a session.
 
 - [Installation](./installation) — install Agentty and run it for the first time.
 - [Agents & Models](@/docs/agents/backends.md) — configure backends and choose models.
-- [Workflow & Keybindings](@/docs/usage/usage.md) — learn the interface and keyboard shortcuts.
+- [Workflow](@/docs/usage/workflow.md) — learn the interface layout and session lifecycle.
+- [Keybindings](@/docs/usage/keybindings.md) — learn the keyboard shortcuts for each view.

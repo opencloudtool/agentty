@@ -14,4 +14,4 @@ Key handling logic split by `AppMode`.
 
 ## Docs
 
-Keybinding changes require updating `docs/site/content/docs/usage/usage.md`.
+Keybinding changes require updating `docs/site/content/docs/usage/keybindings.md`.

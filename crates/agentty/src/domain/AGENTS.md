@@ -17,4 +17,4 @@ Pure business logic and domain entities, decoupled from UI and infrastructure.
 Changes to agent kinds, models, or session status/sizes require updating:
 
 - `docs/site/content/docs/agents/backends.md` — agent backends and models.
-- `docs/site/content/docs/usage/usage.md` — session lifecycle and sizes.
+- `docs/site/content/docs/usage/workflow.md` — session lifecycle and sizes.
