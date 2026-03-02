@@ -1,7 +1,7 @@
 +++
 title = "Design & Architecture"
 description = "Architecture map and change-path guidance for contributors working in the Agentty workspace."
-weight = 2
+weight = 0
 +++
 
 <a id="architecture-introduction"></a>
