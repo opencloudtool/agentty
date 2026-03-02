@@ -18,4 +18,5 @@ theme = "gruvbox-dark-medium"
 
 [extra]
 github_repo = "https://github.com/agentty-xyz/agentty"
+github_repo_slug = "agentty-xyz/agentty"
 npm_package = "https://www.npmjs.com/package/agentty"

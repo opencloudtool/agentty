@@ -141,6 +141,34 @@ svg {
     opacity: 1;
 }
 
+.github-link-rich {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.github-link-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.github-link-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+/* Use a subtle frame so external Shields badges fit the local nav style. */
+.github-badge {
+    display: block;
+    height: 20px;
+    width: auto;
+    border: 1px solid var(--color-border);
+    border-radius: 2px;
+    background: var(--color-surface);
+}
+
 .site-theme-switch {
     display: flex;
     align-items: center;
@@ -848,6 +876,12 @@ svg {
     }
 }
 
+@media (max-width: 760px) {
+    .github-badge-release {
+        display: none;
+    }
+}
+
 @media (max-width: 560px) {
     .site-nav-inner {
         flex-wrap: wrap;
@@ -862,5 +896,10 @@ svg {
     .site-nav-actions {
         width: 100%;
         justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .github-link-badges {
+        flex-wrap: wrap;
     }
 }
