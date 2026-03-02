@@ -643,6 +643,38 @@ svg {
     vertical-align: middle;
 }
 
+/* Paragraph anchors expose a lightweight `#` affordance for deep links. */
+.docs-content .docs-paragraph-anchor-link {
+    border: 1px solid transparent;
+    border-radius: 0.25rem;
+    color: var(--color-dim);
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1;
+    margin-left: 0.4rem;
+    opacity: 0;
+    padding: 0.15rem 0.3rem;
+    text-decoration: none;
+    transition: color var(--transition-fast), border-color var(--transition-fast), opacity var(--transition-fast);
+    vertical-align: middle;
+}
+
+.docs-content p.docs-paragraph-anchored:hover .docs-paragraph-anchor-link,
+.docs-content p.docs-paragraph-anchored:focus-within .docs-paragraph-anchor-link,
+.docs-content .docs-paragraph-anchor-link:focus-visible {
+    border-color: var(--color-border);
+    color: var(--color-accent);
+    opacity: 1;
+}
+
+@media (hover: none) {
+    .docs-content .docs-paragraph-anchor-link {
+        opacity: 1;
+    }
+}
+
 .theme-btn {
     background: transparent;
     border: 0;

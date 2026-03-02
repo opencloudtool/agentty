@@ -15,6 +15,7 @@ Use these conventions to keep Agentty documentation maintainable as it grows.
 - Keep the section directory named `docs` so its canonical route remains `/docs/`.
 - When moving or renaming pages, add `aliases` in page front matter to preserve old links.
 - For paragraph-level deep links, add explicit HTML anchors in content (for example, `<a id="some-paragraph-id"></a>` before the paragraph).
+- Paragraph anchors automatically render a `#` affordance next to the paragraph so users can copy deep links directly.
 
 ## Use Section Metadata Deliberately
 

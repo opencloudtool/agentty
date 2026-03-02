@@ -38,9 +38,44 @@
     {% block extra_scripts %}
         <script>
 (function () {
+  /**
+   * Copy plain text to the clipboard and report whether it succeeded.
+   *
+   * This prefers the async Clipboard API and falls back to
+   * `document.execCommand('copy')` for older browser support.
+   */
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; });
+    }
+
+    var textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.setAttribute('readonly', '');
+    textArea.style.position = 'absolute';
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.select();
+
+    var copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (error) {
+      copied = false;
+    }
+
+    document.body.removeChild(textArea);
+
+    return Promise.resolve(copied);
+  }
+
   /** Attach a copy button to every fenced code block in `.docs-content`. */
   function attachCodeCopyButtons() {
     document.querySelectorAll('.docs-content pre').forEach(function (pre) {
+      if (pre.querySelector('.docs-copy-btn')) {
+        return;
+      }
+
       var btn = document.createElement('button');
       btn.className = 'docs-copy-btn';
       btn.textContent = 'copy';
@@ -50,7 +85,11 @@
       btn.addEventListener('click', function () {
         var code = pre.querySelector('code');
         var text = code ? code.innerText : pre.innerText;
-        navigator.clipboard.writeText(text).then(function () {
+        copyTextToClipboard(text).then(function (copied) {
+          if (!copied) {
+            return;
+          }
+
           btn.textContent = 'copied!';
           setTimeout(function () { btn.textContent = 'copy'; }, 2000);
         });
@@ -60,7 +99,54 @@
     });
   }
 
+  /**
+   * Attach paragraph-level copyable links for explicit HTML anchors (`<a id="..."></a>`).
+   *
+   * The link is appended to the anchored paragraph so users can click `#`
+   * to copy a deep link with the paragraph hash.
+   */
+  function attachParagraphAnchorLinks() {
+    document.querySelectorAll('.docs-content a[id]:not([href]):not(.zola-anchor)').forEach(function (anchor) {
+      var anchorId = anchor.getAttribute('id');
+      var paragraph = anchor.nextElementSibling;
+
+      if (!anchorId || !paragraph || paragraph.tagName !== 'P') {
+        return;
+      }
+
+      if (paragraph.querySelector('.docs-paragraph-anchor-link')) {
+        return;
+      }
+
+      var anchorLink = document.createElement('a');
+      anchorLink.className = 'docs-paragraph-anchor-link';
+      anchorLink.dataset.anchorId = anchorId;
+      anchorLink.href = '#' + anchorId;
+      anchorLink.textContent = '#';
+      anchorLink.title = 'Copy link to this paragraph';
+      anchorLink.setAttribute('aria-label', 'Copy link to this paragraph');
+
+      anchorLink.addEventListener('click', function () {
+        var paragraphUrl = new URL(window.location.href);
+        paragraphUrl.hash = anchorId;
+
+        copyTextToClipboard(paragraphUrl.toString()).then(function (copied) {
+          if (!copied) {
+            return;
+          }
+
+          anchorLink.textContent = 'copied!';
+          setTimeout(function () { anchorLink.textContent = '#'; }, 2000);
+        });
+      });
+
+      paragraph.classList.add('docs-paragraph-anchored');
+      paragraph.appendChild(anchorLink);
+    });
+  }
+
   attachCodeCopyButtons();
+  attachParagraphAnchorLinks();
 })();
         </script>
     {% endblock extra_scripts %}
