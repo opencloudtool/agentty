@@ -308,10 +308,14 @@ mod tests {
                 Box::pin(async move {
                     tokio::fs::create_dir_all(&worktree_path)
                         .await
-                        .map_err(|error| format!("Failed to create mock worktree directory: {error}"))?;
+                        .map_err(|error| {
+                            format!("Failed to create mock worktree directory: {error}")
+                        })?;
                     tokio::fs::create_dir_all(worktree_path.join(SESSION_DATA_DIR))
                         .await
-                        .map_err(|error| format!("Failed to create mock session data directory: {error}"))?;
+                        .map_err(|error| {
+                            format!("Failed to create mock session data directory: {error}")
+                        })?;
 
                     Ok(())
                 })
@@ -378,11 +382,9 @@ mod tests {
         mock.expect_is_worktree_clean()
             .times(0..)
             .returning(|_| Box::pin(async { Ok(true) }));
-        mock.expect_pull_rebase()
-            .times(0..)
-            .returning(|_| {
-                Box::pin(async { Err("No upstream branch configured for pull".to_string()) })
-            });
+        mock.expect_pull_rebase().times(0..).returning(|_| {
+            Box::pin(async { Err("No upstream branch configured for pull".to_string()) })
+        });
         mock.expect_push_current_branch()
             .times(0..)
             .returning(|_| Box::pin(async { Ok(()) }));
@@ -401,12 +403,10 @@ mod tests {
         mock.expect_repo_url()
             .times(0..)
             .returning(|_| Box::pin(async { Ok("https://example.invalid/repo.git".to_string()) }));
-        mock.expect_main_repo_root()
-            .times(0..)
-            .returning(move |_| {
-                let repo_root = repo_root.clone();
-                Box::pin(async move { Ok(repo_root) })
-            });
+        mock.expect_main_repo_root().times(0..).returning(move |_| {
+            let repo_root = repo_root.clone();
+            Box::pin(async move { Ok(repo_root) })
+        });
 
         mock
     }
@@ -771,9 +771,13 @@ mod tests {
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let app =
-            new_test_app_with_db(dir.path().to_path_buf(), working_dir, Some("main".to_string()), db)
-                .await;
+        let app = new_test_app_with_db(
+            dir.path().to_path_buf(),
+            working_dir,
+            Some("main".to_string()),
+            db,
+        )
+        .await;
 
         // Act
         let branch = app.git_branch();
@@ -2540,9 +2544,7 @@ mod tests {
         mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
-            .withf(|_, commit_message, no_verify| {
-                commit_message == COMMIT_MESSAGE && !*no_verify
-            })
+            .withf(|_, commit_message, no_verify| commit_message == COMMIT_MESSAGE && !*no_verify)
             .in_sequence(&mut sequence)
             .returning(|_, _, _| Box::pin(async { Ok(()) }));
         mock_git_client
@@ -2553,9 +2555,7 @@ mod tests {
         mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
-            .withf(|_, commit_message, no_verify| {
-                commit_message == COMMIT_MESSAGE && !*no_verify
-            })
+            .withf(|_, commit_message, no_verify| commit_message == COMMIT_MESSAGE && !*no_verify)
             .in_sequence(&mut sequence)
             .returning(|_, _, _| Box::pin(async { Ok(()) }));
         mock_git_client
@@ -2567,16 +2567,22 @@ mod tests {
         // Act
         std::fs::write(session_folder.join("session-amend.txt"), "first change")
             .expect("failed to write first change");
-        let first_hash =
-            SessionManager::commit_changes_with_client_for_test(&mock_git_client, &session_folder, false)
-                .await
-                .expect("failed to create first session commit");
+        let first_hash = SessionManager::commit_changes_with_client_for_test(
+            &mock_git_client,
+            &session_folder,
+            false,
+        )
+        .await
+        .expect("failed to create first session commit");
         std::fs::write(session_folder.join("session-amend.txt"), "second change")
             .expect("failed to write second change");
-        let second_hash =
-            SessionManager::commit_changes_with_client_for_test(&mock_git_client, &session_folder, false)
-                .await
-                .expect("failed to amend session commit");
+        let second_hash = SessionManager::commit_changes_with_client_for_test(
+            &mock_git_client,
+            &session_folder,
+            false,
+        )
+        .await
+        .expect("failed to amend session commit");
 
         // Assert
         assert_ne!(
@@ -2609,7 +2615,9 @@ mod tests {
                         .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
                     tokio::fs::create_dir_all(worktree_path.join(SESSION_DATA_DIR))
                         .await
-                        .map_err(|error| format!("Failed to create mock worktree data dir: {error}"))?;
+                        .map_err(|error| {
+                            format!("Failed to create mock worktree data dir: {error}")
+                        })?;
 
                     Ok(())
                 })
@@ -2773,7 +2781,9 @@ mod tests {
         mock_git_client
             .expect_create_worktree()
             .times(1)
-            .returning(|_, _, _, _| Box::pin(async { Err("mock create_worktree failed".to_string()) }));
+            .returning(|_, _, _, _| {
+                Box::pin(async { Err("mock create_worktree failed".to_string()) })
+            });
         install_mock_git_client(&mut app, mock_git_client);
 
         // Act
@@ -3052,7 +3062,9 @@ mod tests {
                         .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
                     tokio::fs::create_dir_all(worktree_path.join(SESSION_DATA_DIR))
                         .await
-                        .map_err(|error| format!("Failed to create mock worktree data dir: {error}"))?;
+                        .map_err(|error| {
+                            format!("Failed to create mock worktree data dir: {error}")
+                        })?;
 
                     Ok(())
                 })
@@ -3116,7 +3128,9 @@ mod tests {
                         .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
                     tokio::fs::create_dir_all(worktree_path.join(SESSION_DATA_DIR))
                         .await
-                        .map_err(|error| format!("Failed to create mock worktree data dir: {error}"))?;
+                        .map_err(|error| {
+                            format!("Failed to create mock worktree data dir: {error}")
+                        })?;
 
                     Ok(())
                 })
@@ -3284,12 +3298,19 @@ mod tests {
             .times(1)
             .returning(|_| Box::pin(async { Ok(true) }));
         let mut ahead_behind_calls = 0_u8;
-        mock_git_client.expect_get_ahead_behind().times(2).returning(move |_| {
-            ahead_behind_calls = ahead_behind_calls.saturating_add(1);
-            let value = if ahead_behind_calls == 1 { (1, 2) } else { (0, 0) };
+        mock_git_client
+            .expect_get_ahead_behind()
+            .times(2)
+            .returning(move |_| {
+                ahead_behind_calls = ahead_behind_calls.saturating_add(1);
+                let value = if ahead_behind_calls == 1 {
+                    (1, 2)
+                } else {
+                    (0, 0)
+                };
 
-            Box::pin(async move { Ok(value) })
-        });
+                Box::pin(async move { Ok(value) })
+            });
         mock_git_client
             .expect_list_upstream_commit_titles()
             .times(1)
@@ -3442,13 +3463,16 @@ mod tests {
                 let repo_root = repo_root.clone();
                 Box::pin(async move { Ok(repo_root) })
             });
-        mock_git_client.expect_remove_worktree().times(1).returning(|worktree_path| {
-            Box::pin(async move {
-                let _ = tokio::fs::remove_dir_all(worktree_path).await;
+        mock_git_client
+            .expect_remove_worktree()
+            .times(1)
+            .returning(|worktree_path| {
+                Box::pin(async move {
+                    let _ = tokio::fs::remove_dir_all(worktree_path).await;
 
-                Ok(())
-            })
-        });
+                    Ok(())
+                })
+            });
         mock_git_client
             .expect_delete_branch()
             .times(1)

@@ -1121,24 +1121,15 @@ impl App {
 
     /// Returns the normalized open command to execute when configured.
     ///
-    /// Commands are trimmed and implicitly prefixed with `exec` so interactive
-    /// programs close the tmux window when they exit.
+    /// Commands are trimmed without modifying the configured executable or
+    /// arguments.
     fn open_command_to_run(open_command: &str) -> Option<String> {
         let command = open_command.trim();
         if command.is_empty() {
             return None;
         }
 
-        if Self::command_is_prefixed_with_exec(command) {
-            return Some(command.to_string());
-        }
-
-        Some(format!("exec {command}"))
-    }
-
-    /// Returns whether the configured command already starts with `exec`.
-    fn command_is_prefixed_with_exec(command: &str) -> bool {
-        command.split_whitespace().next() == Some("exec")
+        Some(command.to_string())
     }
 
     /// Sends the provided command and Enter key to a tmux window.
@@ -1686,7 +1677,7 @@ mod tests {
     }
 
     #[test]
-    fn open_command_to_run_trims_and_prefixes_exec() {
+    fn open_command_to_run_trims_whitespace_without_prefixing_exec() {
         // Arrange
         let open_command = "  npm run dev -- --port 5173  ";
 
@@ -1694,11 +1685,11 @@ mod tests {
         let command = App::open_command_to_run(open_command);
 
         // Assert
-        assert_eq!(command, Some("exec npm run dev -- --port 5173".to_string()));
+        assert_eq!(command, Some("npm run dev -- --port 5173".to_string()));
     }
 
     #[test]
-    fn open_command_to_run_preserves_existing_exec_prefix() {
+    fn open_command_to_run_preserves_existing_exec_prefix_when_provided() {
         // Arrange
         let open_command = "  exec nvim .  ";
 
