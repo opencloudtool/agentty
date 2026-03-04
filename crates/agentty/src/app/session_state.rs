@@ -75,9 +75,13 @@ impl SessionState {
         }
     }
 
+    /// Syncs one session snapshot with the latest runtime handle values.
+    ///
+    /// Output replacement uses full string inequality so equal-length text
+    /// changes are still propagated to the UI snapshot.
     fn sync_session_with_handles(session: &mut Session, session_handles: &SessionHandles) {
         if let Ok(output) = session_handles.output.lock()
-            && session.output.len() != output.len()
+            && session.output != *output
         {
             session.output.clone_from(&*output);
         }
@@ -85,5 +89,105 @@ impl SessionState {
         if let Ok(status) = session_handles.status.lock() {
             session.status = *status;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{Instant, SystemTime};
+
+    use ratatui::widgets::TableState;
+
+    use super::*;
+    use crate::domain::agent::AgentModel;
+    use crate::domain::session::{Session, SessionSize, SessionStats, Status};
+
+    struct TestClock;
+
+    impl Clock for TestClock {
+        fn now_instant(&self) -> Instant {
+            Instant::now()
+        }
+
+        fn now_system_time(&self) -> SystemTime {
+            SystemTime::UNIX_EPOCH
+        }
+    }
+
+    /// Ensures output updates propagate even when old/new output lengths match.
+    #[test]
+    fn test_sync_from_handles_replaces_equal_length_output() {
+        // Arrange
+        let session_id = "session01";
+        let session = Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::from("/tmp/session01"),
+            id: session_id.to_string(),
+            model: AgentModel::ClaudeOpus46,
+            output: "stale".to_string(),
+            project_name: "test".to_string(),
+            prompt: "prompt".to_string(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::Review,
+            summary: None,
+            title: Some("test".to_string()),
+            updated_at: 0,
+        };
+        let mut handles: HashMap<String, SessionHandles> = HashMap::new();
+        handles.insert(
+            session_id.to_string(),
+            SessionHandles::new("fresh".to_string(), Status::Review),
+        );
+        let mut state = SessionState::new(
+            handles,
+            vec![session],
+            TableState::default(),
+            Arc::new(TestClock),
+            0,
+            0,
+        );
+
+        // Act
+        state.sync_from_handles();
+
+        // Assert
+        assert_eq!(state.sessions[0].output, "fresh");
+        assert_eq!(state.sessions[0].status, Status::Review);
+    }
+
+    /// Ensures direct single-session sync updates output and status together.
+    #[test]
+    fn test_sync_session_with_handles_equal_length_sync() {
+        // Arrange
+        let session_id = "test";
+        let mut session = Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::from("/tmp/test"),
+            id: session_id.to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: "Old".to_string(), // length 3
+            project_name: "test".to_string(),
+            prompt: "prompt".to_string(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::New,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        };
+        let handles = SessionHandles::new("New".to_string(), Status::InProgress); // length 3
+
+        // Act
+        SessionState::sync_session_with_handles(&mut session, &handles);
+
+        // Assert
+        assert_eq!(session.output, "New");
+        assert_eq!(session.status, Status::InProgress);
     }
 }

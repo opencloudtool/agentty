@@ -20,8 +20,15 @@ impl SessionManager {
     /// Loads session models from the database and reuses live handles when
     /// possible.
     ///
-    /// Existing handles are updated in place to preserve `Arc` identity so
+    /// Existing handles are reused in place to preserve `Arc` identity so
     /// that background workers holding cloned references continue to work.
+    ///
+    /// When a handle already exists, live handle output is treated as
+    /// authoritative for the returned in-memory snapshot to avoid clobbering
+    /// fresh runtime output with stale persisted rows. Active statuses are also
+    /// preserved from live handles, while terminal persisted statuses (`Done`,
+    /// `Canceled`) override stale in-memory status.
+    ///
     /// New handles are inserted for sessions that don't have entries yet.
     ///
     /// Returns both loaded sessions and local-day activity counts aggregated
@@ -51,10 +58,11 @@ impl SessionManager {
 
         for row in db_rows {
             let folder = session_folder(base, &row.id);
-            let status = row.status.parse::<Status>().unwrap_or(Status::Done);
+            let persisted_status = row.status.parse::<Status>().unwrap_or(Status::Done);
             let persisted_size = row.size.parse::<SessionSize>().unwrap_or_default();
-            let is_terminal_status = matches!(status, Status::Done | Status::Canceled);
-            if !folder.is_dir() && !is_terminal_status {
+            let persisted_status_is_terminal =
+                matches!(persisted_status, Status::Done | Status::Canceled);
+            if !folder.is_dir() && !persisted_status_is_terminal {
                 continue;
             }
             let session_model = row
@@ -62,17 +70,24 @@ impl SessionManager {
                 .parse::<AgentModel>()
                 .unwrap_or_else(|_| AgentKind::Gemini.default_model());
 
+            let mut status = persisted_status;
+            let mut output = row.output.clone();
             if let Some(existing) = handles.get(&row.id) {
-                if let Ok(mut output_buffer) = existing.output.lock() {
-                    output_buffer.clone_from(&row.output);
+                if let Ok(output_buffer) = existing.output.lock() {
+                    output.clone_from(&output_buffer);
                 }
-                if let Ok(mut status_value) = existing.status.lock() {
-                    *status_value = status;
+
+                if let Ok(mut live_status) = existing.status.lock() {
+                    if persisted_status_is_terminal {
+                        *live_status = persisted_status;
+                    } else {
+                        status = *live_status;
+                    }
                 }
             } else {
                 handles.insert(
                     row.id.clone(),
-                    SessionHandles::new(row.output.clone(), status),
+                    SessionHandles::new(row.output.clone(), persisted_status),
                 );
             }
 
@@ -82,7 +97,7 @@ impl SessionManager {
                 folder,
                 id: row.id,
                 model: session_model,
-                output: row.output,
+                output,
                 project_name: project_name.clone(),
                 prompt: row.prompt,
                 size: persisted_size,
@@ -190,4 +205,145 @@ fn local_utc_offset_seconds(timestamp_seconds: i64) -> i64 {
     };
 
     i64::from(local_offset.whole_seconds())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::domain::session::SESSION_DATA_DIR;
+
+    /// Ensures reload keeps live handle output and active status when
+    /// persisted row data is stale.
+    #[tokio::test]
+    async fn test_load_sessions_preserves_live_handle_output_and_status() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/test", None)
+            .await
+            .expect("failed to upsert project");
+
+        let session_id = "test-session";
+        db.insert_session(
+            session_id,
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        db.append_session_output(session_id, "DB Output")
+            .await
+            .expect("failed to append persisted output");
+
+        let session_dir = dir.path().join(session_id);
+        std::fs::create_dir_all(session_dir.join(SESSION_DATA_DIR))
+            .expect("failed to create session data dir");
+
+        let mut handles = HashMap::new();
+        let live_output = "Live Output".to_string();
+        let live_status = Status::Review;
+        handles.insert(
+            session_id.to_string(),
+            SessionHandles::new(live_output.clone(), live_status),
+        );
+
+        // Act
+        let (sessions, _) = SessionManager::load_sessions(
+            dir.path(),
+            &db,
+            project_id,
+            Path::new("/tmp/test"),
+            &mut handles,
+        )
+        .await;
+
+        // Assert
+        let session = sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing reloaded session");
+        assert_eq!(session.output, live_output);
+        assert_eq!(session.status, live_status);
+
+        let handle = handles
+            .get(session_id)
+            .expect("missing existing runtime handle");
+        let handle_output = handle
+            .output
+            .lock()
+            .expect("failed to lock handle output")
+            .clone();
+        let handle_status = *handle.status.lock().expect("failed to lock handle status");
+        assert_eq!(handle_output, live_output);
+        assert_eq!(handle_status, live_status);
+    }
+
+    /// Ensures terminal persisted statuses replace stale active handle status
+    /// during reload.
+    #[tokio::test]
+    async fn test_load_sessions_terminal_db_status_overrides_handle_status() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/test", None)
+            .await
+            .expect("failed to upsert project");
+
+        let session_id = "test-session";
+        db.insert_session(
+            session_id,
+            "gemini-3-flash-preview",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+
+        let session_dir = dir.path().join(session_id);
+        std::fs::create_dir_all(session_dir.join(SESSION_DATA_DIR))
+            .expect("failed to create session data dir");
+
+        let mut handles = HashMap::new();
+        handles.insert(
+            session_id.to_string(),
+            SessionHandles::new("output".to_string(), Status::Review),
+        );
+
+        // Act
+        let (sessions, _) = SessionManager::load_sessions(
+            dir.path(),
+            &db,
+            project_id,
+            Path::new("/tmp/test"),
+            &mut handles,
+        )
+        .await;
+
+        // Assert
+        let session = sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing reloaded session");
+        assert_eq!(session.status, Status::Done);
+
+        let handle = handles
+            .get(session_id)
+            .expect("missing existing runtime handle");
+        let handle_status = *handle.status.lock().expect("failed to lock handle status");
+        assert_eq!(handle_status, Status::Done);
+    }
 }
