@@ -492,9 +492,9 @@ async fn apply_turn_result(
 /// Builds the persisted transcript chunk for one parsed assistant response.
 ///
 /// Prefers joined `answer` messages so normal chat output stays concise.
-/// Falls back to full display text when the response contains only `plan` and
-/// `question` messages, ensuring users still see visible output for those
-/// turns.
+/// Falls back to joined `question` text when no answers are present so
+/// clarification prompts stay visible while plan/thought-only responses are
+/// not persisted as final transcript output.
 fn build_assistant_transcript_output(
     assistant_message: &crate::infra::agent::AgentResponse,
 ) -> Option<String> {
@@ -503,12 +503,24 @@ fn build_assistant_transcript_output(
         return Some(format!("{}\n\n", answer_text.trim_end()));
     }
 
-    let display_text = assistant_message.to_display_text();
-    if display_text.trim().is_empty() {
+    let question_text = assistant_message
+        .questions()
+        .into_iter()
+        .filter_map(|question| {
+            let trimmed_question = question.trim();
+            if trimmed_question.is_empty() {
+                return None;
+            }
+
+            Some(trimmed_question.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if question_text.is_empty() {
         return None;
     }
 
-    Some(format!("{}\n\n", display_text.trim_end()))
+    Some(format!("{question_text}\n\n"))
 }
 
 /// Consumes [`TurnEvent`]s from `event_rx` and applies their side effects.
@@ -711,8 +723,9 @@ mod tests {
     }
 
     #[test]
-    /// Ensures transcript output falls back to non-answer display text.
-    fn test_build_assistant_transcript_output_falls_back_to_plan_and_question_text() {
+    /// Ensures transcript output falls back to question text when no answers
+    /// are present.
+    fn test_build_assistant_transcript_output_falls_back_to_question_text() {
         // Arrange
         let response = AgentResponse {
             messages: vec![
@@ -727,8 +740,25 @@ mod tests {
         // Assert
         assert_eq!(
             transcript_output,
-            Some("Plan: inspect parser behavior.\n\nShould I apply the patch?\n\n".to_string())
+            Some("Should I apply the patch?\n\n".to_string())
         );
+    }
+
+    #[test]
+    /// Ensures plan-only responses do not append final transcript text.
+    fn test_build_assistant_transcript_output_returns_none_for_plan_only_response() {
+        // Arrange
+        let response = AgentResponse {
+            messages: vec![AgentResponseMessage::plan(
+                "Plan: inspect parser behavior before implementing.",
+            )],
+        };
+
+        // Act
+        let transcript_output = build_assistant_transcript_output(&response);
+
+        // Assert
+        assert_eq!(transcript_output, None);
     }
 
     #[test]

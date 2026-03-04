@@ -224,7 +224,20 @@ fn is_streamed_thought_message(kind: AgentKind, is_delta: bool, phase: Option<&s
         return false;
     }
 
-    matches!(phase, Some("thinking" | "plan" | "reasoning" | "thought"))
+    phase.is_some_and(is_codex_thought_phase_label)
+}
+
+/// Returns whether one Codex phase label denotes thought/planning text.
+///
+/// Phase matching is case-insensitive so provider variants such as `Thinking`
+/// and `PLAN` continue to route to [`TurnEvent::ThoughtDelta`].
+fn is_codex_thought_phase_label(phase: &str) -> bool {
+    let normalized_phase = phase.trim();
+
+    normalized_phase.eq_ignore_ascii_case("thinking")
+        || normalized_phase.eq_ignore_ascii_case("plan")
+        || normalized_phase.eq_ignore_ascii_case("reasoning")
+        || normalized_phase.eq_ignore_ascii_case("thought")
 }
 
 /// Parses one final assistant payload, optionally repairing malformed
@@ -435,6 +448,44 @@ mod tests {
                 let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
                     message: "Inspecting files".to_string(),
                     phase: Some("thinking".to_string()),
+                    is_delta: true,
+                });
+
+                Box::pin(async {
+                    Ok(make_ok_response(
+                        r#"{"messages":[{"type":"answer","text":"Done."}]}"#,
+                    ))
+                })
+            });
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
+            .await;
+
+        // Assert
+        assert!(result.is_ok());
+        let event = events_rx.try_recv().expect("should have received an event");
+        assert_eq!(
+            event,
+            TurnEvent::ThoughtDelta("Inspecting files".to_string())
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies Codex thought-phase matching is case-insensitive for streamed
+    /// delta routing.
+    async fn test_run_turn_routes_codex_thinking_delta_with_uppercase_phase_to_thought_event() {
+        // Arrange
+        let mut mock_client = MockAppServerClient::new();
+        mock_client
+            .expect_run_turn()
+            .returning(|_request, stream_tx| {
+                let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
+                    message: "Inspecting files".to_string(),
+                    phase: Some("Thinking".to_string()),
                     is_delta: true,
                 });
 

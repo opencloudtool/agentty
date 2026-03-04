@@ -746,9 +746,12 @@ impl RealCodexAppServerClient {
     /// Finalizes one parsed `turn/completed` result into the normalized turn
     /// response tuple.
     ///
-    /// Successful completions join streamed assistant messages. Non-completed
-    /// terminal statuses are surfaced as visible assistant output so the
-    /// session never lands in `Review` silently.
+    /// Successful completions return the latest non-empty completed assistant
+    /// message. This avoids replaying stale drafts when Codex emits multiple
+    /// assistant message items in one turn.
+    ///
+    /// Non-completed terminal statuses are surfaced as visible assistant
+    /// output so the session never lands in `Review` silently.
     fn finalize_turn_completion(
         turn_result: Result<(), String>,
         assistant_messages: &[String],
@@ -758,7 +761,18 @@ impl RealCodexAppServerClient {
     ) -> Result<(String, u64, u64), String> {
         match turn_result {
             Ok(()) => {
-                let assistant_message = assistant_messages.join("\n\n");
+                let assistant_message = assistant_messages
+                    .iter()
+                    .rev()
+                    .find_map(|message| {
+                        let trimmed_message = message.trim();
+                        if trimmed_message.is_empty() {
+                            return None;
+                        }
+
+                        Some(trimmed_message.to_string())
+                    })
+                    .unwrap_or_default();
 
                 Ok((assistant_message, input_tokens, output_tokens))
             }
@@ -1148,6 +1162,10 @@ fn extract_agent_message_delta(response_value: &Value) -> Option<ExtractedAgentM
 
 /// Extracts completed assistant message text from an `item/completed` line.
 ///
+/// Only completed assistant-message item types are treated as final assistant
+/// output. Internal planning/reasoning items are intentionally ignored so
+/// thought text does not leak into persisted turn responses.
+///
 /// Synthetic completion status lines (for example `Command completed`) are
 /// ignored so only real assistant messages are streamed to chat output.
 ///
@@ -1164,11 +1182,10 @@ fn extract_agent_message(response_value: &Value) -> Option<ExtractedAgentMessage
         .and_then(Value::as_str)
         .map(ToString::to_string);
     let item_type = item.get("type")?.as_str()?.to_ascii_lowercase();
-    if !(item_type == "agentmessage"
-        || item_type == "agent_message"
-        || item_type == "reasoning"
-        || item_type == "thought")
-    {
+    if !is_completed_assistant_message_item_type(&item_type) {
+        return None;
+    }
+    if is_codex_thought_phase(phase.as_deref()) {
         return None;
     }
 
@@ -1202,6 +1219,37 @@ fn extract_agent_message(response_value: &Value) -> Option<ExtractedAgentMessage
     }
 
     Some(ExtractedAgentMessage { message, phase })
+}
+
+/// Returns whether one `item/completed` type should be finalized as assistant
+/// output.
+///
+/// Codex streams internal thoughts separately through reasoning/plan item
+/// types, so this matcher intentionally accepts only assistant-message item
+/// variants.
+fn is_completed_assistant_message_item_type(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "agentmessage" | "agent_message" | "assistantmessage" | "assistant_message"
+    )
+}
+
+/// Returns whether one Codex assistant item `phase` denotes thought/planning
+/// text instead of final assistant output.
+///
+/// Phase matching is case-insensitive to handle provider variations such as
+/// `Thinking` and `PLAN`.
+fn is_codex_thought_phase(phase: Option<&str>) -> bool {
+    let Some(phase_value) = phase else {
+        return false;
+    };
+
+    let normalized_phase = phase_value.trim();
+
+    normalized_phase.eq_ignore_ascii_case("thinking")
+        || normalized_phase.eq_ignore_ascii_case("plan")
+        || normalized_phase.eq_ignore_ascii_case("reasoning")
+        || normalized_phase.eq_ignore_ascii_case("thought")
 }
 
 /// Parses `turn/completed` notifications and maps failures to user errors.
@@ -1866,11 +1914,15 @@ mod tests {
     }
 
     #[test]
-    fn finalize_turn_completion_returns_joined_assistant_messages_for_completed_turn() {
+    fn finalize_turn_completion_returns_latest_non_empty_assistant_message_for_completed_turn() {
         // Arrange
         let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
         let turn_result = Ok(());
-        let assistant_messages = vec!["First".to_string(), "Second".to_string()];
+        let assistant_messages = vec![
+            "First draft".to_string(),
+            "   ".to_string(),
+            "Final response".to_string(),
+        ];
 
         // Act
         let result = RealCodexAppServerClient::finalize_turn_completion(
@@ -1882,7 +1934,7 @@ mod tests {
         );
 
         // Assert
-        assert_eq!(result, Ok(("First\n\nSecond".to_string(), 7, 3)));
+        assert_eq!(result, Ok(("Final response".to_string(), 7, 3)));
         assert!(stream_rx.try_recv().is_err());
     }
 
@@ -3135,7 +3187,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_agent_message_returns_text_for_reasoning_item() {
+    fn extract_agent_message_ignores_reasoning_item() {
         // Arrange
         let response_value = serde_json::json!({
             "method": "item/completed",
@@ -3151,12 +3203,53 @@ mod tests {
         let message = extract_agent_message(&response_value);
 
         // Assert
+        assert_eq!(message, None);
+    }
+
+    #[test]
+    fn extract_agent_message_accepts_assistant_message_item_alias() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "assistant_message",
+                    "text": "Final response"
+                }
+            }
+        });
+
+        // Act
+        let message = extract_agent_message(&response_value);
+
+        // Assert
         assert_eq!(
             message,
             Some(ExtractedAgentMessage {
-                message: "Thought complete".to_string(),
+                message: "Final response".to_string(),
                 phase: None,
             })
         );
+    }
+
+    #[test]
+    fn extract_agent_message_ignores_agent_message_with_thought_phase() {
+        // Arrange
+        let response_value = serde_json::json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "agentMessage",
+                    "phase": "Thinking",
+                    "text": "I will inspect stream handling first."
+                }
+            }
+        });
+
+        // Act
+        let message = extract_agent_message(&response_value);
+
+        // Assert
+        assert_eq!(message, None);
     }
 }
