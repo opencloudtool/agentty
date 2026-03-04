@@ -226,9 +226,14 @@ pub(super) fn parse_gemini_stream_output_line(stdout_line: &str) -> Option<(Stri
 /// Parses Codex NDJSON output into the final assistant message and usage.
 ///
 /// Synthetic completion-status `agent_message` events are ignored so trailing
-/// status lines do not replace the assistant-authored reply.
+/// status lines do not replace the assistant-authored reply. When both
+/// `agent_message` and `reasoning`/`thought` items are present, this parser
+/// always prefers `agent_message` content for the final response so internal
+/// reasoning payloads (including raw JSON snippets) do not overwrite
+/// user-visible assistant text.
 fn parse_codex_response(stdout: &str) -> Option<ParsedResponse> {
-    let mut last_message: Option<String> = None;
+    let mut last_agent_message: Option<String> = None;
+    let mut last_reasoning_message: Option<String> = None;
     let mut total_input_tokens: u64 = 0;
     let mut total_output_tokens: u64 = 0;
 
@@ -258,20 +263,20 @@ fn parse_codex_response(stdout: &str) -> Option<ParsedResponse> {
         };
 
         let item_type = item.item_type.as_deref().unwrap_or_default();
-        if !(item_type == "agent_message"
-            || item_type == "agentmessage"
-            || item_type == "reasoning"
-            || item_type == "thought")
-        {
-            continue;
-        }
-
         if let Some(text) = item.text.or(item.delta) {
             if is_codex_completion_status_message(&text) {
                 continue;
             }
 
-            last_message = Some(text);
+            if item_type == "agent_message" || item_type == "agentmessage" {
+                last_agent_message = Some(text);
+
+                continue;
+            }
+
+            if item_type == "reasoning" || item_type == "thought" {
+                last_reasoning_message = Some(text);
+            }
         }
     }
 
@@ -280,7 +285,9 @@ fn parse_codex_response(stdout: &str) -> Option<ParsedResponse> {
         output_tokens: total_output_tokens,
     };
 
-    last_message.map(|content| ParsedResponse { content, stats })
+    last_agent_message
+        .or(last_reasoning_message)
+        .map(|content| ParsedResponse { content, stats })
 }
 
 /// Parses one Codex stream line into display text and content/progress type.
@@ -704,6 +711,48 @@ mod tests {
         assert_eq!(parsed.content, "Planned final answer");
         assert_eq!(parsed.stats.input_tokens, 21);
         assert_eq!(parsed.stats.output_tokens, 8);
+    }
+
+    #[test]
+    /// Ensures trailing reasoning payloads do not overwrite final
+    /// `agent_message` output.
+    fn test_parse_response_codex_prefers_agent_message_over_trailing_reasoning_payload() {
+        // Arrange
+        let stdout = concat!(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"Focused review summary"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"reasoning","text":"{\"title\":\"Inject clock dependency to enforce time boundaries\"}"}}"#,
+            "\n",
+            r#"{"type":"turn.completed","usage":{"input_tokens":13,"output_tokens":9}}"#,
+        );
+
+        // Act
+        let parsed = parse_codex_response_with_fallback(stdout, "");
+
+        // Assert
+        assert_eq!(parsed.content, "Focused review summary");
+        assert_eq!(parsed.stats.input_tokens, 13);
+        assert_eq!(parsed.stats.output_tokens, 9);
+    }
+
+    #[test]
+    /// Ensures parsing still returns reasoning text when no
+    /// `agent_message` item exists.
+    fn test_parse_response_codex_falls_back_to_reasoning_without_agent_message() {
+        // Arrange
+        let stdout = concat!(
+            r#"{"type":"item.completed","item":{"type":"reasoning","text":"Fallback reasoning output"}}"#,
+            "\n",
+            r#"{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":3}}"#,
+        );
+
+        // Act
+        let parsed = parse_codex_response_with_fallback(stdout, "");
+
+        // Assert
+        assert_eq!(parsed.content, "Fallback reasoning output");
+        assert_eq!(parsed.stats.input_tokens, 5);
+        assert_eq!(parsed.stats.output_tokens, 3);
     }
 
     #[test]
