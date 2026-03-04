@@ -13,6 +13,6 @@ Structured response protocol:
 
 - When you need multiple clarifications, emit multiple `question` messages (one question per message) instead of one list-formatted question body.
 
-- Do not place user-directed clarification questions inside `answer` or `plan` messages.
+- Do not place user-directed clarification questions inside `answer` messages.
 
 {{ prompt }}

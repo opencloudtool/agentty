@@ -386,10 +386,10 @@ impl SessionManager {
 /// The final parsed response appends non-empty protocol `answer` text when
 /// present. When no `answer` messages exist, worker output falls back to
 /// joined `question` text so clarification prompts remain visible while
-/// plan-only/thought-only responses are not persisted as final transcript
-/// output. Streamed content (including any partial protocol JSON fragments)
-/// remains visible in the session output. `question` messages are persisted to
-/// the session row and trigger `Status::Question`; all responses are emitted
+/// thought-only responses are not persisted as final transcript output.
+/// Streamed content (including any partial protocol JSON fragments) remains
+/// visible in the session output. `question` messages are persisted to the
+/// session row and trigger `Status::Question`; all responses are emitted
 /// through `AppEvent::AgentResponseReceived` for reducer-level routing.
 async fn apply_turn_result(
     context: &SessionWorkerContext,
@@ -528,8 +528,8 @@ async fn spawn_start_turn_title_generation(
 ///
 /// Prefers joined `answer` messages so normal chat output stays concise.
 /// Falls back to joined `question` text when no answers are present so
-/// clarification prompts stay visible while plan/thought-only responses are
-/// not persisted as final transcript output.
+/// clarification prompts stay visible while thought-only responses are not
+/// persisted as final transcript output.
 fn build_assistant_transcript_output(
     assistant_message: &crate::infra::agent::AgentResponse,
 ) -> Option<String> {
@@ -696,7 +696,6 @@ mod tests {
             messages: vec![
                 AgentResponseMessage::answer("Implemented the feature."),
                 AgentResponseMessage::question("Need a target branch?"),
-                AgentResponseMessage::plan("Run tests and format."),
                 AgentResponseMessage::question("Need migration notes?"),
             ],
         };
@@ -741,7 +740,6 @@ mod tests {
         // Arrange
         let response = AgentResponse {
             messages: vec![
-                AgentResponseMessage::plan("Drafting implementation."),
                 AgentResponseMessage::answer("Implemented the fix."),
                 AgentResponseMessage::question("Need me to run tests?"),
             ],
@@ -763,10 +761,7 @@ mod tests {
     fn test_build_assistant_transcript_output_falls_back_to_question_text() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::plan("Plan: inspect parser behavior."),
-                AgentResponseMessage::question("Should I apply the patch?"),
-            ],
+            messages: vec![AgentResponseMessage::question("Should I apply the patch?")],
         };
 
         // Act
@@ -780,30 +775,12 @@ mod tests {
     }
 
     #[test]
-    /// Ensures plan-only responses do not append final transcript text.
-    fn test_build_assistant_transcript_output_returns_none_for_plan_only_response() {
-        // Arrange
-        let response = AgentResponse {
-            messages: vec![AgentResponseMessage::plan(
-                "Plan: inspect parser behavior before implementing.",
-            )],
-        };
-
-        // Act
-        let transcript_output = build_assistant_transcript_output(&response);
-
-        // Assert
-        assert_eq!(transcript_output, None);
-    }
-
-    #[test]
     /// Ensures blank protocol messages do not append empty transcript output.
     fn test_build_assistant_transcript_output_returns_none_for_blank_messages() {
         // Arrange
         let response = AgentResponse {
             messages: vec![
                 AgentResponseMessage::answer(""),
-                AgentResponseMessage::plan("   "),
                 AgentResponseMessage::question("\n"),
             ],
         };

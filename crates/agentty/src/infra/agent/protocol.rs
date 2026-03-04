@@ -22,8 +22,6 @@ use serde_json::Value;
 pub enum AgentResponseMessageKind {
     /// Standard answer text.
     Answer,
-    /// Plan text awaiting approval.
-    Plan,
     /// Clarification request text.
     Question,
 }
@@ -44,14 +42,6 @@ impl AgentResponseMessage {
     pub fn answer(text: impl Into<String>) -> Self {
         Self {
             kind: AgentResponseMessageKind::Answer,
-            text: text.into(),
-        }
-    }
-
-    /// Constructs one `plan` protocol message.
-    pub fn plan(text: impl Into<String>) -> Self {
-        Self {
-            kind: AgentResponseMessageKind::Plan,
             text: text.into(),
         }
     }
@@ -117,9 +107,9 @@ impl AgentResponse {
     /// Returns transcript text for session output by joining non-empty
     /// `answer` messages with blank lines.
     ///
-    /// `plan` and `question` messages remain available in `messages` for
-    /// dedicated UX flows and are intentionally excluded from regular session
-    /// transcript output.
+    /// `question` messages remain available in `messages` for dedicated UX
+    /// flows and are intentionally excluded from regular session transcript
+    /// output.
     pub fn to_answer_display_text(&self) -> String {
         let mut display_messages = Vec::new();
         for message in &self.messages {
@@ -136,11 +126,6 @@ impl AgentResponse {
     /// Returns all `answer` messages in response order.
     pub fn answers(&self) -> Vec<String> {
         self.messages_by_kind(AgentResponseMessageKind::Answer)
-    }
-
-    /// Returns all `plan` messages in response order.
-    pub fn plans(&self) -> Vec<String> {
-        self.messages_by_kind(AgentResponseMessageKind::Plan)
     }
 
     /// Returns all `question` messages in response order.
@@ -591,7 +576,6 @@ mod tests {
             messages: vec![
                 AgentResponseMessage::answer("Completed implementation."),
                 AgentResponseMessage::question("Need one decision."),
-                AgentResponseMessage::plan("Run checks."),
                 AgentResponseMessage::answer("Applied updates."),
             ],
         };
@@ -614,7 +598,6 @@ mod tests {
             messages: vec![
                 AgentResponseMessage::question("Need one decision."),
                 AgentResponseMessage::answer("Completed implementation."),
-                AgentResponseMessage::plan("Run checks."),
                 AgentResponseMessage::answer("Applied updates."),
             ],
         };
@@ -633,29 +616,6 @@ mod tests {
     }
 
     #[test]
-    /// Returns ordered `plan` messages for plan-review UI flows.
-    fn test_plans_returns_only_plan_messages_in_order() {
-        // Arrange
-        let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::answer("Completed implementation."),
-                AgentResponseMessage::plan("Run checks."),
-                AgentResponseMessage::plan("Open PR."),
-                AgentResponseMessage::question("Need one decision."),
-            ],
-        };
-
-        // Act
-        let plans = response.plans();
-
-        // Assert
-        assert_eq!(
-            plans,
-            vec!["Run checks.".to_string(), "Open PR.".to_string(),]
-        );
-    }
-
-    #[test]
     /// Returns ordered `question` messages for question-mode routing.
     fn test_questions_returns_only_question_messages_in_order() {
         // Arrange
@@ -663,7 +623,6 @@ mod tests {
             messages: vec![
                 AgentResponseMessage::answer("Completed implementation."),
                 AgentResponseMessage::question("Need one decision."),
-                AgentResponseMessage::plan("Run checks."),
                 AgentResponseMessage::question("Need migration details?"),
             ],
         };
@@ -807,7 +766,7 @@ mod tests {
         // Arrange
         let response = AgentResponse {
             messages: vec![
-                AgentResponseMessage::plan("Plan step 1"),
+                AgentResponseMessage::answer("Step 1"),
                 AgentResponseMessage::question("Need one decision"),
             ],
         };
@@ -879,7 +838,7 @@ mod tests {
 
         // Assert
         assert!(
-            contains_schema_enum_values(&schema, &["answer", "plan", "question"]),
+            contains_schema_enum_values(&schema, &["answer", "question"]),
             "message type enum values should exist in schema"
         );
     }
