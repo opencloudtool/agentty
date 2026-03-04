@@ -274,7 +274,7 @@ mod tests {
         assert!(bindings.iter().any(|binding| binding.key == "q"));
         assert!(bindings.iter().any(|binding| binding.key == "j/k"));
         assert!(bindings.iter().any(|binding| binding.key == "?"));
-        assert!(bindings.iter().any(|binding| binding.key == "Ctrl+c"));
+        assert!(!bindings.iter().any(|binding| binding.key == "Ctrl+c"));
         assert!(!bindings.iter().any(|binding| binding.key == "Enter"));
         assert!(!bindings.iter().any(|binding| binding.key == "d"));
         assert!(!bindings.iter().any(|binding| binding.key == "m"));

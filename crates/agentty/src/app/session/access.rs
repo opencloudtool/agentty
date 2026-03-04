@@ -19,7 +19,8 @@ impl SessionManager {
     pub(crate) fn session_or_err(&self, session_id: &str) -> Result<&Session, String> {
         let session_index = self.session_index_or_err(session_id)?;
 
-        self.sessions
+        self.state()
+            .sessions
             .get(session_index)
             .ok_or_else(|| SESSION_NOT_FOUND_ERROR.to_string())
     }
@@ -29,7 +30,8 @@ impl SessionManager {
         &self,
         session_id: &str,
     ) -> Result<&SessionHandles, String> {
-        self.handles
+        self.state()
+            .handles
             .get(session_id)
             .ok_or_else(|| SESSION_HANDLES_NOT_FOUND_ERROR.to_string())
     }

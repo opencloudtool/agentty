@@ -22,13 +22,15 @@ impl SessionManager {
             return;
         }
 
-        self.refresh_deadline = self.next_refresh_deadline();
+        self.state.refresh_deadline = self.next_refresh_deadline();
 
         let Ok(sessions_metadata) = services.db().load_sessions_metadata().await else {
             return;
         };
         let (sessions_row_count, sessions_updated_at_max) = sessions_metadata;
-        if sessions_row_count == self.row_count && sessions_updated_at_max == self.updated_at_max {
+        if sessions_row_count == self.state.row_count
+            && sessions_updated_at_max == self.state.updated_at_max
+        {
             return;
         }
 
@@ -46,7 +48,7 @@ impl SessionManager {
         let sessions_metadata = services.db().load_sessions_metadata().await.ok();
         self.reload_sessions(mode, projects, services, sessions_metadata)
             .await;
-        self.refresh_deadline = self.next_refresh_deadline();
+        self.state.refresh_deadline = self.next_refresh_deadline();
     }
 
     /// Reloads sessions and derived statistics, then restores UI state.
@@ -57,9 +59,9 @@ impl SessionManager {
         services: &AppServices,
         sessions_metadata: Option<(i64, i64)>,
     ) {
-        let selected_index = self.table_state.selected();
+        let selected_index = self.state.table_state.selected();
         let selected_session_id = selected_index
-            .and_then(|index| self.sessions.get(index))
+            .and_then(|index| self.state.sessions.get(index))
             .map(|session| session.id.clone());
 
         let (sessions, stats_activity) = Self::load_sessions(
@@ -67,10 +69,10 @@ impl SessionManager {
             services.db(),
             projects.active_project_id(),
             projects.working_dir(),
-            &mut self.handles,
+            &mut self.state.handles,
         )
         .await;
-        self.sessions = sessions;
+        self.state.sessions = sessions;
         self.stats_activity = stats_activity;
         self.restore_table_selection(selected_session_id.as_deref(), selected_index);
         self.ensure_mode_session_exists(mode);
@@ -80,12 +82,12 @@ impl SessionManager {
             .iter()
             .map(|session| session.id.clone())
             .collect();
-        self.workers
-            .retain(|session_id, _| active_session_ids.contains(session_id));
+        self.worker_service_mut()
+            .retain_active_workers(&active_session_ids);
 
         if let Some((sessions_row_count, sessions_updated_at_max)) = sessions_metadata {
-            self.row_count = sessions_row_count;
-            self.updated_at_max = sessions_updated_at_max;
+            self.state.row_count = sessions_row_count;
+            self.state.updated_at_max = sessions_updated_at_max;
         } else {
             self.update_sessions_metadata_cache(services).await;
         }
@@ -93,12 +95,12 @@ impl SessionManager {
 
     /// Returns `true` when periodic session refresh should run.
     fn is_session_refresh_due(&self) -> bool {
-        self.clock.now_instant() >= self.refresh_deadline
+        self.state.clock.now_instant() >= self.state.refresh_deadline
     }
 
     /// Computes the next refresh deadline from the injected clock.
     fn next_refresh_deadline(&self) -> Instant {
-        self.clock.now_instant() + SESSION_REFRESH_INTERVAL
+        self.state.clock.now_instant() + SESSION_REFRESH_INTERVAL
     }
 
     /// Restores table selection after session list reload.
@@ -107,8 +109,8 @@ impl SessionManager {
         selected_session_id: Option<&str>,
         selected_index: Option<usize>,
     ) {
-        if self.sessions.is_empty() {
-            self.table_state.select(None);
+        if self.state.sessions.is_empty() {
+            self.state.table_state.select(None);
 
             return;
         }
@@ -119,13 +121,13 @@ impl SessionManager {
                 .iter()
                 .position(|session| session.id == session_id)
         {
-            self.table_state.select(Some(index));
+            self.state.table_state.select(Some(index));
 
             return;
         }
 
-        let restored_index = selected_index.map(|index| index.min(self.sessions.len() - 1));
-        self.table_state.select(restored_index);
+        let restored_index = selected_index.map(|index| index.min(self.state.sessions.len() - 1));
+        self.state.table_state.select(restored_index);
     }
 
     /// Switches back to list mode if the currently viewed session is missing.
@@ -154,8 +156,8 @@ impl SessionManager {
         if let Ok((sessions_row_count, sessions_updated_at_max)) =
             services.db().load_sessions_metadata().await
         {
-            self.row_count = sessions_row_count;
-            self.updated_at_max = sessions_updated_at_max;
+            self.state.row_count = sessions_row_count;
+            self.state.updated_at_max = sessions_updated_at_max;
         }
     }
 }
@@ -181,7 +183,7 @@ mod tests {
 
         // Act
         let refresh_due = session_manager.is_session_refresh_due();
-        let wall_clock = session_manager.clock.now_system_time();
+        let wall_clock = session_manager.state().clock.now_system_time();
 
         // Assert
         assert!(!refresh_due);

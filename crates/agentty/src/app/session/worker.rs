@@ -1,6 +1,6 @@
 //! Per-session async worker orchestration for serialized command execution.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -80,9 +80,41 @@ struct SessionWorkerContext {
     status: Arc<Mutex<Status>>,
 }
 
-impl SessionManager {
+/// Runtime snapshot required to create or reuse one session worker.
+pub(super) struct SessionWorkerRuntime {
+    child_pid: Arc<Mutex<Option<u32>>>,
+    /// Injected clock used by downstream assist output batching.
+    clock: Arc<dyn Clock>,
+    folder: PathBuf,
+    output: Arc<Mutex<String>>,
+    session_id: String,
+    session_model: AgentModel,
+    status: Arc<Mutex<Status>>,
+}
+
+/// Owns per-session worker queue senders and test channel overrides.
+pub(crate) struct SessionWorkerService {
+    /// Channels pre-registered for specific session workers in tests.
+    ///
+    /// Tests populate this map before enqueueing a command so that
+    /// `ensure_session_worker` uses the injected channel instead of the
+    /// default factory, enabling deterministic command execution without
+    /// spawning real provider processes.
+    pub(super) test_agent_channels: HashMap<String, Arc<dyn AgentChannel>>,
+    workers: HashMap<String, mpsc::UnboundedSender<SessionCommand>>,
+}
+
+impl SessionWorkerService {
+    /// Creates an empty worker service with no active session workers.
+    pub(super) fn new() -> Self {
+        Self {
+            test_agent_channels: HashMap::new(),
+            workers: HashMap::new(),
+        }
+    }
+
     /// Marks unfinished operations from previous process runs as failed.
-    pub(crate) async fn fail_unfinished_operations_from_previous_run(db: &Database) {
+    pub(super) async fn fail_unfinished_operations_from_previous_run(db: &Database) {
         let interrupted_session_ids: HashSet<String> = db
             .load_unfinished_session_operations()
             .await
@@ -110,16 +142,17 @@ impl SessionManager {
     pub(super) async fn enqueue_session_command(
         &mut self,
         services: &AppServices,
-        session_id: &str,
+        runtime: SessionWorkerRuntime,
         command: SessionCommand,
     ) -> Result<(), String> {
         let operation_id = command.operation_id().to_string();
+        let session_id = runtime.session_id.clone();
         services
             .db()
-            .insert_session_operation(&operation_id, session_id, command.kind())
+            .insert_session_operation(&operation_id, &session_id, command.kind())
             .await?;
 
-        let sender = self.ensure_session_worker(services, session_id)?;
+        let sender = self.ensure_session_worker(services, &runtime);
         if sender.send(command).is_err() {
             let _ = services
                 .db()
@@ -137,59 +170,52 @@ impl SessionManager {
         self.workers.remove(session_id);
     }
 
+    /// Drops worker queues for sessions no longer present in the active list.
+    pub(super) fn retain_active_workers(&mut self, active_session_ids: &HashSet<String>) {
+        self.workers
+            .retain(|session_id, _| active_session_ids.contains(session_id));
+    }
+
     /// Returns an existing session worker sender or creates one lazily.
-    ///
-    /// # Errors
-    /// Returns an error when the session cannot be found.
     fn ensure_session_worker(
         &mut self,
         services: &AppServices,
-        session_id: &str,
-    ) -> Result<mpsc::UnboundedSender<SessionCommand>, String> {
-        if let Some(sender) = self.workers.get(session_id) {
-            return Ok(sender.clone());
+        runtime: &SessionWorkerRuntime,
+    ) -> mpsc::UnboundedSender<SessionCommand> {
+        if let Some(sender) = self.workers.get(&runtime.session_id) {
+            return sender.clone();
         }
 
-        // Extract all session data before any mutable borrows of self.
-        let (session, handles) = self.session_and_handles_or_err(session_id)?;
-        let kind = session.model.kind();
-        let session_id_owned = session.id.clone();
-        let folder = session.folder.clone();
-        let child_pid = Arc::clone(&handles.child_pid);
-        let output = Arc::clone(&handles.output);
-        let status = Arc::clone(&handles.status);
-
-        // In tests, use a pre-registered mock channel when available; otherwise
-        // fall back to the production channel factory.
-        #[cfg(test)]
+        // When a pre-registered channel exists, reuse it; otherwise fall back
+        // to the production channel factory.
         let channel = self
             .test_agent_channels
-            .remove(session_id)
+            .remove(&runtime.session_id)
             .unwrap_or_else(|| {
-                crate::infra::channel::create_agent_channel(kind, services.app_server_client())
+                crate::infra::channel::create_agent_channel(
+                    runtime.session_model.kind(),
+                    services.app_server_client(),
+                )
             });
-
-        #[cfg(not(test))]
-        let channel =
-            crate::infra::channel::create_agent_channel(kind, services.app_server_client());
 
         let context = SessionWorkerContext {
             app_event_tx: services.event_sender(),
             channel,
-            child_pid,
-            clock: Arc::clone(&self.clock),
+            child_pid: Arc::clone(&runtime.child_pid),
+            clock: Arc::clone(&runtime.clock),
             db: services.db().clone(),
-            folder,
+            folder: runtime.folder.clone(),
             git_client: services.git_client(),
-            output,
-            session_id: session_id_owned,
-            status,
+            output: Arc::clone(&runtime.output),
+            session_id: runtime.session_id.clone(),
+            status: Arc::clone(&runtime.status),
         };
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.workers.insert(session_id.to_string(), sender.clone());
+        self.workers
+            .insert(runtime.session_id.clone(), sender.clone());
         Self::spawn_session_worker(context, receiver);
 
-        Ok(sender)
+        sender
     }
 
     /// Spawns the background loop that executes queued session commands.
@@ -380,6 +406,57 @@ impl SessionManager {
             .await;
 
         true
+    }
+}
+
+impl SessionManager {
+    /// Marks unfinished operations from previous process runs as failed.
+    pub(crate) async fn fail_unfinished_operations_from_previous_run(db: &Database) {
+        SessionWorkerService::fail_unfinished_operations_from_previous_run(db).await;
+    }
+
+    /// Persists and enqueues a command on the per-session worker queue.
+    ///
+    /// # Errors
+    /// Returns an error if operation persistence fails or no worker is
+    /// available.
+    pub(super) async fn enqueue_session_command(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+        command: SessionCommand,
+    ) -> Result<(), String> {
+        let runtime = self.session_worker_runtime_or_err(session_id)?;
+
+        self.worker_service_mut()
+            .enqueue_session_command(services, runtime, command)
+            .await
+    }
+
+    /// Drops the in-memory worker sender for a session.
+    pub(super) fn clear_session_worker(&mut self, session_id: &str) {
+        self.worker_service_mut().clear_session_worker(session_id);
+    }
+
+    /// Builds worker-runtime data for one session.
+    ///
+    /// # Errors
+    /// Returns an error when the session or runtime handles are missing.
+    fn session_worker_runtime_or_err(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionWorkerRuntime, String> {
+        let (session, handles) = self.session_and_handles_or_err(session_id)?;
+
+        Ok(SessionWorkerRuntime {
+            child_pid: Arc::clone(&handles.child_pid),
+            clock: Arc::clone(&self.state().clock),
+            folder: session.folder.clone(),
+            output: Arc::clone(&handles.output),
+            session_id: session.id.clone(),
+            session_model: session.model,
+            status: Arc::clone(&handles.status),
+        })
     }
 }
 
@@ -877,7 +954,7 @@ mod tests {
         };
 
         // Act
-        let should_skip = SessionManager::should_skip_worker_command(&context, "op-1").await;
+        let should_skip = SessionWorkerService::should_skip_worker_command(&context, "op-1").await;
         let is_unfinished = db
             .is_session_operation_unfinished("op-1")
             .await
@@ -934,7 +1011,7 @@ mod tests {
         };
 
         // Act
-        let should_skip = SessionManager::should_skip_worker_command(&context, "op-1").await;
+        let should_skip = SessionWorkerService::should_skip_worker_command(&context, "op-1").await;
         let is_unfinished = db
             .is_session_operation_unfinished("op-1")
             .await

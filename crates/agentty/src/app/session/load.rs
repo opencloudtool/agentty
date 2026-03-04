@@ -139,7 +139,7 @@ impl SessionManager {
             return;
         };
         let (base_branch, folder) = {
-            let session = &self.sessions[session_index];
+            let session = &self.state.sessions[session_index];
             (session.base_branch.clone(), session.folder.clone())
         };
         let computed_size =
@@ -150,7 +150,7 @@ impl SessionManager {
             .update_session_size(session_id, &computed_size.to_string())
             .await;
 
-        if let Some(session) = self.sessions.get_mut(session_index) {
+        if let Some(session) = self.state.sessions.get_mut(session_index) {
             session.size = computed_size;
         }
     }

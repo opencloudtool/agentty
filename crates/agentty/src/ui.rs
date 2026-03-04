@@ -9,6 +9,8 @@ pub mod pages;
 mod render;
 pub mod router;
 pub mod state;
+/// Shared UI styling constants and status-display helpers.
+pub mod style;
 pub mod text_util;
 pub mod util;
 

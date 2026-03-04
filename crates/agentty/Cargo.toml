@@ -21,7 +21,6 @@ askama.workspace = true
 crossterm.workspace = true
 dirs.workspace = true
 ignore.workspace = true
-nix.workspace = true
 ratatui.workspace = true
 schemars.workspace = true
 serde.workspace = true

@@ -53,16 +53,20 @@ impl SessionManager {
     ///
     /// Group header rows are non-selectable and are skipped by design.
     pub fn next(&mut self) {
-        let grouped_indexes = grouped_session_indexes(&self.sessions);
+        let grouped_indexes = grouped_session_indexes(&self.state.sessions);
         if grouped_indexes.is_empty() {
             return;
         }
 
-        let index = match self.table_state.selected().and_then(|selected_index| {
-            grouped_indexes
-                .iter()
-                .position(|session_index| *session_index == selected_index)
-        }) {
+        let index = match self
+            .state
+            .table_state
+            .selected()
+            .and_then(|selected_index| {
+                grouped_indexes
+                    .iter()
+                    .position(|session_index| *session_index == selected_index)
+            }) {
             Some(position) => {
                 if position >= grouped_indexes.len() - 1 {
                     0
@@ -73,7 +77,7 @@ impl SessionManager {
             None => 0,
         };
 
-        self.table_state.select(Some(grouped_indexes[index]));
+        self.state.table_state.select(Some(grouped_indexes[index]));
     }
 
     /// Moves selection to the previous selectable session in grouped list
@@ -81,16 +85,20 @@ impl SessionManager {
     ///
     /// Group header rows are non-selectable and are skipped by design.
     pub fn previous(&mut self) {
-        let grouped_indexes = grouped_session_indexes(&self.sessions);
+        let grouped_indexes = grouped_session_indexes(&self.state.sessions);
         if grouped_indexes.is_empty() {
             return;
         }
 
-        let index = match self.table_state.selected().and_then(|selected_index| {
-            grouped_indexes
-                .iter()
-                .position(|session_index| *session_index == selected_index)
-        }) {
+        let index = match self
+            .state
+            .table_state
+            .selected()
+            .and_then(|selected_index| {
+                grouped_indexes
+                    .iter()
+                    .position(|session_index| *session_index == selected_index)
+            }) {
             Some(position) => {
                 if position == 0 {
                     grouped_indexes.len() - 1
@@ -101,7 +109,7 @@ impl SessionManager {
             None => 0,
         };
 
-        self.table_state.select(Some(grouped_indexes[index]));
+        self.state.table_state.select(Some(grouped_indexes[index]));
     }
 
     /// Creates a blank session with an empty prompt and output.
@@ -316,7 +324,8 @@ impl SessionManager {
                 backend,
                 session_model.kind(),
             ));
-        self.test_agent_channels
+        self.worker_service
+            .test_agent_channels
             .insert(session_id.to_string(), channel);
         self.reply_impl(services, session_id, prompt, session_model)
             .await;
@@ -398,21 +407,24 @@ impl SessionManager {
 
     /// Returns the currently selected session, if any.
     pub fn selected_session(&self) -> Option<&Session> {
-        self.table_state
+        self.state
+            .table_state
             .selected()
-            .and_then(|index| self.sessions.get(index))
+            .and_then(|index| self.state.sessions.get(index))
     }
 
     /// Returns the session identifier for the given list index.
     pub fn session_id_for_index(&self, session_index: usize) -> Option<String> {
-        self.sessions
+        self.state
+            .sessions
             .get(session_index)
             .map(|session| session.id.clone())
     }
 
     /// Resolves a stable session identifier to the current list index.
     pub fn session_index_for_id(&self, session_id: &str) -> Option<usize> {
-        self.sessions
+        self.state
+            .sessions
             .iter()
             .position(|session| session.id == session_id)
     }
@@ -469,13 +481,13 @@ impl SessionManager {
         projects: &ProjectManager,
         services: &AppServices,
     ) -> Option<DeletedSessionCleanup> {
-        let selected_index = self.table_state.selected()?;
-        if selected_index >= self.sessions.len() {
+        let selected_index = self.state.table_state.selected()?;
+        if selected_index >= self.state.sessions.len() {
             return None;
         }
 
-        let session = self.sessions.remove(selected_index);
-        self.handles.remove(&session.id);
+        let session = self.state.sessions.remove(selected_index);
+        self.state.handles.remove(&session.id);
         self.clear_history_replay_pending(&session.id);
 
         let _ = services
@@ -615,7 +627,7 @@ impl SessionManager {
         session_model: AgentModel,
         should_replay_history: bool,
     ) -> Result<Option<ReplyContext>, String> {
-        let Some(session) = self.sessions.get_mut(session_index) else {
+        let Some(session) = self.state.sessions.get_mut(session_index) else {
             return Ok(None);
         };
 

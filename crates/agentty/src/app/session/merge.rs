@@ -36,6 +36,10 @@ const REBASE_ASSIST_POLICY: AssistPolicy = AssistPolicy {
     max_identical_failure_streak: 3,
 };
 
+/// Coordinates merge/rebase session workflows behind a dedicated service
+/// boundary.
+pub(crate) struct SessionMergeService;
+
 /// Askama view model for rendering rebase conflict-assistance prompts.
 #[derive(Template)]
 #[template(path = "rebase_assist_prompt.md", escape = "none")]
@@ -435,20 +439,21 @@ impl SyncSessionStartError {
     }
 }
 
-impl SessionManager {
+impl SessionMergeService {
     /// Starts a squash merge for a review-ready or queued session branch in
     /// the background.
     ///
     /// # Errors
     /// Returns an error if the session is invalid for merge, required git
     /// metadata is missing, or the status transition to `Merging` fails.
-    pub async fn merge_session(
+    async fn merge_session(
         &self,
+        manager: &SessionManager,
         session_id: &str,
         projects: &ProjectManager,
         services: &AppServices,
     ) -> Result<(), String> {
-        let session = self
+        let session = manager
             .session_or_err(session_id)
             .map_err(|_| SESSION_NOT_FOUND_ERROR.to_string())?;
         if !matches!(session.status, Status::Review | Status::Queued) {
@@ -461,9 +466,9 @@ impl SessionManager {
         let session_model = session.model;
         let app_event_tx = services.event_sender();
         let fs_client = services.fs_client();
-        let git_client = self.git_client();
+        let git_client = manager.git_client();
 
-        let handles = self
+        let handles = manager
             .session_handles_or_err(session_id)
             .map_err(|_| SESSION_HANDLES_NOT_FOUND_ERROR.to_string())?;
         let child_pid = Arc::clone(&handles.child_pid);
@@ -517,7 +522,7 @@ impl SessionManager {
             app_event_tx,
             base_branch,
             child_pid,
-            clock: Arc::clone(&self.clock),
+            clock: Arc::clone(&manager.state().clock),
             db,
             folder,
             fs_client,
@@ -530,10 +535,101 @@ impl SessionManager {
             status,
         };
         tokio::spawn(async move {
-            Self::run_merge_task(merge_task_input).await;
+            SessionManager::run_merge_task(merge_task_input).await;
         });
 
         Ok(())
+    }
+
+    /// Rebases a reviewed session branch onto its base branch.
+    ///
+    /// # Errors
+    /// Returns an error if the session is invalid for rebase, required git
+    /// metadata is missing, or starting the rebase task fails.
+    async fn rebase_session(
+        &self,
+        manager: &SessionManager,
+        services: &AppServices,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let session = manager
+            .session_or_err(session_id)
+            .map_err(|_| SESSION_NOT_FOUND_ERROR.to_string())?;
+        if session.status != Status::Review {
+            return Err("Session must be in review status".to_string());
+        }
+
+        let base_branch = services
+            .db()
+            .get_session_base_branch(&session.id)
+            .await?
+            .ok_or_else(|| "No git worktree for this session".to_string())?;
+
+        let handles = manager
+            .session_handles_or_err(session_id)
+            .map_err(|_| SESSION_HANDLES_NOT_FOUND_ERROR.to_string())?;
+        let child_pid = Arc::clone(&handles.child_pid);
+        let output = Arc::clone(&handles.output);
+
+        let status = Arc::clone(&handles.status);
+        let db = services.db().clone();
+        let app_event_tx = services.event_sender();
+        let fs_client = services.fs_client();
+        let git_client = manager.git_client();
+
+        if !SessionTaskService::update_status(
+            &status,
+            &db,
+            &app_event_tx,
+            &session.id,
+            Status::Rebasing,
+        )
+        .await
+        {
+            return Err("Invalid status transition to Rebasing".to_string());
+        }
+
+        let id = session.id.clone();
+        let session_model = session.model;
+
+        let rebase_task_input = RebaseTaskInput {
+            app_event_tx,
+            base_branch,
+            child_pid,
+            clock: Arc::clone(&manager.state().clock),
+            db,
+            folder: session.folder.clone(),
+            fs_client,
+            git_client,
+            id,
+            output,
+            session_model,
+            status,
+        };
+        tokio::spawn(async move {
+            SessionManager::run_rebase_task(rebase_task_input).await;
+        });
+
+        Ok(())
+    }
+}
+
+impl SessionManager {
+    /// Starts a squash merge for a review-ready or queued session branch in
+    /// the background.
+    ///
+    /// # Errors
+    /// Returns an error if the session is invalid for merge, required git
+    /// metadata is missing, or the status transition to `Merging` fails.
+    pub async fn merge_session(
+        &self,
+        session_id: &str,
+        projects: &ProjectManager,
+        services: &AppServices,
+    ) -> Result<(), String> {
+        self.merge_service()
+            .merge_session(self, session_id, projects, services)
+            .await
     }
 
     async fn run_merge_task(input: MergeTaskInput) {
@@ -750,65 +846,9 @@ impl SessionManager {
         services: &AppServices,
         session_id: &str,
     ) -> Result<(), String> {
-        let session = self
-            .session_or_err(session_id)
-            .map_err(|_| SESSION_NOT_FOUND_ERROR.to_string())?;
-        if session.status != Status::Review {
-            return Err("Session must be in review status".to_string());
-        }
-
-        let base_branch = services
-            .db()
-            .get_session_base_branch(&session.id)
-            .await?
-            .ok_or_else(|| "No git worktree for this session".to_string())?;
-
-        let handles = self
-            .session_handles_or_err(session_id)
-            .map_err(|_| SESSION_HANDLES_NOT_FOUND_ERROR.to_string())?;
-        let child_pid = Arc::clone(&handles.child_pid);
-        let output = Arc::clone(&handles.output);
-
-        let status = Arc::clone(&handles.status);
-        let db = services.db().clone();
-        let app_event_tx = services.event_sender();
-        let fs_client = services.fs_client();
-        let git_client = self.git_client();
-
-        if !SessionTaskService::update_status(
-            &status,
-            &db,
-            &app_event_tx,
-            &session.id,
-            Status::Rebasing,
-        )
-        .await
-        {
-            return Err("Invalid status transition to Rebasing".to_string());
-        }
-
-        let id = session.id.clone();
-        let session_model = session.model;
-
-        let rebase_task_input = RebaseTaskInput {
-            app_event_tx,
-            base_branch,
-            child_pid,
-            clock: Arc::clone(&self.clock),
-            db,
-            folder: session.folder.clone(),
-            fs_client,
-            git_client,
-            id,
-            output,
-            session_model,
-            status,
-        };
-        tokio::spawn(async move {
-            Self::run_rebase_task(rebase_task_input).await;
-        });
-
-        Ok(())
+        self.merge_service()
+            .rebase_session(self, services, session_id)
+            .await
     }
 
     /// Synchronizes a project branch with upstream using only project context.

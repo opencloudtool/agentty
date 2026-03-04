@@ -1,14 +1,13 @@
 //! Session lifecycle orchestration for creation, refresh, prompt handling,
 //! history management, merge, and cleanup.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::widgets::TableState;
-use tokio::sync::mpsc;
 
 use crate::app::{AppServices, SessionState};
 use crate::domain::agent::AgentModel;
@@ -23,10 +22,12 @@ mod review;
 mod task;
 mod worker;
 
+use merge::SessionMergeService;
 /// Merge workflow sync types exported for app orchestration callers.
 pub(crate) use merge::{SyncMainOutcome, SyncSessionStartError};
 /// Session task inputs/services exported for sibling app modules.
 pub(crate) use task::{RunAgentAssistTaskInput, SessionTaskService};
+use worker::SessionWorkerService;
 
 /// Render payload tuple returned by [`SessionManager::render_parts`].
 type SessionRenderParts<'a> = (&'a [Session], &'a [DailyActivity], &'a mut TableState);
@@ -69,18 +70,11 @@ impl Clock for RealClock {
 pub struct SessionManager {
     default_session_model: AgentModel,
     git_client: Arc<dyn crate::infra::git::GitClient>,
+    merge_service: SessionMergeService,
     pending_history_replay: HashSet<String>,
     state: SessionState,
     stats_activity: Vec<DailyActivity>,
-    workers: HashMap<String, mpsc::UnboundedSender<crate::app::session::worker::SessionCommand>>,
-    /// Channels pre-registered for specific session workers in tests.
-    ///
-    /// Tests populate this map before enqueueing a command so that
-    /// `ensure_session_worker` uses the injected channel instead of the
-    /// default factory, enabling deterministic command execution without
-    /// spawning real provider processes.
-    #[cfg(test)]
-    pub(crate) test_agent_channels: HashMap<String, Arc<dyn crate::infra::channel::AgentChannel>>,
+    worker_service: SessionWorkerService,
 }
 
 impl SessionManager {
@@ -99,18 +93,27 @@ impl SessionManager {
         Self {
             default_session_model: defaults.model,
             git_client,
+            merge_service: SessionMergeService,
             pending_history_replay,
             state,
             stats_activity,
-            workers: HashMap::new(),
-            #[cfg(test)]
-            test_agent_channels: HashMap::new(),
+            worker_service: SessionWorkerService::new(),
         }
+    }
+
+    /// Returns the internal merge orchestration service.
+    pub(crate) fn merge_service(&self) -> &SessionMergeService {
+        &self.merge_service
     }
 
     /// Returns the configured session git client used by orchestration flows.
     pub(crate) fn git_client(&self) -> Arc<dyn crate::infra::git::GitClient> {
         Arc::clone(&self.git_client)
+    }
+
+    /// Returns mutable access to worker orchestration state.
+    pub(crate) fn worker_service_mut(&mut self) -> &mut SessionWorkerService {
+        &mut self.worker_service
     }
 
     /// Returns the default smart model used for session-scoped agent
@@ -139,6 +142,11 @@ impl SessionManager {
         )
     }
 
+    /// Returns shared immutable access to session render and refresh state.
+    pub(crate) fn state(&self) -> &SessionState {
+        &self.state
+    }
+
     /// Applies reducer updates after session agent/model changes are
     /// persisted.
     ///
@@ -161,6 +169,8 @@ impl SessionManager {
     }
 }
 
+/// Backward-compatible state-field access shim while call sites migrate to
+/// explicit `state()` APIs.
 impl Deref for SessionManager {
     type Target = SessionState;
 
@@ -169,6 +179,7 @@ impl Deref for SessionManager {
     }
 }
 
+/// Backward-compatible mutable state access shim for legacy call sites.
 impl DerefMut for SessionManager {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.state
@@ -191,7 +202,7 @@ pub(crate) fn session_branch(session_id: &str) -> String {
 mod tests {
     //! Session module tests.
 
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::sync::{Arc, Mutex};
@@ -2226,6 +2237,7 @@ mod tests {
             .await
             .expect("failed to create session");
         app.sessions
+            .worker_service
             .test_agent_channels
             .insert(session_id.clone(), Arc::new(mock_channel));
         app.sessions
@@ -2358,6 +2370,7 @@ mod tests {
             .expect_shutdown_session()
             .returning(|_| Box::pin(async { Ok(()) }));
         app.sessions
+            .worker_service
             .test_agent_channels
             .insert(session_id.clone(), Arc::new(mock_channel));
 
