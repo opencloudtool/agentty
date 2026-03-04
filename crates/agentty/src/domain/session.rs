@@ -247,11 +247,6 @@ pub struct SessionHandles {
     pub child_pid: Arc<Mutex<Option<u32>>>,
     /// Shared output buffer mirrored to persistence/UI.
     pub output: Arc<Mutex<String>>,
-    /// Clarification questions parsed from the most recent agent response.
-    ///
-    /// Populated by the worker after a turn completes and consumed when the
-    /// user submits a reply. Runtime-only — not persisted to the database.
-    pub questions: Arc<Mutex<Vec<String>>>,
     /// Shared mutable status synchronized with persistence/UI.
     pub status: Arc<Mutex<Status>>,
 }
@@ -262,7 +257,6 @@ impl SessionHandles {
         Self {
             child_pid: Arc::new(Mutex::new(None)),
             output: Arc::new(Mutex::new(output)),
-            questions: Arc::new(Mutex::new(Vec::new())),
             status: Arc::new(Mutex::new(status)),
         }
     }

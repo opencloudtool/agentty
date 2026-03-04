@@ -57,6 +57,7 @@ dependencies = [
  "mockall",
  "nix 0.31.1",
  "ratatui",
+ "schemars",
  "semver",
  "serde",
  "serde_json",

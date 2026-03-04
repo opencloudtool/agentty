@@ -11,7 +11,6 @@ use crate::app::assist::AssistContext;
 use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::session::{SessionStats, Status};
-use crate::infra::agent::AgentResponse;
 use crate::infra::channel::{
     AgentChannel, AgentError, TurnEvent, TurnMode, TurnRequest, TurnResult,
 };
@@ -73,8 +72,6 @@ struct SessionWorkerContext {
     folder: PathBuf,
     git_client: Arc<dyn GitClient>,
     output: Arc<Mutex<String>>,
-    /// Clarification questions parsed from the most recent agent response.
-    questions: Arc<Mutex<Vec<String>>>,
     session_id: String,
     status: Arc<Mutex<Status>>,
 }
@@ -156,7 +153,6 @@ impl SessionManager {
         let folder = session.folder.clone();
         let child_pid = Arc::clone(&handles.child_pid);
         let output = Arc::clone(&handles.output);
-        let questions = Arc::clone(&handles.questions);
         let status = Arc::clone(&handles.status);
 
         // In tests, use a pre-registered mock channel when available; otherwise
@@ -181,7 +177,6 @@ impl SessionManager {
             folder,
             git_client: services.git_client(),
             output,
-            questions,
             session_id: session_id_owned,
             status,
         };
@@ -384,8 +379,9 @@ async fn apply_turn_result(
 ) -> Result<(), String> {
     match turn_result {
         Ok(result) => {
-            if !streamed_any_content && !result.assistant_message.text.trim().is_empty() {
-                let message = format!("{}\n\n", result.assistant_message.text.trim_end());
+            let assistant_message_text = result.assistant_message.to_display_text();
+            if !streamed_any_content && !assistant_message_text.trim().is_empty() {
+                let message = format!("{}\n\n", assistant_message_text.trim_end());
                 SessionTaskService::append_session_output(
                     &context.output,
                     &context.db,
@@ -416,8 +412,6 @@ async fn apply_turn_result(
                 )
                 .await;
 
-            apply_protocol_metadata(context, &result.assistant_message).await;
-
             SessionTaskService::handle_auto_commit(AssistContext {
                 app_event_tx: context.app_event_tx.clone(),
                 child_pid: Arc::clone(&context.child_pid),
@@ -433,10 +427,6 @@ async fn apply_turn_result(
             Ok(())
         }
         Err(error) => {
-            if let Ok(mut guard) = context.questions.lock() {
-                guard.clear();
-            }
-
             let message = format!("\n{}\n", error.0.trim());
             SessionTaskService::append_session_output(
                 &context.output,
@@ -449,60 +439,6 @@ async fn apply_turn_result(
 
             Err(error.0)
         }
-    }
-}
-
-/// Extracts structured questions from the agent response and strips protocol
-/// metadata from the output buffer.
-///
-/// Uses structured questions from protocol metadata when available; falls back
-/// to legacy heading-based parsing for backward compatibility with agents that
-/// do not follow the protocol.
-async fn apply_protocol_metadata(context: &SessionWorkerContext, response: &AgentResponse) {
-    let parsed_questions = if response.meta.questions.is_empty() {
-        crate::infra::agent::question_parser::parse_questions(&response.text)
-    } else {
-        response.meta.questions.clone()
-    };
-
-    if let Ok(mut guard) = context.questions.lock() {
-        *guard = parsed_questions;
-    }
-
-    strip_protocol_metadata(context).await;
-}
-
-/// Strips the `---agentty-meta---` delimiter and trailing JSON block from
-/// the streamed session output buffer and persisted database output.
-///
-/// During streaming, the protocol metadata block is appended as raw text.
-/// This function removes it after the turn completes so the metadata is
-/// not displayed to the user.
-async fn strip_protocol_metadata(context: &SessionWorkerContext) {
-    let delimiter = crate::infra::agent::protocol::METADATA_DELIMITER;
-
-    let cleaned_output = if let Ok(mut guard) = context.output.lock() {
-        if let Some(pos) = guard.rfind(delimiter) {
-            guard.truncate(pos);
-            let trimmed = guard.trim_end().to_string();
-            (*guard).clone_from(&trimmed);
-
-            Some(trimmed)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    if let Some(output) = cleaned_output {
-        let _ = context
-            .db
-            .replace_session_output(&context.session_id, &output)
-            .await;
-        let _ = context.app_event_tx.send(AppEvent::SessionUpdated {
-            session_id: context.session_id.clone(),
-        });
     }
 }
 
@@ -694,7 +630,6 @@ mod tests {
             folder: base_dir.path().to_path_buf(),
             git_client: Arc::new(MockGitClient::new()),
             output: Arc::new(Mutex::new(String::new())),
-            questions: Arc::new(Mutex::new(Vec::new())),
             session_id: "sess1".to_string(),
             status: Arc::new(Mutex::new(Status::InProgress)),
         };
@@ -751,7 +686,6 @@ mod tests {
             folder: base_dir.path().to_path_buf(),
             git_client: Arc::new(MockGitClient::new()),
             output: Arc::new(Mutex::new(String::new())),
-            questions: Arc::new(Mutex::new(Vec::new())),
             session_id: "sess1".to_string(),
             status: Arc::new(Mutex::new(Status::InProgress)),
         };

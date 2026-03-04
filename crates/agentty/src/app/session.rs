@@ -221,8 +221,9 @@ mod tests {
     fn create_mock_backend() -> MockAgentBackend {
         let mut mock = MockAgentBackend::new();
         mock.expect_build_command().returning(|request| {
-            let mut cmd = Command::new("echo");
-            cmd.arg("mock-start")
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg("printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"mock-start\"}]}'")
                 .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -2405,10 +2406,12 @@ mod tests {
             assert!(session_output.contains("Initial prompt"));
             assert!(session_output.contains("mock-start"));
 
-            let mut cmd = Command::new("echo");
-            cmd.arg("--prompt")
-                .arg(request.mode.prompt())
-                .arg("replayed-after-restart")
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg(
+                    "printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"\
+                     replayed-after-restart\"}]}'",
+                )
                 .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -2476,7 +2479,10 @@ mod tests {
         mock.expect_build_command().returning(|request| {
             let mut cmd = Command::new("bash");
             cmd.arg("-c")
-                .arg("echo auto-content > auto-committed.txt")
+                .arg(
+                    "echo auto-content > auto-committed.txt; printf \
+                     '{\"messages\":[{\"type\":\"answer\",\"text\":\"Auto commit done\"}]}'",
+                )
                 .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -2612,8 +2618,9 @@ mod tests {
         // Agent that produces no file changes
         let mut mock = MockAgentBackend::new();
         mock.expect_build_command().returning(|request| {
-            let mut cmd = Command::new("echo");
-            cmd.arg("no-changes")
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg("printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"no-changes\"}]}'")
                 .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());

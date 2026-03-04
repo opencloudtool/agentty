@@ -13,8 +13,6 @@ mod codex;
 mod gemini;
 #[path = "agent/protocol.rs"]
 pub(crate) mod protocol;
-#[path = "agent/question_parser.rs"]
-pub(crate) mod question_parser;
 #[path = "agent/response_parser.rs"]
 mod response_parser;
 

@@ -1,23 +1,14 @@
 Structured response protocol:
 
-- When you need clarification before proceeding, append a metadata block at the very end of your response.
-- The metadata block starts with the delimiter line `---agentty-meta---` on its own line.
-- After the delimiter, provide a single-line JSON object with a `type` field and optionally a `questions` array.
-- Supported `type` values: `"answer"`, `"question"`, `"plan"`.
-- Only ask questions when genuinely blocked; prefer making reasonable assumptions.
-- When you have no questions and are not presenting a plan, omit the metadata block entirely.
-- Format examples:
+- Return a single JSON object as the entire final response.
 
-Your analysis and response text here.
+- Do not wrap the JSON in markdown code fences.
 
----agentty-meta---
-{"type": "question", "questions": ["Should the new endpoint require authentication?", "Which database table stores user preferences?"]}
+- Follow this JSON Schema exactly:
+  {{ protocol_schema_json }}
 
-Or for a plan:
+- You may include multiple messages in one response.
 
-Your proposed implementation plan here.
-
----agentty-meta---
-{"type": "plan"}
+- Use `question` only when genuinely blocked; otherwise prefer making reasonable assumptions.
 
 {{ prompt }}

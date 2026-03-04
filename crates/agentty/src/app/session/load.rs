@@ -70,26 +70,33 @@ impl SessionManager {
                 .parse::<AgentModel>()
                 .unwrap_or_else(|_| AgentKind::Gemini.default_model());
 
-            let mut status = persisted_status;
-            let mut output = row.output.clone();
-            if let Some(existing) = handles.get(&row.id) {
-                if let Ok(output_buffer) = existing.output.lock() {
-                    output.clone_from(&output_buffer);
+            let (session_output, session_status) = if let Some(existing) = handles.get(&row.id) {
+                let output_from_handle = existing
+                    .output
+                    .lock()
+                    .ok()
+                    .map_or_else(|| row.output.clone(), |output| output.clone());
+                let status_from_handle = existing
+                    .status
+                    .lock()
+                    .ok()
+                    .map_or(persisted_status, |status| *status);
+                let merged_status =
+                    merge_loaded_session_status(persisted_status, status_from_handle);
+
+                if let Ok(mut handle_status) = existing.status.lock() {
+                    *handle_status = merged_status;
                 }
 
-                if let Ok(mut live_status) = existing.status.lock() {
-                    if persisted_status_is_terminal {
-                        *live_status = persisted_status;
-                    } else {
-                        status = *live_status;
-                    }
-                }
+                (output_from_handle, merged_status)
             } else {
                 handles.insert(
                     row.id.clone(),
                     SessionHandles::new(row.output.clone(), persisted_status),
                 );
-            }
+
+                (row.output.clone(), persisted_status)
+            };
 
             sessions.push(Session {
                 base_branch: row.base_branch,
@@ -97,7 +104,7 @@ impl SessionManager {
                 folder,
                 id: row.id,
                 model: session_model,
-                output,
+                output: session_output,
                 project_name: project_name.clone(),
                 prompt: row.prompt,
                 size: persisted_size,
@@ -105,7 +112,7 @@ impl SessionManager {
                     input_tokens: row.input_tokens.cast_unsigned(),
                     output_tokens: row.output_tokens.cast_unsigned(),
                 },
-                status,
+                status: session_status,
                 summary: row.summary,
                 title: row.title,
                 updated_at: row.updated_at,
@@ -162,6 +169,20 @@ impl SessionManager {
 
         SessionSize::from_diff(&diff)
     }
+}
+
+/// Merges one loaded status with the existing live-handle status.
+///
+/// Existing handle status is kept for active transitions to prevent stale DB
+/// snapshots from clobbering in-memory updates. Persisted terminal statuses
+/// (`Done`, `Canceled`) take precedence so explicit DB transitions still appear
+/// after refresh.
+fn merge_loaded_session_status(status_from_db: Status, status_from_handle: Status) -> Status {
+    if matches!(status_from_db, Status::Done | Status::Canceled) {
+        return status_from_db;
+    }
+
+    status_from_handle
 }
 
 /// Aggregates persisted session-creation timestamps into local-day totals.
@@ -345,5 +366,33 @@ mod tests {
             .expect("missing existing runtime handle");
         let handle_status = *handle.status.lock().expect("failed to lock handle status");
         assert_eq!(handle_status, Status::Done);
+    }
+
+    #[test]
+    /// Verifies terminal DB statuses override stale in-memory handle statuses.
+    fn merge_loaded_session_status_prefers_terminal_status_from_db() {
+        // Arrange
+        let status_from_db = Status::Done;
+        let status_from_handle = Status::New;
+
+        // Act
+        let merged_status = merge_loaded_session_status(status_from_db, status_from_handle);
+
+        // Assert
+        assert_eq!(merged_status, Status::Done);
+    }
+
+    #[test]
+    /// Verifies non-terminal DB statuses do not overwrite in-memory status.
+    fn merge_loaded_session_status_prefers_handle_for_non_terminal_db_status() {
+        // Arrange
+        let status_from_db = Status::Review;
+        let status_from_handle = Status::InProgress;
+
+        // Act
+        let merged_status = merge_loaded_session_status(status_from_db, status_from_handle);
+
+        // Assert
+        assert_eq!(merged_status, Status::InProgress);
     }
 }

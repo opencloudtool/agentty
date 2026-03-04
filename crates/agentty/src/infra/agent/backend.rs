@@ -115,7 +115,10 @@ struct ResumeWithSessionOutputPromptTemplate<'a> {
 #[derive(Template)]
 #[template(path = "protocol_instruction_prompt.md", escape = "none")]
 struct ProtocolInstructionPromptTemplate<'a> {
+    /// User prompt appended after protocol instructions.
     prompt: &'a str,
+    /// Pretty-printed JSON schema contract injected into the prompt template.
+    protocol_schema_json: &'a str,
 }
 
 /// Askama view model for rendering repo-root file path contract instructions.
@@ -225,10 +228,11 @@ pub(crate) fn prepend_repo_root_path_instructions(
 
 /// Prepends structured response protocol instructions to a prompt.
 ///
-/// Tells agents to append a `---agentty-meta---` delimiter followed by a
-/// JSON metadata block when they need clarification or are presenting a
-/// plan. If the prompt already contains the protocol marker, this function
-/// returns the prompt unchanged to avoid duplicated guidance.
+/// Tells agents to emit one top-level JSON object with a `messages` array of
+/// typed entries so response parsing can deserialize directly into the
+/// internal protocol structs. If the prompt already contains the protocol
+/// marker, this function returns the prompt unchanged to avoid duplicated
+/// guidance.
 ///
 /// # Errors
 /// Returns an error if Askama template rendering fails.
@@ -237,7 +241,11 @@ pub(crate) fn prepend_protocol_instructions(prompt: &str) -> Result<String, Agen
         return Ok(prompt.to_string());
     }
 
-    let template = ProtocolInstructionPromptTemplate { prompt };
+    let protocol_schema_json = crate::infra::agent::protocol::agent_response_output_schema_json();
+    let template = ProtocolInstructionPromptTemplate {
+        prompt,
+        protocol_schema_json: &protocol_schema_json,
+    };
     let rendered = template.render().map_err(|error| {
         AgentBackendError::CommandBuild(format!(
             "Failed to render `protocol_instruction_prompt.md`: {error}"
@@ -371,7 +379,10 @@ mod tests {
 
         // Assert
         assert!(rendered_prompt.contains("Structured response protocol:"));
-        assert!(rendered_prompt.contains("---agentty-meta---"));
+        assert!(rendered_prompt.contains("Return a single JSON object"));
+        assert!(rendered_prompt.contains("Do not wrap the JSON in markdown code fences."));
+        assert!(rendered_prompt.contains("Follow this JSON Schema exactly:"));
+        assert!(rendered_prompt.contains("\"messages\""));
         assert!(rendered_prompt.ends_with(prompt));
     }
 

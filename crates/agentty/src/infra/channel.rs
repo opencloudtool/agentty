@@ -98,7 +98,7 @@ pub enum TurnEvent {
 /// Normalized result returned when one agent turn completes successfully.
 #[derive(Debug)]
 pub struct TurnResult {
-    /// Parsed agent response containing display text and structured metadata.
+    /// Parsed agent response containing structured protocol messages.
     pub assistant_message: AgentResponse,
     /// Whether the provider reset its context to complete this turn.
     pub context_reset: bool,
@@ -185,7 +185,7 @@ pub fn create_agent_channel(
     app_server_client: Arc<dyn AppServerClient>,
 ) -> Arc<dyn AgentChannel> {
     if crate::infra::agent::transport_mode(kind).uses_app_server() {
-        Arc::new(AppServerAgentChannel::new(app_server_client))
+        Arc::new(AppServerAgentChannel::new(app_server_client, kind))
     } else {
         Arc::new(CliAgentChannel::new(kind))
     }

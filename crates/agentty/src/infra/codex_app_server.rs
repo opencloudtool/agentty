@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::domain::permission::PermissionMode;
+use crate::infra::agent::protocol::agent_response_output_schema;
 use crate::infra::app_server::{
     self, AppServerClient, AppServerFuture, AppServerSessionRegistry, AppServerStreamEvent,
     AppServerTurnRequest, AppServerTurnResponse,
@@ -590,6 +591,9 @@ impl RealCodexAppServerClient {
     }
 
     /// Builds one `turn/start` request payload for the active thread.
+    ///
+    /// Includes `outputSchema` so Codex app-server enforces protocol-shaped
+    /// responses for this turn.
     fn build_turn_start_payload(
         folder: &Path,
         model: &str,
@@ -615,7 +619,7 @@ impl RealCodexAppServerClient {
                 "effort": reasoning_level.codex(),
                 "summary": Value::Null,
                 "personality": Value::Null,
-                "outputSchema": Value::Null
+                "outputSchema": agent_response_output_schema()
             }
         })
     }
@@ -2105,6 +2109,39 @@ mod tests {
                 .and_then(Value::as_str),
             Some("high")
         );
+    }
+
+    #[test]
+    /// Ensures `turn/start` includes a structured output schema object.
+    fn build_turn_start_payload_sets_structured_output_schema() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+
+        // Act
+        let payload = RealCodexAppServerClient::build_turn_start_payload(
+            temp_directory.path(),
+            "gpt-5.3-codex",
+            ReasoningLevel::Medium,
+            "thread-1",
+            "Implement task",
+            "turn-start-1",
+        );
+        let output_schema = payload
+            .get("params")
+            .and_then(|params| params.get("outputSchema"))
+            .and_then(Value::as_object)
+            .expect("output schema should be an object");
+        let output_schema_properties = output_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("output schema should define properties");
+
+        // Assert
+        assert_eq!(
+            output_schema.get("type").and_then(Value::as_str),
+            Some("object")
+        );
+        assert!(output_schema_properties.contains_key("messages"));
     }
 
     #[test]

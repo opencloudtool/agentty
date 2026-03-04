@@ -7,7 +7,11 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::infra::agent::protocol::parse_agent_response;
+use crate::domain::agent::AgentKind;
+use crate::infra::agent::protocol::{
+    build_protocol_repair_prompt, normalize_stream_assistant_chunk, parse_agent_response,
+    parse_agent_response_strict,
+};
 use crate::infra::app_server::{AppServerClient, AppServerStreamEvent, AppServerTurnRequest};
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnMode,
@@ -22,12 +26,14 @@ use crate::infra::channel::{
 pub struct AppServerAgentChannel {
     /// Provider-specific app-server client.
     client: Arc<dyn AppServerClient>,
+    /// Provider kind routed through this channel instance.
+    kind: AgentKind,
 }
 
 impl AppServerAgentChannel {
     /// Creates a new app-server channel backed by the given client.
-    pub fn new(client: Arc<dyn AppServerClient>) -> Self {
-        Self { client }
+    pub fn new(client: Arc<dyn AppServerClient>, kind: AgentKind) -> Self {
+        Self { client, kind }
     }
 }
 
@@ -47,9 +53,14 @@ impl AgentChannel for AppServerAgentChannel {
     ///
     /// [`AppServerStreamEvent::AssistantMessage`] events are forwarded as
     /// [`TurnEvent::AssistantDelta`] (formatting adjusted based on the
-    /// `is_delta` flag). Provider phase metadata is accepted but not surfaced
-    /// in [`TurnEvent`] yet. [`AppServerStreamEvent::ProgressUpdate`] events
-    /// are forwarded as [`TurnEvent::Progress`].
+    /// `is_delta` flag) for non-strict providers. Strict providers suppress
+    /// assistant stream chunks and rely on final payload parsing to avoid
+    /// leaking malformed first-pass output when a repair retry is needed.
+    /// Non-delta assistant messages are normalized through
+    /// [`parse_agent_response`] so structured protocol payloads stream as
+    /// human-readable text. Provider phase metadata is accepted but not
+    /// surfaced in [`TurnEvent`] yet. [`AppServerStreamEvent::ProgressUpdate`]
+    /// events are forwarded as [`TurnEvent::Progress`].
     ///
     /// # Errors
     /// Returns [`AgentError`] when [`AppServerClient::run_turn`] fails.
@@ -60,6 +71,8 @@ impl AgentChannel for AppServerAgentChannel {
         events: mpsc::UnboundedSender<TurnEvent>,
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
         let client = Arc::clone(&self.client);
+        let kind = self.kind;
+        let should_stream_assistant_messages = !requires_strict_structured_output(kind);
 
         Box::pin(async move {
             let session_output = match req.mode {
@@ -77,6 +90,7 @@ impl AgentChannel for AppServerAgentChannel {
                 session_id,
                 session_output,
             };
+            let request_for_repair = request.clone();
 
             let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<AppServerStreamEvent>();
 
@@ -91,16 +105,26 @@ impl AgentChannel for AppServerAgentChannel {
                                 phase: _phase,
                                 is_delta,
                             } => {
+                                if !should_stream_assistant_messages {
+                                    continue;
+                                }
+
                                 let trimmed = message.trim_end();
                                 if trimmed.trim().is_empty() {
                                     continue;
                                 }
 
                                 let formatted = if is_delta {
-                                    message
+                                    normalize_delta_assistant_message(trimmed)
                                 } else {
-                                    format!("{trimmed}\n\n")
+                                    format_non_delta_assistant_message(trimmed)
                                 };
+                                let Some(formatted) = formatted else {
+                                    continue;
+                                };
+                                if formatted.trim().is_empty() {
+                                    continue;
+                                }
 
                                 let _ = events.send(TurnEvent::AssistantDelta(formatted));
                             }
@@ -118,9 +142,16 @@ impl AgentChannel for AppServerAgentChannel {
             match turn_result {
                 Ok(response) => {
                     let _ = events.send(TurnEvent::PidUpdate(response.pid));
+                    let assistant_message = parse_or_repair_structured_response(
+                        &client,
+                        kind,
+                        &request_for_repair,
+                        &response,
+                    )
+                    .await?;
 
                     Ok(TurnResult {
-                        assistant_message: parse_agent_response(&response.assistant_message),
+                        assistant_message,
                         context_reset: response.context_reset,
                         input_tokens: response.input_tokens,
                         output_tokens: response.output_tokens,
@@ -144,10 +175,89 @@ impl AgentChannel for AppServerAgentChannel {
     }
 }
 
+/// Normalizes one streamed delta assistant message.
+///
+/// For protocol JSON fragments, returns [`None`] so partial JSON is not
+/// appended to session output.
+fn normalize_delta_assistant_message(message: &str) -> Option<String> {
+    normalize_stream_assistant_chunk(message)
+}
+
+/// Normalizes one complete non-delta assistant message.
+///
+/// The app-server emits non-delta assistant messages as complete chunks. This
+/// helper parses protocol wrappers and returns only display text, preserving
+/// paragraph spacing.
+///
+/// Returns [`None`] when the payload is only a suppressed protocol fragment.
+fn format_non_delta_assistant_message(message: &str) -> Option<String> {
+    let normalized = normalize_stream_assistant_chunk(message)?;
+    let normalized = normalized.trim_end();
+
+    Some(format!("{normalized}\n\n"))
+}
+
+/// Parses one final assistant payload, optionally repairing malformed
+/// structured output for strict providers.
+async fn parse_or_repair_structured_response(
+    client: &Arc<dyn AppServerClient>,
+    kind: AgentKind,
+    original_request: &AppServerTurnRequest,
+    response: &crate::infra::app_server::AppServerTurnResponse,
+) -> Result<crate::infra::agent::AgentResponse, AgentError> {
+    if !requires_strict_structured_output(kind) {
+        return Ok(parse_agent_response(&response.assistant_message));
+    }
+
+    if let Ok(parsed_response) = parse_agent_response_strict(&response.assistant_message) {
+        return Ok(parsed_response);
+    }
+
+    let repair_request = build_repair_request(original_request, response);
+    let (repair_stream_tx, _repair_stream_rx) = mpsc::unbounded_channel();
+    let repair_response = client
+        .run_turn(repair_request, repair_stream_tx)
+        .await
+        .map_err(AgentError)?;
+
+    parse_agent_response_strict(&repair_response.assistant_message).map_err(|error| {
+        AgentError(format!(
+            "Agent output did not match the required JSON schema after one repair attempt: {error}"
+        ))
+    })
+}
+
+/// Returns whether the provider should fail closed on invalid structured
+/// output instead of falling back to plain text.
+fn requires_strict_structured_output(kind: AgentKind) -> bool {
+    matches!(kind, AgentKind::Claude | AgentKind::Gemini)
+}
+
+/// Builds one app-server repair turn request from the original request.
+fn build_repair_request(
+    original_request: &AppServerTurnRequest,
+    response: &crate::infra::app_server::AppServerTurnResponse,
+) -> AppServerTurnRequest {
+    AppServerTurnRequest {
+        reasoning_level: original_request.reasoning_level,
+        folder: original_request.folder.clone(),
+        live_session_output: None,
+        model: original_request.model.clone(),
+        prompt: build_protocol_repair_prompt(&response.assistant_message),
+        provider_conversation_id: response
+            .provider_conversation_id
+            .clone()
+            .or_else(|| original_request.provider_conversation_id.clone()),
+        session_id: original_request.session_id.clone(),
+        session_output: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tokio::sync::mpsc;
 
@@ -196,9 +306,7 @@ mod tests {
 
                 Box::pin(async { Ok(make_ok_response("Hello world")) })
             });
-        let channel = AppServerAgentChannel {
-            client: Arc::new(mock_client),
-        };
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
 
         // Act
@@ -229,9 +337,7 @@ mod tests {
 
                 Box::pin(async { Ok(make_ok_response("Full paragraph")) })
             });
-        let channel = AppServerAgentChannel {
-            client: Arc::new(mock_client),
-        };
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
 
         // Act
@@ -249,6 +355,44 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies non-delta structured JSON messages are streamed as text only.
+    async fn test_run_turn_bridges_non_delta_structured_json_as_text() {
+        // Arrange
+        let mut mock_client = MockAppServerClient::new();
+        mock_client
+            .expect_run_turn()
+            .returning(|_request, stream_tx| {
+                let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
+                    message: r#"{"messages":[{"type":"question","text":"Need clarification."}]}"#
+                        .to_string(),
+                    phase: None,
+                    is_delta: false,
+                });
+
+                Box::pin(async {
+                    Ok(make_ok_response(
+                        r#"{"messages":[{"type":"question","text":"Need clarification."}]}"#,
+                    ))
+                })
+            });
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
+            .await;
+
+        // Assert
+        assert!(result.is_ok());
+        let event = events_rx.try_recv().expect("should have received an event");
+        assert_eq!(
+            event,
+            TurnEvent::AssistantDelta("Need clarification.\n\n".to_string())
+        );
+    }
+
+    #[tokio::test]
     /// Verifies `ProgressUpdate` events are forwarded as `Progress` events.
     async fn test_run_turn_bridges_progress_update_as_progress_event() {
         // Arrange
@@ -262,9 +406,7 @@ mod tests {
 
                 Box::pin(async { Ok(make_ok_response("")) })
             });
-        let channel = AppServerAgentChannel {
-            client: Arc::new(mock_client),
-        };
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
 
         // Act
@@ -295,9 +437,7 @@ mod tests {
 
                 Box::pin(async { Ok(make_ok_response("")) })
             });
-        let channel = AppServerAgentChannel {
-            client: Arc::new(mock_client),
-        };
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
 
         // Act
@@ -316,6 +456,158 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies delta protocol JSON fragments are not forwarded as
+    /// `AssistantDelta` events.
+    async fn test_run_turn_skips_delta_protocol_json_fragments() {
+        // Arrange
+        let mut mock_client = MockAppServerClient::new();
+        mock_client
+            .expect_run_turn()
+            .returning(|_request, stream_tx| {
+                let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
+                    message: r#"{"messages":[{"type":"answer","#.to_string(),
+                    phase: None,
+                    is_delta: true,
+                });
+
+                Box::pin(async {
+                    Ok(make_ok_response(
+                        r#"{"messages":[{"type":"answer","text":"Final answer."}]}"#,
+                    ))
+                })
+            });
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(result.assistant_message.to_display_text(), "Final answer.");
+        while let Ok(event) = events_rx.try_recv() {
+            assert!(
+                !matches!(event, TurnEvent::AssistantDelta(_)),
+                "no AssistantDelta should be emitted for protocol fragments, got: {event:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    /// Verifies strict providers suppress streamed assistant chunks and rely on
+    /// the final parsed payload.
+    async fn test_run_turn_gemini_suppresses_streamed_assistant_messages() {
+        // Arrange
+        let mut mock_client = MockAppServerClient::new();
+        mock_client
+            .expect_run_turn()
+            .returning(|_request, stream_tx| {
+                let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
+                    message: "streamed plain text".to_string(),
+                    phase: None,
+                    is_delta: true,
+                });
+
+                Box::pin(async {
+                    Ok(make_ok_response(
+                        r#"{"messages":[{"type":"answer","text":"Final structured output."}]}"#,
+                    ))
+                })
+            });
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Gemini);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(
+            result.assistant_message.to_display_text(),
+            "Final structured output."
+        );
+        while let Ok(event) = events_rx.try_recv() {
+            assert!(
+                !matches!(event, TurnEvent::AssistantDelta(_)),
+                "no AssistantDelta should be emitted for strict providers, got: {event:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    /// Verifies Gemini turns run one repair retry when final output is not
+    /// valid structured JSON.
+    async fn test_run_turn_repairs_invalid_structured_output_for_gemini() {
+        // Arrange
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let mut mock_client = MockAppServerClient::new();
+        mock_client.expect_run_turn().times(2).returning({
+            let call_count = Arc::clone(&call_count);
+            move |request, _stream_tx| {
+                let call_index = call_count.fetch_add(1, Ordering::SeqCst);
+                if call_index == 0 {
+                    assert_eq!(request.prompt, "Do something");
+
+                    Box::pin(async { Ok(make_ok_response("plain non-json response")) })
+                } else {
+                    assert!(
+                        request
+                            .prompt
+                            .contains("did not match the required JSON schema")
+                    );
+                    Box::pin(async {
+                        Ok(make_ok_response(
+                            r#"{"messages":[{"type":"answer","text":"Recovered output"}]}"#,
+                        ))
+                    })
+                }
+            }
+        });
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Gemini);
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(
+            result.assistant_message.to_display_text(),
+            "Recovered output"
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    /// Verifies Codex turns do not run repair fallback when final output is
+    /// plain text.
+    async fn test_run_turn_codex_keeps_plain_text_without_repair_retry() {
+        // Arrange
+        let mut mock_client = MockAppServerClient::new();
+        mock_client
+            .expect_run_turn()
+            .times(1)
+            .returning(|_request, _stream_tx| Box::pin(async { Ok(make_ok_response("plain")) }));
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(result.assistant_message.to_display_text(), "plain");
+    }
+
+    #[tokio::test]
     /// Verifies client turn failure propagates as `Err(AgentError)`.
     async fn test_run_turn_client_failure_returns_agent_error() {
         // Arrange
@@ -325,9 +617,7 @@ mod tests {
             .returning(|_request, _stream_tx| {
                 Box::pin(async { Err("server timeout".to_string()) })
             });
-        let channel = AppServerAgentChannel {
-            client: Arc::new(mock_client),
-        };
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
 
         // Act
@@ -360,9 +650,7 @@ mod tests {
                     })
                 })
             });
-        let channel = AppServerAgentChannel {
-            client: Arc::new(mock_client),
-        };
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
 
         // Act
@@ -372,7 +660,7 @@ mod tests {
             .expect("turn should succeed");
 
         // Assert
-        assert_eq!(result.assistant_message.text, "Result");
+        assert_eq!(result.assistant_message.to_display_text(), "Result");
         assert!(result.context_reset);
         assert_eq!(result.input_tokens, 100);
         assert_eq!(result.output_tokens, 50);
@@ -410,9 +698,7 @@ mod tests {
                     })
                 })
             });
-        let channel = AppServerAgentChannel {
-            client: Arc::new(mock_client),
-        };
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let mut request = make_turn_request();
         request.reasoning_level = ReasoningLevel::Medium;

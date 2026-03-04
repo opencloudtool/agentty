@@ -813,8 +813,8 @@ WHERE id = ?
 
     /// Replaces the full output for a session row.
     ///
-    /// Used by the protocol metadata stripping pass to remove the
-    /// `---agentty-meta---` block after turn completion.
+    /// Used when an operation needs to rewrite the persisted transcript
+    /// instead of appending incremental chunks.
     ///
     /// # Errors
     /// Returns an error if the output update fails.

@@ -9,8 +9,11 @@ use std::sync::{Arc, Mutex};
 use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::mpsc;
 
-use crate::domain::agent::AgentKind;
-use crate::infra::agent::protocol::parse_agent_response;
+use crate::domain::agent::{AgentKind, ReasoningLevel};
+use crate::infra::agent::protocol::{
+    build_protocol_repair_prompt, normalize_stream_assistant_chunk, parse_agent_response,
+    parse_agent_response_strict,
+};
 use crate::infra::agent::{AgentBackend, AgentCommandMode, BuildCommandRequest};
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnMode,
@@ -81,6 +84,7 @@ impl AgentChannel for CliAgentChannel {
         req: TurnRequest,
         events: mpsc::UnboundedSender<TurnEvent>,
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
+        let backend = Arc::clone(&self.backend);
         let build_result = self.backend.build_command(BuildCommandRequest {
             reasoning_level: req.reasoning_level,
             folder: &req.folder,
@@ -96,6 +100,9 @@ impl AgentChannel for CliAgentChannel {
             model: &req.model,
         });
         let kind = self.kind;
+        let reasoning_level = req.reasoning_level;
+        let folder = req.folder;
+        let model = req.model;
 
         Box::pin(async move {
             let command = build_result
@@ -167,9 +174,18 @@ impl AgentChannel for CliAgentChannel {
             let stdout_text = raw_stdout.lock().map(|buf| buf.clone()).unwrap_or_default();
             let stderr_text = raw_stderr.lock().map(|buf| buf.clone()).unwrap_or_default();
             let parsed = crate::infra::agent::parse_response(kind, &stdout_text, &stderr_text);
+            let assistant_message = parse_or_repair_structured_response(
+                backend,
+                kind,
+                reasoning_level,
+                &folder,
+                &model,
+                &parsed.content,
+            )
+            .await?;
 
             Ok(TurnResult {
-                assistant_message: parse_agent_response(&parsed.content),
+                assistant_message,
                 context_reset: false,
                 input_tokens: parsed.stats.input_tokens,
                 output_tokens: parsed.stats.output_tokens,
@@ -211,13 +227,20 @@ async fn stream_stdout(
             continue;
         };
 
-        if text.trim().is_empty() {
-            continue;
-        }
-
         let event = if is_response_content {
-            TurnEvent::AssistantDelta(text)
+            let Some(normalized_text) = normalize_stream_response_content(&text) else {
+                continue;
+            };
+            if normalized_text.trim().is_empty() {
+                continue;
+            }
+
+            TurnEvent::AssistantDelta(normalized_text)
         } else {
+            if text.trim().is_empty() {
+                continue;
+            }
+
             TurnEvent::Progress(text)
         };
 
@@ -225,10 +248,108 @@ async fn stream_stdout(
     }
 }
 
+/// Normalizes one response-content stream chunk before transcript emission.
+///
+/// For structured protocol chunks that already contain a complete JSON payload,
+/// this strips the protocol wrapper and returns only display text.
+///
+/// Partial protocol JSON fragments are suppressed so raw JSON does not leak
+/// into session output while streaming.
+fn normalize_stream_response_content(text: &str) -> Option<String> {
+    normalize_stream_assistant_chunk(text)
+}
+
+/// Parses one final assistant payload, optionally repairing malformed
+/// structured output for strict providers.
+async fn parse_or_repair_structured_response(
+    backend: Arc<dyn AgentBackend>,
+    kind: AgentKind,
+    reasoning_level: ReasoningLevel,
+    folder: &std::path::Path,
+    model: &str,
+    response_text: &str,
+) -> Result<crate::infra::agent::AgentResponse, AgentError> {
+    if !requires_strict_structured_output(kind) {
+        return Ok(parse_agent_response(response_text));
+    }
+
+    if let Ok(parsed_response) = parse_agent_response_strict(response_text) {
+        return Ok(parsed_response);
+    }
+
+    let repair_content = run_structured_output_repair_turn(
+        backend,
+        kind,
+        reasoning_level,
+        folder,
+        model,
+        response_text,
+    )
+    .await?;
+
+    parse_agent_response_strict(&repair_content).map_err(|error| {
+        AgentError(format!(
+            "Agent output did not match the required JSON schema after one repair attempt: {error}"
+        ))
+    })
+}
+
+/// Runs one best-effort repair turn that asks the model to re-emit valid
+/// protocol JSON only.
+async fn run_structured_output_repair_turn(
+    backend: Arc<dyn AgentBackend>,
+    kind: AgentKind,
+    reasoning_level: ReasoningLevel,
+    folder: &std::path::Path,
+    model: &str,
+    invalid_response: &str,
+) -> Result<String, AgentError> {
+    let repair_prompt = build_protocol_repair_prompt(invalid_response);
+    let repair_command = backend
+        .build_command(BuildCommandRequest {
+            reasoning_level,
+            folder,
+            mode: AgentCommandMode::Start {
+                prompt: &repair_prompt,
+            },
+            model,
+        })
+        .map_err(|error| AgentError(format!("Failed to build repair command: {error}")))?;
+
+    let mut tokio_command = tokio::process::Command::from(repair_command);
+    tokio_command.stdin(std::process::Stdio::null());
+    tokio_command.stdout(std::process::Stdio::piped());
+    tokio_command.stderr(std::process::Stdio::piped());
+
+    let output = tokio_command
+        .output()
+        .await
+        .map_err(|error| AgentError(format!("Failed to run repair command: {error}")))?;
+
+    if output.status.signal().is_some() {
+        return Err(AgentError(
+            "[Stopped] Agent interrupted during structured output repair.".to_string(),
+        ));
+    }
+
+    let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+    let parsed = crate::infra::agent::parse_response(kind, &stdout_text, &stderr_text);
+
+    Ok(parsed.content)
+}
+
+/// Returns whether the provider should fail closed on invalid structured
+/// output instead of falling back to plain text.
+fn requires_strict_structured_output(kind: AgentKind) -> bool {
+    matches!(kind, AgentKind::Claude | AgentKind::Gemini)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tempfile::tempdir;
     use tokio::sync::mpsc;
@@ -330,9 +451,14 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut mock_backend = MockAgentBackend::new();
-        mock_backend
-            .expect_build_command()
-            .returning(|_| Ok(std::process::Command::new("true")));
+        mock_backend.expect_build_command().returning(|_| {
+            let mut command = std::process::Command::new("sh");
+            command
+                .arg("-c")
+                .arg("printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"ok\"}]}'");
+
+            Ok(command)
+        });
         let channel = CliAgentChannel {
             backend: Arc::new(mock_backend),
             kind: AgentKind::Claude,
@@ -346,5 +472,102 @@ mod tests {
         // Assert
         let turn_result = result.expect("expected Ok for clean exit");
         assert!(!turn_result.context_reset);
+    }
+
+    #[tokio::test]
+    /// Verifies Claude turns run one repair retry when final output is not
+    /// valid structured JSON.
+    async fn test_run_turn_repairs_invalid_structured_output_for_claude() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let mut mock_backend = MockAgentBackend::new();
+        mock_backend.expect_build_command().times(2).returning({
+            let call_count = Arc::clone(&call_count);
+            move |request| {
+                let call_index = call_count.fetch_add(1, Ordering::SeqCst);
+                let mut command = std::process::Command::new("sh");
+                command.arg("-c");
+
+                if call_index == 0 {
+                    command.arg("printf 'plain non-json response'");
+                } else {
+                    assert!(
+                        matches!(request.mode, AgentCommandMode::Start { .. }),
+                        "repair turn should use start mode"
+                    );
+                    assert!(
+                        request
+                            .mode
+                            .prompt()
+                            .contains("did not match the required JSON schema")
+                    );
+                    command.arg(
+                        "printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"Recovered \
+                         output\"}]}'",
+                    );
+                }
+
+                Ok(command)
+            }
+        });
+        let channel = CliAgentChannel {
+            backend: Arc::new(mock_backend),
+            kind: AgentKind::Claude,
+        };
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let req = make_turn_request(dir.path().to_path_buf());
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), req, events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(
+            result.assistant_message.to_display_text(),
+            "Recovered output"
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    /// Verifies plain stream chunks are returned unchanged.
+    fn test_normalize_stream_response_content_keeps_plain_text() {
+        // Arrange
+        let text = "Plain response line";
+
+        // Act
+        let normalized_text = normalize_stream_response_content(text);
+
+        // Assert
+        assert_eq!(normalized_text, Some(text.to_string()));
+    }
+
+    #[test]
+    /// Verifies structured JSON stream chunks are normalized to display text.
+    fn test_normalize_stream_response_content_unwraps_structured_json() {
+        // Arrange
+        let text = r#"{"messages":[{"type":"question","text":"Need clarification."}]}"#;
+
+        // Act
+        let normalized_text = normalize_stream_response_content(text);
+
+        // Assert
+        assert_eq!(normalized_text, Some("Need clarification.".to_string()));
+    }
+
+    #[test]
+    /// Verifies partial protocol JSON chunks are suppressed during streaming.
+    fn test_normalize_stream_response_content_suppresses_json_fragment() {
+        // Arrange
+        let text = r#"{"messages":[{"type":"answer","#;
+
+        // Act
+        let normalized_text = normalize_stream_response_content(text);
+
+        // Assert
+        assert_eq!(normalized_text, None);
     }
 }
