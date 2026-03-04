@@ -282,6 +282,9 @@ impl SessionTaskService {
 
     /// Executes one agent command for assisted edits without auto-commit.
     ///
+    /// Structured protocol responses are normalized to plain display text so
+    /// session output does not show raw protocol JSON payloads.
+    ///
     /// # Errors
     /// Returns an error when spawning fails, waiting fails, the process is
     /// interrupted, or the command exits with a non-zero status code.
@@ -353,9 +356,17 @@ impl SessionTaskService {
             &captured.stdout_text,
             &captured.stderr_text,
         );
+        let normalized_assist_output = Self::normalize_assist_final_output(&parsed.content);
 
         if !captured.streamed_response_seen {
-            Self::append_session_output(&output, &db, &app_event_tx, &id, &parsed.content).await;
+            Self::append_session_output(
+                &output,
+                &db,
+                &app_event_tx,
+                &id,
+                &normalized_assist_output,
+            )
+            .await;
         }
         let _ = db.update_session_stats(&id, &parsed.stats).await;
         let _ = db
@@ -479,7 +490,10 @@ impl SessionTaskService {
         true
     }
 
-    /// Captures raw output from a stream into an in-memory buffer.
+    /// Captures raw output from a stream into in-memory buffers.
+    ///
+    /// Parsed response-content chunks are normalized before they are appended
+    /// to user-visible session output so protocol wrappers are hidden.
     pub(super) async fn capture_raw_output<R: AsyncRead + Unpin>(
         source: R,
         buffer: &Arc<Mutex<String>>,
@@ -533,9 +547,32 @@ impl SessionTaskService {
             }
 
             if is_response_content {
+                let Some(normalized_stream_text) =
+                    Self::normalize_assist_stream_response_content(&stream_text)
+                else {
+                    Self::flush_session_output_if_needed(
+                        stream_context,
+                        &mut session_output_batch,
+                        should_flush,
+                        &mut last_flush,
+                    )
+                    .await;
+                    continue;
+                };
+                if normalized_stream_text.trim().is_empty() {
+                    Self::flush_session_output_if_needed(
+                        stream_context,
+                        &mut session_output_batch,
+                        should_flush,
+                        &mut last_flush,
+                    )
+                    .await;
+                    continue;
+                }
+
                 Self::handle_response_content_line(
                     stream_context,
-                    &stream_text,
+                    &normalized_stream_text,
                     &mut session_output_batch,
                     should_flush,
                     &mut last_flush,
@@ -772,6 +809,24 @@ impl SessionTaskService {
             progress_message,
             session_id: id.to_string(),
         });
+    }
+
+    /// Normalizes one streamed assist response chunk for transcript emission.
+    ///
+    /// Structured protocol payloads are unwrapped to display text while
+    /// partial protocol JSON fragments are suppressed.
+    fn normalize_assist_stream_response_content(stream_text: &str) -> Option<String> {
+        crate::infra::agent::protocol::normalize_stream_assistant_chunk(stream_text)
+    }
+
+    /// Normalizes final assist output before persistence and UI updates.
+    ///
+    /// Structured protocol payloads are unwrapped to display text while
+    /// plain text payloads pass through unchanged.
+    fn normalize_assist_final_output(output: &str) -> String {
+        let parsed_response = crate::infra::agent::protocol::parse_agent_response(output);
+
+        parsed_response.to_display_text()
     }
 
     fn status_requires_full_refresh(status: Status) -> bool {
@@ -1140,6 +1195,118 @@ mod tests {
         );
         assert!(output_text.contains("First message\n\nFinal answer"));
         assert_eq!(output_text.matches("Final answer").count(), 1);
+    }
+
+    #[tokio::test]
+    /// Verifies Codex structured protocol payloads are unwrapped to plain
+    /// assistant text in streamed assist output.
+    async fn test_run_agent_assist_task_streams_codex_structured_output_without_raw_json() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-id", "gpt-5.3-codex", "main", "Review", project_id)
+            .await
+            .expect("failed to insert session");
+
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+        let output = Arc::new(Mutex::new(String::new()));
+
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-lc",
+                r#"printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"messages\":[{\"type\":\"answer\",\"text\":\"Resolved the rebase conflict.\"}]}"}}' '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":7}}'"#,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Act
+        let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
+            agent: AgentKind::Codex,
+            app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
+            cmd: command,
+            db: database,
+            id: "session-id".to_string(),
+            output: Arc::clone(&output),
+            session_model: AgentModel::Gpt53Codex,
+        })
+        .await;
+        let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
+
+        // Assert
+        assert!(
+            result.is_ok(),
+            "assist task should succeed: {:?}",
+            result.err()
+        );
+        assert!(output_text.contains("Resolved the rebase conflict."));
+        assert!(!output_text.contains(r#"{"messages""#));
+    }
+
+    #[tokio::test]
+    /// Verifies non-stream assist fallback output unwraps structured protocol
+    /// payloads before persistence.
+    async fn test_run_agent_assist_task_unwraps_structured_output_in_non_stream_fallback() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session(
+                "session-id",
+                "claude-sonnet-4-20250514",
+                "main",
+                "Review",
+                project_id,
+            )
+            .await
+            .expect("failed to insert session");
+
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+        let output = Arc::new(Mutex::new(String::new()));
+
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-lc",
+                r#"printf '%s\n' '{"type":"result","subtype":"success","result":"{\"messages\":[{\"type\":\"answer\",\"text\":\"Applied conflict resolution.\"}]}","usage":{"input_tokens":11,"output_tokens":7}}'"#,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Act
+        let result = SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
+            agent: AgentKind::Claude,
+            app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
+            cmd: command,
+            db: database,
+            id: "session-id".to_string(),
+            output: Arc::clone(&output),
+            session_model: AgentModel::ClaudeOpus46,
+        })
+        .await;
+        let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
+
+        // Assert
+        assert!(
+            result.is_ok(),
+            "assist task should succeed: {:?}",
+            result.err()
+        );
+        assert!(output_text.contains("Applied conflict resolution."));
+        assert!(!output_text.contains(r#"{"messages""#));
     }
 
     #[tokio::test]
