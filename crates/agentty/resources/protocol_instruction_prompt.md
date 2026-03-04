@@ -15,4 +15,6 @@ Structured response protocol:
 
 - Do not place user-directed clarification questions inside `answer` messages.
 
+- During an Agentty session, treat user directives (including requests to stop doing something) as applying to all current session-branch changes, including already committed changes. Keep those changes continuously discussable and revise them to reflect the latest user request.
+
 {{ prompt }}
