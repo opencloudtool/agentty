@@ -203,7 +203,11 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
     }
 
     if can_edit_session {
-        actions.push(HelpAction::new("add to merge queue", "m", "Add to merge queue"));
+        actions.push(HelpAction::new(
+            "add to merge queue",
+            "m",
+            "Add to merge queue",
+        ));
         actions.push(HelpAction::new("rebase", "r", "Rebase"));
         actions.push(HelpAction::new("mode", "S-Tab", "Toggle permission mode"));
     }
@@ -248,7 +252,11 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
 
     if can_edit_session {
         actions.push(HelpAction::new("reply", "Enter", "Reply"));
-        actions.push(HelpAction::new("add to merge queue", "m", "Add to merge queue"));
+        actions.push(HelpAction::new(
+            "add to merge queue",
+            "m",
+            "Add to merge queue",
+        ));
         actions.push(HelpAction::new("rebase", "r", "Rebase"));
     }
 

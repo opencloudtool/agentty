@@ -19,7 +19,7 @@ Agentty organizes its interface into four tabs, accessible with `Tab`:
 
 | Tab | Purpose |
 |-----|---------|
-| **Sessions** | List, create, and manage agent sessions. |
+| **Sessions** | List, create, and manage agent sessions. When a project is active, this tab appears as `Sessions (<project-name>)`. |
 | **Projects** | Select between projects (git repositories). |
 | **Stats** | View usage statistics. |
 | **Settings** | Configure Codex reasoning level, default models, and other preferences. |

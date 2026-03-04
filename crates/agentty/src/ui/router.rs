@@ -345,7 +345,7 @@ pub(crate) fn render_list_background(
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(content_area);
 
-    components::tab::Tabs::new(current_tab).render(f, chunks[0]);
+    components::tab::Tabs::new(current_tab, active_project_id, projects).render(f, chunks[0]);
 
     match current_tab {
         Tab::Projects => {
@@ -360,8 +360,7 @@ pub(crate) fn render_list_background(
             pages::session_list::SessionListPage::new(sessions, table_state).render(f, chunks[1]);
         }
         Tab::Stats => {
-            pages::stats::StatsPage::new(sessions, stats_activity)
-                .render(f, chunks[1]);
+            pages::stats::StatsPage::new(sessions, stats_activity).render(f, chunks[1]);
         }
         Tab::Settings => {
             pages::settings::SettingsPage::new(settings).render(f, chunks[1]);

@@ -132,7 +132,11 @@ impl SessionManager {
     /// The tuple contains live sessions, activity heatmap data, and list table
     /// state.
     pub(crate) fn render_parts(&mut self) -> SessionRenderParts<'_> {
-        (&self.state.sessions, &self.stats_activity, &mut self.state.table_state)
+        (
+            &self.state.sessions,
+            &self.stats_activity,
+            &mut self.state.table_state,
+        )
     }
 
     /// Applies reducer updates after session agent/model changes are

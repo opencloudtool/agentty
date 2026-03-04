@@ -150,7 +150,7 @@ To ensure code quality, you must pass both automated and manual gates.
 
 ### Automated Checks
 
-To ensure code quality and consistency, you MUST run the validation and formatting 
+To ensure code quality and consistency, you MUST run the validation and formatting
 tools as part of your "Execution -> Validate" phase.
 
 1. **Autofix:** `pre-commit run rustfmt-fix --all-files --hook-stage manual && pre-commit run clippy-fix --all-files --hook-stage manual`

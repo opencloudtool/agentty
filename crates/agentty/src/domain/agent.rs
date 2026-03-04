@@ -32,13 +32,14 @@ pub enum AgentModel {
 }
 
 /// Supported reasoning-effort levels for task execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReasoningLevel {
     /// Low reasoning effort for faster responses.
     Low,
     /// Medium reasoning effort.
     Medium,
     /// High reasoning effort for deeper reasoning.
+    #[default]
     High,
     /// Extra-high reasoning effort for deeper analysis.
     XHigh,
@@ -92,12 +93,6 @@ impl ReasoningLevel {
             Self::High => "high",
             Self::XHigh => "xhigh",
         }
-    }
-}
-
-impl Default for ReasoningLevel {
-    fn default() -> Self {
-        Self::High
     }
 }
 

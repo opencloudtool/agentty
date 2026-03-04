@@ -1133,12 +1133,10 @@ mod tests {
         );
 
         SessionManager::new(
-            Vec::new(),
             crate::app::session::SessionDefaults {
                 model: AgentModel::Gpt53Codex,
             },
             Arc::new(crate::infra::git::MockGitClient::new()),
-            0,
             state,
             Vec::new(),
         )

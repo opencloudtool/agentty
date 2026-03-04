@@ -209,12 +209,10 @@ mod tests {
             Arc::new(crate::infra::git::MockGitClient::new());
 
         SessionManager::new(
-            Vec::new(),
             crate::app::session::SessionDefaults {
                 model: AgentKind::Gemini.default_model(),
             },
             git_client,
-            0,
             SessionState::new(
                 HashMap::new(),
                 Vec::new(),

@@ -54,7 +54,7 @@ const AUTO_COMPACT_INPUT_TOKEN_THRESHOLD_128K_CONTEXT: u64 = 120_000;
 ///
 /// Codex turns can legitimately run for long periods while planning and
 /// executing tools, so the value is intentionally measured in hours.
-const CODEX_TURN_TIMEOUT: Duration = Duration::from_secs(14_400);
+const CODEX_TURN_TIMEOUT: Duration = Duration::from_hours(4);
 
 /// Production [`AppServerClient`] backed by `codex app-server` process
 /// instances.
@@ -1447,7 +1447,7 @@ mod tests {
     #[test]
     fn compaction_timeout_error_includes_timeout_seconds() {
         // Arrange
-        let timeout = Duration::from_secs(4_200);
+        let timeout = Duration::from_mins(70);
 
         // Act
         let error_message = RealCodexAppServerClient::compaction_timeout_error(timeout);
