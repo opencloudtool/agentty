@@ -41,7 +41,9 @@ impl AgentBackend for ClaudeBackend {
         }
 
         command.arg("-p").arg(prompt);
-        command.arg("--allowedTools").arg("Edit,Bash");
+        command
+            .arg("--allowedTools")
+            .arg("Edit,Bash,EnterPlanMode,ExitPlanMode");
         command
             .arg("--verbose")
             .arg("--output-format")
@@ -86,7 +88,7 @@ mod tests {
 
         // Assert
         assert!(debug_command.contains("--allowedTools"));
-        assert!(debug_command.contains("Edit,Bash"));
+        assert!(debug_command.contains("Edit,Bash,EnterPlanMode,ExitPlanMode"));
         assert!(debug_command.contains("--include-partial-messages"));
         assert!(!debug_command.contains("--permission-mode"));
     }
