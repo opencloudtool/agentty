@@ -160,6 +160,8 @@ a failing hook:
 1. **Validate:** `pre-commit run --all-files`
 1. **Test:** `cargo test -q -- --test-threads=1`
 
+When tests are required, always run the full suite with `cargo test -q -- --test-threads=1`. Do not run focused or narrowed test commands because the suite is fast enough to run end-to-end.
+
 The manual-stage autofix hooks apply formatting and fixable clippy lints. The
 validation command then runs non-mutating checks (including formatting and clippy
 lint gates), dependency checks, compilation, and directory index checks with
