@@ -43,9 +43,10 @@ pub fn calculate_input_height(width: u16, input: &str) -> u16 {
 ///
 /// The first line starts with the visible prompt prefix (` › `). Continuation
 /// lines (from wrapping or explicit newlines) keep the same horizontal padding
-/// as spaces, so text never appears under the prompt icon. Tokens that start
-/// with `@` at a word boundary are highlighted to make file lookup references
-/// easy to spot while typing.
+/// as spaces, so text never appears under the prompt icon. Wrapping prefers
+/// whole words when possible; only words that exceed the full content width are
+/// split across lines. Tokens that start with `@` at a word boundary are
+/// highlighted to make file lookup references easy to spot while typing.
 pub fn compute_input_layout(
     input: &str,
     width: u16,
@@ -206,7 +207,8 @@ fn compute_input_layout_data(input: &str, width: u16) -> InputLayout {
     let mut in_mention = false;
     let mut last_ch = None;
 
-    for ch in input.chars() {
+    let input_chars = input.chars().collect::<Vec<_>>();
+    for (character_index, ch) in input_chars.iter().copied().enumerate() {
         if ch == '\n' {
             in_mention = false;
             cursor_positions.push((current_width, line_index));
@@ -217,6 +219,25 @@ fn compute_input_layout_data(input: &str, width: u16) -> InputLayout {
             last_ch = Some(ch);
 
             continue;
+        }
+
+        let is_word_start = !ch.is_whitespace()
+            && (character_index == 0 || input_chars[character_index - 1].is_whitespace());
+        if is_word_start {
+            let word_width = input_chars
+                .iter()
+                .skip(character_index)
+                .take_while(|next_ch| !next_ch.is_whitespace())
+                .map(|next_ch| Span::raw(next_ch.to_string()).width())
+                .sum::<usize>();
+            let line_has_content = current_width > prefix_width;
+
+            if line_has_content && current_width + word_width > inner_width {
+                display_lines.push(Line::from(std::mem::take(&mut current_line_spans)));
+                current_line_spans = vec![Span::raw(continuation_padding.clone())];
+                current_width = prefix_width;
+                line_index += 1;
+            }
         }
 
         if ch == '@' && last_ch.is_none_or(char::is_whitespace) {
@@ -516,6 +537,24 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_input_layout_wraps_whole_words_when_they_fit_on_next_line() {
+        // Arrange
+        let input = "abc def";
+        let width = 11;
+        let cursor = input.chars().count();
+
+        // Act
+        let (lines, cursor_x, cursor_y) = compute_input_layout(input, width, cursor);
+
+        // Assert
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].to_string(), " › abc ");
+        assert_eq!(lines[1].to_string(), "   def");
+        assert_eq!(cursor_x, 6);
+        assert_eq!(cursor_y, 1);
+    }
+
+    #[test]
     fn test_compute_input_layout_multiline_exact_fit() {
         // Arrange
         let input = "1234567".to_owned() + "1234567890";
@@ -570,6 +609,20 @@ mod tests {
 
         // Act
         let (_, cursor_x, cursor_y) = compute_input_layout(input, width, 7);
+
+        // Assert
+        assert_eq!(cursor_x, 3);
+        assert_eq!(cursor_y, 1);
+    }
+
+    #[test]
+    fn test_compute_input_layout_cursor_moves_to_next_line_before_wrapped_word() {
+        // Arrange
+        let input = "abc def";
+        let width = 11;
+
+        // Act
+        let (_, cursor_x, cursor_y) = compute_input_layout(input, width, 4);
 
         // Assert
         assert_eq!(cursor_x, 3);

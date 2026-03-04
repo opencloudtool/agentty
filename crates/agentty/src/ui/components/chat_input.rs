@@ -134,8 +134,9 @@ impl<'a> ChatInput<'a> {
             .height
             .saturating_sub(2)
             .min(CHAT_INPUT_MAX_VISIBLE_LINES);
+        let total_line_count = Self::total_viewport_line_count(display_lines.len(), cursor_y);
         let (scroll_offset, cursor_row) =
-            calculate_input_viewport(display_lines.len(), cursor_y, viewport_height);
+            calculate_input_viewport(total_line_count, cursor_y, viewport_height);
         let widget = Paragraph::new(display_lines)
             .scroll((scroll_offset, 0))
             .block(block);
@@ -143,6 +144,15 @@ impl<'a> ChatInput<'a> {
         f.render_widget(Clear, area);
         f.render_widget(widget, area);
         f.set_cursor_position(input_cursor_position(area, cursor_x, cursor_row));
+    }
+
+    /// Computes the total line count used by input viewport scrolling.
+    ///
+    /// The cursor can legally point to a trailing wrapped line that has no
+    /// visible characters yet (exact line-fit case), so viewport calculations
+    /// must account for whichever line index is greater.
+    fn total_viewport_line_count(display_line_count: usize, cursor_y: u16) -> usize {
+        display_line_count.max(usize::from(cursor_y).saturating_add(1))
     }
 }
 
@@ -199,5 +209,18 @@ mod tests {
                 .title,
             "Menu"
         );
+    }
+
+    #[test]
+    fn test_total_viewport_line_count_uses_cursor_row_when_cursor_is_below_last_display_line() {
+        // Arrange
+        let display_line_count = 1;
+        let cursor_y = 1;
+
+        // Act
+        let total_line_count = ChatInput::total_viewport_line_count(display_line_count, cursor_y);
+
+        // Assert
+        assert_eq!(total_line_count, 2);
     }
 }
