@@ -12,7 +12,7 @@ use askama::Template;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use tokio::sync::mpsc;
 
-use super::COMMIT_MESSAGE;
+use super::{COMMIT_MESSAGE, Clock};
 use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, format_detail_lines,
     run_agent_assist,
@@ -50,6 +50,8 @@ pub(crate) struct RunAgentAssistTaskInput {
     pub(crate) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     /// Shared process identifier slot used for cancellation.
     pub(crate) child_pid: Arc<Mutex<Option<u32>>>,
+    /// Injected clock used for deterministic output-batch timing.
+    pub(crate) clock: Arc<dyn Clock>,
     /// Prepared assist command to execute.
     pub(crate) cmd: Command,
     /// Database handle used for output/status persistence.
@@ -250,6 +252,7 @@ impl SessionTaskService {
         let assist_context = AssistContext {
             app_event_tx: context.app_event_tx.clone(),
             child_pid: Arc::clone(&context.child_pid),
+            clock: Arc::clone(&context.clock),
             db: context.db.clone(),
             folder: context.folder.clone(),
             git_client: Arc::clone(&context.git_client),
@@ -283,7 +286,8 @@ impl SessionTaskService {
     /// Executes one agent command for assisted edits without auto-commit.
     ///
     /// Structured protocol responses are normalized to plain display text so
-    /// session output does not show raw protocol JSON payloads.
+    /// session output does not show raw protocol JSON payloads. Stream flush
+    /// timing is sourced from an injected [`Clock`] for deterministic tests.
     ///
     /// # Errors
     /// Returns an error when spawning fails, waiting fails, the process is
@@ -295,6 +299,7 @@ impl SessionTaskService {
             agent,
             app_event_tx,
             child_pid,
+            clock,
             cmd,
             db,
             id,
@@ -323,7 +328,8 @@ impl SessionTaskService {
         }
 
         let captured =
-            Self::capture_child_output(&mut child, agent, &app_event_tx, &db, &id, &output).await;
+            Self::capture_child_output(&mut child, agent, &app_event_tx, &db, &id, &output, clock)
+                .await;
 
         let exit_status = child
             .wait()
@@ -383,6 +389,7 @@ impl SessionTaskService {
         db: &Database,
         id: &str,
         output: &Arc<Mutex<String>>,
+        clock: Arc<dyn Clock>,
     ) -> CapturedOutput {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -406,15 +413,17 @@ impl SessionTaskService {
                 output: Arc::clone(output),
                 streamed_response_seen: Arc::clone(&streamed_response_seen),
             };
+            let clock = Arc::clone(&clock);
             handles.push(tokio::spawn(async move {
-                Self::capture_raw_output(stdout, &buffer, Some(stream_context)).await;
+                Self::capture_raw_output(stdout, &buffer, Some(stream_context), clock).await;
             }));
         }
 
         if let Some(stderr) = stderr {
             let buffer = Arc::clone(&raw_stderr);
+            let clock = Arc::clone(&clock);
             handles.push(tokio::spawn(async move {
-                Self::capture_raw_output(stderr, &buffer, None).await;
+                Self::capture_raw_output(stderr, &buffer, None, clock).await;
             }));
         }
 
@@ -493,16 +502,18 @@ impl SessionTaskService {
     /// Captures raw output from a stream into in-memory buffers.
     ///
     /// Parsed response-content chunks are normalized before they are appended
-    /// to user-visible session output so protocol wrappers are hidden.
+    /// to user-visible session output so protocol wrappers are hidden. Flush
+    /// timing uses an injected [`Clock`] for deterministic tests.
     pub(super) async fn capture_raw_output<R: AsyncRead + Unpin>(
         source: R,
         buffer: &Arc<Mutex<String>>,
         stream_context: Option<StreamOutputContext>,
+        clock: Arc<dyn Clock>,
     ) {
         let mut reader = tokio::io::BufReader::new(source).lines();
         let mut raw_buffer_batch = String::new();
         let mut session_output_batch = String::new();
-        let mut last_flush = std::time::Instant::now();
+        let mut last_flush = clock.now_instant();
 
         while let Ok(Some(line)) = reader.next_line().await {
             raw_buffer_batch.push_str(&line);
@@ -516,78 +527,18 @@ impl SessionTaskService {
 
             let Some(stream_context) = &stream_context else {
                 if should_flush {
-                    last_flush = std::time::Instant::now();
+                    last_flush = clock.now_instant();
                 }
                 continue;
             };
 
-            let Some((stream_text, is_response_content)) =
-                crate::infra::agent::parse_stream_output_line(stream_context.agent, &line)
-            else {
-                // Flush session output batch if any, even if this line was skipped
-                Self::flush_session_output_if_needed(
-                    stream_context,
-                    &mut session_output_batch,
-                    should_flush,
-                    &mut last_flush,
-                )
-                .await;
-                continue;
-            };
-
-            if stream_text.trim().is_empty() {
-                Self::flush_session_output_if_needed(
-                    stream_context,
-                    &mut session_output_batch,
-                    should_flush,
-                    &mut last_flush,
-                )
-                .await;
-                continue;
-            }
-
-            if is_response_content {
-                let Some(normalized_stream_text) =
-                    Self::normalize_assist_stream_response_content(&stream_text)
-                else {
-                    Self::flush_session_output_if_needed(
-                        stream_context,
-                        &mut session_output_batch,
-                        should_flush,
-                        &mut last_flush,
-                    )
-                    .await;
-                    continue;
-                };
-                if normalized_stream_text.trim().is_empty() {
-                    Self::flush_session_output_if_needed(
-                        stream_context,
-                        &mut session_output_batch,
-                        should_flush,
-                        &mut last_flush,
-                    )
-                    .await;
-                    continue;
-                }
-
-                Self::handle_response_content_line(
-                    stream_context,
-                    &normalized_stream_text,
-                    &mut session_output_batch,
-                    should_flush,
-                    &mut last_flush,
-                )
-                .await;
-
-                continue;
-            }
-
-            Self::handle_progress_content_line(
+            Self::process_stream_output_line(
                 stream_context,
-                stream_text,
+                &line,
                 &mut session_output_batch,
                 should_flush,
                 &mut last_flush,
+                clock.as_ref(),
             )
             .await;
         }
@@ -651,13 +602,121 @@ impl SessionTaskService {
         session_output_batch: &mut String,
         should_flush: bool,
         last_flush: &mut std::time::Instant,
+        clock: &dyn Clock,
     ) {
         if !should_flush {
             return;
         }
 
         Self::flush_session_output_batch(stream_context, session_output_batch).await;
-        *last_flush = std::time::Instant::now();
+        *last_flush = clock.now_instant();
+    }
+
+    /// Flushes any pending stream output when one parsed line is skipped.
+    async fn flush_stream_output_for_skipped_line(
+        stream_context: &StreamOutputContext,
+        session_output_batch: &mut String,
+        should_flush: bool,
+        last_flush: &mut std::time::Instant,
+        clock: &dyn Clock,
+    ) {
+        Self::flush_session_output_if_needed(
+            stream_context,
+            session_output_batch,
+            should_flush,
+            last_flush,
+            clock,
+        )
+        .await;
+    }
+
+    /// Processes one parsed stream line and routes response/progress updates.
+    async fn process_stream_output_line(
+        stream_context: &StreamOutputContext,
+        line: &str,
+        session_output_batch: &mut String,
+        should_flush: bool,
+        last_flush: &mut std::time::Instant,
+        clock: &dyn Clock,
+    ) {
+        let Some((stream_text, is_response_content)) =
+            crate::infra::agent::parse_stream_output_line(stream_context.agent, line)
+        else {
+            Self::flush_stream_output_for_skipped_line(
+                stream_context,
+                session_output_batch,
+                should_flush,
+                last_flush,
+                clock,
+            )
+            .await;
+
+            return;
+        };
+
+        if stream_text.trim().is_empty() {
+            Self::flush_stream_output_for_skipped_line(
+                stream_context,
+                session_output_batch,
+                should_flush,
+                last_flush,
+                clock,
+            )
+            .await;
+
+            return;
+        }
+
+        if is_response_content {
+            let Some(normalized_stream_text) =
+                Self::normalize_assist_stream_response_content(&stream_text)
+            else {
+                Self::flush_stream_output_for_skipped_line(
+                    stream_context,
+                    session_output_batch,
+                    should_flush,
+                    last_flush,
+                    clock,
+                )
+                .await;
+
+                return;
+            };
+            if normalized_stream_text.trim().is_empty() {
+                Self::flush_stream_output_for_skipped_line(
+                    stream_context,
+                    session_output_batch,
+                    should_flush,
+                    last_flush,
+                    clock,
+                )
+                .await;
+
+                return;
+            }
+
+            Self::handle_response_content_line(
+                stream_context,
+                &normalized_stream_text,
+                session_output_batch,
+                should_flush,
+                last_flush,
+                clock,
+            )
+            .await;
+
+            return;
+        }
+
+        Self::handle_progress_content_line(
+            stream_context,
+            stream_text,
+            session_output_batch,
+            should_flush,
+            last_flush,
+            clock,
+        )
+        .await;
     }
 
     /// Handles parsed response content and reconciles progress state
@@ -672,6 +731,7 @@ impl SessionTaskService {
         session_output_batch: &mut String,
         should_flush: bool,
         last_flush: &mut std::time::Instant,
+        clock: &dyn Clock,
     ) {
         let should_prefix_blank_line = !stream_context
             .streamed_response_seen
@@ -690,7 +750,7 @@ impl SessionTaskService {
 
         if should_flush {
             Self::flush_session_output_batch(stream_context, session_output_batch).await;
-            *last_flush = std::time::Instant::now();
+            *last_flush = clock.now_instant();
         }
 
         stream_context
@@ -715,6 +775,7 @@ impl SessionTaskService {
         session_output_batch: &mut String,
         should_flush: bool,
         last_flush: &mut std::time::Instant,
+        clock: &dyn Clock,
     ) {
         stream_context
             .non_response_stream_output_seen
@@ -730,6 +791,7 @@ impl SessionTaskService {
                     session_output_batch,
                     should_flush,
                     last_flush,
+                    clock,
                 )
                 .await;
 
@@ -748,7 +810,7 @@ impl SessionTaskService {
 
         // Reset flush timer as we just did a potential write (progress update events
         // are immediate)
-        *last_flush = std::time::Instant::now();
+        *last_flush = clock.now_instant();
     }
 
     /// Persists and clears the session output batch when it contains data.
@@ -848,6 +910,11 @@ mod tests {
     use crate::db::Database;
     use crate::infra::git::MockGitClient;
 
+    /// Returns the production clock implementation as a trait object.
+    fn test_clock() -> Arc<dyn Clock> {
+        Arc::new(crate::app::session::RealClock)
+    }
+
     #[test]
     /// Verifies lifecycle statuses that require full list refreshes are
     /// enumerated correctly.
@@ -916,6 +983,7 @@ mod tests {
         let context = AssistContext {
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             db: Database::open_in_memory()
                 .await
                 .expect("failed to open in-memory db"),
@@ -953,6 +1021,7 @@ mod tests {
         let context = AssistContext {
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             db: Database::open_in_memory()
                 .await
                 .expect("failed to open in-memory db"),
@@ -989,6 +1058,7 @@ mod tests {
         let context = AssistContext {
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             db: Database::open_in_memory()
                 .await
                 .expect("failed to open in-memory db"),
@@ -1047,6 +1117,7 @@ mod tests {
             agent: AgentKind::Claude,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database.clone(),
             id: "session-id".to_string(),
@@ -1111,6 +1182,7 @@ mod tests {
             agent: AgentKind::Codex,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database.clone(),
             id: "session-id".to_string(),
@@ -1178,6 +1250,7 @@ mod tests {
             agent: AgentKind::Codex,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database,
             id: "session-id".to_string(),
@@ -1231,6 +1304,7 @@ mod tests {
             agent: AgentKind::Codex,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database,
             id: "session-id".to_string(),
@@ -1290,6 +1364,7 @@ mod tests {
             agent: AgentKind::Claude,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database,
             id: "session-id".to_string(),
@@ -1351,6 +1426,7 @@ mod tests {
             agent: AgentKind::Claude,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database.clone(),
             id: "session-id".to_string(),
@@ -1423,6 +1499,7 @@ mod tests {
             agent: AgentKind::Gemini,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database.clone(),
             id: "session-id".to_string(),
@@ -1492,6 +1569,7 @@ mod tests {
             agent: AgentKind::Codex,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database,
             id: "session-id".to_string(),
@@ -1583,6 +1661,7 @@ mod tests {
             agent: AgentKind::Claude,
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             cmd: command,
             db: database,
             id: "session-id".to_string(),
@@ -1640,7 +1719,13 @@ mod tests {
         let cursor = Cursor::new(response_line.as_bytes().to_vec());
 
         // Act
-        SessionTaskService::capture_raw_output(cursor, &raw_buffer, Some(stream_context)).await;
+        SessionTaskService::capture_raw_output(
+            cursor,
+            &raw_buffer,
+            Some(stream_context),
+            test_clock(),
+        )
+        .await;
         let observed_events: Vec<AppEvent> =
             std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect();
 
@@ -1707,7 +1792,13 @@ mod tests {
         let cursor = Cursor::new(progress_line.as_bytes().to_vec());
 
         // Act
-        SessionTaskService::capture_raw_output(cursor, &raw_buffer, Some(stream_context)).await;
+        SessionTaskService::capture_raw_output(
+            cursor,
+            &raw_buffer,
+            Some(stream_context),
+            test_clock(),
+        )
+        .await;
         let observed_events: Vec<AppEvent> =
             std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect();
 

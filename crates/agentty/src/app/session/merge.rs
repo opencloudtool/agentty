@@ -19,7 +19,7 @@ use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, format_detail_lines,
     run_agent_assist,
 };
-use crate::app::session::SessionTaskService;
+use crate::app::session::{Clock, SessionTaskService};
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::Status;
@@ -66,6 +66,8 @@ struct MergeTaskInput {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
     base_branch: String,
     child_pid: Arc<Mutex<Option<u32>>>,
+    /// Injected clock used by downstream assist output batching.
+    clock: Arc<dyn Clock>,
     db: Database,
     folder: PathBuf,
     git_client: Arc<dyn GitClient>,
@@ -82,6 +84,8 @@ struct RebaseAssistInput {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
     base_branch: String,
     child_pid: Arc<Mutex<Option<u32>>>,
+    /// Injected clock used by downstream assist output batching.
+    clock: Arc<dyn Clock>,
     db: Database,
     folder: PathBuf,
     git_client: Arc<dyn GitClient>,
@@ -94,6 +98,8 @@ struct RebaseTaskInput {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
     base_branch: String,
     child_pid: Arc<Mutex<Option<u32>>>,
+    /// Injected clock used by downstream assist output batching.
+    clock: Arc<dyn Clock>,
     db: Database,
     folder: PathBuf,
     git_client: Arc<dyn GitClient>,
@@ -497,6 +503,7 @@ impl SessionManager {
             app_event_tx,
             base_branch,
             child_pid,
+            clock: Arc::clone(&self.clock),
             db,
             folder,
             git_client,
@@ -536,6 +543,7 @@ impl SessionManager {
             app_event_tx,
             base_branch,
             child_pid,
+            clock,
             db,
             folder,
             git_client,
@@ -554,6 +562,7 @@ impl SessionManager {
             app_event_tx: app_event_tx.clone(),
             base_branch: base_branch.clone(),
             child_pid: Arc::clone(&child_pid),
+            clock: Arc::clone(&clock),
             db: db.clone(),
             folder: folder.clone(),
             git_client: Arc::clone(&git_client),
@@ -750,6 +759,7 @@ impl SessionManager {
             app_event_tx,
             base_branch,
             child_pid,
+            clock: Arc::clone(&self.clock),
             db,
             folder: session.folder.clone(),
             git_client,
@@ -1007,6 +1017,7 @@ impl SessionManager {
             app_event_tx,
             base_branch,
             child_pid,
+            clock,
             db,
             folder,
             git_client,
@@ -1021,6 +1032,7 @@ impl SessionManager {
                 app_event_tx: app_event_tx.clone(),
                 base_branch: base_branch.clone(),
                 child_pid: Arc::clone(&child_pid),
+                clock: Arc::clone(&clock),
                 db: db.clone(),
                 folder: folder.clone(),
                 git_client: Arc::clone(&git_client),
@@ -1536,6 +1548,7 @@ impl SessionManager {
         AssistContext {
             app_event_tx: input.app_event_tx.clone(),
             child_pid: Arc::clone(&input.child_pid),
+            clock: Arc::clone(&input.clock),
             db: input.db.clone(),
             folder: input.folder.clone(),
             git_client: Arc::clone(&input.git_client),
@@ -1710,6 +1723,11 @@ mod tests {
 
     use super::*;
 
+    /// Returns the production clock implementation as a trait object.
+    fn test_clock() -> Arc<dyn Clock> {
+        Arc::new(crate::app::session::RealClock)
+    }
+
     /// Builds rebase assistance input with the provided git client for unit
     /// tests.
     async fn build_rebase_assist_input_for_test(
@@ -1722,6 +1740,7 @@ mod tests {
             app_event_tx,
             base_branch: "main".to_string(),
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             db,
             folder: PathBuf::from("/tmp/rebase-start-test"),
             git_client,
@@ -1810,6 +1829,7 @@ mod tests {
             app_event_tx: tx,
             base_branch: "main".to_string(),
             child_pid: Arc::new(Mutex::new(None)),
+            clock: test_clock(),
             db,
             folder: PathBuf::from("/tmp/test"),
             git_client: Arc::new(git::RealGitClient),

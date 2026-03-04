@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
-use crate::app::session::{RunAgentAssistTaskInput, SessionTaskService};
+use crate::app::session::{Clock, RunAgentAssistTaskInput, SessionTaskService};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::infra::db::Database;
 use crate::infra::git::GitClient;
@@ -26,6 +26,8 @@ pub(super) struct AssistContext {
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     /// Shared process identifier slot used for cancellation.
     pub(super) child_pid: Arc<Mutex<Option<u32>>>,
+    /// Injected clock used for deterministic stream timing behavior.
+    pub(super) clock: Arc<dyn Clock>,
     /// Database handle used for session persistence updates.
     pub(super) db: Database,
     /// Session worktree folder where git/agent commands run.
@@ -136,6 +138,7 @@ pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> R
         agent: context.session_model.kind(),
         app_event_tx: context.app_event_tx.clone(),
         child_pid: Arc::clone(&context.child_pid),
+        clock: Arc::clone(&context.clock),
         cmd: command,
         db: context.db.clone(),
         id: context.id.clone(),
