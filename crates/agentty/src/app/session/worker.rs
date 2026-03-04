@@ -371,9 +371,10 @@ impl SessionManager {
 /// runs auto-commit. Returns `Ok(())` on success or `Err(description)` on
 /// turn failure after appending the error to session output.
 ///
-/// The final parsed response is always appended regardless of whether content
-/// was streamed during the turn. Streamed content (including any partial
-/// protocol JSON fragments) remains visible in the session output.
+/// The final parsed response appends only non-empty protocol `answer` message
+/// text regardless of whether content was streamed during the turn. Streamed
+/// content (including any partial protocol JSON fragments) remains visible in
+/// the session output.
 async fn apply_turn_result(
     context: &SessionWorkerContext,
     session_model: AgentModel,
@@ -381,7 +382,7 @@ async fn apply_turn_result(
 ) -> Result<(), String> {
     match turn_result {
         Ok(result) => {
-            let assistant_message_text = result.assistant_message.to_display_text();
+            let assistant_message_text = result.assistant_message.to_answer_display_text();
             if !assistant_message_text.trim().is_empty() {
                 let message = format!("{}\n\n", assistant_message_text.trim_end());
                 SessionTaskService::append_session_output(
@@ -392,6 +393,15 @@ async fn apply_turn_result(
                     &message,
                 )
                 .await;
+            }
+
+            let questions = extract_agent_questions(&result.assistant_message);
+
+            if !questions.is_empty() {
+                let _ = context.app_event_tx.send(AppEvent::AgentQuestionsReceived {
+                    questions,
+                    session_id: context.session_id.clone(),
+                });
             }
 
             let stats = SessionStats {
@@ -442,6 +452,18 @@ async fn apply_turn_result(
             Err(error.0)
         }
     }
+}
+
+/// Extracts model clarification questions from one structured response.
+fn extract_agent_questions(agent_response: &crate::infra::agent::AgentResponse) -> Vec<String> {
+    agent_response
+        .messages
+        .iter()
+        .filter(|message| {
+            message.kind == crate::infra::agent::protocol::AgentResponseMessageKind::Question
+        })
+        .map(|message| message.text.clone())
+        .collect()
 }
 
 /// Consumes [`TurnEvent`]s from `event_rx` and applies their side effects.
@@ -525,6 +547,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::infra::agent::AgentResponse;
+    use crate::infra::agent::protocol::AgentResponseMessage;
     use crate::infra::channel::MockAgentChannel;
     use crate::infra::db::Database;
     use crate::infra::git::MockGitClient;
@@ -556,6 +580,52 @@ mod tests {
         // Assert
         assert_eq!(start_kind, "start_prompt");
         assert_eq!(resume_kind, "reply");
+    }
+
+    #[test]
+    fn test_extract_agent_questions_returns_only_question_messages() {
+        // Arrange
+        let agent_response = AgentResponse {
+            messages: vec![
+                AgentResponseMessage::answer("Implemented the feature."),
+                AgentResponseMessage::question("Need a target branch?"),
+                AgentResponseMessage::plan("Run tests and format."),
+                AgentResponseMessage::question("Need migration notes?"),
+            ],
+        };
+
+        // Act
+        let questions = extract_agent_questions(&agent_response);
+
+        // Assert
+        assert_eq!(
+            questions,
+            vec![
+                "Need a target branch?".to_string(),
+                "Need migration notes?".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_agent_questions_preserves_ordered_list_as_single_question_text() {
+        // Arrange
+        let numbered_questions =
+            "1) Is this repository intentionally incomplete (docs-only), or should it include the \
+             referenced dotfiles tree (for\nexample `.config/` and `lua/`)?\n2) Should I propose \
+             and apply a docs-only cleanup now (aligning setup steps to the current files), or \
+             keep docs\nas-is and treat missing files as a known gap?\n3) Do you want keyd \
+             instructions rewritten to the safer `/etc/keyd/default.conf` path with existence \
+             checks and\nrollback notes?";
+        let agent_response = AgentResponse {
+            messages: vec![AgentResponseMessage::question(numbered_questions)],
+        };
+
+        // Act
+        let questions = extract_agent_questions(&agent_response);
+
+        // Assert
+        assert_eq!(questions, vec![numbered_questions.to_string()]);
     }
 
     #[tokio::test]

@@ -42,6 +42,7 @@ pub(crate) async fn handle_key_event(
             mode::session_view::handle(app, terminal, key, event_reader_pause).await
         }
         AppMode::Prompt { .. } => mode::prompt::handle(app, terminal, key).await,
+        AppMode::Question { .. } => Ok(mode::question::handle(app, key).await),
         AppMode::Diff { .. } => Ok(mode::diff::handle(app, key)),
         AppMode::Help { .. } => Ok(mode::help::handle(app, key)),
     }

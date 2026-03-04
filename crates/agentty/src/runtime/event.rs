@@ -160,7 +160,7 @@ pub(crate) async fn process_events(
 
 /// Routes a single terminal event to the active mode handler.
 ///
-/// `Event::Paste` is handled only in prompt mode so multiline clipboard
+/// `Event::Paste` is handled in text-input modes so multiline clipboard
 /// content is inserted as text instead of interpreted as navigation keys.
 async fn process_event(
     app: &mut App,
@@ -176,6 +176,10 @@ async fn process_event(
             Event::Paste(pasted_text) => {
                 if matches!(&app.mode, AppMode::Prompt { .. }) {
                     mode::prompt::handle_paste(app, &pasted_text);
+                }
+
+                if matches!(&app.mode, AppMode::Question { .. }) {
+                    mode::question::handle_paste(app, &pasted_text);
                 }
             }
             _ => {}

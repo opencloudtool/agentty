@@ -121,6 +121,12 @@ pub(crate) enum AppEvent {
     FocusedReviewPreparationFailed { error: String, session_id: String },
     /// Indicates that a session handle snapshot changed in-memory.
     SessionUpdated { session_id: String },
+    /// Indicates that the agent response contains questions that need user
+    /// answers.
+    AgentQuestionsReceived {
+        questions: Vec<String>,
+        session_id: String,
+    },
 }
 
 #[derive(Default)]
@@ -136,6 +142,7 @@ struct AppEventBatch {
     session_ids: HashSet<String>,
     should_force_reload: bool,
     sync_main_result: Option<Result<SyncMainOutcome, SyncSessionStartError>>,
+    agent_questions_received: HashMap<String, Vec<String>>,
 }
 
 /// Immutable context displayed in sync-main popup content.
@@ -895,6 +902,10 @@ impl App {
             }
         }
 
+        for (session_id, questions) in event_batch.agent_questions_received {
+            self.apply_agent_questions_received(&session_id, questions);
+        }
+
         for session_id in &event_batch.session_ids {
             self.sessions.sync_session_from_handle(session_id);
         }
@@ -908,6 +919,47 @@ impl App {
         self.handle_merge_queue_progress(&event_batch.session_ids, &previous_session_states)
             .await;
         self.retain_valid_session_progress_messages();
+    }
+
+    /// Transitions the active mode to `Question` when an agent turn returns
+    /// clarification requests for the focused session.
+    fn apply_agent_questions_received(&mut self, session_id: &str, questions: Vec<String>) {
+        if questions.is_empty() {
+            return;
+        }
+
+        let is_viewing_session = match &self.mode {
+            AppMode::View {
+                session_id: view_id,
+                ..
+            }
+            | AppMode::Prompt {
+                session_id: view_id,
+                ..
+            }
+            | AppMode::Diff {
+                session_id: view_id,
+                ..
+            }
+            | AppMode::Question {
+                session_id: view_id,
+                ..
+            } => view_id == session_id,
+            AppMode::List
+            | AppMode::Confirmation { .. }
+            | AppMode::SyncBlockedPopup { .. }
+            | AppMode::Help { .. } => false,
+        };
+
+        if is_viewing_session {
+            self.mode = AppMode::Question {
+                session_id: session_id.to_string(),
+                questions,
+                responses: Vec::new(),
+                current_index: 0,
+                input: crate::domain::input::InputState::default(),
+            };
+        }
     }
 
     /// Applies loaded at-mention entries to the currently focused prompt
@@ -987,6 +1039,7 @@ impl App {
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
             | AppMode::Prompt { .. }
+            | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. }
             | AppMode::View { .. } => {}
@@ -1645,6 +1698,12 @@ impl AppEventBatch {
             AppEvent::SessionUpdated { session_id } => {
                 self.session_ids.insert(session_id);
             }
+            AppEvent::AgentQuestionsReceived {
+                questions,
+                session_id,
+            } => {
+                self.agent_questions_received.insert(session_id, questions);
+            }
         }
     }
 }
@@ -1664,6 +1723,7 @@ mod tests {
     use crate::infra::db::Database;
     use crate::infra::file_index::FileEntry;
     use crate::infra::tmux::MockTmuxClient;
+    use crate::ui::state::app_mode::DoneSessionOutputMode;
 
     /// Builds one mock app-server client wrapped in `Arc`.
     fn mock_app_server() -> Arc<dyn crate::infra::app_server::AppServerClient> {
@@ -1690,6 +1750,24 @@ mod tests {
         }
     }
 
+    /// Builds a test app rooted at one temporary workspace.
+    async fn new_test_app() -> App {
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+
+        App::new(
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            mock_app_server(),
+        )
+        .await
+    }
+
     /// Builds a test app with one selected session and configurable open
     /// command.
     async fn new_test_app_with_selected_session(
@@ -1697,21 +1775,9 @@ mod tests {
         open_command: &str,
     ) -> App {
         // Arrange
-        let base_dir = tempdir().expect("failed to create temp dir");
-        let base_path = base_dir.path().to_path_buf();
-        let database = Database::open_in_memory()
-            .await
-            .expect("failed to open in-memory db");
+        let mut app = new_test_app().await;
 
         // Act
-        let mut app = App::new(
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await;
         app.settings.open_command = open_command.to_string();
         app.sessions.sessions.push(test_session(session_folder));
         app.sessions.table_state.select(Some(0));
@@ -1951,6 +2017,91 @@ mod tests {
                 .cloned(),
             Some(second_entries)
         );
+    }
+
+    #[test]
+    fn app_event_batch_collect_event_keeps_latest_agent_questions_update() {
+        // Arrange
+        let mut event_batch = AppEventBatch::default();
+        let latest_questions = vec!["Need branch?".to_string(), "Need tests?".to_string()];
+
+        // Act
+        event_batch.collect_event(AppEvent::AgentQuestionsReceived {
+            questions: vec!["Old question".to_string()],
+            session_id: "session-1".to_string(),
+        });
+        event_batch.collect_event(AppEvent::AgentQuestionsReceived {
+            questions: latest_questions.clone(),
+            session_id: "session-1".to_string(),
+        });
+
+        // Assert
+        assert_eq!(
+            event_batch
+                .agent_questions_received
+                .get("session-1")
+                .cloned(),
+            Some(latest_questions)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_app_events_agent_questions_switches_view_mode_to_question_mode() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-question-view")));
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            session_id: "session-1".to_string(),
+            scroll_offset: None,
+        };
+        let expected_questions = vec![
+            "Need a target branch?".to_string(),
+            "Need integration tests?".to_string(),
+        ];
+
+        // Act
+        app.apply_app_events(AppEvent::AgentQuestionsReceived {
+            questions: expected_questions.clone(),
+            session_id: "session-1".to_string(),
+        })
+        .await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                ref session_id,
+                ref questions,
+                ref responses,
+                current_index: 0,
+                ref input,
+            } if session_id == "session-1"
+                && questions == &expected_questions
+                && responses.is_empty()
+                && input.text().is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_app_events_agent_questions_keeps_list_mode_when_not_viewing_session() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = AppMode::List;
+
+        // Act
+        app.apply_app_events(AppEvent::AgentQuestionsReceived {
+            questions: vec!["Need context?".to_string()],
+            session_id: "session-1".to_string(),
+        })
+        .await;
+
+        // Assert
+        assert!(matches!(app.mode, AppMode::List));
     }
 
     #[test]

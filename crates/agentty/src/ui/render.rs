@@ -100,6 +100,7 @@ fn render_footer_bar(
         }
         | AppMode::View { session_id, .. }
         | AppMode::Prompt { session_id, .. }
+        | AppMode::Question { session_id, .. }
         | AppMode::Diff { session_id, .. }
         | AppMode::Help {
             context: HelpContext::View { session_id, .. } | HelpContext::Diff { session_id, .. },

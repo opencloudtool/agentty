@@ -175,7 +175,10 @@ fn render_list_or_overlay_mode(
             shared.list_background(),
             aux.session_progress_messages,
         ),
-        AppMode::View { .. } | AppMode::Prompt { .. } | AppMode::Diff { .. } => {
+        AppMode::View { .. }
+        | AppMode::Prompt { .. }
+        | AppMode::Question { .. }
+        | AppMode::Diff { .. } => {
             return false;
         }
     }
@@ -254,6 +257,17 @@ fn render_session_or_diff_mode(
                 scroll_offset: *scroll_offset,
             },
         ),
+        AppMode::Question { session_id, .. } => render_session_chat(
+            f,
+            area,
+            SessionChatRenderContext {
+                mode,
+                session_id,
+                session_progress_messages: aux.session_progress_messages,
+                sessions,
+                scroll_offset: None,
+            },
+        ),
         AppMode::Diff {
             diff,
             file_explorer_selected_index,
@@ -275,7 +289,7 @@ fn render_session_or_diff_mode(
     }
 }
 
-/// Renders the session chat page for view and prompt modes.
+/// Renders the session chat page for all session-chat modes.
 fn render_session_chat(f: &mut Frame, area: Rect, context: SessionChatRenderContext<'_>) {
     let SessionChatRenderContext {
         mode,

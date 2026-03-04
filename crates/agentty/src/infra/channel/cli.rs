@@ -256,7 +256,7 @@ async fn stream_stdout(
 /// Normalizes one response-content stream chunk before transcript emission.
 ///
 /// For structured protocol chunks that already contain a complete JSON payload,
-/// this strips the protocol wrapper and returns only display text.
+/// this strips the protocol wrapper and returns only `answer` display text.
 ///
 /// Partial protocol JSON fragments are suppressed so raw JSON does not leak
 /// into session output while streaming.
@@ -600,8 +600,21 @@ mod tests {
     }
 
     #[test]
-    /// Verifies structured JSON stream chunks are normalized to display text.
-    fn test_normalize_stream_response_content_unwraps_structured_json() {
+    /// Verifies structured JSON stream chunks keep only `answer` text.
+    fn test_normalize_stream_response_content_keeps_answer_text_only() {
+        // Arrange
+        let text = r#"{"messages":[{"type":"answer","text":"Done."},{"type":"question","text":"Need clarification."}]}"#;
+
+        // Act
+        let normalized_text = normalize_stream_response_content(text);
+
+        // Assert
+        assert_eq!(normalized_text, Some("Done.".to_string()));
+    }
+
+    #[test]
+    /// Verifies structured JSON chunks without `answer` text are suppressed.
+    fn test_normalize_stream_response_content_suppresses_question_only_payload() {
         // Arrange
         let text = r#"{"messages":[{"type":"question","text":"Need clarification."}]}"#;
 
@@ -609,7 +622,7 @@ mod tests {
         let normalized_text = normalize_stream_response_content(text);
 
         // Assert
-        assert_eq!(normalized_text, Some("Need clarification.".to_string()));
+        assert_eq!(normalized_text, None);
     }
 
     #[test]

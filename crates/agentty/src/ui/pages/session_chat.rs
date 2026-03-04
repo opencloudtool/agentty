@@ -81,6 +81,7 @@ impl<'a> SessionChatPage<'a> {
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
             | AppMode::Prompt { .. }
+            | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. } => DoneSessionOutputMode::Summary,
         }
@@ -97,6 +98,7 @@ impl<'a> SessionChatPage<'a> {
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
             | AppMode::Prompt { .. }
+            | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. } => None,
         }
@@ -113,6 +115,7 @@ impl<'a> SessionChatPage<'a> {
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
             | AppMode::Prompt { .. }
+            | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. } => None,
         }
@@ -237,6 +240,7 @@ impl<'a> SessionChatPage<'a> {
         })
     }
 
+    /// Renders the session output panel and context-aware bottom panel.
     fn render_session(&self, f: &mut Frame, area: Rect, session: &Session) {
         let bottom_height = self.bottom_height(area, session);
         let chunks = Layout::default()
@@ -290,6 +294,27 @@ impl<'a> SessionChatPage<'a> {
             return desired_bottom_height.min(max_bottom_height);
         }
 
+        if let AppMode::Question {
+            questions,
+            current_index,
+            input,
+            ..
+        } = self.mode
+        {
+            let question = questions.get(*current_index).map_or("", String::as_str);
+            let question_height =
+                calculate_input_height(area.width.saturating_sub(2), question).max(1);
+            let input_height = calculate_input_height(area.width.saturating_sub(2), input.text())
+                .min(CHAT_INPUT_MAX_PANEL_HEIGHT);
+
+            let desired_bottom_height = question_height
+                .saturating_add(input_height)
+                .saturating_add(1);
+            let max_bottom_height = area.height.saturating_sub(1);
+
+            return desired_bottom_height.min(max_bottom_height);
+        }
+
         1
     }
 
@@ -329,6 +354,50 @@ impl<'a> SessionChatPage<'a> {
             }
 
             chat_input.render(f, bottom_area);
+
+            return;
+        }
+
+        if let AppMode::Question {
+            questions,
+            current_index,
+            input,
+            ..
+        } = self.mode
+        {
+            let question = questions.get(*current_index).map_or("", String::as_str);
+            let question_height =
+                calculate_input_height(bottom_area.width.saturating_sub(2), question).max(1);
+
+            let chunks = Layout::default()
+                .constraints([Constraint::Length(question_height), Constraint::Min(0)])
+                .split(bottom_area);
+
+            let question_title = format!("Question {}/{}", current_index + 1, questions.len());
+            let question_para = Paragraph::new(question)
+                .style(Style::default().fg(Color::Yellow))
+                .wrap(ratatui::widgets::Wrap { trim: true });
+            f.render_widget(question_para, chunks[0]);
+
+            let input_title = format!(" [{question_title}] ");
+            let chat_input = ChatInput::new(&input_title, input.text(), input.cursor)
+                .placeholder("Type response (Enter: send, Esc: skip)");
+
+            let input_chunks = Layout::default()
+                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .split(chunks[1]);
+
+            chat_input.render(f, input_chunks[0]);
+
+            let help_actions = vec![
+                crate::ui::state::help_action::HelpAction::new("send", "Enter", "Send response"),
+                crate::ui::state::help_action::HelpAction::new("skip", "Esc", "Skip (no answer)"),
+            ];
+            let help_text = crate::ui::state::help_action::footer_text(&help_actions);
+            let help_para = Paragraph::new(help_text)
+                .style(Style::default().fg(Color::Gray))
+                .alignment(ratatui::layout::Alignment::Right);
+            f.render_widget(help_para, input_chunks[1]);
 
             return;
         }
@@ -889,6 +958,58 @@ mod tests {
             session_id: "session-id".to_string(),
             input: InputState::with_text("line\n".repeat(80)),
             scroll_offset: None,
+        };
+        let page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
+        let area = Rect::new(0, 0, 120, 8);
+
+        // Act
+        let bottom_height = page.bottom_height(area, &session);
+
+        // Assert
+        assert_eq!(bottom_height, 7);
+    }
+
+    #[test]
+    fn test_bottom_height_question_mode_includes_question_input_and_help_rows() {
+        // Arrange
+        let session = session_fixture();
+        let question = "Need an explicit migration plan?".to_string();
+        let answer = "Use two phases: schema and runtime.";
+        let mode = AppMode::Question {
+            session_id: "session-id".to_string(),
+            questions: vec![question.clone()],
+            responses: Vec::new(),
+            current_index: 0,
+            input: InputState::with_text(answer.to_string()),
+        };
+        let page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
+        let area = Rect::new(0, 0, 120, 30);
+        let expected_height = calculate_input_height(area.width.saturating_sub(2), &question)
+            .max(1)
+            .saturating_add(
+                calculate_input_height(area.width.saturating_sub(2), answer)
+                    .min(CHAT_INPUT_MAX_PANEL_HEIGHT),
+            )
+            .saturating_add(1)
+            .min(area.height.saturating_sub(1));
+
+        // Act
+        let bottom_height = page.bottom_height(area, &session);
+
+        // Assert
+        assert_eq!(bottom_height, expected_height);
+    }
+
+    #[test]
+    fn test_bottom_height_question_mode_preserves_space_for_output_area() {
+        // Arrange
+        let session = session_fixture();
+        let mode = AppMode::Question {
+            session_id: "session-id".to_string(),
+            questions: vec!["Need details?".to_string()],
+            responses: Vec::new(),
+            current_index: 0,
+            input: InputState::with_text("answer\n".repeat(50)),
         };
         let page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
         let area = Rect::new(0, 0, 120, 8);

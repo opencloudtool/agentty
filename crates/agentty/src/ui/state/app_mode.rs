@@ -114,6 +114,20 @@ pub enum AppMode {
         file_explorer_selected_index: usize,
     },
 
+    /// Interactive clarification flow that asks agent questions one-by-one.
+    Question {
+        /// Session receiving the follow-up clarification reply.
+        session_id: String,
+        /// Ordered clarification prompts emitted by the model.
+        questions: Vec<String>,
+        /// Collected user responses aligned to `questions`.
+        responses: Vec<String>,
+        /// Active question index inside `questions`.
+        current_index: usize,
+        /// Editable response input for the active question.
+        input: InputState,
+    },
+
     Help {
         context: HelpContext,
         scroll_offset: u16,

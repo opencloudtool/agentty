@@ -9,6 +9,10 @@ Structured response protocol:
 
 - You may include multiple messages in one response.
 
-- Use `question` only when genuinely blocked; otherwise prefer making reasonable assumptions.
+- If you need user input, approval, or a decision before continuing, emit that request as a `question` message.
+
+- When you need multiple clarifications, emit multiple `question` messages (one question per message) instead of one list-formatted question body.
+
+- Do not place user-directed clarification questions inside `answer` or `plan` messages.
 
 {{ prompt }}

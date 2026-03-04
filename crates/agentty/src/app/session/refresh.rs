@@ -136,6 +136,7 @@ impl SessionManager {
                 ..
             }
             | AppMode::Prompt { session_id, .. }
+            | AppMode::Question { session_id, .. }
             | AppMode::View { session_id, .. }
             | AppMode::Diff { session_id, .. } => Some(session_id),
             _ => None,

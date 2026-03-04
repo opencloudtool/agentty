@@ -186,8 +186,8 @@ fn normalize_delta_assistant_message(message: &str) -> Option<String> {
 /// Normalizes one complete non-delta assistant message.
 ///
 /// The app-server emits non-delta assistant messages as complete chunks. This
-/// helper parses protocol wrappers and returns only display text, preserving
-/// paragraph spacing.
+/// helper parses protocol wrappers and returns only `answer` display text,
+/// preserving paragraph spacing.
 ///
 /// Returns [`None`] when the payload is only a suppressed protocol fragment.
 fn format_non_delta_assistant_message(message: &str) -> Option<String> {
@@ -355,23 +355,22 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies non-delta structured JSON messages are streamed as text only.
-    async fn test_run_turn_bridges_non_delta_structured_json_as_text() {
+    /// Verifies non-delta structured JSON streams only `answer` text.
+    async fn test_run_turn_bridges_non_delta_structured_json_as_answer_text() {
         // Arrange
         let mut mock_client = MockAppServerClient::new();
         mock_client
             .expect_run_turn()
             .returning(|_request, stream_tx| {
                 let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
-                    message: r#"{"messages":[{"type":"question","text":"Need clarification."}]}"#
-                        .to_string(),
+                    message: r#"{"messages":[{"type":"answer","text":"Done."},{"type":"question","text":"Need clarification."}]}"#.to_string(),
                     phase: None,
                     is_delta: false,
                 });
 
                 Box::pin(async {
                     Ok(make_ok_response(
-                        r#"{"messages":[{"type":"question","text":"Need clarification."}]}"#,
+                        r#"{"messages":[{"type":"answer","text":"Done."},{"type":"question","text":"Need clarification."}]}"#,
                     ))
                 })
             });
@@ -386,10 +385,7 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         let event = events_rx.try_recv().expect("should have received an event");
-        assert_eq!(
-            event,
-            TurnEvent::AssistantDelta("Need clarification.\n\n".to_string())
-        );
+        assert_eq!(event, TurnEvent::AssistantDelta("Done.\n\n".to_string()));
     }
 
     #[tokio::test]

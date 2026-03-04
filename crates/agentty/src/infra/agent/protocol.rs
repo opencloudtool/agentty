@@ -116,6 +116,25 @@ impl AgentResponse {
 
         display_messages.join("\n\n")
     }
+
+    /// Returns transcript text for session output by joining non-empty
+    /// `answer` messages with blank lines.
+    ///
+    /// `plan` and `question` messages remain available in `messages` for
+    /// dedicated UX flows and are intentionally excluded from regular session
+    /// transcript output.
+    pub fn to_answer_display_text(&self) -> String {
+        let mut display_messages = Vec::new();
+        for message in &self.messages {
+            if message.kind != AgentResponseMessageKind::Answer {
+                continue;
+            }
+
+            push_display_message(&mut display_messages, &message.text);
+        }
+
+        display_messages.join("\n\n")
+    }
 }
 
 /// Appends one non-empty display message.
@@ -201,7 +220,7 @@ pub(crate) fn parse_agent_response_strict(
 ///
 /// Returns:
 /// - `Some(display_text)` for plain text chunks or complete structured JSON
-///   payloads.
+///   payloads containing at least one non-empty `answer` message.
 /// - `None` for protocol JSON fragments that should be suppressed until the
 ///   final assembled response arrives.
 pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
@@ -210,7 +229,7 @@ pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
     }
 
     if let Some(response) = parse_structured_json_response(raw) {
-        let display_text = response.to_display_text();
+        let display_text = response.to_answer_display_text();
         if display_text.trim().is_empty() {
             return None;
         }
@@ -488,6 +507,19 @@ mod tests {
     }
 
     #[test]
+    /// Suppresses complete structured payloads that contain only questions.
+    fn test_normalize_stream_assistant_chunk_question_only_payload() {
+        // Arrange
+        let raw = r#"{"messages":[{"type":"question","text":"Need details?"}]}"#;
+
+        // Act
+        let normalized = normalize_stream_assistant_chunk(raw);
+
+        // Assert
+        assert_eq!(normalized, None);
+    }
+
+    #[test]
     /// Suppresses partial protocol JSON fragments from streamed output.
     fn test_normalize_stream_assistant_chunk_protocol_fragment() {
         // Arrange
@@ -527,6 +559,29 @@ mod tests {
         assert_eq!(
             response.to_display_text(),
             "Completed implementation.\n\nNeed one decision."
+        );
+    }
+
+    #[test]
+    /// Builds transcript text from only `answer` messages.
+    fn test_to_answer_display_text_uses_only_answer_messages() {
+        // Arrange
+        let response = AgentResponse {
+            messages: vec![
+                AgentResponseMessage::answer("Completed implementation."),
+                AgentResponseMessage::question("Need one decision."),
+                AgentResponseMessage::plan("Run checks."),
+                AgentResponseMessage::answer("Applied updates."),
+            ],
+        };
+
+        // Act
+        let display_text = response.to_answer_display_text();
+
+        // Assert
+        assert_eq!(
+            display_text,
+            "Completed implementation.\n\nApplied updates."
         );
     }
 

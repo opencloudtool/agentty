@@ -1,6 +1,6 @@
 +++
 title = "Keybindings"
-description = "Keyboard shortcuts across lists, session view, diff mode, and prompt input."
+description = "Keyboard shortcuts across lists, session view, diff mode, prompt input, and question input."
 weight = 2
 +++
 
@@ -117,3 +117,21 @@ The diff panel title shows aggregate line-change totals as `+added` and
 | `Esc` | Cancel |
 | `@` | Open file picker |
 | `/` | Open slash commands |
+
+## Question Input
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Submit response for current question |
+| `Esc` | Skip current question (`no answer`) |
+| `Left` / `Right` | Move cursor |
+| `Up` / `Down` | Move cursor across wrapped lines |
+| `Backspace` / `Delete` | Delete character |
+| `Home` / `End` | Move cursor to start/end |
+| `Ctrl+u` | Delete current line |
+| `Tab` | Insert tab |
+
+<a id="usage-question-input-submit-flow"></a>
+After the last question is answered (or skipped), Agentty sends one follow-up
+message to the session with each question and its response, then returns to
+session view.
