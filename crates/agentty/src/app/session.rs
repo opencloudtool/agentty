@@ -199,12 +199,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::app::settings::SettingName;
     use crate::app::{App, SyncSessionStartError, Tab};
     use crate::domain::agent::{AgentKind, AgentModel};
     use crate::domain::session::{
         DailyActivity, SESSION_DATA_DIR, Session, SessionHandles, SessionSize, SessionStats, Status,
     };
+    use crate::domain::setting::SettingName;
     use crate::infra::agent::AgentCommandMode;
     use crate::infra::agent::tests::MockAgentBackend;
     use crate::infra::app_server::MockAppServerClient;

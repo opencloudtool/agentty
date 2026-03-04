@@ -12,6 +12,7 @@ use crate::app::assist::AssistContext;
 use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::session::{SessionStats, Status};
+use crate::domain::setting::SettingName;
 use crate::infra::channel::{
     AgentChannel, AgentError, TurnEvent, TurnMode, TurnRequest, TurnResult,
 };
@@ -507,7 +508,7 @@ async fn spawn_start_turn_title_generation(
 
     let title_model = context
         .db
-        .get_setting(crate::app::settings::SettingName::DefaultFastModel.as_str())
+        .get_setting(SettingName::DefaultFastModel.as_str())
         .await
         .ok()
         .flatten()

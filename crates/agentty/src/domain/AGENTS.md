@@ -11,6 +11,7 @@ Pure business logic and domain entities, decoupled from UI and infrastructure.
 - [permission.rs](permission.rs) - Permission modes and logic.
 - [project.rs](project.rs) - Project entity definitions.
 - [session.rs](session.rs) - Session entity definitions.
+- [setting.rs](setting.rs) - Shared persisted setting-name domain model.
 
 ## Docs
 

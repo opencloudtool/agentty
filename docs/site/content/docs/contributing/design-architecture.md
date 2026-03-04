@@ -126,6 +126,7 @@ instead of replaying the full transcript.
 | `crates/agentty/src/domain/permission.rs` | `PermissionMode` and permission logic. |
 | `crates/agentty/src/domain/project.rs` | Project entities and display helpers. |
 | `crates/agentty/src/domain/session.rs` | Session entities, statuses, sizes, and stats-focused domain types. |
+| `crates/agentty/src/domain/setting.rs` | Shared persisted setting keys used across app and infrastructure layers. |
 
 ### Infrastructure Layer (`infra/`)
 

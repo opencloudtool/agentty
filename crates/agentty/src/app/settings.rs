@@ -2,31 +2,7 @@ use ratatui::widgets::TableState;
 
 use crate::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::app::AppServices;
-
-/// Names of persisted application settings.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SettingName {
-    ReasoningLevel,
-    DefaultFastModel,
-    DefaultReviewModel,
-    DefaultSmartModel,
-    OpenCommand,
-    LastUsedModelAsDefault,
-}
-
-impl SettingName {
-    /// Returns the persisted key name for this setting.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::ReasoningLevel => "ReasoningLevel",
-            Self::DefaultFastModel => "DefaultFastModel",
-            Self::DefaultReviewModel => "DefaultReviewModel",
-            Self::DefaultSmartModel => "DefaultSmartModel",
-            Self::OpenCommand => "OpenCommand",
-            Self::LastUsedModelAsDefault => "LastUsedModelAsDefault",
-        }
-    }
-}
+use crate::domain::setting::SettingName;
 
 /// Loads the persisted smart-model default used for new sessions.
 ///

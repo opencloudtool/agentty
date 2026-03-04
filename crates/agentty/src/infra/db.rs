@@ -6,9 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
-use crate::app::settings::SettingName;
 use crate::domain::agent::ReasoningLevel;
 use crate::domain::session::SessionStats;
+use crate::domain::setting::SettingName;
 
 /// Subdirectory under the agentty home where the database file is stored.
 pub const DB_DIR: &str = "db";
