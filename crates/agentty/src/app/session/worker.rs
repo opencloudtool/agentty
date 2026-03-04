@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -289,8 +290,8 @@ impl SessionManager {
             folder: context.folder.clone(),
             live_session_output: Some(Arc::clone(&context.output)),
             model: session_model.as_str().to_string(),
-            mode,
-            prompt,
+            mode: mode.clone(),
+            prompt: prompt.clone(),
             provider_conversation_id,
         };
 
@@ -319,7 +320,7 @@ impl SessionManager {
         let _ = consumer.await;
         SessionTaskService::clear_session_progress(&context.app_event_tx, &context.session_id);
 
-        let result = apply_turn_result(context, session_model, turn_result).await;
+        let result = apply_turn_result(context, session_model, mode, prompt, turn_result).await;
 
         SessionTaskService::refresh_persisted_session_size(
             &context.db,
@@ -383,16 +384,18 @@ impl SessionManager {
 /// turn failure after appending the error to session output.
 ///
 /// The final parsed response appends non-empty protocol `answer` text when
-/// present. When no `answer` messages exist, worker output falls back to the
-/// full display text so users can still see `plan`/`question`-only responses
-/// in the transcript. Streamed content (including any partial protocol JSON
-/// fragments) remains visible in the session output. `question` messages are
-/// persisted to the session row and trigger `Status::Question`; all responses
-/// are emitted through
-/// `AppEvent::AgentResponseReceived` for reducer-level routing.
+/// present. When no `answer` messages exist, worker output falls back to
+/// joined `question` text so clarification prompts remain visible while
+/// plan-only/thought-only responses are not persisted as final transcript
+/// output. Streamed content (including any partial protocol JSON fragments)
+/// remains visible in the session output. `question` messages are persisted to
+/// the session row and trigger `Status::Question`; all responses are emitted
+/// through `AppEvent::AgentResponseReceived` for reducer-level routing.
 async fn apply_turn_result(
     context: &SessionWorkerContext,
     session_model: AgentModel,
+    mode: TurnMode,
+    prompt: String,
     turn_result: Result<TurnResult, AgentError>,
 ) -> Result<Status, String> {
     match turn_result {
@@ -404,6 +407,8 @@ async fn apply_turn_result(
                 provider_conversation_id,
                 ..
             } = result;
+
+            spawn_start_turn_title_generation(context, mode, &prompt, session_model).await;
 
             if let Some(message) = build_assistant_transcript_output(&assistant_message) {
                 SessionTaskService::append_session_output(
@@ -487,6 +492,36 @@ async fn apply_turn_result(
             Err(error.0)
         }
     }
+}
+
+/// Spawns first-turn session title generation from the initial user prompt.
+async fn spawn_start_turn_title_generation(
+    context: &SessionWorkerContext,
+    mode: TurnMode,
+    prompt: &str,
+    session_model: AgentModel,
+) {
+    if !matches!(mode, TurnMode::Start) {
+        return;
+    }
+
+    let title_model = context
+        .db
+        .get_setting(crate::app::settings::SettingName::DefaultFastModel.as_str())
+        .await
+        .ok()
+        .flatten()
+        .and_then(|setting_value| AgentModel::from_str(&setting_value).ok())
+        .unwrap_or(session_model);
+
+    SessionManager::spawn_session_title_generation_task(
+        context.app_event_tx.clone(),
+        context.db.clone(),
+        &context.session_id,
+        &context.folder,
+        prompt,
+        title_model,
+    );
 }
 
 /// Builds the persisted transcript chunk for one parsed assistant response.

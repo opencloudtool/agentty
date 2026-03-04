@@ -1,4 +1,4 @@
-Generate a concise, commit-style title for the following text.
+Generate a concise, commit-style title for the following interaction.
 
 Rules:
 
@@ -10,4 +10,5 @@ Rules:
 - Return only valid JSON: {"title":"..."}.
 - Do not include markdown fences, explanations, or any additional keys.
 
+User Request:
 {{ prompt }}

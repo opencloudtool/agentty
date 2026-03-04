@@ -30,7 +30,7 @@ struct BuildSessionCommandInput {
 }
 
 /// Intermediate values captured while preparing a session reply.
-type ReplyContext = (PathBuf, Option<String>, bool, String, Option<String>);
+type ReplyContext = (Option<String>, bool, String, Option<String>);
 
 /// Cleanup payload for a deleted session's git and filesystem resources.
 struct DeletedSessionCleanup {
@@ -223,8 +223,8 @@ impl SessionManager {
     /// Submits the first prompt for a blank session and starts the agent.
     ///
     /// The first prompt is persisted as both session prompt and session title.
-    /// A detached one-shot title-generation task may replace that initial
-    /// title once.
+    /// A detached one-shot title-generation task from the start-turn worker
+    /// may replace that initial title once.
     ///
     /// # Errors
     /// Returns an error if the session is missing or prompt persistence fails.
@@ -235,7 +235,7 @@ impl SessionManager {
         prompt: String,
     ) -> Result<(), String> {
         let session_index = self.session_index_or_err(session_id)?;
-        let (folder, persisted_session_id, session_model, title) = {
+        let (persisted_session_id, session_model, title) = {
             let session = self
                 .sessions
                 .get_mut(session_index)
@@ -247,12 +247,7 @@ impl SessionManager {
             session.title = Some(title.clone());
             let session_model = session.model;
 
-            (
-                session.folder.clone(),
-                session.id.clone(),
-                session_model,
-                title,
-            )
+            (session.id.clone(), session_model, title)
         };
 
         let handles = self.session_handles_or_err(&persisted_session_id)?;
@@ -260,24 +255,8 @@ impl SessionManager {
         let status = Arc::clone(&handles.status);
         let app_event_tx = services.event_sender();
 
-        let _ = services
-            .db()
-            .update_session_title(&persisted_session_id, &title)
+        self.persist_first_message_metadata(services, &persisted_session_id, &prompt, &title)
             .await;
-        let _ = services
-            .db()
-            .update_session_prompt(&persisted_session_id, &prompt)
-            .await;
-
-        let title_model =
-            crate::app::settings::load_default_fast_model_setting(services, session_model).await;
-        Self::spawn_session_title_generation_task(
-            services,
-            &persisted_session_id,
-            folder.as_path(),
-            &prompt,
-            title_model,
-        );
 
         let initial_output = format!(" › {prompt}\n\n");
         SessionTaskService::append_session_output(
@@ -549,22 +528,18 @@ impl SessionManager {
             return;
         };
         let should_replay_history = self.should_replay_history(session_id);
-        let (folder, session_output, is_first_message, persisted_session_id, title_to_save) =
-            match self.prepare_reply_context(
-                session_index,
-                prompt,
-                session_model,
-                should_replay_history,
-            ) {
-                Ok(Some(reply_context)) => reply_context,
-                Ok(None) => return,
-                Err(blocked_session_id) => {
-                    self.append_reply_status_error(services, &blocked_session_id)
-                        .await;
+        let (session_output, is_first_message, persisted_session_id, title_to_save) = match self
+            .prepare_reply_context(session_index, prompt, session_model, should_replay_history)
+        {
+            Ok(Some(reply_context)) => reply_context,
+            Ok(None) => return,
+            Err(blocked_session_id) => {
+                self.append_reply_status_error(services, &blocked_session_id)
+                    .await;
 
-                    return;
-                }
-            };
+                return;
+            }
+        };
 
         if should_replay_history {
             self.clear_history_replay_pending(&persisted_session_id);
@@ -582,13 +557,11 @@ impl SessionManager {
         let effective_prompt = prompt;
 
         if let Some(title) = title_to_save {
-            self.persist_first_reply_metadata(
+            self.persist_first_message_metadata(
                 services,
                 &persisted_session_id,
                 effective_prompt,
                 &title,
-                folder.as_path(),
-                session_model,
             )
             .await;
 
@@ -670,7 +643,6 @@ impl SessionManager {
         };
 
         Ok(Some((
-            session.folder.clone(),
             session_output,
             is_first_message,
             session.id.clone(),
@@ -680,32 +652,22 @@ impl SessionManager {
 
     /// Persists first-message prompt/title metadata before queueing execution.
     ///
-    /// This writes the initial prompt/title, then starts one detached
-    /// generation task that may replace the title once.
-    async fn persist_first_reply_metadata(
+    /// This writes the initial prompt/title.
+    ///
+    /// Title generation itself is triggered once from the start-turn worker
+    /// path after the first model response is available.
+    async fn persist_first_message_metadata(
         &self,
         services: &AppServices,
         session_id: &str,
         prompt: &str,
         title: &str,
-        folder: &Path,
-        session_model: AgentModel,
     ) {
         let _ = services.db().update_session_title(session_id, title).await;
         let _ = services
             .db()
             .update_session_prompt(session_id, prompt)
             .await;
-
-        let title_model =
-            crate::app::settings::load_default_fast_model_setting(services, session_model).await;
-        Self::spawn_session_title_generation_task(
-            services,
-            session_id,
-            folder,
-            prompt,
-            title_model,
-        );
     }
 
     /// Appends the user reply marker line to session output.
@@ -801,15 +763,14 @@ impl SessionManager {
     /// The generated title is persisted when parsing succeeds, then a
     /// `RefreshSessions` event is emitted so list-mode snapshots pick up the
     /// new title.
-    fn spawn_session_title_generation_task(
-        services: &AppServices,
+    pub(crate) fn spawn_session_title_generation_task(
+        app_event_tx: mpsc::UnboundedSender<AppEvent>,
+        db: crate::infra::db::Database,
         session_id: &str,
         folder: &Path,
         prompt: &str,
         session_model: AgentModel,
     ) {
-        let app_event_tx = services.event_sender();
-        let db = services.db().clone();
         let folder = folder.to_path_buf();
         let prompt = prompt.to_string();
         let persisted_session_id = session_id.to_string();
@@ -1114,11 +1075,10 @@ mod tests {
             .expect("session should produce reply context");
 
         // Assert
-        assert_eq!(context.0, PathBuf::from("/tmp/session"));
-        assert_eq!(context.1, None);
-        assert!(context.2);
-        assert_eq!(context.3, "session-id");
-        assert_eq!(context.4, Some(prompt.to_string()));
+        assert_eq!(context.0, None);
+        assert!(context.1);
+        assert_eq!(context.2, "session-id");
+        assert_eq!(context.3, Some(prompt.to_string()));
         assert_eq!(session_manager.sessions[0].prompt, prompt);
         assert_eq!(session_manager.sessions[0].title, Some(prompt.to_string()));
     }
@@ -1142,11 +1102,10 @@ mod tests {
             .expect("session should produce reply context");
 
         // Assert
-        assert_eq!(context.0, PathBuf::from("/tmp/session"));
-        assert_eq!(context.1, None);
-        assert!(!context.2);
-        assert_eq!(context.3, "session-id");
-        assert_eq!(context.4, None);
+        assert_eq!(context.0, None);
+        assert!(!context.1);
+        assert_eq!(context.2, "session-id");
+        assert_eq!(context.3, None);
         assert_eq!(session_manager.sessions[0].prompt, "Initial prompt");
         assert_eq!(
             session_manager.sessions[0].title,
