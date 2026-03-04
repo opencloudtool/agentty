@@ -2,7 +2,7 @@ use std::io;
 
 use crossterm::event::{self, KeyCode, KeyEvent};
 
-use crate::app::{App, AppEvent};
+use crate::app::{App, AppEvent, SessionStatsUsage};
 use crate::domain::agent::AgentKind;
 use crate::domain::input::InputState;
 use crate::infra::file_index;
@@ -542,8 +542,17 @@ async fn append_output_for_session(app: &App, session_id: &str, output: &str) {
     app.append_output_for_session(session_id, output).await;
 }
 
+/// Handles `/stats` by loading stats through the app layer and appending the
+/// rendered output to the session transcript.
 async fn handle_stats_command(app: &App, prompt_context: &PromptContext) {
-    let stats_output = build_stats_output(app.services.db(), &prompt_context.session_id).await;
+    let session_stats = app.stats_for_session(&prompt_context.session_id).await;
+    let session_time = session_stats
+        .session_duration_seconds
+        .map_or_else(|| "Unavailable".to_string(), format_duration);
+    let usage_rows_result = build_token_usage_rows(session_stats.usage_rows_result);
+    let stats_output =
+        build_stats_markdown(&prompt_context.session_id, &session_time, usage_rows_result);
+
     append_output_for_session(app, &prompt_context.session_id, &stats_output).await;
 }
 
@@ -553,37 +562,17 @@ struct TokenUsageRow {
     out_tokens: String,
 }
 
-async fn build_stats_output(db: &crate::db::Database, session_id: &str) -> String {
-    let session_time = load_session_time_text(db, session_id).await;
-    let usage_rows_result = build_token_usage_rows(db.load_session_usage(session_id).await);
-
-    build_stats_markdown(session_id, &session_time, usage_rows_result)
-}
-
-async fn load_session_time_text(db: &crate::db::Database, session_id: &str) -> String {
-    match db.load_session_timestamps(session_id).await {
-        Ok(Some((created_at, updated_at))) => {
-            let duration_seconds = (updated_at - created_at).max(0);
-
-            format_duration(duration_seconds)
-        }
-        Ok(None) | Err(_) => "Unavailable".to_string(),
-    }
-}
-
 fn build_token_usage_rows(
-    usage_rows_result: Result<Vec<crate::db::SessionUsageRow>, String>,
+    usage_rows_result: Result<Vec<SessionStatsUsage>, String>,
 ) -> Result<Vec<TokenUsageRow>, String> {
     match usage_rows_result {
         Ok(usage_rows) => {
             let rows = usage_rows
                 .into_iter()
                 .map(|row| TokenUsageRow {
-                    in_tokens: crate::ui::util::format_token_count(row.input_tokens.unsigned_abs()),
+                    in_tokens: crate::ui::util::format_token_count(row.input_tokens),
                     model: row.model,
-                    out_tokens: crate::ui::util::format_token_count(
-                        row.output_tokens.unsigned_abs(),
-                    ),
+                    out_tokens: crate::ui::util::format_token_count(row.output_tokens),
                 })
                 .collect();
 
