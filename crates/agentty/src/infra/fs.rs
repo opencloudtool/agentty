@@ -30,6 +30,9 @@ pub trait FsClient: Send + Sync {
     /// # Errors
     /// Returns an error when file read fails.
     fn read_file(&self, path: PathBuf) -> Result<Vec<u8>, String>;
+
+    /// Returns whether `path` currently resolves to an existing directory.
+    fn is_dir(&self, path: PathBuf) -> bool;
 }
 
 /// Production [`FsClient`] implementation backed by real filesystem calls.
@@ -54,5 +57,9 @@ impl FsClient for RealFsClient {
 
     fn read_file(&self, path: PathBuf) -> Result<Vec<u8>, String> {
         std::fs::read(path).map_err(|error| error.to_string())
+    }
+
+    fn is_dir(&self, path: PathBuf) -> bool {
+        path.is_dir()
     }
 }

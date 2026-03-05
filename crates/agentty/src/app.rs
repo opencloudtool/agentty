@@ -297,12 +297,13 @@ impl App {
 
         let mut table_state = TableState::default();
         let mut handles = HashMap::new();
-        let (sessions, stats_activity) = SessionManager::load_sessions(
+        let (sessions, stats_activity) = SessionManager::load_sessions_with_fs_client(
             &base_path,
             &db,
             active_project_id,
             startup_working_dir.as_path(),
             &mut handles,
+            clients.fs_client.as_ref(),
         )
         .await;
         let (sessions_row_count, sessions_updated_at_max) =

@@ -12,6 +12,7 @@ use crate::domain::session::{
     DailyActivity, Session, SessionHandles, SessionSize, SessionStats, Status,
 };
 use crate::infra::db::Database;
+use crate::infra::fs::{FsClient, RealFsClient};
 use crate::infra::git::GitClient;
 
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -40,6 +41,43 @@ impl SessionManager {
         working_dir: &Path,
         handles: &mut HashMap<String, SessionHandles>,
     ) -> (Vec<Session>, Vec<DailyActivity>) {
+        let fs_client = RealFsClient;
+
+        Self::load_sessions_with_fs_client(
+            base,
+            db,
+            active_project_id,
+            working_dir,
+            handles,
+            &fs_client,
+        )
+        .await
+    }
+
+    /// Loads session models from the database using the provided filesystem
+    /// boundary to decide which session folders exist.
+    ///
+    /// Existing handles are reused in place to preserve `Arc` identity so
+    /// that background workers holding cloned references continue to work.
+    ///
+    /// When a handle already exists, live handle output is treated as
+    /// authoritative for the returned in-memory snapshot to avoid clobbering
+    /// fresh runtime output with stale persisted rows. Active statuses are also
+    /// preserved from live handles, while terminal persisted statuses (`Done`,
+    /// `Canceled`) override stale in-memory status.
+    ///
+    /// New handles are inserted for sessions that don't have entries yet.
+    ///
+    /// Returns both loaded sessions and local-day activity counts aggregated
+    /// from persisted session-creation activity history.
+    pub(crate) async fn load_sessions_with_fs_client(
+        base: &Path,
+        db: &Database,
+        active_project_id: i64,
+        working_dir: &Path,
+        handles: &mut HashMap<String, SessionHandles>,
+        fs_client: &dyn FsClient,
+    ) -> (Vec<Session>, Vec<DailyActivity>) {
         let project_name = working_dir
             .file_name()
             .and_then(|name| name.to_str())
@@ -62,7 +100,9 @@ impl SessionManager {
             let persisted_size = row.size.parse::<SessionSize>().unwrap_or_default();
             let persisted_status_is_terminal =
                 matches!(persisted_status, Status::Done | Status::Canceled);
-            if !folder.is_dir() && !persisted_status_is_terminal {
+            let has_session_folder = fs_client.is_dir(folder.clone());
+
+            if !has_session_folder && !persisted_status_is_terminal {
                 continue;
             }
             let session_model = row
@@ -237,19 +277,27 @@ fn local_utc_offset_seconds(timestamp_seconds: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::Path;
-
-    use tempfile::tempdir;
+    use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::domain::session::SESSION_DATA_DIR;
+
+    /// Returns a filesystem mock that reports the supplied directories as
+    /// existing.
+    fn create_folder_lookup_mock(existing_folders: Vec<PathBuf>) -> crate::infra::fs::MockFsClient {
+        let mut mock_fs_client = crate::infra::fs::MockFsClient::new();
+        mock_fs_client
+            .expect_is_dir()
+            .times(0..)
+            .returning(move |path| existing_folders.contains(&path));
+
+        mock_fs_client
+    }
 
     /// Ensures reload keeps live handle output and active status when
     /// persisted row data is stale.
     #[tokio::test]
     async fn test_load_sessions_preserves_live_handle_output_and_status() {
         // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
@@ -272,9 +320,9 @@ mod tests {
             .await
             .expect("failed to append persisted output");
 
-        let session_dir = session_folder(dir.path(), session_id);
-        std::fs::create_dir_all(session_dir.join(SESSION_DATA_DIR))
-            .expect("failed to create session data dir");
+        let base_path = Path::new("/virtual/session-base");
+        let session_dir = session_folder(base_path, session_id);
+        let mock_fs_client = create_folder_lookup_mock(vec![session_dir]);
 
         let mut handles = HashMap::new();
         let live_output = "Live Output".to_string();
@@ -285,12 +333,13 @@ mod tests {
         );
 
         // Act
-        let (sessions, _) = SessionManager::load_sessions(
-            dir.path(),
+        let (sessions, _) = SessionManager::load_sessions_with_fs_client(
+            base_path,
             &db,
             project_id,
             Path::new("/tmp/test"),
             &mut handles,
+            &mock_fs_client,
         )
         .await;
 
@@ -320,7 +369,6 @@ mod tests {
     #[tokio::test]
     async fn test_load_sessions_terminal_db_status_overrides_handle_status() {
         // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
         let db = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
@@ -340,9 +388,9 @@ mod tests {
         .await
         .expect("failed to insert session");
 
-        let session_dir = session_folder(dir.path(), session_id);
-        std::fs::create_dir_all(session_dir.join(SESSION_DATA_DIR))
-            .expect("failed to create session data dir");
+        let base_path = Path::new("/virtual/session-base");
+        let session_dir = session_folder(base_path, session_id);
+        let mock_fs_client = create_folder_lookup_mock(vec![session_dir]);
 
         let mut handles = HashMap::new();
         handles.insert(
@@ -351,12 +399,13 @@ mod tests {
         );
 
         // Act
-        let (sessions, _) = SessionManager::load_sessions(
-            dir.path(),
+        let (sessions, _) = SessionManager::load_sessions_with_fs_client(
+            base_path,
             &db,
             project_id,
             Path::new("/tmp/test"),
             &mut handles,
+            &mock_fs_client,
         )
         .await;
 

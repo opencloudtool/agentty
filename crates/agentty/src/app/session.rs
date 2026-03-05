@@ -257,6 +257,10 @@ mod tests {
             .expect_read_file()
             .times(0..)
             .returning(|path| std::fs::read(path).map_err(|error| error.to_string()));
+        mock_fs_client
+            .expect_is_dir()
+            .times(0..)
+            .returning(|path| path.is_dir());
 
         mock_fs_client
     }
