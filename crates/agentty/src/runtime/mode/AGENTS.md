@@ -15,4 +15,7 @@ Key handling logic split by `AppMode`.
 
 ## Docs
 
-Keybinding changes require updating `docs/site/content/docs/usage/keybindings.md`.
+Keep usage docs synchronized with mode behavior:
+
+- Key handling or shortcut changes require updating `docs/site/content/docs/usage/keybindings.md`.
+- Question-mode flow or session-state behavior changes require updating `docs/site/content/docs/usage/workflow.md`.

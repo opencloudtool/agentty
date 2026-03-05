@@ -12,4 +12,7 @@ State management for UI components and modes.
 
 ## Docs
 
-Help action changes require updating `docs/site/content/docs/usage/keybindings.md`.
+Keep usage docs synchronized with UI state changes:
+
+- Help action and shortcut mapping changes require updating `docs/site/content/docs/usage/keybindings.md`.
+- `AppMode`/question-flow behavior changes require updating `docs/site/content/docs/usage/workflow.md`.

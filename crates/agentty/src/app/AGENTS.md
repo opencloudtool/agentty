@@ -32,6 +32,14 @@ Application-layer workflows and orchestration.
 - Recovery model:
   - Operation state is persisted so interrupted work can be reconciled on startup.
 
+## Docs Sync
+
+When app orchestration or session lifecycle behavior changes, update:
+
+- `docs/site/content/docs/usage/workflow.md` — statuses, transitions, question flow, and slash-command behavior.
+- `docs/site/content/docs/usage/keybindings.md` — user-visible actions available per mode/state.
+- `docs/site/content/docs/architecture/runtime-flow.md` — app orchestration and worker/channel runtime flow.
+
 ## Directory Index
 
 - [assist.rs](assist.rs) - Shared assistance helpers for commit/rebase recovery loops.

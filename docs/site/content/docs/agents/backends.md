@@ -33,6 +33,45 @@ POSIX paths. This keeps file references consistent in session output and reviews
 - Example: `crates/agentty/src/infra/agent/backend.rs:151`
 - Not allowed: absolute paths, `file://` URIs, or `../`-prefixed paths
 
+## Structured Response Protocol
+
+<a id="backends-structured-response-protocol"></a>
+For normal coding turns, Agentty prepends a structured response contract to the
+prompt. The agent response should be a single JSON object with a `messages`
+array, where each entry has:
+
+- `type`: `answer` or `question`
+- `text`: markdown text payload
+
+Example payload:
+
+```json
+{
+  "messages": [
+    { "type": "answer", "text": "Implemented the change." },
+    { "type": "question", "text": "Should I run the full test suite?" }
+  ]
+}
+```
+
+<a id="backends-structured-response-routing"></a>
+`answer` messages are appended to the normal session transcript. `question`
+messages are persisted separately and move the session to **Question** status
+so Agentty can collect clarifications in question input mode.
+
+## Protocol Validation and Repair
+
+<a id="backends-protocol-validation-repair"></a>
+Agentty validates final agent output against the structured response protocol.
+
+- Claude and Gemini integrations use strict parsing and run one automatic
+  repair retry when output does not match the protocol schema.
+- Codex app-server turns include `outputSchema` at transport level and then use
+  permissive final parsing fallback so non-schema text is still visible if
+  needed.
+- Partial protocol JSON fragments are suppressed during streaming so raw JSON
+  wrappers do not leak into live transcript output.
+
 ## Session Resume Behavior
 
 <a id="backends-session-resume"></a>

@@ -57,6 +57,14 @@ prompt as the initial title and starts one background title-generation task
 using the configured **Default Fast Model**. That generation runs only once
 for session initiation; Agentty does not continuously refresh titles.
 
+## Clarification Interaction Loop
+
+<a id="usage-clarification-loop"></a>
+If an agent emits structured `question` messages, the session moves to
+**Question** status. You answer each question in sequence (or press `Esc` to
+skip with `no answer`), and Agentty sends one consolidated follow-up message
+back to the same session before returning it to normal execution.
+
 ## Session Sizes
 
 <a id="usage-session-size"></a>

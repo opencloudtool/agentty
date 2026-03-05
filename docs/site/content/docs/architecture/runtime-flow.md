@@ -84,3 +84,52 @@ app/session/worker.rs
 `provider_conversation_id` after each turn. Session workers persist this to the
 database so a future runtime restart can resume the provider's native context
 instead of replaying the full transcript.
+
+## Agent Interaction Protocol Flow
+
+<a id="architecture-agent-interaction-protocol"></a>
+Agentty normalizes provider interactions into one response protocol:
+
+1. Prompt builders prepend the structured-response contract and schema.
+1. Channels stream provider events as `AssistantDelta`, `ThoughtDelta`, and
+   `Progress`.
+1. Final turn output is parsed into protocol `messages` (`answer`/`question`).
+1. Session workers persist answers to transcript output and store questions for
+   **Question** mode.
+
+<a id="architecture-agent-interaction-streaming"></a>
+Streaming behavior differs by transport/provider:
+
+- CLI channel (Claude): stdout lines are parsed into content/progress events;
+  protocol JSON fragments are suppressed while streaming.
+- App-server channel (Codex): streamed thought phases (`thinking`, `plan`,
+  `reasoning`) become `ThoughtDelta`; non-delta assistant chunks are suppressed
+  for deterministic final transcript assembly.
+- App-server channel (Gemini): assistant stream chunks are suppressed in strict
+  mode; only final parsed protocol output is persisted.
+
+<a id="architecture-agent-interaction-validation"></a>
+Final-output validation also differs by provider:
+
+- Claude and Gemini run strict protocol parsing and one repair retry when output
+  is invalid.
+- Codex sends `outputSchema` in `turn/start` and uses permissive fallback
+  parsing for resiliency.
+
+## Clarification Question Loop
+
+<a id="architecture-agent-question-loop"></a>
+When final parsed output contains one or more `question` messages, Agentty
+stores them on the session row and switches status to **Question**. The runtime
+enters question input mode, collects responses one-by-one, then sends a single
+follow-up reply in this shape:
+
+```text
+Clarifications:
+1. Q: <question 1>
+   A: <response 1>
+2. Q: <question 2>
+   A: <response 2>
+```
+
+After submission, the session returns to normal turn execution.

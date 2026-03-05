@@ -2,14 +2,21 @@
 
 Provider-specific command builders and response parsing helpers for agent CLI integrations.
 
+## Docs Sync
+
+When backend protocol or provider parsing behavior changes, update:
+
+- `docs/site/content/docs/agents/backends.md` — backend capabilities, structured response protocol, resume behavior, and provider settings.
+- `docs/site/content/docs/architecture/runtime-flow.md` — protocol parsing/repair and turn interaction flow.
+- `docs/site/content/docs/architecture/module-map.md` — module responsibility descriptions for `infra/agent/`.
+
 ## Directory Index
 
 - [backend.rs](backend.rs) - Shared backend trait, backend factory, and resume prompt construction.
 - [claude.rs](claude.rs) - Claude CLI backend command construction.
 - [codex.rs](codex.rs) - Codex CLI backend command construction.
 - [gemini.rs](gemini.rs) - Gemini CLI backend command construction.
-- [protocol.rs](protocol.rs) - Structured agent communication protocol types and response parsing (`AgentResponse`, `AgentResponseMeta`, `AgentResponseKind`).
-- [question_parser.rs](question_parser.rs) - Legacy question extraction from agent responses and answer formatting (backward compatibility fallback).
+- [protocol.rs](protocol.rs) - Structured response contract (`AgentResponse`, `AgentResponseMessage`, `AgentResponseMessageKind`), schema generation, parsing, and repair helpers.
 - [response_parser.rs](response_parser.rs) - Provider-specific parsing for final and streaming output.
 - [AGENTS.md](AGENTS.md) - Local module guidance and directory index.
 - [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.

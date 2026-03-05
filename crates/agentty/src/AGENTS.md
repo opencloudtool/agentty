@@ -14,9 +14,12 @@
 
 ## Docs Sync
 
-When modifying module boundaries, runtime flow, trait-based external boundaries, or workspace crate ownership under this directory, update:
+When changing architecture-level behavior under `src/`, update:
 
-- `docs/site/content/docs/contributing/design-architecture.md` — architecture map, change paths, and layer responsibilities.
+- `docs/site/content/docs/architecture/module-map.md` — module/path ownership and boundaries.
+- `docs/site/content/docs/architecture/runtime-flow.md` — runtime flow, channel transport, and turn interaction flow.
+- `docs/site/content/docs/architecture/testability-boundaries.md` — trait boundaries for external integrations.
+- `docs/site/content/docs/architecture/change-recipes.md` — contributor-safe change paths.
 
 ## Directory Index
 
