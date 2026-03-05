@@ -923,6 +923,7 @@ impl App {
 
         if event_batch.should_force_reload {
             self.refresh_sessions_now().await;
+            self.reload_projects().await;
         }
 
         if event_batch.has_git_status_update {
@@ -2423,6 +2424,69 @@ mod tests {
 
         // Assert
         assert!(!is_session_worktree);
+    }
+
+    #[tokio::test]
+    async fn apply_app_events_refresh_sessions_reloads_project_active_session_count() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project(&base_path.to_string_lossy(), None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session(
+                "session-active",
+                "gemini-3-flash-preview",
+                "main",
+                &Status::Review.to_string(),
+                project_id,
+            )
+            .await
+            .expect("failed to insert active session");
+
+        let session_folder_name = "session-".chars().take(8).collect::<String>();
+        let session_data_dir = base_path.join(session_folder_name).join(SESSION_DATA_DIR);
+        fs::create_dir_all(session_data_dir).expect("failed to create session dir");
+
+        let mut app = App::new(
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            mock_app_server(),
+        )
+        .await;
+
+        let initial_active_count = app
+            .projects
+            .project_items()
+            .iter()
+            .find(|item| item.project.id == project_id)
+            .map_or(0, |item| item.active_session_count);
+        assert_eq!(initial_active_count, 1);
+
+        app.services
+            .db()
+            .update_session_status("session-active", &Status::Done.to_string())
+            .await
+            .expect("failed to update session status");
+
+        // Act
+        app.apply_app_events(AppEvent::RefreshSessions).await;
+
+        // Assert
+        let updated_active_count = app
+            .projects
+            .project_items()
+            .iter()
+            .find(|item| item.project.id == project_id)
+            .map_or(0, |item| item.active_session_count);
+        assert_eq!(updated_active_count, 0);
     }
 
     /// Creates one directory with a `.git` marker for repository discovery
