@@ -1,6 +1,6 @@
 +++
-title = "Architecture Runtime Flow"
-description = "Architecture goals, workspace map, runtime event flow, and agent channel transport model."
+title = "Runtime Flow"
+description = "Goals, workspace map, runtime event flow, and agent channel transport model."
 weight = 2
 +++
 

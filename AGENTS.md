@@ -196,20 +196,20 @@ When adding, removing, or changing user-facing features (agent backends, models,
 | `docs/site/content/docs/usage/workflow.md` | Session lifecycle, workflow, slash commands, and data location. |
 | `docs/site/content/docs/usage/keybindings.md` | Keybindings across lists, session view, diff mode, and prompt input. |
 | `docs/site/content/docs/getting-started/overview.md` | High-level concepts and worktree isolation. |
-| `docs/site/content/docs/architecture/design-architecture.md` | Architecture guide index and deep-link entry points. |
-| `docs/site/content/docs/architecture/architecture-runtime-flow.md` | Architecture goals, workspace map, runtime flow, and channel transport model. |
-| `docs/site/content/docs/architecture/architecture-module-map.md` | Module boundaries and path ownership across layers. |
-| `docs/site/content/docs/architecture/architecture-change-recipes.md` | Change-path recipes and architecture-safe contributor checklist. |
-| `docs/site/content/docs/architecture/architecture-testability-boundaries.md` | Trait boundaries and testability guidance for external integrations. |
+| `docs/site/content/docs/architecture/guide-map.md` | Guide index and deep-link entry points. |
+| `docs/site/content/docs/architecture/runtime-flow.md` | Architecture goals, workspace map, runtime flow, and channel transport model. |
+| `docs/site/content/docs/architecture/module-map.md` | Module boundaries and path ownership across layers. |
+| `docs/site/content/docs/architecture/change-recipes.md` | Change-path recipes and architecture-safe contributor checklist. |
+| `docs/site/content/docs/architecture/testability-boundaries.md` | Trait boundaries and testability guidance for external integrations. |
 | `docs/site/content/docs/contributing/managing-docs-with-zola.md` | Conventions for maintaining docs with Zola. |
 
 Update architecture docs whenever you change:
 
-- Module boundaries (`app`, `domain`, `infra`, `runtime`, `ui`) or add/remove/rename modules (`docs/site/content/docs/architecture/architecture-module-map.md`).
-- Runtime or control flow between layers (event loop, mode dispatch, app orchestration) (`docs/site/content/docs/architecture/architecture-runtime-flow.md`).
-- Trait-based external boundaries (`GitClient`, `AppServerClient`, `EventSource`) (`docs/site/content/docs/architecture/architecture-testability-boundaries.md`).
-- Workspace crate ownership or add/remove workspace members (`docs/site/content/docs/architecture/architecture-module-map.md`).
-- Canonical change-path guidance (`docs/site/content/docs/architecture/architecture-change-recipes.md`) when contribution workflows change.
+- Module boundaries (`app`, `domain`, `infra`, `runtime`, `ui`) or add/remove/rename modules (`docs/site/content/docs/architecture/module-map.md`).
+- Runtime or control flow between layers (event loop, mode dispatch, app orchestration) (`docs/site/content/docs/architecture/runtime-flow.md`).
+- Trait-based external boundaries (`GitClient`, `AppServerClient`, `EventSource`) (`docs/site/content/docs/architecture/testability-boundaries.md`).
+- Workspace crate ownership or add/remove workspace members (`docs/site/content/docs/architecture/module-map.md`).
+- Canonical change-path guidance (`docs/site/content/docs/architecture/change-recipes.md`) when contribution workflows change.
 
 ## Git Conventions
 

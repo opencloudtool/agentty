@@ -1,5 +1,5 @@
 +++
-title = "Architecture Module Map"
+title = "Module Map"
 description = "Path-by-path ownership map for composition root, application, domain, infrastructure, runtime, and UI modules."
 weight = 3
 +++

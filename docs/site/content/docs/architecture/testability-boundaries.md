@@ -1,5 +1,5 @@
 +++
-title = "Architecture Testability Boundaries"
+title = "Testability Boundaries"
 description = "Trait boundaries around external systems and testing guidance for deterministic orchestration."
 weight = 5
 +++
