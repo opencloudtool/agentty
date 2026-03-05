@@ -19,3 +19,4 @@ Keep usage docs synchronized with mode behavior:
 
 - Key handling or shortcut changes require updating `docs/site/content/docs/usage/keybindings.md`.
 - Question-mode flow or session-state behavior changes require updating `docs/site/content/docs/usage/workflow.md`.
+- Adding, removing, or renaming a mode handler file under `runtime/mode/` requires updating the runtime-mode list in `docs/site/content/docs/architecture/module-map.md`.

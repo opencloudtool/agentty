@@ -22,6 +22,7 @@ When channel event routing or transport behavior changes, update:
 - `docs/site/content/docs/architecture/runtime-flow.md` — channel architecture and turn event flow.
 - `docs/site/content/docs/architecture/testability-boundaries.md` — trait boundaries for channel/app-server integrations.
 - `docs/site/content/docs/architecture/module-map.md` — path-level ownership for `infra/channel/`.
+- Changes to `TurnRequest`, `TurnEvent`, or `TurnResult` fields/variants in `channel.rs` must update the key-types table in `docs/site/content/docs/architecture/runtime-flow.md`.
 
 ## Directory Index
 

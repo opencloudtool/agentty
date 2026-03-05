@@ -74,8 +74,8 @@ app/session/worker.rs
 
 | Type | Purpose |
 |------|---------|
-| `TurnRequest` | Input payload: folder, model, mode (start/resume), prompt, `provider_conversation_id`. |
-| `TurnEvent` | Incremental stream events: `AssistantDelta`, `Progress`, `Completed`, `Failed`, `PidUpdate`. |
+| `TurnRequest` | Input payload: `reasoning_level`, folder, `live_session_output`, model, mode (start/resume), prompt, `provider_conversation_id`. |
+| `TurnEvent` | Incremental stream events: `AssistantDelta`, `ThoughtDelta`, `Progress`, `Completed`, `Failed`, `PidUpdate`. |
 | `TurnResult` | Normalized output: `assistant_message`, token counts, `provider_conversation_id`. |
 | `TurnMode` | `Start` (fresh turn) or `Resume` (with optional session output replay). |
 
@@ -84,6 +84,20 @@ app/session/worker.rs
 `provider_conversation_id` after each turn. Session workers persist this to the
 database so a future runtime restart can resume the provider's native context
 instead of replaying the full transcript.
+
+## Session Operation Lifecycle and Recovery
+
+<a id="architecture-session-operation-lifecycle"></a>
+Turn execution is persisted as a durable operation lifecycle before worker
+execution starts:
+
+- Each queued turn is stored in `session_operation` before enqueue.
+- A per-session worker queue runs one command at a time and marks operation
+  state transitions (`queued` -> `running` -> `done`/`failed`/`canceled`).
+- Startup recovery marks unfinished operations as failed and restores affected
+  sessions to `Review` so users can safely continue from known state.
+- Cancel requests are persisted and checked before execution so queued turns can
+  be skipped deterministically.
 
 ## Agent Interaction Protocol Flow
 
