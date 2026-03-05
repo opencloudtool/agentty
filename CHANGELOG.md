@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.1] - 2026-03-04
+
+### Added
+
+- **UI:** Show active session count in the project list.
+- **Review:** Run focused review assist in isolated start mode.
+- **Docs:** Split architecture documentation into a dedicated section and document structured response protocol.
+
+### Changed
+
+- **Protocol:** Harden structured protocol handling across providers.
+- **Architecture:** Standardize module-oriented imports across the `app` and `ui` layers.
+- **Architecture:** Align architecture docs with runtime mode, channel schema, and test boundaries.
+- **Quality:** Require explicit user approval to retain legacy behavior during development.
+
+### Fixed
+
+- **UI:** Fix active session count calculation to exclude `Question` status and ensure projects reload on session refresh.
+
+### Contributors
+
+- @minev-dev
+- @andagaev
+
 ## [v0.5.0] - 2026-03-04
 
 ### Added
