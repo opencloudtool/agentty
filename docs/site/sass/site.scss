@@ -573,6 +573,8 @@ svg {
     grid-area: content;
     margin: 0 auto;
     max-width: 860px;
+    /* Ensure the center column shrinks with the grid track instead of overflowing into sidebars. */
+    width: 100%;
     min-width: 0;
 }
 
@@ -599,9 +601,12 @@ svg {
 .docs-outline-link {
     color: var(--color-muted);
     text-decoration: none;
-    display: inline-block;
+    display: block;
     font-size: 0.85rem;
     line-height: 1.35;
+    /* Keep long heading tokens inside the TOC column. */
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .docs-outline-link:hover {
@@ -620,6 +625,8 @@ svg {
     color: var(--color-muted);
     line-height: 1.75;
     font-size: 0.95rem;
+    /* Prevent long inline tokens from spilling under the right sidebar. */
+    overflow-wrap: anywhere;
 }
 
 .docs-content :not(pre) > code {
