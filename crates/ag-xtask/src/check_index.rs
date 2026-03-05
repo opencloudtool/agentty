@@ -19,6 +19,8 @@ impl CommandRunner for RealCommandRunner {
     }
 }
 
+const OPTIONAL_INDEX_FILES: [&str; 3] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md"];
+
 /// Runs repository-wide `AGENTS.md` directory index validation.
 pub(crate) fn run() -> Result<(), String> {
     run_with_runner(&RealCommandRunner)
@@ -53,9 +55,7 @@ fn run_with_runner(runner: &dyn CommandRunner) -> Result<(), String> {
     }
 
     if !success {
-        return Err(
-            "Index check failed. Some files are missing from AGENTS.md indexes.".to_string(),
-        );
+        return Err("Index check failed. Some AGENTS.md indexes are outdated.".to_string());
     }
 
     Ok(())
@@ -144,6 +144,15 @@ fn is_ignored_index_path(path: &str) -> bool {
     path == ".tmp-home" || path.starts_with(".tmp-home/")
 }
 
+/// Returns whether `entry` is optional in `Directory Index` sections.
+///
+/// These files are generated or symlinked alongside `AGENTS.md` and may be
+/// documented for discoverability, but they are not required for indexing
+/// correctness.
+fn is_optional_index_entry(entry: &str) -> bool {
+    OPTIONAL_INDEX_FILES.contains(&entry)
+}
+
 fn get_tracked_files(runner: &dyn CommandRunner) -> Result<Vec<String>, String> {
     let output = runner
         .run(Command::new("git").arg("ls-files"))
@@ -172,6 +181,9 @@ fn get_agents_files(runner: &dyn CommandRunner) -> Result<Vec<PathBuf>, String> 
     Ok(stdout.lines().map(PathBuf::from).collect())
 }
 
+/// Validates one `AGENTS.md` file against the tracked entries in its directory.
+///
+/// The check reports missing, stale, duplicate, and mislabeled index entries.
 fn process_directory(agents_path: &Path, tracked_files: &[String]) -> bool {
     let directory = agents_path.parent().unwrap_or_else(|| Path::new("."));
     let all_entries = get_local_entries(directory, tracked_files);
@@ -184,7 +196,7 @@ fn process_directory(agents_path: &Path, tracked_files: &[String]) -> bool {
         }
     };
 
-    let Some(indexed_files) = parse_index(&content) else {
+    let Some(index_entries) = parse_index(&content) else {
         error!(
             "Error: No '## Directory Index' section in {}",
             agents_path.display()
@@ -192,26 +204,93 @@ fn process_directory(agents_path: &Path, tracked_files: &[String]) -> bool {
         return false;
     };
 
-    let mut missing = Vec::new();
-    for entry in all_entries {
-        if !indexed_files.contains(&entry) {
-            missing.push(entry);
-        }
-    }
+    let indexed_destinations = index_entries
+        .iter()
+        .map(|entry| entry.destination.clone())
+        .collect::<Vec<_>>();
+    let indexed_set = indexed_destinations
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let local_set = all_entries.iter().cloned().collect::<BTreeSet<_>>();
 
-    if missing.is_empty() {
+    let missing = local_set
+        .difference(&indexed_set)
+        .cloned()
+        .collect::<Vec<_>>();
+    let stale = indexed_set
+        .difference(&local_set)
+        .filter(|entry| !is_optional_index_entry(entry.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let duplicate = duplicate_index_entries(&indexed_destinations);
+    let mismatched_labels = index_entries
+        .iter()
+        .filter(|entry| entry.label != entry.destination)
+        .map(|entry| format!("{} -> {}", entry.label, entry.destination))
+        .collect::<Vec<_>>();
+
+    if missing.is_empty()
+        && stale.is_empty()
+        && duplicate.is_empty()
+        && mismatched_labels.is_empty()
+    {
         return true;
     }
 
-    error!(
-        "Error: {} is missing entries: {}",
-        agents_path.display(),
-        missing.join(", ")
-    );
+    if !missing.is_empty() {
+        error!(
+            "Error: {} is missing entries: {}",
+            agents_path.display(),
+            missing.join(", ")
+        );
+    }
+
+    if !stale.is_empty() {
+        error!(
+            "Error: {} has stale entries: {}",
+            agents_path.display(),
+            stale.join(", ")
+        );
+    }
+
+    if !duplicate.is_empty() {
+        error!(
+            "Error: {} has duplicate entries: {}",
+            agents_path.display(),
+            duplicate.join(", ")
+        );
+    }
+
+    if !mismatched_labels.is_empty() {
+        error!(
+            "Error: {} has mismatched link labels: {}",
+            agents_path.display(),
+            mismatched_labels.join(", ")
+        );
+    }
 
     false
 }
 
+/// Returns duplicate index entries in sorted order.
+fn duplicate_index_entries(indexed_destinations: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut duplicate = BTreeSet::new();
+
+    for indexed_destination in indexed_destinations {
+        if !seen.insert(indexed_destination.clone()) {
+            duplicate.insert(indexed_destination.clone());
+        }
+    }
+
+    duplicate.into_iter().collect()
+}
+
+/// Collects direct child files/directories for one indexed directory path.
+///
+/// Agent instruction files are excluded because they are optional index
+/// entries.
 fn get_local_entries(directory: &Path, tracked_files: &[String]) -> Vec<String> {
     let mut local_files = BTreeSet::new();
     let mut local_dirs = BTreeSet::new();
@@ -242,8 +321,7 @@ fn get_local_entries(directory: &Path, tracked_files: &[String]) -> Vec<String> 
 
             if let Some(slash_idx) = rel_path.find('/') {
                 local_dirs.insert(rel_path[..slash_idx].to_string());
-            } else if rel_path != "AGENTS.md" && rel_path != "CLAUDE.md" && rel_path != "GEMINI.md"
-            {
+            } else if !is_optional_index_entry(rel_path) {
                 local_files.insert(rel_path.to_string());
             }
         }
@@ -261,23 +339,56 @@ fn get_local_entries(directory: &Path, tracked_files: &[String]) -> Vec<String> 
     all_entries
 }
 
-/// Parses the `Directory Index` section of an `AGENTS.md` file.
-///
-/// The parser uses markdown events and collects link destinations from index
-/// bullets so formatter changes to link text do not affect validation.
-fn parse_index(content: &str) -> Option<Vec<String>> {
-    collect_directory_index_destinations(content)
+/// Parsed `Directory Index` link metadata from one entry line.
+#[derive(Debug, PartialEq)]
+struct IndexEntry {
+    destination: String,
+    label: String,
 }
 
-/// Collects link destinations from the `Directory Index` section.
+/// Temporary parser state for one in-progress markdown link.
+#[derive(Debug)]
+struct LinkCapture {
+    destination: String,
+    label: String,
+}
+
+impl LinkCapture {
+    /// Creates a new link capture from a parsed markdown destination.
+    fn new(destination: &str) -> Self {
+        Self {
+            destination: destination.to_string(),
+            label: String::new(),
+        }
+    }
+
+    /// Converts parser state into a finalized index entry.
+    fn into_index_entry(self) -> IndexEntry {
+        IndexEntry {
+            destination: self.destination,
+            label: self.label,
+        }
+    }
+}
+
+/// Parses the `Directory Index` section of an `AGENTS.md` file.
+///
+/// The parser uses markdown events to collect entry destinations and labels,
+/// which allows validation to detect stale or duplicate index references.
+fn parse_index(content: &str) -> Option<Vec<IndexEntry>> {
+    collect_directory_index_entries(content)
+}
+
+/// Collects markdown link entries from the `Directory Index` section.
 ///
 /// The section starts at an `H2` heading with text equal to `Directory Index`
 /// and ends when the next `H1` or `H2` heading starts.
-fn collect_directory_index_destinations(content: &str) -> Option<Vec<String>> {
-    let mut indexed_files = Vec::new();
+fn collect_directory_index_entries(content: &str) -> Option<Vec<IndexEntry>> {
+    let mut indexed_entries = Vec::new();
     let mut is_in_directory_index = false;
     let mut current_heading_level = None;
     let mut current_heading_text = String::new();
+    let mut current_link = None;
 
     for event in Parser::new(content) {
         if let Event::Start(Tag::Heading { level, .. }) = &event {
@@ -315,10 +426,22 @@ fn collect_directory_index_destinations(content: &str) -> Option<Vec<String>> {
             continue;
         }
 
-        if let Event::Start(Tag::Link { dest_url, .. }) = &event {
-            let destination = dest_url.trim();
-            if !destination.is_empty() {
-                indexed_files.push(destination.to_string());
+        match &event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let destination = dest_url.trim();
+                if destination.is_empty() {
+                    continue;
+                }
+
+                current_link = Some(LinkCapture::new(destination));
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some(link_capture) = current_link.take() {
+                    indexed_entries.push(link_capture.into_index_entry());
+                }
+            }
+            _ => {
+                append_link_label_text(&mut current_link, &event);
             }
         }
     }
@@ -327,7 +450,7 @@ fn collect_directory_index_destinations(content: &str) -> Option<Vec<String>> {
         return None;
     }
 
-    Some(indexed_files)
+    Some(indexed_entries)
 }
 
 /// Returns whether a heading level starts a new top-level index section.
@@ -341,6 +464,17 @@ fn append_heading_text(current_heading_text: &mut String, event: &Event<'_>) {
         Event::Text(text) | Event::Code(text) => current_heading_text.push_str(text),
         Event::SoftBreak | Event::HardBreak => current_heading_text.push(' '),
         _ => {}
+    }
+}
+
+/// Appends markdown link-label text while a `Directory Index` link is active.
+fn append_link_label_text(current_link: &mut Option<LinkCapture>, event: &Event<'_>) {
+    if let Some(link_capture) = current_link {
+        match event {
+            Event::Text(text) | Event::Code(text) => link_capture.label.push_str(text),
+            Event::SoftBreak | Event::HardBreak => link_capture.label.push(' '),
+            _ => {}
+        }
     }
 }
 
@@ -422,10 +556,22 @@ mod tests {
                        Desc\n\n## Next Section\n- [ignored](ignored) - Desc";
 
         // Act
-        let files = parse_index(content).expect("Failed to parse index");
+        let entries = parse_index(content).expect("Failed to parse index");
 
         // Assert
-        assert_eq!(files, vec!["file1", "dir1/"]);
+        assert_eq!(
+            entries,
+            vec![
+                IndexEntry {
+                    destination: "file1".to_string(),
+                    label: "file1".to_string(),
+                },
+                IndexEntry {
+                    destination: "dir1/".to_string(),
+                    label: "dir1/".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -434,10 +580,16 @@ mod tests {
         let content = "## Directory Index\n- [\\_index.md](_index.md) - Homepage content.\n";
 
         // Act
-        let files = parse_index(content).expect("Failed to parse index");
+        let entries = parse_index(content).expect("Failed to parse index");
 
         // Assert
-        assert_eq!(files, vec!["_index.md"]);
+        assert_eq!(
+            entries,
+            vec![IndexEntry {
+                destination: "_index.md".to_string(),
+                label: "_index.md".to_string(),
+            }]
+        );
     }
 
     #[test]
@@ -446,10 +598,16 @@ mod tests {
         let content = "## Directory Index\n- [`_index.md`](_index.md) - Homepage content.\n";
 
         // Act
-        let files = parse_index(content).expect("Failed to parse index");
+        let entries = parse_index(content).expect("Failed to parse index");
 
         // Assert
-        assert_eq!(files, vec!["_index.md"]);
+        assert_eq!(
+            entries,
+            vec![IndexEntry {
+                destination: "_index.md".to_string(),
+                label: "_index.md".to_string(),
+            }]
+        );
     }
 
     #[test]
@@ -475,6 +633,95 @@ mod tests {
 
         // Act
         let result = process_directory(agents_path, &tracked_files);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_process_directory_fails_on_stale_entries() {
+        // Arrange
+        let dir = tempdir().expect("Failed to create temp dir");
+        let agents_path = dir.path().join("AGENTS.md");
+        fs::write(
+            &agents_path,
+            "## Directory Index\n- [file1](file1) - desc\n- [stale](stale) - desc\n",
+        )
+        .expect("Failed to write AGENTS.md");
+        let tracked_files = vec![
+            agents_path.to_string_lossy().to_string(),
+            dir.path().join("file1").to_string_lossy().to_string(),
+        ];
+
+        // Act
+        let result = process_directory(&agents_path, &tracked_files);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_process_directory_allows_optional_entries() {
+        // Arrange
+        let dir = tempdir().expect("Failed to create temp dir");
+        let agents_path = dir.path().join("AGENTS.md");
+        fs::write(
+            &agents_path,
+            "## Directory Index\n- [file1](file1) - desc\n- [AGENTS.md](AGENTS.md) - desc\n- \
+             [CLAUDE.md](CLAUDE.md) - desc\n- [GEMINI.md](GEMINI.md) - desc\n",
+        )
+        .expect("Failed to write AGENTS.md");
+        let tracked_files = vec![
+            agents_path.to_string_lossy().to_string(),
+            dir.path().join("file1").to_string_lossy().to_string(),
+        ];
+
+        // Act
+        let result = process_directory(&agents_path, &tracked_files);
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_process_directory_fails_on_duplicate_entries() {
+        // Arrange
+        let dir = tempdir().expect("Failed to create temp dir");
+        let agents_path = dir.path().join("AGENTS.md");
+        fs::write(
+            &agents_path,
+            "## Directory Index\n- [file1](file1) - desc\n- [file1 duplicate](file1) - desc\n",
+        )
+        .expect("Failed to write AGENTS.md");
+        let tracked_files = vec![
+            agents_path.to_string_lossy().to_string(),
+            dir.path().join("file1").to_string_lossy().to_string(),
+        ];
+
+        // Act
+        let result = process_directory(&agents_path, &tracked_files);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_process_directory_fails_on_mismatched_labels() {
+        // Arrange
+        let dir = tempdir().expect("Failed to create temp dir");
+        let agents_path = dir.path().join("AGENTS.md");
+        fs::write(
+            &agents_path,
+            "## Directory Index\n- [Renamed file](file1) - desc\n",
+        )
+        .expect("Failed to write AGENTS.md");
+        let tracked_files = vec![
+            agents_path.to_string_lossy().to_string(),
+            dir.path().join("file1").to_string_lossy().to_string(),
+        ];
+
+        // Act
+        let result = process_directory(&agents_path, &tracked_files);
 
         // Assert
         assert!(!result);

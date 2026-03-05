@@ -26,8 +26,8 @@ When channel event routing or transport behavior changes, update:
 
 ## Directory Index
 
-- [app_server.rs](app_server.rs) - App-server RPC `AgentChannel` adapter (`AppServerAgentChannel`).
-- [cli.rs](cli.rs) - CLI subprocess `AgentChannel` adapter (`CliAgentChannel`).
-- [AGENTS.md](AGENTS.md) - Local module guidance and directory index.
-- [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.
-- [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
+- [`app_server.rs`](app_server.rs) - App-server RPC `AgentChannel` adapter (`AppServerAgentChannel`).
+- [`cli.rs`](cli.rs) - CLI subprocess `AgentChannel` adapter (`CliAgentChannel`).
+- [`AGENTS.md`](AGENTS.md) - Local module guidance and directory index.
+- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
+- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.

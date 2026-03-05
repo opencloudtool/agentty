@@ -9,7 +9,7 @@ TUI tool to manage agents.
 
 - **Document Code:** Document all added or updated code using docstrings. When touching existing code, add or refresh docstrings so the changed behavior is clearly described.
 - **Update AGENTS.md:** Update the relevant `AGENTS.md` file only when a user instruction establishes a critical, persistent preference, convention, or workflow rule. Do not update it for one-off tasks.
-- **Directory Indexing:** Maintain the "Directory Index" section in the local `AGENTS.md`. If you create, rename, or delete a file/directory, update the index immediately.
+- **Directory Indexing:** Maintain the "Directory Index" section in the local `AGENTS.md`. If you create, rename, or delete a file/directory, update the index immediately. Wrap every index link label in backticks (for example, `` [`file_name.rs`](file_name.rs) ``) so markdown-special characters render correctly.
 - **Local Paths Only:** In `AGENTS.md`, do not use parent-directory relative paths. Each file should document only files and folders in its own directory.
 - **Context First:** Before listing a directory or reading source code, ALWAYS read the local `AGENTS.md` first. This provides immediate context on the folder structure and file purposes, reducing the need for broad discovery actions.
 - **Context7 First:** If Context7 is connected as an MCP server, use it to retrieve the latest documentation and API details for the tools and libraries used in the task.
@@ -271,26 +271,26 @@ git worktree prune
 
 ## Directory Index
 
-- [.claude/](.claude/) - Claude AI specific settings.
-- [.codex/](.codex/) - Codex AI specific settings.
-- [.gemini/](.gemini/) - Gemini AI specific settings.
-- [.git-town.toml](.git-town.toml) - Git Town configuration.
-- [.github/](.github/) - GitHub configuration files.
-- [.gitignore](.gitignore) - Git ignore patterns.
-- [.pre-commit-config.yaml](.pre-commit-config.yaml) - Pre-commit hooks configuration.
-- [.rustfmt.toml](.rustfmt.toml) - Rustfmt configuration.
-- [clippy.toml](clippy.toml) - Clippy lint configuration.
-- [crates/](crates/) - Workspace member crates.
-- [docs/](docs/) - Documentation and assets.
-- [AGENTS.md](AGENTS.md) - Context and instructions for AI agents.
-- [Cargo.lock](Cargo.lock) - Exact version pins for dependencies.
-- [Cargo.toml](Cargo.toml) - Workspace root configuration and dependency definitions.
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guide and development checks.
-- [CHANGELOG.md](CHANGELOG.md) - Project changelog.
-- [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.
-- [dist-workspace.toml](dist-workspace.toml) - Release configuration for cargo-dist.
-- [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
-- [LICENSE](LICENSE) - Project license file.
-- [README.md](README.md) - Main project documentation.
-- [rust-toolchain.toml](rust-toolchain.toml) - Rust toolchain version pinning.
-- [skills/](skills/) - Shared agent skills.
+- [`.claude/`](.claude/) - Claude AI specific settings.
+- [`.codex/`](.codex/) - Codex AI specific settings.
+- [`.gemini/`](.gemini/) - Gemini AI specific settings.
+- [`.git-town.toml`](.git-town.toml) - Git Town configuration.
+- [`.github/`](.github/) - GitHub configuration files.
+- [`.gitignore`](.gitignore) - Git ignore patterns.
+- [`.pre-commit-config.yaml`](.pre-commit-config.yaml) - Pre-commit hooks configuration.
+- [`.rustfmt.toml`](.rustfmt.toml) - Rustfmt configuration.
+- [`clippy.toml`](clippy.toml) - Clippy lint configuration.
+- [`crates/`](crates/) - Workspace member crates.
+- [`docs/`](docs/) - Documentation and assets.
+- [`AGENTS.md`](AGENTS.md) - Context and instructions for AI agents.
+- [`Cargo.lock`](Cargo.lock) - Exact version pins for dependencies.
+- [`Cargo.toml`](Cargo.toml) - Workspace root configuration and dependency definitions.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) - Contribution guide and development checks.
+- [`CHANGELOG.md`](CHANGELOG.md) - Project changelog.
+- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
+- [`dist-workspace.toml`](dist-workspace.toml) - Release configuration for cargo-dist.
+- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
+- [`LICENSE`](LICENSE) - Project license file.
+- [`README.md`](README.md) - Main project documentation.
+- [`rust-toolchain.toml`](rust-toolchain.toml) - Rust toolchain version pinning.
+- [`skills/`](skills/) - Shared agent skills.

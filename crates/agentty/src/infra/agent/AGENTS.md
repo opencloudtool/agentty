@@ -12,12 +12,12 @@ When backend protocol or provider parsing behavior changes, update:
 
 ## Directory Index
 
-- [backend.rs](backend.rs) - Shared backend trait, backend factory, and resume prompt construction.
-- [claude.rs](claude.rs) - Claude CLI backend command construction.
-- [codex.rs](codex.rs) - Codex CLI backend command construction.
-- [gemini.rs](gemini.rs) - Gemini CLI backend command construction.
-- [protocol.rs](protocol.rs) - Structured response contract (`AgentResponse`, `AgentResponseMessage`, `AgentResponseMessageKind`), schema generation, parsing, and repair helpers.
-- [response_parser.rs](response_parser.rs) - Provider-specific parsing for final and streaming output.
-- [AGENTS.md](AGENTS.md) - Local module guidance and directory index.
-- [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.
-- [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
+- [`backend.rs`](backend.rs) - Shared backend trait, backend factory, and resume prompt construction.
+- [`claude.rs`](claude.rs) - Claude CLI backend command construction.
+- [`codex.rs`](codex.rs) - Codex CLI backend command construction.
+- [`gemini.rs`](gemini.rs) - Gemini CLI backend command construction.
+- [`protocol.rs`](protocol.rs) - Structured response contract (`AgentResponse`, `AgentResponseMessage`, `AgentResponseMessageKind`), schema generation, parsing, and repair helpers.
+- [`response_parser.rs`](response_parser.rs) - Provider-specific parsing for final and streaming output.
+- [`AGENTS.md`](AGENTS.md) - Local module guidance and directory index.
+- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
+- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.

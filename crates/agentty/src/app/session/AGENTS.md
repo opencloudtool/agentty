@@ -16,11 +16,11 @@ Session domain workflows for app-level orchestration.
 
 ## Directory Index
 
-- [access.rs](access.rs) - Session lookup helpers and canonical lookup errors.
-- [lifecycle.rs](lifecycle.rs) - Session creation, prompt/reply, history, and deletion workflows.
-- [load.rs](load.rs) - Session snapshot loading and derived size persistence.
-- [merge.rs](merge.rs) - Merge/rebase workflows and worktree cleanup helpers.
-- [review.rs](review.rs) - Review-session transcript replay tracking helpers.
-- [refresh.rs](refresh.rs) - Periodic refresh scheduling and list-state restoration.
-- [task.rs](task.rs) - Session process execution, streaming output capture, and status persistence helpers.
-- [worker.rs](worker.rs) - Per-session command queue and worker execution orchestration.
+- [`access.rs`](access.rs) - Session lookup helpers and canonical lookup errors.
+- [`lifecycle.rs`](lifecycle.rs) - Session creation, prompt/reply, history, and deletion workflows.
+- [`load.rs`](load.rs) - Session snapshot loading and derived size persistence.
+- [`merge.rs`](merge.rs) - Merge/rebase workflows and worktree cleanup helpers.
+- [`review.rs`](review.rs) - Review-session transcript replay tracking helpers.
+- [`refresh.rs`](refresh.rs) - Periodic refresh scheduling and list-state restoration.
+- [`task.rs`](task.rs) - Session process execution, streaming output capture, and status persistence helpers.
+- [`worker.rs`](worker.rs) - Per-session command queue and worker execution orchestration.

@@ -26,15 +26,15 @@ When changing architecture-level behavior under `src/`, update:
 
 ## Directory Index
 
-- [app/](app/) - Application state and workflows split by concern (`session`, `project`, `task`).
-- [app.rs](app.rs) - App module root, shared app state, and orchestration APIs.
-- [domain/](domain/) - Domain layer entities and logic.
-- [domain.rs](domain.rs) - Domain module root and submodule declarations.
-- [infra/](infra/) - Infrastructure layer implementations.
-- [infra.rs](infra.rs) - Infrastructure module root and submodule declarations.
-- [runtime/](runtime/) - Runtime event loop, terminal integration, and mode key handling.
-- [runtime.rs](runtime.rs) - Runtime entry point and main event/render loop wiring.
-- [ui/](ui/) - User Interface module.
-- [ui.rs](ui.rs) - UI module root with shared exports and submodule declarations.
-- [lib.rs](lib.rs) - Library entry point, exports modules.
-- [main.rs](main.rs) - Binary composition root for DB bootstrap and runtime launch.
+- [`app/`](app/) - Application state and workflows split by concern (`session`, `project`, `task`).
+- [`app.rs`](app.rs) - App module root, shared app state, and orchestration APIs.
+- [`domain/`](domain/) - Domain layer entities and logic.
+- [`domain.rs`](domain.rs) - Domain module root and submodule declarations.
+- [`infra/`](infra/) - Infrastructure layer implementations.
+- [`infra.rs`](infra.rs) - Infrastructure module root and submodule declarations.
+- [`runtime/`](runtime/) - Runtime event loop, terminal integration, and mode key handling.
+- [`runtime.rs`](runtime.rs) - Runtime entry point and main event/render loop wiring.
+- [`ui/`](ui/) - User Interface module.
+- [`ui.rs`](ui.rs) - UI module root with shared exports and submodule declarations.
+- [`lib.rs`](lib.rs) - Library entry point, exports modules.
+- [`main.rs`](main.rs) - Binary composition root for DB bootstrap and runtime launch.

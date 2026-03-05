@@ -41,24 +41,24 @@ When working within `crates/agentty/src/ui/`:
 
 ## Directory Index
 
-- [components/](components/) - Reusable UI components.
-- [component.rs](component.rs) - UI components module root and exports.
-- [pages/](pages/) - Full-screen page implementations.
-- [page.rs](page.rs) - UI pages module root and exports.
-- [AGENTS.md](AGENTS.md) - UI specific instructions.
-- [CLAUDE.md](CLAUDE.md) - Symlink to AGENTS.md.
-- [GEMINI.md](GEMINI.md) - Symlink to AGENTS.md.
-- [activity_heatmap.rs](activity_heatmap.rs) - Activity day-key and heatmap utility logic.
-- [diff_util.rs](diff_util.rs) - Unified diff parsing and wrapping helpers.
-- [icon.rs](icon.rs) - UI icons.
-- [layout.rs](layout.rs) - Input and layout calculation helpers.
-- [markdown.rs](markdown.rs) - Styled markdown renderer for session output.
-- [overlay.rs](overlay.rs) - Overlay renderers and overlay-specific background composition.
-- [README.md](README.md) - Additional documentation.
-- [render.rs](render.rs) - Top-level frame rendering orchestration and shared UI traits/context.
-- [router.rs](router.rs) - Mode router for content-area rendering.
-- [state/](state/) - UI state definitions.
-- [state.rs](state.rs) - UI state module root and exports.
-- [style.rs](style.rs) - UI styling constants.
-- [text_util.rs](text_util.rs) - Text wrapping and compact formatting helpers.
-- [util.rs](util.rs) - Backward-compatible re-exports for UI utility modules.
+- [`components/`](components/) - Reusable UI components.
+- [`component.rs`](component.rs) - UI components module root and exports.
+- [`pages/`](pages/) - Full-screen page implementations.
+- [`page.rs`](page.rs) - UI pages module root and exports.
+- [`AGENTS.md`](AGENTS.md) - UI specific instructions.
+- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
+- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
+- [`activity_heatmap.rs`](activity_heatmap.rs) - Activity day-key and heatmap utility logic.
+- [`diff_util.rs`](diff_util.rs) - Unified diff parsing and wrapping helpers.
+- [`icon.rs`](icon.rs) - UI icons.
+- [`layout.rs`](layout.rs) - Input and layout calculation helpers.
+- [`markdown.rs`](markdown.rs) - Styled markdown renderer for session output.
+- [`overlay.rs`](overlay.rs) - Overlay renderers and overlay-specific background composition.
+- [`README.md`](README.md) - Additional documentation.
+- [`render.rs`](render.rs) - Top-level frame rendering orchestration and shared UI traits/context.
+- [`router.rs`](router.rs) - Mode router for content-area rendering.
+- [`state/`](state/) - UI state definitions.
+- [`state.rs`](state.rs) - UI state module root and exports.
+- [`style.rs`](style.rs) - UI styling constants.
+- [`text_util.rs`](text_util.rs) - Text wrapping and compact formatting helpers.
+- [`util.rs`](util.rs) - Backward-compatible re-exports for UI utility modules.

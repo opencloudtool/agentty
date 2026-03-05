@@ -14,5 +14,5 @@ Workspace maintenance tasks. This crate serves as the central hub for project au
 
 ## Directory Index
 
-- [Cargo.toml](Cargo.toml) - Crate configuration and dependencies.
-- [src/](src/) - Source code for the xtask binary.
+- [`Cargo.toml`](Cargo.toml) - Crate configuration and dependencies.
+- [`src/`](src/) - Source code for the xtask binary.
