@@ -218,7 +218,7 @@ mod tests {
     use crate::domain::setting::SettingName;
     use crate::infra::agent::AgentCommandMode;
     use crate::infra::agent::tests::MockAgentBackend;
-    use crate::infra::app_server::MockAppServerClient;
+    use crate::infra::app_server::{AppServerTurnResponse, MockAppServerClient};
     use crate::infra::channel::{MockAgentChannel, TurnEvent, TurnMode, TurnResult};
     use crate::infra::db::Database;
     use crate::infra::fs::FsClient;
@@ -532,6 +532,22 @@ mod tests {
         app.sessions.git_client = mock_git_client;
     }
 
+    /// Builds a test app with a caller-provided database, git context, and
+    /// app-server boundary.
+    async fn new_test_app_with_db_and_app_server(
+        path: PathBuf,
+        working_dir: PathBuf,
+        git_branch: Option<String>,
+        db: Database,
+        app_server_client: Arc<dyn crate::infra::app_server::AppServerClient>,
+    ) -> App {
+        let mut app = App::new(path, working_dir.clone(), git_branch, db, app_server_client).await;
+        let mock_git_client = create_default_mock_git_client(working_dir);
+        install_mock_git_client(&mut app, mock_git_client);
+
+        app
+    }
+
     /// Builds a test app with a caller-provided database and git context.
     async fn new_test_app_with_db(
         path: PathBuf,
@@ -539,11 +555,8 @@ mod tests {
         git_branch: Option<String>,
         db: Database,
     ) -> App {
-        let mut app = App::new(path, working_dir.clone(), git_branch, db, mock_app_server()).await;
-        let mock_git_client = create_default_mock_git_client(working_dir);
-        install_mock_git_client(&mut app, mock_git_client);
-
-        app
+        new_test_app_with_db_and_app_server(path, working_dir, git_branch, db, mock_app_server())
+            .await
     }
 
     /// Builds a test app rooted at `path` with no branch-specific git context.
@@ -3465,6 +3478,174 @@ mod tests {
             .find(|session| session.id == session_id)
             .expect("missing persisted session");
         assert_eq!(db_session.status, "Canceled");
+    }
+
+    #[tokio::test]
+    /// Ensures canceling a review session shuts down its app-server runtime.
+    async fn test_cancel_session_triggers_app_server_shutdown() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mut mock_app_server = MockAppServerClient::new();
+        mock_app_server
+            .expect_run_turn()
+            .times(1)
+            .returning(|_, _| {
+                Box::pin(async {
+                    Ok(AppServerTurnResponse {
+                        assistant_message: r#"{"messages":[{"type":"answer","text":"ready"}]}"#
+                            .to_string(),
+                        context_reset: false,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        pid: None,
+                        provider_conversation_id: None,
+                    })
+                })
+            });
+        mock_app_server
+            .expect_shutdown_session()
+            .times(1)
+            .returning(move |session_id| {
+                let shutdown_tx = shutdown_tx.clone();
+                Box::pin(async move {
+                    let _ = shutdown_tx.send(session_id);
+                })
+            });
+        let app_server_client: Arc<dyn crate::infra::app_server::AppServerClient> =
+            Arc::new(mock_app_server);
+        let mut app = new_test_app_with_db_and_app_server(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            Some("main".to_string()),
+            db,
+            app_server_client,
+        )
+        .await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+
+        // Act
+        app.sessions
+            .reply(&app.services, &session_id, "Start")
+            .await;
+        wait_for_status(&mut app, &session_id, Status::Review).await;
+        app.cancel_session(&session_id)
+            .await
+            .expect("failed to cancel session");
+        app.process_pending_app_events().await;
+        wait_for_status(&mut app, &session_id, Status::Canceled).await;
+        let shutdown_session_id =
+            tokio::time::timeout(std::time::Duration::from_secs(1), shutdown_rx.recv())
+                .await
+                .expect("timed out waiting for app-server shutdown")
+                .expect("missing shutdown session id");
+
+        // Assert
+        assert_eq!(shutdown_session_id, session_id);
+    }
+
+    #[tokio::test]
+    /// Ensures transitioning a session to `Done` shuts down its app-server
+    /// runtime.
+    async fn test_done_status_triggers_app_server_shutdown() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mut mock_app_server = MockAppServerClient::new();
+        mock_app_server
+            .expect_run_turn()
+            .times(1)
+            .returning(|_, _| {
+                Box::pin(async {
+                    Ok(AppServerTurnResponse {
+                        assistant_message: r#"{"messages":[{"type":"answer","text":"ready"}]}"#
+                            .to_string(),
+                        context_reset: false,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        pid: None,
+                        provider_conversation_id: None,
+                    })
+                })
+            });
+        mock_app_server
+            .expect_shutdown_session()
+            .times(1)
+            .returning(move |session_id| {
+                let shutdown_tx = shutdown_tx.clone();
+                Box::pin(async move {
+                    let _ = shutdown_tx.send(session_id);
+                })
+            });
+        let app_server_client: Arc<dyn crate::infra::app_server::AppServerClient> =
+            Arc::new(mock_app_server);
+        let mut app = new_test_app_with_db_and_app_server(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            Some("main".to_string()),
+            db,
+            app_server_client,
+        )
+        .await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+
+        // Act
+        app.sessions
+            .reply(&app.services, &session_id, "Start")
+            .await;
+        wait_for_status(&mut app, &session_id, Status::Review).await;
+        let handles = app
+            .sessions
+            .session_handles_or_err(&session_id)
+            .expect("missing session handles");
+        let session_status = Arc::clone(&handles.status);
+        let app_event_tx = app.services.event_sender();
+        let transitioned_to_merging = SessionTaskService::update_status(
+            &session_status,
+            app.services.db(),
+            &app_event_tx,
+            &session_id,
+            Status::Merging,
+        )
+        .await;
+        assert!(
+            transitioned_to_merging,
+            "status transition to Merging should succeed"
+        );
+        let transitioned_to_done = SessionTaskService::update_status(
+            &session_status,
+            app.services.db(),
+            &app_event_tx,
+            &session_id,
+            Status::Done,
+        )
+        .await;
+        assert!(
+            transitioned_to_done,
+            "status transition to Done should succeed"
+        );
+        app.process_pending_app_events().await;
+        wait_for_status(&mut app, &session_id, Status::Done).await;
+        let shutdown_session_id =
+            tokio::time::timeout(std::time::Duration::from_secs(1), shutdown_rx.recv())
+                .await
+                .expect("timed out waiting for app-server shutdown")
+                .expect("missing shutdown session id");
+
+        // Assert
+        assert_eq!(shutdown_session_id, session_id);
     }
 
     #[tokio::test]

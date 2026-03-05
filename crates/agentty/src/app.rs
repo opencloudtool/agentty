@@ -900,6 +900,11 @@ impl App {
         event_batch
     }
 
+    /// Applies one reduced app-event batch to in-memory app state.
+    ///
+    /// Session updates are synchronized from runtime handles first. Any touched
+    /// session that reached terminal status (`Done`, `Canceled`) then drops its
+    /// worker queue so background workers can shut down provider runtimes.
     async fn apply_app_event_batch(&mut self, event_batch: AppEventBatch) {
         let previous_session_states = event_batch
             .session_ids
@@ -952,6 +957,8 @@ impl App {
         for session_id in &event_batch.session_ids {
             self.sessions.sync_session_from_handle(session_id);
         }
+        self.sessions
+            .clear_terminal_session_workers(&event_batch.session_ids);
 
         if let Some(sync_main_result) = event_batch.sync_main_result {
             let sync_popup_context = self.sync_popup_context();

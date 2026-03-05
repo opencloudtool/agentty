@@ -438,6 +438,30 @@ impl SessionManager {
         self.worker_service_mut().clear_session_worker(session_id);
     }
 
+    /// Drops worker queues for touched sessions that reached terminal status.
+    ///
+    /// Terminal sessions (`Done`, `Canceled`) no longer execute turns, so
+    /// dropping their worker sender lets the worker task exit and shut down any
+    /// provider runtime process associated with that session.
+    pub(crate) fn clear_terminal_session_workers(&mut self, updated_session_ids: &HashSet<String>) {
+        let terminal_session_ids = updated_session_ids
+            .iter()
+            .filter_map(|session_id| {
+                self.sessions
+                    .iter()
+                    .find(|session| session.id == *session_id)
+                    .and_then(|session| {
+                        matches!(session.status, Status::Done | Status::Canceled)
+                            .then(|| session.id.clone())
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        for session_id in terminal_session_ids {
+            self.clear_session_worker(&session_id);
+        }
+    }
+
     /// Builds worker-runtime data for one session.
     ///
     /// # Errors
