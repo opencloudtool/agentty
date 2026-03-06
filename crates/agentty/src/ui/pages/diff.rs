@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -11,7 +11,7 @@ use crate::ui::util::{
     DiffLine, DiffLineKind, diff_line_change_totals, max_diff_line_number, parse_diff_lines,
     wrap_diff_content,
 };
-use crate::ui::{Component, Page};
+use crate::ui::{Component, Page, style};
 
 const BORDER_HORIZONTAL_WIDTH: u16 = 2;
 const FOOTER_HEIGHT: u16 = 1;
@@ -58,19 +58,19 @@ impl<'a> DiffPage<'a> {
         total_removed_lines: usize,
     ) {
         let title = Line::from(vec![
-            Span::styled(" (", Style::default().fg(Color::Yellow)),
+            Span::styled(" (", Style::default().fg(style::palette::WARNING)),
             Span::styled(
                 format!("+{total_added_lines}"),
-                Style::default().fg(Color::Green),
+                Style::default().fg(style::palette::SUCCESS),
             ),
-            Span::styled(" ", Style::default().fg(Color::Yellow)),
+            Span::styled(" ", Style::default().fg(style::palette::WARNING)),
             Span::styled(
                 format!("-{total_removed_lines}"),
-                Style::default().fg(Color::Red),
+                Style::default().fg(style::palette::DANGER),
             ),
             Span::styled(
                 format!(") Diff — {} ", self.session.display_title()),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(style::palette::WARNING),
             ),
         ]);
 
@@ -87,7 +87,7 @@ impl<'a> DiffPage<'a> {
             gutter_width * LINE_NUMBER_COLUMN_COUNT + GUTTER_EXTRA_WIDTH + SIGN_COLUMN_WIDTH;
         let inner_width = area.width.saturating_sub(BORDER_HORIZONTAL_WIDTH) as usize;
 
-        let gutter_style = Style::default().fg(Color::DarkGray);
+        let gutter_style = Style::default().fg(style::palette::TEXT_SUBTLE);
 
         let mut lines: Vec<Line<'_>> = Vec::with_capacity(parsed.len());
 
@@ -99,7 +99,7 @@ impl<'a> DiffPage<'a> {
                     }
                     lines.push(Line::from(Span::styled(
                         diff_line.content,
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(style::palette::WARNING),
                     )));
 
                     continue;
@@ -107,14 +107,14 @@ impl<'a> DiffPage<'a> {
                 DiffLineKind::HunkHeader => {
                     lines.push(Line::from(Span::styled(
                         diff_line.content,
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(style::palette::ACCENT),
                     )));
 
                     continue;
                 }
-                DiffLineKind::Addition => ("+", Style::default().fg(Color::Green)),
-                DiffLineKind::Deletion => ("-", Style::default().fg(Color::Red)),
-                DiffLineKind::Context => (" ", Style::default().fg(Color::Gray)),
+                DiffLineKind::Addition => ("+", Style::default().fg(style::palette::SUCCESS)),
+                DiffLineKind::Deletion => ("-", Style::default().fg(style::palette::DANGER)),
+                DiffLineKind::Context => (" ", Style::default().fg(style::palette::TEXT_MUTED)),
             };
 
             let old_str = match diff_line.old_line {

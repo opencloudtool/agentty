@@ -5,9 +5,9 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use crate::domain::session::{Session, SessionSize, Status};
-use crate::ui::Page;
 use crate::ui::state::help_action;
 use crate::ui::util::{first_table_column_width, truncate_with_ellipsis};
+use crate::ui::{Page, style};
 
 const ROW_HIGHLIGHT_SYMBOL: &str = ">> ";
 const TABLE_COLUMN_SPACING: u16 = 1;
@@ -54,8 +54,10 @@ impl Page for SessionListPage<'_> {
     fn render(&mut self, f: &mut Frame, area: Rect) {
         let (main_area, footer_area) = Self::content_chunks(area);
 
-        let selected_style = Style::default().bg(Color::DarkGray);
-        let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
+        let selected_style = Style::default().bg(style::palette::SURFACE);
+        let normal_style = Style::default()
+            .bg(style::palette::SURFACE_ELEVATED)
+            .fg(style::palette::BORDER);
         let header_cells = ["Session", "Model", "Size", "Status"]
             .iter()
             .map(|h| Cell::from(*h));
@@ -262,7 +264,7 @@ fn render_table_row(row: &SessionTableRow<'_>, title_column_width: usize) -> Row
 /// Renders a non-selectable group label row.
 fn render_group_label_row(group: SessionGroup) -> Row<'static> {
     let cells = vec![
-        Cell::from(group.label()).style(Style::default().fg(Color::Cyan)),
+        Cell::from(group.label()).style(Style::default().fg(style::palette::ACCENT)),
         Cell::from(""),
         Cell::from(""),
         Cell::from(""),
@@ -274,7 +276,7 @@ fn render_group_label_row(group: SessionGroup) -> Row<'static> {
 /// Renders a non-selectable placeholder row for empty groups.
 fn render_empty_group_placeholder_row() -> Row<'static> {
     let cells = vec![
-        Cell::from(GROUP_EMPTY_PLACEHOLDER).style(Style::default().fg(Color::DarkGray)),
+        Cell::from(GROUP_EMPTY_PLACEHOLDER).style(Style::default().fg(style::palette::TEXT_SUBTLE)),
         Cell::from(""),
         Cell::from(""),
         Cell::from(""),
@@ -291,7 +293,7 @@ fn render_session_row(session: &Session, title_column_width: usize) -> Row<'stat
         Cell::from(display_title),
         Cell::from(session.model.as_str()),
         Cell::from(session.size.to_string()).style(Style::default().fg(size_color(session.size))),
-        Cell::from(format!("{status}")).style(Style::default().fg(status.color())),
+        Cell::from(format!("{status}")).style(Style::default().fg(style::status_color(status))),
     ];
 
     Row::new(cells).height(1)
@@ -339,14 +341,15 @@ fn status_column_width() -> Constraint {
     )
 }
 
+/// Returns the palette color representing each session size bucket.
 fn size_color(size: SessionSize) -> Color {
     match size {
-        SessionSize::Xs => Color::Green,
-        SessionSize::S => Color::LightGreen,
-        SessionSize::M => Color::Yellow,
-        SessionSize::L => Color::LightYellow,
-        SessionSize::Xl => Color::LightRed,
-        SessionSize::Xxl => Color::Red,
+        SessionSize::Xs => style::palette::SUCCESS,
+        SessionSize::S => style::palette::SUCCESS_SOFT,
+        SessionSize::M => style::palette::WARNING,
+        SessionSize::L => style::palette::WARNING_SOFT,
+        SessionSize::Xl => style::palette::DANGER_SOFT,
+        SessionSize::Xxl => style::palette::DANGER,
     }
 }
 
@@ -636,12 +639,12 @@ mod tests {
     fn test_size_color_uses_expected_palette() {
         // Arrange
         let test_cases = [
-            (SessionSize::Xs, Color::Green),
-            (SessionSize::S, Color::LightGreen),
-            (SessionSize::M, Color::Yellow),
-            (SessionSize::L, Color::LightYellow),
-            (SessionSize::Xl, Color::LightRed),
-            (SessionSize::Xxl, Color::Red),
+            (SessionSize::Xs, style::palette::SUCCESS),
+            (SessionSize::S, style::palette::SUCCESS_SOFT),
+            (SessionSize::M, style::palette::WARNING),
+            (SessionSize::L, style::palette::WARNING_SOFT),
+            (SessionSize::Xl, style::palette::DANGER_SOFT),
+            (SessionSize::Xxl, style::palette::DANGER),
         ];
 
         // Act & Assert

@@ -5,13 +5,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::domain::session::{DailyActivity, Session};
-use crate::ui::Page;
 use crate::ui::page::session_list::{model_column_width, project_column_width};
 use crate::ui::state::help_action;
 use crate::ui::util::{
     build_activity_heatmap_grid, build_visible_heatmap_month_row, current_day_key_local,
     format_token_count, heatmap_intensity_level, heatmap_max_count, visible_heatmap_week_count,
 };
+use crate::ui::{Page, style};
 
 const DAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const HEATMAP_CELL_WIDTH: usize = 2;
@@ -71,9 +71,12 @@ impl StatsPage<'_> {
         f.render_widget(heatmap, area);
     }
 
+    /// Renders per-session token statistics using the shared table palette.
     fn render_table(&self, f: &mut Frame, area: Rect) {
-        let selected_style = Style::default().bg(Color::DarkGray);
-        let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
+        let selected_style = Style::default().bg(style::palette::SURFACE);
+        let normal_style = Style::default()
+            .bg(style::palette::SURFACE_ELEVATED)
+            .fg(style::palette::BORDER);
         let header_cells = ["Session", "Project", "Model", "Input", "Output"]
             .iter()
             .map(|header| Cell::from(*header));
@@ -143,7 +146,7 @@ impl StatsPage<'_> {
             output_display
         );
         let stats = Paragraph::new(summary)
-            .style(Style::default().fg(Color::Gray))
+            .style(Style::default().fg(style::palette::TEXT_MUTED))
             .alignment(Alignment::Right);
         f.render_widget(stats, footer_chunks[1]);
     }
@@ -166,13 +169,13 @@ impl StatsPage<'_> {
         );
         lines.push(Line::from(Span::styled(
             month_row,
-            Style::default().fg(Color::Gray),
+            Style::default().fg(style::palette::TEXT_MUTED),
         )));
 
         for (day_index, day_label) in DAY_LABELS.iter().enumerate() {
             let mut spans = vec![Span::styled(
                 format!("{day_label} "),
-                Style::default().fg(Color::Gray),
+                Style::default().fg(style::palette::TEXT_MUTED),
             )];
 
             let first_visible_week = grid[day_index].len().saturating_sub(visible_week_count);
@@ -190,13 +193,16 @@ impl StatsPage<'_> {
         if content_width < 24 {
             lines.push(Line::from(Span::styled(
                 format!("Max/day: {max_count}"),
-                Style::default().fg(Color::Gray),
+                Style::default().fg(style::palette::TEXT_MUTED),
             )));
 
             return lines;
         }
 
-        let mut legend = vec![Span::styled("Less ", Style::default().fg(Color::Gray))];
+        let mut legend = vec![Span::styled(
+            "Less ",
+            Style::default().fg(style::palette::TEXT_MUTED),
+        )];
         for intensity in 0_u8..=4 {
             legend.push(Span::styled(
                 "  ",
@@ -204,7 +210,10 @@ impl StatsPage<'_> {
             ));
             legend.push(Span::raw(" "));
         }
-        legend.push(Span::styled("More", Style::default().fg(Color::Gray)));
+        legend.push(Span::styled(
+            "More",
+            Style::default().fg(style::palette::TEXT_MUTED),
+        ));
         if content_width >= 36 {
             legend.push(Span::raw(format!(" | Max/day: {max_count}")));
         }

@@ -1,14 +1,14 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::ui::Component;
 use crate::ui::util::{
     CHAT_INPUT_MAX_VISIBLE_LINES, calculate_input_viewport, compute_input_layout,
     input_cursor_position, placeholder_cursor_position, slash_menu_dropdown_height,
 };
+use crate::ui::{Component, style};
 
 /// A single slash-command dropdown option.
 pub struct SlashMenuOption {
@@ -68,15 +68,15 @@ impl<'a> ChatInput<'a> {
                 let prefix = if is_selected { ">" } else { " " };
                 let label_style = if is_selected {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(style::palette::ACCENT)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(style::palette::TEXT_MUTED)
                 };
                 let description_style = if is_selected {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(style::palette::TEXT_MUTED)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(style::palette::TEXT_SUBTLE)
                 };
 
                 Line::from(vec![
@@ -89,10 +89,10 @@ impl<'a> ChatInput<'a> {
         let dropdown = Paragraph::new(rows).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(Style::default().fg(style::palette::BORDER))
                 .title(Span::styled(
                     slash_menu.title,
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(style::palette::ACCENT),
                 )),
         );
 
@@ -104,8 +104,11 @@ impl<'a> ChatInput<'a> {
     fn render_input(&self, f: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(Span::styled(self.title, Style::default().fg(Color::Cyan)));
+            .border_style(Style::default().fg(style::palette::ACCENT))
+            .title(Span::styled(
+                self.title,
+                Style::default().fg(style::palette::ACCENT),
+            ));
 
         if self.input.is_empty() {
             let prefix = " › ";
@@ -113,11 +116,14 @@ impl<'a> ChatInput<'a> {
                 Span::styled(
                     prefix,
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(style::palette::ACCENT)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(self.placeholder, Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    self.placeholder,
+                    Style::default().fg(style::palette::TEXT_SUBTLE),
+                ),
             ])];
 
             let widget = Paragraph::new(display_lines).block(block);

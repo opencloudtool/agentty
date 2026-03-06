@@ -1,12 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::setting::SettingsManager;
-use crate::ui::Page;
 use crate::ui::state::help_action;
+use crate::ui::{Page, style};
 
 /// Renders the settings page table and inline editing hints.
 pub struct SettingsPage<'a> {
@@ -30,8 +30,10 @@ impl Page for SettingsPage<'_> {
         let main_area = chunks[0];
         // Footer area can be used for help text later
 
-        let selected_style = Style::default().bg(Color::DarkGray);
-        let normal_style = Style::default().bg(Color::Gray).fg(Color::Black);
+        let selected_style = Style::default().bg(style::palette::SURFACE);
+        let normal_style = Style::default()
+            .bg(style::palette::SURFACE_ELEVATED)
+            .fg(style::palette::BORDER);
         let header_cells = ["Setting", "Value"].iter().map(|h| Cell::from(*h));
         let header = Row::new(header_cells)
             .style(normal_style)

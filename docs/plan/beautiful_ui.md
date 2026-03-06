@@ -2,11 +2,15 @@
 
 Status-aware UI polish plan aligned with the current Ratatui implementation in `crates/agentty/src/ui/`.
 
+## Status Maintenance Rule
+
+- After implementing any step in this plan, immediately update its status in this document (for example add `- Done`, update checkboxes, and adjust related snapshot rows).
+
 ## Current State Snapshot
 
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
-| Color system | Most UI uses ANSI colors (`Color::Cyan`, `Color::DarkGray`, etc.). A few targeted RGB usages exist (for example heatmap colors in `pages/stat.rs`). | Not started |
+| Color system | Shared semantic palette tokens are defined in `style.rs` and migrated across target UI components/pages. Heatmap colors in `pages/stat.rs` remain a separate RGB data-visualization scale. | Done |
 | Spacing and padding | Most pages render with outer `margin(1)` and some overlays use inner padding (`InfoOverlay`). Table `column_spacing` remains `1` in major list views. | Partial |
 | Tab bar | Active tab is yellow + bold; no active background treatment or separators. | Not started |
 | Tables | Header row still uses gray background with black text; row selection still uses `>> `. | Not started |
@@ -19,13 +23,13 @@ Status-aware UI polish plan aligned with the current Ratatui implementation in `
 
 ## Updated Priorities
 
-## 1) Build a shared palette and migrate hard-coded colors
+## 1) Build a shared palette and migrate hard-coded colors - Done
 
 **Why now:** Almost every other visual change depends on consistent color tokens.
 
-- Add a UI palette module (or constants in `style.rs`) with semantic tokens (surface, border, text, muted, accent, success, warning, danger).
-- Keep heatmap colors as a separate data-visualization scale.
-- Replace scattered `Color::*` usage across:
+- [x] Add a UI palette module (or constants in `style.rs`) with semantic tokens (surface, border, text, muted, accent, success, warning, danger).
+- [x] Keep heatmap colors as a separate data-visualization scale.
+- [x] Replace scattered `Color::*` usage across:
   - `components/status_bar.rs`
   - `components/footer_bar.rs`
   - `components/tab.rs`
@@ -121,7 +125,7 @@ Primary files:
 
 ## Suggested Execution Order
 
-1. Shared color palette + color token migration.
+1. Shared color palette + color token migration. (Done)
 1. Footer keybinding styling. (Done)
 1. Table selection/header/spacing refresh.
 1. Diff addition/deletion background tinting.

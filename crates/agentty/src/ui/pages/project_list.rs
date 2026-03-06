@@ -1,13 +1,13 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use time::OffsetDateTime;
 
 use crate::domain::project::ProjectListItem;
-use crate::ui::Page;
 use crate::ui::state::help_action;
+use crate::ui::{Page, style};
 
 const ROW_HIGHLIGHT_SYMBOL: &str = ">> ";
 const ACTIVE_PROJECT_MARKER: &str = "* ";
@@ -45,9 +45,13 @@ impl Page for ProjectListPage<'_> {
         let main_area = chunks[0];
         let footer_area = chunks[1];
 
-        let selected_style = Style::default().bg(Color::DarkGray);
+        let selected_style = Style::default().bg(style::palette::SURFACE);
         let header = Row::new(["Project", "Branch", "Sessions", "Last Opened", "Path"])
-            .style(Style::default().bg(Color::Gray).fg(Color::Black))
+            .style(
+                Style::default()
+                    .bg(style::palette::SURFACE_ELEVATED)
+                    .fg(style::palette::BORDER),
+            )
             .height(1)
             .bottom_margin(1);
         let active_project_id = self.active_project_id;
@@ -114,7 +118,7 @@ fn project_row_values(
 /// Returns style for one project row, emphasizing the active project.
 fn project_row_style(project_item: &ProjectListItem, active_project_id: i64) -> Style {
     if project_item.project.id == active_project_id {
-        return Style::default().fg(Color::LightCyan);
+        return Style::default().fg(style::palette::ACCENT_SOFT);
     }
 
     Style::default()
@@ -136,7 +140,10 @@ fn session_count_line(total: u32, active: u32) -> Line<'static> {
     if active > 0 {
         return Line::from(vec![
             Span::raw(format!("{total} ")),
-            Span::styled(format!("▶ {active}"), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("▶ {active}"),
+                Style::default().fg(style::palette::WARNING),
+            ),
         ]);
     }
 
@@ -224,7 +231,7 @@ mod tests {
         assert_eq!(line.spans.len(), 2);
         assert_eq!(line.spans[0].content.as_ref(), "5 ");
         assert_eq!(line.spans[1].content.as_ref(), "▶ 2");
-        assert_eq!(line.spans[1].style.fg, Some(Color::Yellow));
+        assert_eq!(line.spans[1].style.fg, Some(style::palette::WARNING));
     }
 
     #[test]

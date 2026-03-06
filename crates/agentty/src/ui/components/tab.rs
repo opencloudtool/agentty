@@ -1,12 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
 use crate::app::Tab;
 use crate::domain::project::ProjectListItem;
-use crate::ui::Component;
+use crate::ui::{Component, style};
 
 /// Header tabs rendered at the top of list mode pages.
 pub struct Tabs<'a> {
@@ -57,11 +57,11 @@ fn tab_spans(
                 Span::styled(
                     label,
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(style::palette::WARNING)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                Span::styled(label, Style::default().fg(Color::Gray))
+                Span::styled(label, Style::default().fg(style::palette::TEXT_MUTED))
             }
         })
         .collect()
@@ -120,10 +120,10 @@ mod tests {
         let spans = tab_spans(current_tab, 0, &[]);
 
         // Assert
-        assert_eq!(spans[0].style.fg, Some(Color::Gray));
-        assert_eq!(spans[1].style.fg, Some(Color::Gray));
-        assert_eq!(spans[2].style.fg, Some(Color::Yellow));
-        assert_eq!(spans[3].style.fg, Some(Color::Gray));
+        assert_eq!(spans[0].style.fg, Some(style::palette::TEXT_MUTED));
+        assert_eq!(spans[1].style.fg, Some(style::palette::TEXT_MUTED));
+        assert_eq!(spans[2].style.fg, Some(style::palette::WARNING));
+        assert_eq!(spans[3].style.fg, Some(style::palette::TEXT_MUTED));
         assert!(spans[2].style.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -149,7 +149,7 @@ mod tests {
             rendered_tabs,
             " Projects  Sessions (Primary)  Stats  Settings "
         );
-        assert_eq!(spans[1].style.fg, Some(Color::Yellow));
+        assert_eq!(spans[1].style.fg, Some(style::palette::WARNING));
     }
 
     /// Creates a `ProjectListItem` for tab-label rendering tests.

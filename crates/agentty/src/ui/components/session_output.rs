@@ -2,15 +2,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::domain::session::{Session, Status};
 use crate::icon::Icon;
-use crate::ui::Component;
 use crate::ui::markdown::render_markdown;
 use crate::ui::state::app_mode::DoneSessionOutputMode;
+use crate::ui::{Component, style};
 
 const USER_PROMPT_PREFIX: &str = " › ";
 const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
@@ -146,7 +146,7 @@ impl<'a> SessionOutput<'a> {
             let status_message = Self::status_message(status, active_progress);
             lines.push(Line::from(vec![Span::styled(
                 format!("{status_icon} {status_message}"),
-                Style::default().fg(status.color()),
+                Style::default().fg(style::status_color(status)),
             )]));
         } else if status == Status::Done {
             lines.push(Line::from(""));
@@ -185,7 +185,7 @@ impl<'a> SessionOutput<'a> {
 
         Line::from(vec![Span::styled(
             format!("Press t to switch to {toggle_target}."),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(style::palette::TEXT_SUBTLE),
         )])
     }
 
@@ -441,7 +441,7 @@ impl Component for SessionOutput<'_> {
             .block(
                 Block::default()
                     .borders(Self::output_panel_borders())
-                    .border_style(Style::default().fg(status.color())),
+                    .border_style(Style::default().fg(style::status_color(status))),
             )
             .scroll((final_scroll, 0));
 
@@ -782,7 +782,7 @@ mod tests {
             .expect("expected user prompt line");
         assert_eq!(prompt_line.to_string().trim_end(), " › /model gemini");
         assert_eq!(prompt_line.width(), 80);
-        assert_eq!(prompt_line.spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(prompt_line.spans[0].style.fg, Some(style::palette::ACCENT));
         assert!(
             prompt_line.spans[0]
                 .style

@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
-use crate::ui::Component;
 use crate::ui::util::{DiffLine, DiffLineKind};
+use crate::ui::{Component, style};
 
 const DIFF_GIT_FILE_HEADER_PREFIX: &str = "diff --git";
 const DIFF_GIT_PATH_PREFIX: &str = "diff --git a/";
@@ -226,7 +226,7 @@ impl FileExplorer {
         if file_list_lines.is_empty() {
             file_list_lines.push(Line::from(Span::styled(
                 NO_FILES_LABEL,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(style::palette::TEXT_SUBTLE),
             )));
         }
 
@@ -326,7 +326,7 @@ impl FileExplorer {
 
             lines.push(Line::from(Span::styled(
                 line_text,
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(style::palette::WARNING),
             )));
             items.push(FileTreeItem::Folder(folder_path.clone()));
 
@@ -349,12 +349,15 @@ impl FileExplorer {
             };
             let file_name = format!("{prefix}{branch_prefix}{}", file.name);
             let file_path = format!("{path_prefix}{}", file.name);
-            let mut spans = vec![Span::styled(file_name, Style::default().fg(Color::Cyan))];
+            let mut spans = vec![Span::styled(
+                file_name,
+                Style::default().fg(style::palette::ACCENT),
+            )];
 
             if let Some(rename_from) = &file.rename_from {
                 spans.push(Span::styled(
                     format!("{RENAME_ORIGIN_PREFIX}{rename_from}"),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(style::palette::TEXT_SUBTLE),
                 ));
             }
 
@@ -376,9 +379,9 @@ impl Component for FileExplorer {
         let list = List::new(items)
             .block(Block::default().borders(Borders::ALL).title(Span::styled(
                 FILE_EXPLORER_TITLE,
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(style::palette::ACCENT),
             )))
-            .highlight_style(Style::default().bg(Color::DarkGray));
+            .highlight_style(Style::default().bg(style::palette::SURFACE));
 
         let mut state = ListState::default();
         state.select(Some(self.selected_index));

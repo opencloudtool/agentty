@@ -3,16 +3,55 @@ use ratatui::style::Color;
 use super::icon::Icon;
 use crate::domain::session::Status;
 
+/// Shared semantic color tokens for the terminal UI.
+pub mod palette {
+    use ratatui::style::Color;
+
+    /// Primary accent color used for focused UI elements and titles.
+    pub const ACCENT: Color = Color::Cyan;
+    /// Brighter accent used for secondary emphasis.
+    pub const ACCENT_SOFT: Color = Color::LightCyan;
+    /// Subtle border and separator color.
+    pub const BORDER: Color = Color::DarkGray;
+    /// Error/danger color for destructive or failed states.
+    pub const DANGER: Color = Color::Red;
+    /// Softer danger tone used for graded severity scales.
+    pub const DANGER_SOFT: Color = Color::LightRed;
+    /// Informational color used for neutral-highlight states.
+    pub const INFO: Color = Color::LightBlue;
+    /// Color used for question-status emphasis.
+    pub const QUESTION: Color = Color::LightMagenta;
+    /// Base surface color for bars and selected rows.
+    pub const SURFACE: Color = Color::DarkGray;
+    /// Elevated surface color for table headers.
+    pub const SURFACE_ELEVATED: Color = Color::Gray;
+    /// Primary readable text color.
+    pub const TEXT: Color = Color::White;
+    /// Muted text color for secondary copy.
+    pub const TEXT_MUTED: Color = Color::Gray;
+    /// Extra-muted text color for placeholders and hints.
+    pub const TEXT_SUBTLE: Color = Color::DarkGray;
+    /// Success color for positive states.
+    pub const SUCCESS: Color = Color::Green;
+    /// Softer success tone used for graded severity scales.
+    pub const SUCCESS_SOFT: Color = Color::LightGreen;
+    /// Warning color for in-progress and caution states.
+    pub const WARNING: Color = Color::Yellow;
+    /// Softer warning tone used for graded severity scales.
+    pub const WARNING_SOFT: Color = Color::LightYellow;
+}
+
 /// Returns the terminal color used for one session status label.
 pub fn status_color(status: Status) -> Color {
     match status {
-        Status::New => Color::DarkGray,
-        Status::InProgress | Status::Question => Color::Yellow,
-        Status::Review => Color::LightBlue,
-        Status::Queued => Color::LightCyan,
-        Status::Rebasing | Status::Merging => Color::Cyan,
-        Status::Done => Color::Green,
-        Status::Canceled => Color::Red,
+        Status::New => palette::TEXT_SUBTLE,
+        Status::InProgress => palette::WARNING,
+        Status::Review => palette::INFO,
+        Status::Question => palette::QUESTION,
+        Status::Queued => palette::ACCENT_SOFT,
+        Status::Rebasing | Status::Merging => palette::ACCENT,
+        Status::Done => palette::SUCCESS,
+        Status::Canceled => palette::DANGER,
     }
 }
 

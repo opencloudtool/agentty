@@ -1,10 +1,10 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::ui::Component;
+use crate::ui::{Component, style};
 
 /// Top status bar showing current version and update availability.
 pub struct StatusBar {
@@ -34,7 +34,7 @@ impl Component for StatusBar {
         let mut version_spans = vec![Span::styled(
             format!(" Agentty {}", self.current_version),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(style::palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         )];
         if let Some(latest_available_version) = &self.latest_available_version {
@@ -45,13 +45,16 @@ impl Component for StatusBar {
                      agentty@latest"
                 ),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(style::palette::WARNING)
                     .add_modifier(Modifier::BOLD),
             ));
         }
 
-        let status_bar = Paragraph::new(Line::from(version_spans))
-            .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        let status_bar = Paragraph::new(Line::from(version_spans)).style(
+            Style::default()
+                .bg(style::palette::SURFACE)
+                .fg(style::palette::TEXT),
+        );
         f.render_widget(status_bar, area);
     }
 }

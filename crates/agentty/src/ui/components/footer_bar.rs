@@ -1,11 +1,11 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::icon::Icon;
-use crate::ui::Component;
+use crate::ui::{Component, style};
 
 /// Footer widget that renders the working directory and optional git status.
 pub struct FooterBar {
@@ -54,7 +54,7 @@ impl Component for FooterBar {
         let left_text = Span::styled(
             format!(" {display_path}"),
             Style::default()
-                .fg(Color::White)
+                .fg(style::palette::TEXT)
                 .add_modifier(Modifier::DIM),
         );
 
@@ -82,12 +82,18 @@ impl Component for FooterBar {
                 let padding = " ".repeat(padding_width);
 
                 spans.push(Span::raw(padding));
-                spans.push(Span::styled(branch_text, Style::default().fg(Color::Green)));
+                spans.push(Span::styled(
+                    branch_text,
+                    Style::default().fg(style::palette::SUCCESS),
+                ));
             }
         }
 
-        let footer = Paragraph::new(Line::from(spans))
-            .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        let footer = Paragraph::new(Line::from(spans)).style(
+            Style::default()
+                .bg(style::palette::SURFACE)
+                .fg(style::palette::TEXT),
+        );
 
         f.render_widget(footer, area);
     }
