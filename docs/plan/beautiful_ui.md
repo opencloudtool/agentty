@@ -1,173 +1,136 @@
 # UI Beautification Plan
 
-Recommendations for improving the Ratatui-based TUI, organized from highest-impact to most subtle.
+Status-aware UI polish plan aligned with the current Ratatui implementation in `crates/agentty/src/ui/`.
 
-## 1. Adopt a True Color Palette Instead of ANSI-16
+## Current State Snapshot
 
-**Current:** The entire UI uses the 16 basic ANSI colors (`Color::Cyan`, `Color::DarkGray`, etc.), which look different on every terminal theme and can clash badly.
+| Area | Current state in codebase | Status |
+|------|---------------------------|--------|
+| Color system | Most UI uses ANSI colors (`Color::Cyan`, `Color::DarkGray`, etc.). A few targeted RGB usages exist (for example heatmap colors in `pages/stat.rs`). | Not started |
+| Spacing and padding | Most pages render with outer `margin(1)` and some overlays use inner padding (`InfoOverlay`). Table `column_spacing` remains `1` in major list views. | Partial |
+| Tab bar | Active tab is yellow + bold; no active background treatment or separators. | Not started |
+| Tables | Header row still uses gray background with black text; row selection still uses `>> `. | Not started |
+| Status and footer bars | Status/footer bars are present and functional, but page-level keybinding hints are rendered as plain single-style strings. | Partial |
+| Diff view | Strong structure exists (file explorer, line-number gutter, sign column). Added/removed lines are foreground-only (no background tinting). | Partial |
+| Overlays/dialogs | Overlay components are established. `InfoOverlay` already uses rounded borders and padding; others still use square borders and no shared dimmed backdrop. | Partial |
+| Chat presentation | Prompt blocks already have background treatment in markdown rendering; spinner/progress text exists. Input still uses square-border style with no focus variant. | Partial |
+| Empty-state and badge UX | Session group placeholders are still generic (`No sessions...`), and session size/status display remains text-color only (no badge/pill styling). | Not started |
+| Typography consistency | Bold/dim/color usage is inconsistent across pages/components. | Partial |
 
-**Proposal:** Define a custom palette using `Color::Rgb(r, g, b)` with a cohesive, muted color scheme (think Catppuccin, Tokyo Night, or custom). This is the single biggest visual upgrade possible.
+## Updated Priorities
 
-```rust
-// Example palette module
-pub const SURFACE_0: Color = Color::Rgb(30, 30, 46);    // dark bg
-pub const SURFACE_1: Color = Color::Rgb(49, 50, 68);    // slightly lighter (selected row, bars)
-pub const SURFACE_2: Color = Color::Rgb(88, 91, 112);   // borders, muted elements
-pub const TEXT: Color = Color::Rgb(205, 214, 244);       // primary text
-pub const SUBTEXT: Color = Color::Rgb(147, 153, 178);    // secondary/dim text
-pub const BLUE: Color = Color::Rgb(137, 180, 250);       // primary accent
-pub const GREEN: Color = Color::Rgb(166, 227, 161);      // success
-pub const YELLOW: Color = Color::Rgb(249, 226, 175);     // warnings, active tabs
-pub const RED: Color = Color::Rgb(243, 139, 168);        // errors, destructive
-pub const MAUVE: Color = Color::Rgb(203, 166, 247);      // special states
-```
+## 1) Build a shared palette and migrate hard-coded colors
 
-Gives a visually harmonious look regardless of the user's terminal theme. Replace the scattered `Color::*` references in `style.rs`, page files, and components with palette constants.
+**Why now:** Almost every other visual change depends on consistent color tokens.
 
-**Files affected:** `style.rs`, all page and component files that reference `Color::*`.
+- Add a UI palette module (or constants in `style.rs`) with semantic tokens (surface, border, text, muted, accent, success, warning, danger).
+- Keep heatmap colors as a separate data-visualization scale.
+- Replace scattered `Color::*` usage across:
+  - `components/status_bar.rs`
+  - `components/footer_bar.rs`
+  - `components/tab.rs`
+  - `components/chat_input.rs`
+  - `components/session_output.rs`
+  - `components/file_explorer.rs`
+  - `pages/session_list.rs`
+  - `pages/project_list.rs`
+  - `pages/diff.rs`
+  - `pages/stat.rs`
+  - `pages/setting.rs`
 
-______________________________________________________________________
+## 2) Fix keybinding discoverability (footer hint styling)
 
-## 2. Add Breathing Room with Padding and Spacing
+**Why now:** Highest UX payoff with small surface area.
 
-**Current:** Content is packed tight — tables start at the very edge, the session list has a 1-cell margin but no inner padding, and the chat view has no visual breathing room.
+- Move footer hint rendering from plain `String` output to styled spans where keys and labels are visually distinct.
+- Keep `help_action` as the source of actions, but return richer render data for page/footer components.
+- Apply to all page footers currently using `Paragraph::new(help_text).style(Color::Gray)`.
 
-**Proposals:**
+## 3) Refresh table visual language
 
-- **Status bar / footer bar**: Add 1 cell of left padding consistently using `Padding`.
-- **Tables**: Increase `column_spacing` from `1` to `2`. Add 1 line of `bottom_margin` between group headers and their rows.
-- **Session chat**: Add a thin left gutter (1-2 cells) for the output area so text doesn't hug the border.
-- **Overlays**: Consider `Padding::uniform(1)` inside overlay blocks.
+**Why now:** List pages are the most frequently viewed screens.
 
-**Files affected:** `session_list.rs`, `session_chat.rs`, `project_list.rs`, overlay components.
+- Replace `>> ` selection marker with either full-row highlight only or a subtle single-column marker.
+- Replace heavy gray header backgrounds with lighter-weight header styling (bold + muted divider treatment).
+- Increase list table column spacing from `1` to `2` where it improves readability.
+- Consider rounded borders for list tables if consistent with the updated palette.
 
-______________________________________________________________________
+Primary files:
 
-## 3. Improve the Tab Bar
+- `pages/session_list.rs`
+- `pages/project_list.rs`
+- `pages/setting.rs`
+- `pages/stat.rs`
 
-**Current:** Plain text labels with bottom border, active tab is just yellow+bold.
+## 4) Upgrade tab bar affordance
 
-**Proposals:**
+- Add active-tab background (not only yellow text).
+- Add separators or spacing treatment that clearly partitions tabs.
+- Keep project-qualified Sessions label behavior already present.
 
-- Use a subtle background highlight for the active tab (e.g., `bg(SURFACE_1)`) instead of just color change, making it look like a real tab.
-- Add a separator character between tabs (e.g., `│` or a thin space) for visual clarity.
-- Consider an underline (`Modifier::UNDERLINED`) on the active tab instead of/in addition to color — a common modern TUI pattern.
+Primary file:
 
-**Files affected:** `components/tab.rs`.
+- `components/tab.rs`
 
-______________________________________________________________________
+## 5) Improve diff scanability with background tints
 
-## 4. Soften Table Appearance
+- Keep the current useful structure (file tree + numeric gutter + sign column).
+- Add subtle background colors for additions/deletions in `pages/diff.rs`.
+- Preserve readable contrast for wrapped lines and hunk headers.
 
-**Current:** Gray background header row with black text, `>> ` selection indicator, plain borders.
+Primary files:
 
-**Proposals:**
+- `pages/diff.rs`
+- `diff_util.rs` (only if tokenization helpers need extension)
 
-- **Header**: Use bold text with an underline instead of a solid background color. Less visually heavy.
-- **Selection**: Replace `>> ` with a subtle vertical bar `▎` or highlight the entire row with a slightly different background — less jarring than the arrow prefix which shifts content.
-- **Row separator**: Add alternating row tinting (subtle, like every other row gets +5 brightness) for readability in long lists.
-- **Borders**: Use `BorderType::Rounded` for the session list block — softer and more modern.
+## 6) Make overlay styling consistent
 
-**Files affected:** `session_list.rs`, `project_list.rs`, `settings.rs`.
+- Introduce a shared overlay frame style (border type, title style, padding defaults).
+- Normalize `ConfirmationOverlay`, `HelpOverlay`, and `OpenCommandOverlay` with the same visual system used by `InfoOverlay`.
+- Add background dimming behind overlays (currently background is redrawn and popup area is `Clear`ed only).
 
-______________________________________________________________________
+Primary files:
 
-## 5. Enrich the Status/Footer Bars
+- `overlay.rs`
+- `components/confirmation_overlay.rs`
+- `components/help_overlay.rs`
+- `components/info_overlay.rs`
+- `components/open_command_overlay.rs`
 
-**Current:** Single-line `DarkGray` background bars with minimal content.
+## 7) Chat panel polish
 
-**Proposals:**
+- Keep existing prompt block background styling from `markdown.rs`.
+- Add a clear focused-input border treatment in `chat_input.rs`.
+- Evaluate whether output panel should keep top/bottom-only borders or move to a subtle full box after palette migration.
 
-- **Status bar**: Add a subtle separator between app name and the rest (e.g., `│`). Consider right-aligning a clock or session count.
-- **Footer bar**: Style keybinding hints differently from descriptions — keys in accent color, descriptions in subtext color. This is the **#1 discoverability improvement**.
+Primary files:
 
-Example rendering:
+- `components/chat_input.rs`
+- `components/session_output.rs`
+- `markdown.rs`
 
-```
- n new  Enter view  d diff  ? help
-```
+## 8) Empty states and badge treatments
 
-Where `n`, `Enter`, `d`, `?` are rendered in the accent color and the rest is dimmed.
+- Replace generic placeholders like `No sessions...` with action-oriented copy.
+- Add optional badge/pill styles for session size and status where density remains acceptable.
 
-**Files affected:** `components/status_bar.rs`, `components/footer_bar.rs`, `session_list.rs` (help text), `state/help_action.rs`.
+Primary files:
 
-______________________________________________________________________
+- `pages/session_list.rs`
+- `pages/project_list.rs`
 
-## 6. Improve the Diff View
+## Suggested Execution Order
 
-**Current:** Functional unified diff with line numbers and color-coded +/- signs.
+1. Shared color palette + color token migration.
+1. Footer keybinding styling.
+1. Table selection/header/spacing refresh.
+1. Diff addition/deletion background tinting.
+1. Tab bar polish.
+1. Overlay consistency + background dimming.
+1. Chat input focus and output border follow-up.
+1. Empty states and optional badges.
 
-**Proposals:**
+## Out of Scope for This Pass
 
-- Use subtle background tints for added/removed lines instead of just foreground color — `bg(Rgb(30, 50, 30))` for additions, `bg(Rgb(50, 30, 30))` for deletions. This is what every modern diff tool does and massively improves scanability.
-- Add a thin vertical separator between the line number gutter and content.
-- Consider syntax highlighting for code within diff hunks (higher effort, likely via `syntect` or `tree-sitter`).
-
-**Files affected:** `pages/diff.rs`, `diff_util.rs`.
-
-______________________________________________________________________
-
-## 7. Polish Overlays and Dialogs
-
-**Current:** Centered boxes with colored borders, `Clear` widget for background.
-
-**Proposals:**
-
-- **Dim the background** behind overlays instead of just clearing. Render the background frame normally, then draw a semi-transparent dim layer (fill area with `Style::default().bg(Color::Rgb(0,0,0)).add_modifier(Modifier::DIM)`) before rendering the overlay. Creates a modal "focus" effect.
-- **Consistent rounded borders** on all overlays (the info overlay uses rounded, but confirmation doesn't).
-- **Button styling**: Instead of just Cyan background on selected yes/no, use rounded brackets and a filled indicator: `[ Yes ]  No` or `Yes   No`.
-
-**Files affected:** `overlays.rs`, `components/confirmation_overlay.rs`, `components/help_overlay.rs`, `components/info_overlay.rs`.
-
-______________________________________________________________________
-
-## 8. Improve the Chat Experience
-
-**Current:** Prompt prefix `›` with markdown-rendered output above.
-
-**Proposals:**
-
-- **Message bubbles**: Add a subtle left-border accent (like a `▎` character or colored border) to distinguish user prompts from agent output, similar to how Slack/Discord show messages.
-- **Typing indicator**: Already have the braille spinner — consider adding a subtle pulsing effect or a "thinking..." text next to it.
-- **Input box**: Use `BorderType::Rounded` and an accent-colored border when focused to clearly show the input area.
-
-**Files affected:** `pages/session_chat.rs`, `components/chat_input.rs`, `components/session_output.rs`, `markdown.rs`.
-
-______________________________________________________________________
-
-## 9. Add Visual Micro-Interactions
-
-- **Empty states**: Replace `"No sessions..."` with a friendlier message and a hint: `No sessions yet — press n to start one`.
-- **Session size pills**: Instead of just colored text, render size labels with a subtle background tint (like badges/pills).
-- **Status labels**: Same treatment — render as colored badges: `InProgress` with a background color.
-
-**Files affected:** `session_list.rs`, `project_list.rs`.
-
-______________________________________________________________________
-
-## 10. Typography Improvements
-
-- Use **bold** sparingly and consistently — only for headings and the most important interactive element on screen.
-- Use **dim** for truly secondary information (timestamps, paths, IDs) rather than for primary content.
-- Ensure consistent capitalization in headers and labels.
-
-**Files affected:** All rendering files (audit pass).
-
-______________________________________________________________________
-
-## Priority Matrix
-
-| Priority | Item | Impact | Effort |
-|----------|------|--------|--------|
-| 1 | RGB color palette | Transformative | Medium |
-| 2 | Styled keybinding hints in footer | High | Low |
-| 3 | Diff line background tinting | High | Low |
-| 4 | Table selection style (bar vs `>>`) | Medium | Low |
-| 5 | Tab bar active highlight | Medium | Low |
-| 6 | Overlay background dimming | Medium | Medium |
-| 7 | Spacing/padding pass | Medium | Low |
-| 8 | Chat message left-border accents | Medium | Low |
-| 9 | Status badges/pills | Medium | Medium |
-| 10 | Rounded borders everywhere | Low | Low |
-
-**Recommended first pass:** Items 1-5 as a cohesive batch — they transform the look with relatively contained changes.
+- Full syntax highlighting inside diff hunks.
+- Deep animation systems beyond existing spinner/progress behavior.
