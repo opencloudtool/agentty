@@ -280,9 +280,11 @@ impl SessionWorkerService {
     ///
     /// When `mode` is [`TurnMode::Resume`], the session is first transitioned
     /// to `InProgress` (start turns set `InProgress` in the lifecycle before
-    /// enqueueing). Progress events update the UI indicator; `PidUpdate` events
-    /// update the shared PID slot used for cancellation. If the turn fails, the
-    /// error is appended to session output before transitioning to `Review`.
+    /// enqueueing). Start turns schedule detached title generation immediately
+    /// before the main turn request runs. Progress events update the UI
+    /// indicator; `PidUpdate` events update the shared PID slot used for
+    /// cancellation. If the turn fails, the error is appended to session output
+    /// before transitioning to `Review`.
     async fn run_channel_turn(
         context: &SessionWorkerContext,
         mode: TurnMode,
@@ -340,6 +342,8 @@ impl SessionWorkerService {
             Some("Thinking".to_string()),
         );
 
+        spawn_start_turn_title_generation(context, &mode, &prompt, session_model).await;
+
         let turn_result = context
             .channel
             .run_turn(context.session_id.clone(), req, event_tx)
@@ -348,7 +352,7 @@ impl SessionWorkerService {
         let _ = consumer.await;
         SessionTaskService::clear_session_progress(&context.app_event_tx, &context.session_id);
 
-        let result = apply_turn_result(context, session_model, mode, prompt, turn_result).await;
+        let result = apply_turn_result(context, session_model, turn_result).await;
 
         SessionTaskService::refresh_persisted_session_size(
             &context.db,
@@ -497,8 +501,6 @@ impl SessionManager {
 async fn apply_turn_result(
     context: &SessionWorkerContext,
     session_model: AgentModel,
-    mode: TurnMode,
-    prompt: String,
     turn_result: Result<TurnResult, AgentError>,
 ) -> Result<Status, String> {
     match turn_result {
@@ -510,8 +512,6 @@ async fn apply_turn_result(
                 provider_conversation_id,
                 ..
             } = result;
-
-            spawn_start_turn_title_generation(context, mode, &prompt, session_model).await;
 
             if let Some(message) = build_assistant_transcript_output(&assistant_message) {
                 SessionTaskService::append_session_output(
@@ -601,7 +601,7 @@ async fn apply_turn_result(
 /// Spawns first-turn session title generation from the initial user prompt.
 async fn spawn_start_turn_title_generation(
     context: &SessionWorkerContext,
-    mode: TurnMode,
+    mode: &TurnMode,
     prompt: &str,
     session_model: AgentModel,
 ) {

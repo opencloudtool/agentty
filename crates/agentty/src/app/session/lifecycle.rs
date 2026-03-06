@@ -669,7 +669,7 @@ impl SessionManager {
     /// This writes the initial prompt/title.
     ///
     /// Title generation itself is triggered once from the start-turn worker
-    /// path after the first model response is available.
+    /// path as soon as the first turn starts running.
     async fn persist_first_message_metadata(
         &self,
         services: &AppServices,
@@ -1154,6 +1154,7 @@ mod tests {
 
         // Assert
         assert!(title_prompt.contains("Generate a concise, commit-style title"));
+        assert!(title_prompt.contains("Describe what the user wants to do"));
         assert!(title_prompt.contains("Keep it high-level and intent-focused."));
         assert!(title_prompt.contains("Do not include long file names"));
         assert!(title_prompt.contains("Return only the title text."));
