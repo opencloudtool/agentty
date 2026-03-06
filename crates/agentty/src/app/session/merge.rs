@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use askama::Template;
-use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use super::access::{SESSION_HANDLES_NOT_FOUND_ERROR, SESSION_NOT_FOUND_ERROR};
@@ -57,15 +56,6 @@ struct MergeCommitMessagePromptTemplate<'a> {
 
 /// Boxed async result used by sync conflict assistance boundary methods.
 type SyncAssistFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-
-#[derive(Deserialize)]
-/// Parsed response schema used when generating merge commit messages via model.
-pub(crate) struct ModelMergeCommitMessageResponse {
-    /// Optional commit body text.
-    pub(crate) description: String,
-    /// One-line commit title.
-    pub(crate) title: String,
-}
 
 struct MergeTaskInput {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -1661,17 +1651,7 @@ impl SessionManager {
         let prompt = Self::merge_commit_message_prompt(diff).ok()?;
         let model_response =
             Self::generate_merge_commit_message_with_model(folder, session_model, &prompt).ok()?;
-        let parsed_response = Self::parse_merge_commit_message_response(&model_response)?;
-        let message = if parsed_response.description.is_empty() {
-            parsed_response.title
-        } else {
-            format!(
-                "{}\n\n{}",
-                parsed_response.title, parsed_response.description
-            )
-        };
-
-        Some(message)
+        Self::parse_merge_commit_message_response(&model_response)
     }
 
     fn generate_merge_commit_message_with_model(
@@ -1712,19 +1692,21 @@ impl SessionManager {
         Ok(content)
     }
 
-    /// Parses a model response payload into a merge commit-message object.
+    /// Parses merge commit-message text from structured protocol output.
     ///
-    /// The parser accepts either a pure JSON payload or JSON wrapped in
-    /// surrounding provider text by extracting the outermost object braces.
-    pub(crate) fn parse_merge_commit_message_response(
-        content: &str,
-    ) -> Option<ModelMergeCommitMessageResponse> {
-        serde_json::from_str(content.trim()).ok().or_else(|| {
-            let json_start = content.find('{')?;
-            let json_end = content.rfind('}')?;
-            let json = &content[json_start..=json_end];
-            serde_json::from_str(json).ok()
-        })
+    /// Only protocol responses are accepted. The returned value is the joined
+    /// `answer` message text, which may contain a title-only commit message or
+    /// a multi-line message where title and body are separated by a blank line.
+    pub(crate) fn parse_merge_commit_message_response(content: &str) -> Option<String> {
+        let protocol_response = agent::protocol::parse_agent_response_strict(content).ok()?;
+        let answer_text = protocol_response.to_answer_display_text();
+        let trimmed_answer_text = answer_text.trim();
+
+        if trimmed_answer_text.is_empty() {
+            return None;
+        }
+
+        Some(trimmed_answer_text.to_string())
     }
 
     /// Renders the merge commit-message prompt from the markdown template.

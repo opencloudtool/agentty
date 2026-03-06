@@ -1,16 +1,15 @@
 Generate a git squash commit message using only the diff below.
-Return strict JSON with exactly two keys: `title` and `description`.
+Return one plain-text commit message in the protocol `answer` message text.
 Use repository default commit format unless explicit user instructions in the diff request a different format.
 
 Rules:
 
-- `title` must be one line, concise, and in present simple tense.
+- The first line is the commit title and must be one line, concise, and in present simple tense.
 - Do not use Conventional Commit prefixes like `feat:` or `fix:`.
-- `description` is commit body text and may be an empty string when no body is needed.
-- If `description` is not empty, write in present simple tense and use `-` bullets when listing multiple points.
+- If a body is needed, add one empty line after the title and then write the body text.
+- Body text must use present simple tense and use `-` bullets when listing multiple points.
 - Include `Co-Authored-By: [Agentty](https://github.com/agentty-xyz/agentty)` at the end of the final message.
 - Use only the diff content.
-- Do not wrap the JSON in markdown fences.
 
 Diff:
 {{ diff }}

@@ -3731,7 +3731,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_merge_commit_message_response_with_json() {
+    fn test_parse_merge_commit_message_response_with_protocol_message() {
+        // Arrange
+        let content = r#"{"messages":[{"type":"answer","text":"Title\n\n- Detail"}]}"#;
+
+        // Act
+        let parsed = SessionManager::parse_merge_commit_message_response(content);
+
+        // Assert
+        assert!(parsed.is_some());
+        assert_eq!(parsed.as_deref(), Some("Title\n\n- Detail"));
+    }
+
+    #[test]
+    fn test_parse_merge_commit_message_response_rejects_non_protocol_json() {
         // Arrange
         let content = r#"{"title":"Title","description":"- Detail"}"#;
 
@@ -3739,31 +3752,7 @@ mod tests {
         let parsed = SessionManager::parse_merge_commit_message_response(content);
 
         // Assert
-        assert!(parsed.is_some());
-        assert_eq!(
-            parsed.as_ref().map(|value| value.title.as_str()),
-            Some("Title")
-        );
-        assert_eq!(
-            parsed.as_ref().map(|value| value.description.as_str()),
-            Some("- Detail")
-        );
-    }
-
-    #[test]
-    fn test_parse_merge_commit_message_response_with_wrapped_json() {
-        // Arrange
-        let content = "response:\n{\"title\":\"Title\",\"description\":\"- Detail\"}\n";
-
-        // Act
-        let parsed = SessionManager::parse_merge_commit_message_response(content);
-
-        // Assert
-        assert!(parsed.is_some());
-        assert_eq!(
-            parsed.as_ref().map(|value| value.title.as_str()),
-            Some("Title")
-        );
+        assert!(parsed.is_none());
     }
 
     #[test]
@@ -3776,8 +3765,15 @@ mod tests {
             .expect("merge commit message prompt should render");
 
         // Assert
-        assert!(prompt.contains("`title` must be one line, concise, and in present simple tense."));
+        assert!(prompt.contains(
+            "Return one plain-text commit message in the protocol `answer` message text."
+        ));
+        assert!(prompt.contains(
+            "The first line is the commit title and must be one line, concise, and in present \
+             simple tense."
+        ));
         assert!(prompt.contains("Do not use Conventional Commit prefixes like `feat:` or `fix:`."));
+        assert!(prompt.contains("add one empty line after the title"));
         assert!(prompt.contains("use `-` bullets when listing multiple points."));
         assert!(prompt.contains(
             "Include `Co-Authored-By: [Agentty](https://github.com/agentty-xyz/agentty)` at the \
