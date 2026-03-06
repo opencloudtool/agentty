@@ -10,17 +10,16 @@ Session domain workflows for app-level orchestration.
 ## Design
 
 - Session workflow responsibilities are split by concern to keep implementations focused and testable.
-- `access.rs` centralizes session and handle lookups plus canonical lookup errors.
-- Lifecycle, refresh, loading, review replay, and merge/rebase logic are isolated into dedicated files.
-- Session tests remain with their corresponding source modules (for example `session.rs`) instead of a standalone `test.rs`.
+- `core.rs` holds `SessionManager` state, shared constants, and session-level helpers.
+- `workflow.rs` is a router-only module that exposes workflow submodules.
+- `workflow/` centralizes lookup, lifecycle, refresh, loading, review replay, task execution, merge/rebase, and worker orchestration.
+- Session tests remain with their corresponding source modules (for example `core.rs`) instead of a standalone `test.rs`.
 
 ## Directory Index
 
-- [`access.rs`](access.rs) - Session lookup helpers and canonical lookup errors.
-- [`lifecycle.rs`](lifecycle.rs) - Session creation, prompt/reply, history, and deletion workflows.
-- [`load.rs`](load.rs) - Session snapshot loading and derived size persistence.
-- [`merge.rs`](merge.rs) - Merge/rebase workflows and worktree cleanup helpers.
-- [`review.rs`](review.rs) - Review-session transcript replay tracking helpers.
-- [`refresh.rs`](refresh.rs) - Periodic refresh scheduling and list-state restoration.
-- [`task.rs`](task.rs) - Session process execution, streaming output capture, and status persistence helpers.
-- [`worker.rs`](worker.rs) - Per-session command queue and worker execution orchestration.
+- [`workflow/`](workflow/) - Session workflow modules and local docs/index.
+- [`workflow.rs`](workflow.rs) - Session workflow module router.
+- [`core.rs`](core.rs) - Session orchestration implementation (`SessionManager`, clock boundary, constants, and tests).
+- [`AGENTS.md`](AGENTS.md) - Local module guidance and directory index.
+- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
+- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.

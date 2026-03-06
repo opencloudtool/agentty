@@ -67,7 +67,7 @@ pub(crate) struct RunAgentAssistTaskInput {
 
 /// Shared context for streaming incremental agent output as it arrives.
 #[derive(Clone)]
-pub(super) struct StreamOutputContext {
+pub(in crate::app::session) struct StreamOutputContext {
     /// Latest progress line currently shown in the UI, if any.
     active_progress_message: Arc<Mutex<Option<String>>>,
     /// Agent family used for stream parsing.
@@ -501,7 +501,7 @@ impl SessionTaskService {
     /// Parsed response-content chunks are normalized before they are appended
     /// to user-visible session output so protocol wrappers are hidden. Flush
     /// timing uses an injected [`Clock`] for deterministic tests.
-    pub(super) async fn capture_raw_output<R: AsyncRead + Unpin>(
+    pub(in crate::app::session) async fn capture_raw_output<R: AsyncRead + Unpin>(
         source: R,
         buffer: &Arc<Mutex<String>>,
         stream_context: Option<StreamOutputContext>,

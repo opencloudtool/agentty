@@ -101,13 +101,13 @@ pub(crate) struct SessionWorkerService {
     /// `ensure_session_worker` uses the injected channel instead of the
     /// default factory, enabling deterministic command execution without
     /// spawning real provider processes.
-    pub(super) test_agent_channels: HashMap<String, Arc<dyn AgentChannel>>,
+    pub(in crate::app::session) test_agent_channels: HashMap<String, Arc<dyn AgentChannel>>,
     workers: HashMap<String, mpsc::UnboundedSender<SessionCommand>>,
 }
 
 impl SessionWorkerService {
     /// Creates an empty worker service with no active session workers.
-    pub(super) fn new() -> Self {
+    pub(in crate::app::session) fn new() -> Self {
         Self {
             test_agent_channels: HashMap::new(),
             workers: HashMap::new(),

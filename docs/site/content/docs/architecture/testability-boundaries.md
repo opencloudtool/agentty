@@ -17,8 +17,8 @@ All traits below use `#[cfg_attr(test, mockall::automock)]`:
 
 | Trait | Module | Boundary |
 |-------|--------|----------|
-| `SyncMainRunner` | `app.rs` | App-level async sync orchestration trigger used by list-mode sync flows. |
-| `GitClient` | `infra/git.rs` | Git/process operations (worktree, merge, rebase, diff, push, pull). |
+| `SyncMainRunner` | `app/core.rs` | App-level async sync orchestration trigger used by list-mode sync flows. |
+| `GitClient` | `infra/git/client.rs` | Git/process operations (worktree, merge, rebase, diff, push, pull). |
 | `FsClient` | `infra/fs.rs` | Filesystem operations used by app orchestration (create/remove/read workflow files). |
 | `TmuxClient` | `infra/tmux.rs` | Tmux subprocess operations for opening session worktrees and dispatching open commands. |
 | `AgentChannel` | `infra/channel.rs` | Provider-agnostic turn execution (session init, run turn, shutdown). |
@@ -29,7 +29,7 @@ All traits below use `#[cfg_attr(test, mockall::automock)]`:
 | `EditorLauncher` | `runtime/terminal.rs` | External editor process launch boundary used by runtime key handlers. |
 | `VersionCommandRunner` | `infra/version.rs` | npm/curl command execution for update checks. |
 | `GitCommandRunner` | `infra/git/rebase.rs` | Rebase command invocation boundary for conflict/retry tests. |
-| `SyncAssistClient` | `app/session/merge.rs` | Sync-rebase assistance execution boundary. |
+| `SyncAssistClient` | `app/session/workflow/merge.rs` | Sync-rebase assistance execution boundary. |
 | `GeminiRuntimeTransport` | `infra/gemini_acp.rs` | ACP stdio transport boundary for Gemini runtime protocol tests. |
 
 <a id="architecture-boundary-testing-guidance"></a>

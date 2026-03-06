@@ -43,10 +43,11 @@ When app orchestration or session lifecycle behavior changes, update:
 ## Directory Index
 
 - [`assist.rs`](assist.rs) - Shared assistance helpers for commit/rebase recovery loops.
+- [`core.rs`](core.rs) - App orchestration implementation (`App`, `AppEvent`, startup wiring, reducers, and tests).
 - [`merge_queue.rs`](merge_queue.rs) - Session merge queue orchestration and background workflow helpers.
 - [`project.rs`](project.rs) - Project discovery and switching logic.
 - [`session/`](session/) - Session workflows and their local docs/index.
-- [`session.rs`](session.rs) - Session module root with orchestration types and tests.
+- [`session.rs`](session.rs) - Session module router with re-exports for session orchestration APIs.
 - [`service.rs`](service.rs) - Shared app dependency container (`Database`, base path, app event sender).
 - [`setting.rs`](setting.rs) - Settings management and persistence.
 - [`session_state.rs`](session_state.rs) - Session state management.

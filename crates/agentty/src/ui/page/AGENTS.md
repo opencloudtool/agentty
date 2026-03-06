@@ -4,6 +4,9 @@ Full-screen page implementations implementing the `Page` trait.
 
 ## Directory Index
 
+- [`AGENTS.md`](AGENTS.md) - Local page module guidance and directory index.
+- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
+- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
 - [`diff.rs`](diff.rs) - Diff view page.
 - [`project_list.rs`](project_list.rs) - Project management table page.
 - [`stat.rs`](stat.rs) - Stats view page.

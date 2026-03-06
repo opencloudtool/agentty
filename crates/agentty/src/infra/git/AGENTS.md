@@ -6,6 +6,7 @@ Workflow-focused git operations for merge, rebase, repository state, sync, and w
 
 ## Directory Index
 
+- [`client.rs`](client.rs) - `GitClient` trait boundary, `RealGitClient` adapter, and git client integration tests.
 - [`merge.rs`](merge.rs) - Merge-specific git command orchestration helpers.
 - [`rebase.rs`](rebase.rs) - Rebase workflow, resume handling, and related command orchestration.
 - [`repo.rs`](repo.rs) - Repository discovery, inspection, and shared git utilities.

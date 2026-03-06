@@ -27,13 +27,13 @@ When changing architecture-level behavior under `src/`, update:
 ## Directory Index
 
 - [`app/`](app/) - Application state and workflows split by concern (`session`, `project`, `task`).
-- [`app.rs`](app.rs) - App module root, shared app state, and orchestration APIs.
+- [`app.rs`](app.rs) - App module router and public re-exports for app orchestration APIs.
 - [`domain/`](domain/) - Domain layer entities and logic.
 - [`domain.rs`](domain.rs) - Domain module root and submodule declarations.
 - [`infra/`](infra/) - Infrastructure layer implementations.
 - [`infra.rs`](infra.rs) - Infrastructure module root and submodule declarations.
 - [`runtime/`](runtime/) - Runtime event loop, terminal integration, and mode key handling.
-- [`runtime.rs`](runtime.rs) - Runtime entry point and main event/render loop wiring.
+- [`runtime.rs`](runtime.rs) - Runtime module router with public runtime entry exports.
 - [`ui/`](ui/) - User Interface module.
 - [`ui.rs`](ui.rs) - UI module root with shared exports and submodule declarations.
 - [`lib.rs`](lib.rs) - Library entry point, exports modules.

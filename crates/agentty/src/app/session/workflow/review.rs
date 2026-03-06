@@ -8,7 +8,9 @@ use crate::domain::session::{Session, Status};
 impl SessionManager {
     /// Collects session ids that should replay persisted transcript output on
     /// the next reply after app startup.
-    pub(super) fn startup_history_replay_set(sessions: &[Session]) -> HashSet<String> {
+    pub(in crate::app::session) fn startup_history_replay_set(
+        sessions: &[Session],
+    ) -> HashSet<String> {
         sessions
             .iter()
             .filter(|session| session.status == Status::Review)

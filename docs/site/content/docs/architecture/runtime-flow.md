@@ -142,7 +142,7 @@ Runtime status transitions enforced by `Status::can_transition_to()`:
 Session workers are transport-agnostic through `AgentChannel`:
 
 ```text
-app/session/worker.rs
+app/session/workflow/worker.rs
   └─ AgentChannel::run_turn(session_id, TurnRequest, event_tx)
        ├─ CliAgentChannel        (Claude; subprocess per turn)
        └─ AppServerAgentChannel  (Codex/Gemini; persistent runtime per session)

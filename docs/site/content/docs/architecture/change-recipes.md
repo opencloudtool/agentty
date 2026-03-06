@@ -14,7 +14,7 @@ layer boundaries.
 
 1. Update orchestration in `crates/agentty/src/app/session/` (`lifecycle.rs`, `worker.rs`, `task.rs`, etc.).
 1. Keep persistence in `crates/agentty/src/infra/db.rs`.
-1. Keep git operations behind `GitClient` in `crates/agentty/src/infra/git.rs`.
+1. Keep git operations behind `GitClient` in `crates/agentty/src/infra/git/client.rs` (re-exported from `crates/agentty/src/infra/git.rs`).
 1. Update docs when lifecycle/status behavior changes: `docs/site/content/docs/usage/workflow.md`.
 
 ## Add a New Agent Backend or Model
@@ -42,7 +42,7 @@ layer boundaries.
 
 ## Add a New UI Page or Component
 
-1. Add the page in `crates/agentty/src/ui/pages/` or component in `crates/agentty/src/ui/components/`.
+1. Add the page in `crates/agentty/src/ui/page/` or component in `crates/agentty/src/ui/component/`.
 1. Wire the page into `crates/agentty/src/ui/router.rs`.
 1. If a new `AppMode` is needed, extend `crates/agentty/src/ui/state/app_mode.rs` and add a key handler in `crates/agentty/src/runtime/mode/`.
 

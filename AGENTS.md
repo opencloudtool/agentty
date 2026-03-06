@@ -40,6 +40,7 @@ TUI tool to manage agents.
   - If a function has multiple callees, they should appear in the order they are first called within that function.
 - **File Naming:** Use **singular** names for Rust source files (e.g., `model.rs`, `icon.rs`, `agent.rs`). Do not use plural forms.
 - **Module Layout:** Prefer `module.rs` paired with `module/` for modules that have child modules. Do not introduce new `mod.rs` files.
+- **Parent Module Router Rule:** For every `module.rs` file paired with a `module/` directory, keep `module.rs` router-only. It may declare child modules and re-export child APIs, but must not define runtime logic, functions, structs, enums, traits, impl blocks, or constants.
 - **Imports:** Always place imports at the top of the file. Do not use local `use` statements within functions or other blocks.
   - For internal crate paths, prefer module-oriented imports and namespace usage by default (for example, `use crate::infra::agent;` and `agent::create_backend(...)`).
   - Use direct item imports only when they materially improve readability (for example, frequently used traits/types like `AppMode`, `PathBuf`, `Arc`, or small focused groups in braces).

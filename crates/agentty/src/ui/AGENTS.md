@@ -4,9 +4,9 @@ When working within `crates/agentty/src/ui/`:
 
 ## Core Rules
 
-- **Modularization**: Always respect the module boundaries. Do not put page-specific rendering logic in the UI module root file. Use the dedicated files in `pages/` (`session_list.rs`, `session_chat.rs`, etc.).
+- **Modularization**: Always respect the module boundaries. Do not put page-specific rendering logic in the UI module root file. Use the dedicated files in `page/` (`session_list.rs`, `session_chat.rs`, etc.).
 - **Helper Functions**: If you write a helper function that calculates layout or processes text, **IMMEDIATELY** move it to `util.rs` and write a unit test for it. Do not leave complex logic inline within render functions.
-- **Component Reuse**: Check the `components/` directory before building a new common widget. All components must implement the `Component` trait.
+- **Component Reuse**: Check the `component/` directory before building a new common widget. All components must implement the `Component` trait.
 - **Palette Usage**: Use semantic color tokens from `style.rs` (`palette::*`) for UI colors. Avoid direct `Color::*` usage in UI components/pages, except approved data-visualization scales (for example heatmap intensity colors).
 - **Symlinks**: Ensure `CLAUDE.md` and `GEMINI.md` are symlinked to this file.
 
@@ -14,7 +14,7 @@ When working within `crates/agentty/src/ui/`:
 
 ### Adding a New Page
 
-1. Create a new module in `pages/` (e.g., `pages/my_page.rs`)
+1. Create a new module in `page/` (e.g., `page/my_page.rs`)
 1. Define a struct (e.g., `MyPage`) that holds necessary references
 1. Implement the `Page` trait for your struct with a `render(&mut self, f: &mut Frame, area: Rect)` method
 1. Expose the module in `page.rs`
@@ -22,7 +22,7 @@ When working within `crates/agentty/src/ui/`:
 
 ### Adding a New Component
 
-1. Create a new module in `components/` (e.g., `components/my_widget.rs`)
+1. Create a new module in `component/` (e.g., `component/my_widget.rs`)
 1. Define a struct that holds the rendering data needed
 1. Implement the `Component` trait with a `render(&self, f: &mut Frame, area: Rect)` method
 1. Add a `new()` constructor to initialize the struct
@@ -42,9 +42,9 @@ When working within `crates/agentty/src/ui/`:
 
 ## Directory Index
 
-- [`components/`](components/) - Reusable UI components.
+- [`component/`](component/) - Reusable UI components.
 - [`component.rs`](component.rs) - UI components module root and exports.
-- [`pages/`](pages/) - Full-screen page implementations.
+- [`page/`](page/) - Full-screen page implementations.
 - [`page.rs`](page.rs) - UI pages module root and exports.
 - [`AGENTS.md`](AGENTS.md) - UI specific instructions.
 - [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.

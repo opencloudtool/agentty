@@ -29,7 +29,7 @@ const ROOT_TREE_PREFIX: &str = "";
 pub enum FileTreeItem {
     /// A folder prefix path (e.g. `"src/ui/"`).
     Folder(String),
-    /// A full file path (e.g. `"src/ui/components/file_explorer.rs"`).
+    /// A full file path (e.g. `"src/ui/component/file_explorer.rs"`).
     File(String),
 }
 
@@ -399,7 +399,7 @@ mod tests {
     const DIFF_NONSTANDARD_HEADER: &str = "diff --git old/path new/path";
     const DIFF_README_HEADER: &str = "diff --git a/README.md b/README.md";
     const DIFF_NESTED_HEADER: &str =
-        "diff --git a/src/ui/components/file_explorer.rs b/src/ui/components/file_explorer.rs";
+        "diff --git a/src/ui/component/file_explorer.rs b/src/ui/component/file_explorer.rs";
     const EXPECTED_SRC_FOLDER_LINE: &str = "└ src/";
     const EXPECTED_MAIN_FILE_LINE: &str = "  └ main.rs";
     const EXPECTED_NEW_FILE_LINE: &str = "  └ new.rs";
@@ -408,7 +408,7 @@ mod tests {
     const EXPECTED_NESTED_TREE_LINES: [&str; 6] = [
         "├ src/",
         "│ ├ ui/",
-        "│ │ └ components/",
+        "│ │ └ component/",
         "│ │   └ file_explorer.rs",
         "│ └ main.rs",
         "└ README.md",
@@ -614,8 +614,8 @@ mod tests {
             vec![
                 FileTreeItem::Folder("src/".to_string()),
                 FileTreeItem::Folder("src/ui/".to_string()),
-                FileTreeItem::Folder("src/ui/components/".to_string()),
-                FileTreeItem::File("src/ui/components/file_explorer.rs".to_string()),
+                FileTreeItem::Folder("src/ui/component/".to_string()),
+                FileTreeItem::File("src/ui/component/file_explorer.rs".to_string()),
                 FileTreeItem::File("src/main.rs".to_string()),
                 FileTreeItem::File("README.md".to_string()),
             ]

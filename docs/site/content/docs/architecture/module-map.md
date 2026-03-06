@@ -21,7 +21,8 @@ choose the correct module when implementing changes.
 
 | Path | What lives here |
 |------|------------------|
-| `crates/agentty/src/app.rs` | `App` facade, event reducer, startup loading, background task wiring. |
+| `crates/agentty/src/app.rs` | App module router and public re-exports for app orchestration APIs. |
+| `crates/agentty/src/app/core.rs` | `App` facade, event reducer, startup loading, background task wiring. |
 | `crates/agentty/src/app/assist.rs` | Shared assistance helpers for commit and rebase recovery loops. |
 | `crates/agentty/src/app/merge_queue.rs` | Merge queue state machine (`Queued`/`Merging` progression rules). |
 | `crates/agentty/src/app/project.rs` | `ProjectManager` - project CRUD and selection orchestration. |
@@ -31,14 +32,15 @@ choose the correct module when implementing changes.
 | `crates/agentty/src/app/tab.rs` | `TabManager` - top-level tab definitions and tab selection state. |
 | `crates/agentty/src/app/task.rs` | App-scoped background tasks (git status polling, version checks, review assists, app-server turns). |
 | `crates/agentty/src/app/session/` | Session-specific orchestration split by concern: |
-| - `access.rs` | Session lookup helpers. |
-| - `lifecycle.rs` | Session creation, prompt/reply workflows. |
-| - `load.rs` | Session snapshot loading. |
-| - `merge.rs` | Merge/rebase workflows. |
-| - `refresh.rs` | Periodic refresh scheduling. |
-| - `review.rs` | Review transcript replay and review-mode restoration helpers. |
-| - `task.rs` | Session process execution and status persistence. |
-| - `worker.rs` | Per-session command queue orchestration, `AgentChannel` turn dispatch. |
+| - `core.rs` | `SessionManager`, session clock boundary, shared constants, and session module tests. |
+| - `workflow/access.rs` | Session lookup helpers. |
+| - `workflow/lifecycle.rs` | Session creation, prompt/reply workflows. |
+| - `workflow/load.rs` | Session snapshot loading. |
+| - `workflow/merge.rs` | Merge/rebase workflows. |
+| - `workflow/refresh.rs` | Periodic refresh scheduling. |
+| - `workflow/review.rs` | Review transcript replay and review-mode restoration helpers. |
+| - `workflow/task.rs` | Session process execution and status persistence. |
+| - `workflow/worker.rs` | Per-session command queue orchestration, `AgentChannel` turn dispatch. |
 
 ## Domain Layer (`domain/`)
 
@@ -57,7 +59,8 @@ choose the correct module when implementing changes.
 |------|------------------|
 | `crates/agentty/src/infra/db.rs` | SQLite persistence and queries; database open config enables `WAL` and foreign keys. |
 | `crates/agentty/src/infra/fs.rs` | `FsClient` trait and production async filesystem adapter used by app orchestration. |
-| `crates/agentty/src/infra/git.rs` + `infra/git/` | `GitClient` trait and async git workflow commands (`merge.rs`, `rebase.rs`, `repo.rs`, `sync.rs`, `worktree.rs`). |
+| `crates/agentty/src/infra/git.rs` + `infra/git/` | Git module router plus async git workflow commands (`merge.rs`, `rebase.rs`, `repo.rs`, `sync.rs`, `worktree.rs`). |
+| `crates/agentty/src/infra/git/client.rs` | `GitClient` trait boundary, `RealGitClient` production adapter, and git client integration tests. |
 | `crates/agentty/src/infra/channel.rs` + `infra/channel/` | `AgentChannel` trait and provider-agnostic turn execution: |
 | - `cli.rs` | `CliAgentChannel` - CLI subprocess adapter (Claude). |
 | - `app_server.rs` | `AppServerAgentChannel` - app-server RPC adapter (Codex/Gemini). |
@@ -81,7 +84,8 @@ choose the correct module when implementing changes.
 
 | Path | What lives here |
 |------|------------------|
-| `crates/agentty/src/runtime.rs` | Terminal lifecycle, event/render loop orchestration, `TerminalGuard`. |
+| `crates/agentty/src/runtime.rs` | Runtime module router and public runtime entry re-exports. |
+| `crates/agentty/src/runtime/core.rs` | Terminal lifecycle, event/render loop orchestration, `TerminalGuard`. |
 | `crates/agentty/src/runtime/terminal.rs` | Terminal setup/cleanup plus `EditorLauncher` trait boundary for external editor subprocesses. |
 | `crates/agentty/src/runtime/event.rs` | `EventSource` trait, event reader spawn, tick processing, and app-event integration. |
 | `crates/agentty/src/runtime/key_handler.rs` | Mode dispatch for key events. |
@@ -109,14 +113,14 @@ choose the correct module when implementing changes.
 | `crates/agentty/src/ui/text_util.rs` | Text manipulation helpers. |
 | `crates/agentty/src/ui/activity_heatmap.rs` | Activity heatmap visualization. |
 | `crates/agentty/src/ui/util.rs` | General UI utilities. |
-| `crates/agentty/src/ui/pages/` | Full-screen page implementations: |
+| `crates/agentty/src/ui/page/` | Full-screen page implementations: |
 | - `diff.rs` | Diff view page. |
 | - `project_list.rs` | Project list page. |
 | - `session_chat.rs` | Session chat page (new sessions and replies). |
 | - `session_list.rs` | Session list page. |
 | - `setting.rs` | Settings page. |
 | - `stat.rs` | Stats/analytics page. |
-| `crates/agentty/src/ui/components/` | Reusable widgets and overlays: |
+| `crates/agentty/src/ui/component/` | Reusable widgets and overlays: |
 | - `chat_input.rs` | Chat input widget. |
 | - `confirmation_overlay.rs` | Confirmation dialog overlay. |
 | - `file_explorer.rs` | Diff file explorer component. |

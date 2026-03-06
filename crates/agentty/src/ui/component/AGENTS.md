@@ -4,6 +4,9 @@ Reusable UI widgets implementing the `Component` trait.
 
 ## Directory Index
 
+- [`AGENTS.md`](AGENTS.md) - Local component module guidance and directory index.
+- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
+- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
 - [`chat_input.rs`](chat_input.rs) - Chat input component.
 - [`confirmation_overlay.rs`](confirmation_overlay.rs) - Confirmation dialog overlay component.
 - [`file_explorer.rs`](file_explorer.rs) - Diff file explorer component.
