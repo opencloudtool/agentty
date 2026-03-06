@@ -12,6 +12,10 @@ use crate::ui::Component;
 use crate::ui::markdown::render_markdown;
 use crate::ui::state::app_mode::DoneSessionOutputMode;
 
+const USER_PROMPT_PREFIX: &str = " › ";
+const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
+const CLARIFICATION_HEADER_LINE: &str = " › Clarifications:";
+
 /// Session chat output panel renderer.
 pub struct SessionOutput<'a> {
     active_progress: Option<&'a str>,
@@ -240,6 +244,10 @@ impl<'a> SessionOutput<'a> {
 
     /// Adds visual spacing around user prompt blocks while preserving pasted
     /// multiline prompts as one contiguous message.
+    ///
+    /// Clarification replies receive one extra spacer row between numbered
+    /// question/answer groups so the block scans faster than plain prompt
+    /// text.
     fn output_text_with_spaced_user_input(output_text: &str) -> String {
         let raw_lines = output_text.split('\n').collect::<Vec<_>>();
         let mut formatted_lines = Vec::with_capacity(raw_lines.len());
@@ -247,7 +255,7 @@ impl<'a> SessionOutput<'a> {
 
         while line_index < raw_lines.len() {
             let line = raw_lines[line_index];
-            if !line.starts_with(" › ") {
+            if !line.starts_with(USER_PROMPT_PREFIX) {
                 formatted_lines.push(line.to_string());
                 line_index += 1;
 
@@ -262,11 +270,9 @@ impl<'a> SessionOutput<'a> {
             }
 
             let block_end_index = Self::user_prompt_block_end_index(&raw_lines, line_index);
-            formatted_lines.extend(
-                raw_lines[line_index..=block_end_index]
-                    .iter()
-                    .map(ToString::to_string),
-            );
+            formatted_lines.extend(Self::format_prompt_block_lines(
+                &raw_lines[line_index..=block_end_index],
+            ));
             line_index = block_end_index + 1;
 
             let next_line_is_empty = raw_lines
@@ -280,6 +286,55 @@ impl<'a> SessionOutput<'a> {
         formatted_lines.join("\n")
     }
 
+    /// Formats one prompt block and inserts intra-block separators for
+    /// clarification question groups.
+    fn format_prompt_block_lines(raw_block_lines: &[&str]) -> Vec<String> {
+        if !Self::is_clarification_prompt_block(raw_block_lines) {
+            return raw_block_lines.iter().map(ToString::to_string).collect();
+        }
+
+        let mut formatted_block_lines = Vec::with_capacity(raw_block_lines.len() + 2);
+        for (block_line_index, raw_block_line) in raw_block_lines.iter().enumerate() {
+            if block_line_index > 0 && Self::is_clarification_question_line(raw_block_line) {
+                formatted_block_lines.push(USER_PROMPT_CONTINUATION_PREFIX.to_string());
+            }
+
+            formatted_block_lines.push((*raw_block_line).to_string());
+        }
+
+        formatted_block_lines
+    }
+
+    /// Returns true when the prompt block is the generated clarifications
+    /// payload.
+    fn is_clarification_prompt_block(raw_block_lines: &[&str]) -> bool {
+        raw_block_lines
+            .first()
+            .is_some_and(|line| line.trim_end() == CLARIFICATION_HEADER_LINE)
+    }
+
+    /// Returns true for numbered clarification question rows like
+    /// `   1. Q: Need tests?`.
+    fn is_clarification_question_line(raw_block_line: &str) -> bool {
+        let Some(line_without_prefix) =
+            raw_block_line.strip_prefix(USER_PROMPT_CONTINUATION_PREFIX)
+        else {
+            return false;
+        };
+        let trimmed_line = line_without_prefix.trim_start();
+        let digit_count = trimmed_line
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .count();
+        if digit_count == 0 {
+            return false;
+        }
+
+        let (_, suffix) = trimmed_line.split_at(digit_count);
+
+        suffix.starts_with(". Q: ")
+    }
+
     /// Returns the final non-empty line index for a user prompt block that
     /// starts at `start_index`.
     fn user_prompt_block_end_index(raw_lines: &[&str], start_index: usize) -> usize {
@@ -287,7 +342,7 @@ impl<'a> SessionOutput<'a> {
 
         while candidate_index < raw_lines.len() {
             let candidate_line = raw_lines[candidate_index];
-            if candidate_line.is_empty() || candidate_line.starts_with(" › ") {
+            if candidate_line.is_empty() || candidate_line.starts_with(USER_PROMPT_PREFIX) {
                 break;
             }
 
@@ -859,6 +914,23 @@ mod tests {
         assert_eq!(
             spaced,
             "assistant output\n\n › first line\nsecond line\n\nagent response"
+        );
+    }
+
+    #[test]
+    fn test_output_text_with_spaced_user_input_adds_question_group_spacing_for_clarifications() {
+        // Arrange
+        let output = "assistant output\n › Clarifications:\n   1. Q: Need target branch?\n      \
+                      A: main\n   2. Q: Need tests?\n      A: yes\n\nagent response";
+
+        // Act
+        let spaced = SessionOutput::output_text_with_spaced_user_input(output);
+
+        // Assert
+        assert_eq!(
+            spaced,
+            "assistant output\n\n › Clarifications:\n   \n   1. Q: Need target branch?\n      A: \
+             main\n   \n   2. Q: Need tests?\n      A: yes\n\nagent response"
         );
     }
 

@@ -4,6 +4,8 @@ use ratatui::text::{Line, Span};
 use crate::ui::util::wrap_styled_line;
 
 const USER_PROMPT_PREFIX: &str = " › ";
+const CLARIFICATION_HEADER: &str = "Clarifications:";
+const CLARIFICATION_PROMPT_PREFIX: &str = USER_PROMPT_PREFIX;
 const STATS_LABEL_WIDTH: usize = 22;
 
 #[derive(Clone, Copy)]
@@ -13,26 +15,36 @@ enum BlockState {
     FencedStats,
 }
 
+/// Distinguishes prompt-block payloads that share `USER_PROMPT_PREFIX`.
+#[derive(Clone, Copy)]
+enum PromptBlockKind {
+    Clarification,
+    UserPrompt,
+}
+
 /// Converts markdown text into styled, word-wrapped lines for terminal display.
 pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut rendered_lines = Vec::new();
     let mut block_state = BlockState::Paragraph;
     let mut is_user_prompt_block = false;
+    let mut active_prompt_block_kind = PromptBlockKind::UserPrompt;
 
     for raw_line in text.split('\n') {
         let starts_user_prompt_block = raw_line.starts_with(USER_PROMPT_PREFIX);
         if let Some(prompt_line) = user_prompt_block_line(raw_line, &mut is_user_prompt_block) {
             if starts_user_prompt_block {
                 // Prompt lines are session metadata, not markdown content.
+                active_prompt_block_kind = prompt_block_kind(raw_line);
                 block_state = BlockState::Paragraph;
-                rendered_lines.push(user_prompt_padding_line(width));
+                rendered_lines.push(prompt_block_padding_line(width, active_prompt_block_kind));
             }
 
             let closes_user_prompt_block = prompt_line.is_empty() && !is_user_prompt_block;
-            rendered_lines.extend(render_user_prompt_line(
+            rendered_lines.extend(render_prompt_block_line(
                 prompt_line,
                 starts_user_prompt_block,
                 width,
+                active_prompt_block_kind,
             ));
             if closes_user_prompt_block {
                 rendered_lines.push(Line::from(""));
@@ -58,7 +70,7 @@ pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     }
 
     if is_user_prompt_block {
-        rendered_lines.push(user_prompt_padding_line(width));
+        rendered_lines.push(prompt_block_padding_line(width, active_prompt_block_kind));
     }
 
     if rendered_lines.is_empty() {
@@ -66,6 +78,18 @@ pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     }
 
     rendered_lines
+}
+
+/// Resolves one prompt block style from the first prefixed line.
+fn prompt_block_kind(raw_line: &str) -> PromptBlockKind {
+    let is_clarification_header = raw_line
+        .strip_prefix(USER_PROMPT_PREFIX)
+        .is_some_and(|content| content.trim() == CLARIFICATION_HEADER);
+    if is_clarification_header {
+        return PromptBlockKind::Clarification;
+    }
+
+    PromptBlockKind::UserPrompt
 }
 
 /// Returns prompt block lines that must be rendered with prompt styling.
@@ -95,6 +119,24 @@ fn user_prompt_block_line<'a>(
     None
 }
 
+/// Renders one prompt block line using the style rules for the current prompt
+/// block kind.
+fn render_prompt_block_line(
+    raw_line: &str,
+    starts_user_prompt_block: bool,
+    width: usize,
+    prompt_block_kind: PromptBlockKind,
+) -> Vec<Line<'static>> {
+    match prompt_block_kind {
+        PromptBlockKind::Clarification => {
+            render_clarification_prompt_line(raw_line, starts_user_prompt_block, width)
+        }
+        PromptBlockKind::UserPrompt => {
+            render_user_prompt_line(raw_line, starts_user_prompt_block, width)
+        }
+    }
+}
+
 /// Renders a user prompt line verbatim so markdown syntax in prompts is not
 /// parsed.
 ///
@@ -106,10 +148,13 @@ fn render_user_prompt_line(
     width: usize,
 ) -> Vec<Line<'static>> {
     if raw_line.is_empty() {
-        return vec![user_prompt_padding_line(width)];
+        return vec![prompt_block_padding_line(
+            width,
+            PromptBlockKind::UserPrompt,
+        )];
     }
 
-    let continuation_padding = user_prompt_continuation_padding();
+    let continuation_padding = prompt_block_continuation_padding();
     let content_style = user_prompt_content_style();
 
     let prompt_lines = if starts_user_prompt_block
@@ -122,6 +167,7 @@ fn render_user_prompt_line(
             user_prompt_prefix_style(),
             content_style,
             width,
+            user_prompt_lookup_spans,
         )
     } else {
         let continuation_content = raw_line
@@ -135,6 +181,7 @@ fn render_user_prompt_line(
             content_style,
             content_style,
             width,
+            user_prompt_lookup_spans,
         )
     };
 
@@ -144,10 +191,73 @@ fn render_user_prompt_line(
         .collect()
 }
 
-/// Returns one full-width line used as top or bottom padding inside the user
-/// prompt area.
-fn user_prompt_padding_line(width: usize) -> Line<'static> {
-    pad_line_to_width(Line::from(""), width, user_prompt_content_style())
+/// Renders one clarification line with distinct prompt visuals and
+/// question/answer marker highlighting.
+fn render_clarification_prompt_line(
+    raw_line: &str,
+    starts_user_prompt_block: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
+    if raw_line.is_empty() {
+        return vec![prompt_block_padding_line(
+            width,
+            PromptBlockKind::Clarification,
+        )];
+    }
+
+    let continuation_padding = prompt_block_continuation_padding();
+    let content_style = clarification_content_style();
+
+    let prompt_lines = if starts_user_prompt_block
+        && let Some(content) = raw_line.strip_prefix(USER_PROMPT_PREFIX)
+    {
+        render_prefixed_verbatim_line(
+            CLARIFICATION_PROMPT_PREFIX,
+            &continuation_padding,
+            content,
+            clarification_prompt_prefix_style(),
+            content_style,
+            width,
+            clarification_prompt_spans,
+        )
+    } else {
+        let continuation_content = raw_line
+            .strip_prefix(continuation_padding.as_str())
+            .unwrap_or(raw_line);
+
+        render_prefixed_verbatim_line(
+            &continuation_padding,
+            &continuation_padding,
+            continuation_content,
+            content_style,
+            content_style,
+            width,
+            clarification_prompt_spans,
+        )
+    };
+
+    prompt_lines
+        .into_iter()
+        .map(|line| pad_line_to_width(line, width, content_style))
+        .collect()
+}
+
+/// Returns one full-width line used as top or bottom padding inside prompt
+/// blocks.
+fn prompt_block_padding_line(width: usize, prompt_block_kind: PromptBlockKind) -> Line<'static> {
+    pad_line_to_width(
+        Line::from(""),
+        width,
+        prompt_block_content_style(prompt_block_kind),
+    )
+}
+
+/// Returns the base style used across a full prompt-block row.
+fn prompt_block_content_style(prompt_block_kind: PromptBlockKind) -> Style {
+    match prompt_block_kind {
+        PromptBlockKind::Clarification => clarification_content_style(),
+        PromptBlockKind::UserPrompt => user_prompt_content_style(),
+    }
 }
 
 /// Pads one rendered line to the target width using one style for trailing
@@ -174,7 +284,7 @@ fn render_markdown_line(raw_line: &str, width: usize) -> Vec<Line<'static>> {
     }
 
     if raw_line.starts_with(USER_PROMPT_PREFIX) {
-        return render_user_prompt_line(raw_line, true, width);
+        return render_prompt_block_line(raw_line, true, width, PromptBlockKind::UserPrompt);
     }
 
     if let Some((level, content)) = parse_heading(raw_line) {
@@ -265,17 +375,18 @@ fn render_prefixed_verbatim_line(
     prefix_style: Style,
     content_style: Style,
     width: usize,
+    content_span_builder: fn(&str, Style) -> Vec<Span<'static>>,
 ) -> Vec<Line<'static>> {
     let prefix_width = prefix.chars().count();
     if width <= prefix_width {
         let mut spans = vec![Span::styled(prefix.to_string(), prefix_style)];
-        spans.extend(user_prompt_lookup_spans(content, content_style));
+        spans.extend(content_span_builder(content, content_style));
 
         return wrap_styled_line(spans, width);
     }
 
     let wrapped_content = wrap_verbatim_spans(
-        user_prompt_lookup_spans(content, content_style),
+        content_span_builder(content, content_style),
         width - prefix_width,
     );
     let mut lines = Vec::with_capacity(wrapped_content.len());
@@ -321,6 +432,63 @@ fn user_prompt_lookup_spans(content: &str, content_style: Style) -> Vec<Span<'st
         push_verbatim_span_character(&mut spans, style, character);
         previous_character = Some(character);
     }
+
+    spans
+}
+
+/// Splits one clarification prompt content line into styled spans for
+/// clarification headings and `Q:` / `A:` labels.
+fn clarification_prompt_spans(content: &str, content_style: Style) -> Vec<Span<'static>> {
+    if content.trim().is_empty() {
+        return vec![Span::styled(content.to_string(), content_style)];
+    }
+
+    let leading_padding_width = content
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .count();
+    let (leading_padding, trimmed_content) = content.split_at(leading_padding_width);
+    let mut spans = Vec::new();
+    if !leading_padding.is_empty() {
+        spans.push(Span::styled(leading_padding.to_string(), content_style));
+    }
+
+    if trimmed_content == CLARIFICATION_HEADER {
+        spans.push(Span::styled(
+            trimmed_content.to_string(),
+            clarification_header_style(),
+        ));
+
+        return spans;
+    }
+
+    if let Some((question_index, question_text)) =
+        parse_clarification_question_line(trimmed_content)
+    {
+        spans.push(Span::styled(
+            question_index,
+            clarification_question_index_style(),
+        ));
+        spans.push(Span::styled(
+            "Q: ".to_string(),
+            clarification_question_label_style(),
+        ));
+        spans.push(Span::styled(question_text.to_string(), content_style));
+
+        return spans;
+    }
+
+    if let Some(answer_text) = trimmed_content.strip_prefix("A: ") {
+        spans.push(Span::styled(
+            "A: ".to_string(),
+            clarification_answer_label_style(),
+        ));
+        spans.push(Span::styled(answer_text.to_string(), content_style));
+
+        return spans;
+    }
+
+    spans.push(Span::styled(trimmed_content.to_string(), content_style));
 
     spans
 }
@@ -545,6 +713,19 @@ fn parse_numbered_content(raw_line: &str) -> Option<(String, &str)> {
     Some((format!("{digits}. "), content))
 }
 
+/// Parses one clarification question line like `1. Q: Need tests?`.
+fn parse_clarification_question_line(raw_line: &str) -> Option<(String, &str)> {
+    let digit_count = raw_line.chars().take_while(char::is_ascii_digit).count();
+    if digit_count == 0 {
+        return None;
+    }
+
+    let (digits, suffix) = raw_line.split_at(digit_count);
+    let content = suffix.strip_prefix(". Q: ")?;
+
+    Some((format!("{digits}. "), content))
+}
+
 fn opening_fence_block_state(raw_line: &str) -> BlockState {
     if is_stats_fence(raw_line) {
         return BlockState::FencedStats;
@@ -635,6 +816,58 @@ fn stats_value_style() -> Style {
     inline_code_style()
 }
 
+/// Returns the background color used for clarification prompt blocks.
+fn clarification_background_color() -> Color {
+    Color::Rgb(28, 38, 48)
+}
+
+/// Returns the style for the visible `CLARIFICATION_PROMPT_PREFIX` marker.
+fn clarification_prompt_prefix_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .bg(clarification_background_color())
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Returns the style for clarification heading text.
+fn clarification_header_style() -> Style {
+    Style::default()
+        .fg(Color::LightYellow)
+        .bg(clarification_background_color())
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Returns the style for numbered clarification question indexes.
+fn clarification_question_index_style() -> Style {
+    Style::default()
+        .fg(Color::White)
+        .bg(clarification_background_color())
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Returns the style for `Q:` labels in clarification blocks.
+fn clarification_question_label_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .bg(clarification_background_color())
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Returns the style for `A:` labels in clarification blocks.
+fn clarification_answer_label_style() -> Style {
+    Style::default()
+        .fg(Color::Green)
+        .bg(clarification_background_color())
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Returns the style for clarification text content.
+fn clarification_content_style() -> Style {
+    Style::default()
+        .fg(Color::Gray)
+        .bg(clarification_background_color())
+}
+
 /// Returns the background color used for rendered user prompt blocks.
 fn user_prompt_background_color() -> Color {
     Color::DarkGray
@@ -660,8 +893,8 @@ fn user_prompt_lookup_style() -> Style {
         .bg(user_prompt_background_color())
 }
 
-/// Returns continuation padding that aligns with `USER_PROMPT_PREFIX` width.
-fn user_prompt_continuation_padding() -> String {
+/// Returns continuation padding that aligns with prompt prefix width.
+fn prompt_block_continuation_padding() -> String {
     " ".repeat(USER_PROMPT_PREFIX.chars().count())
 }
 
@@ -762,6 +995,30 @@ mod tests {
         assert_eq!(lines[2].spans[0].style, user_prompt_content_style());
         assert_eq!(lines[2].spans[1].style, user_prompt_content_style());
         assert_eq!(lines[5].spans[0].style, Style::default());
+    }
+
+    #[test]
+    fn test_render_markdown_styles_clarification_block_differently_from_user_prompt() {
+        // Arrange
+        let input = " › Clarifications:\n   1. Q: Need tests?\n      A: Yes";
+
+        // Act
+        let lines = render_markdown(input, 80);
+
+        // Assert
+        assert_eq!(lines[1].to_string().trim_end(), " › Clarifications:");
+        assert_eq!(lines[1].spans[0].style, clarification_prompt_prefix_style());
+        assert_eq!(lines[1].spans[1].style, clarification_header_style());
+        assert_ne!(lines[1].spans[1].style.bg, user_prompt_content_style().bg);
+        assert!(lines[2].spans.iter().any(|span| {
+            span.content.as_ref() == "1. " && span.style == clarification_question_index_style()
+        }));
+        assert!(lines[2].spans.iter().any(|span| {
+            span.content.as_ref() == "Q: " && span.style == clarification_question_label_style()
+        }));
+        assert!(lines[3].spans.iter().any(|span| {
+            span.content.as_ref() == "A: " && span.style == clarification_answer_label_style()
+        }));
     }
 
     #[test]
