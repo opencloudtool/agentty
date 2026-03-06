@@ -8,6 +8,10 @@ use super::backend::{
 use crate::infra::agent::protocol::agent_response_output_schema_json;
 
 /// Backend implementation for the Claude CLI.
+///
+/// Commands are built with `--strict-mcp-config` so provider-level MCP
+/// connector defaults (for example Claude.ai account connectors) are ignored
+/// unless explicitly configured by Agentty.
 pub(super) struct ClaudeBackend;
 
 impl AgentBackend for ClaudeBackend {
@@ -46,6 +50,7 @@ impl AgentBackend for ClaudeBackend {
         command
             .arg("--allowedTools")
             .arg("Edit,Bash,EnterPlanMode,ExitPlanMode");
+        command.arg("--strict-mcp-config");
         command.arg("--verbose");
         command.arg("--output-format").arg("json");
         command
@@ -92,6 +97,7 @@ mod tests {
         // Assert
         assert!(debug_command.contains("--allowedTools"));
         assert!(debug_command.contains("Edit,Bash,EnterPlanMode,ExitPlanMode"));
+        assert!(debug_command.contains("--strict-mcp-config"));
         assert!(debug_command.contains("--output-format"));
         assert!(debug_command.contains("json"));
         assert!(!debug_command.contains("--permission-mode"));
