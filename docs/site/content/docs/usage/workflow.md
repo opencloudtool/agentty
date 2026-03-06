@@ -58,6 +58,11 @@ New → InProgress → Review → Done
                          ↘ Rebasing → Review
 ```
 
+While a session is **InProgress**, Agentty keeps the `Thinking...` status badge
+for streamed activity. Assistant content streams live when available; if
+assistant content already streamed, Agentty skips duplicate final-answer append
+at turn completion.
+
 <a id="usage-title-refinement"></a>
 When the first prompt is submitted for a new session, Agentty stores that
 prompt as the initial title and starts one background title-generation task

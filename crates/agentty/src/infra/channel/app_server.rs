@@ -63,10 +63,8 @@ impl AgentChannel for AppServerAgentChannel {
     /// and rely on final payload parsing to avoid leaking malformed first-pass
     /// output when a repair retry is needed.
     ///
-    /// Codex non-delta assistant chunks are suppressed to keep transcript
-    /// persistence deterministic: only the final parsed answer is appended by
-    /// the worker. Codex thought-style deltas (`phase: thinking/plan`) are
-    /// emitted as [`TurnEvent::ThoughtDelta`]. Other deltas are normalized via
+    /// Codex thought-style deltas (`phase: thinking/plan`) are emitted as
+    /// [`TurnEvent::ThoughtDelta`]. Other assistant chunks are normalized via
     /// [`normalize_stream_assistant_chunk`] and emitted as
     /// [`TurnEvent::AssistantDelta`].
     ///
@@ -117,10 +115,6 @@ impl AgentChannel for AppServerAgentChannel {
                                 is_delta,
                             } => {
                                 if !should_stream_assistant_messages {
-                                    continue;
-                                }
-
-                                if kind == AgentKind::Codex && !is_delta {
                                     continue;
                                 }
 
@@ -389,9 +383,9 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies Codex non-delta assistant chunks are suppressed so transcript
-    /// output only uses the final parsed answer.
-    async fn test_run_turn_codex_suppresses_non_delta_assistant_messages() {
+    /// Verifies Codex non-delta assistant chunks are forwarded as
+    /// `AssistantDelta` events.
+    async fn test_run_turn_codex_forwards_non_delta_assistant_messages() {
         // Arrange
         let mut mock_client = MockAppServerClient::new();
         mock_client
@@ -415,17 +409,17 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
-        while let Ok(event) = events_rx.try_recv() {
-            assert!(
-                !matches!(event, TurnEvent::AssistantDelta(_)),
-                "no AssistantDelta should be emitted for codex non-delta chunks, got: {event:?}"
-            );
-        }
+        let event = events_rx.try_recv().expect("should have received an event");
+        assert_eq!(
+            event,
+            TurnEvent::AssistantDelta("Full paragraph\n\n".to_string())
+        );
     }
 
     #[tokio::test]
-    /// Verifies Codex non-delta structured JSON chunks are suppressed.
-    async fn test_run_turn_codex_suppresses_non_delta_structured_json_streaming() {
+    /// Verifies Codex non-delta structured JSON chunks are normalized and
+    /// forwarded as `AssistantDelta`.
+    async fn test_run_turn_codex_forwards_non_delta_structured_json_streaming() {
         // Arrange
         let mut mock_client = MockAppServerClient::new();
         mock_client
@@ -453,13 +447,8 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
-        while let Ok(event) = events_rx.try_recv() {
-            assert!(
-                !matches!(event, TurnEvent::AssistantDelta(_)),
-                "no AssistantDelta should be emitted for codex structured non-delta chunks, got: \
-                 {event:?}"
-            );
-        }
+        let event = events_rx.try_recv().expect("should have received an event");
+        assert_eq!(event, TurnEvent::AssistantDelta("Done.\n\n".to_string()));
     }
 
     #[tokio::test]

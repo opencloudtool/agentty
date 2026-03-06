@@ -106,7 +106,7 @@ From prompt submit to persisted result:
 1. Worker spawns `consume_turn_events()` and sets initial progress (`Thinking`).
 1. `AgentChannel::run_turn()` streams `TurnEvent` values and returns `TurnResult`.
 1. Worker applies final result:
-1. Append final assistant transcript output (`answer` text, fallback `question` text).
+1. Append final assistant transcript output when no assistant chunks were already streamed (`answer` text, fallback `question` text).
 1. Persist session questions and emit `AppEvent::AgentResponseReceived`.
 1. Persist stats and per-model usage.
 1. Persist provider conversation id (app-server providers).
@@ -186,6 +186,7 @@ Streaming behavior differs by transport/provider:
 - App-server channel (`AppServerAgentChannel`): bridges `AppServerStreamEvent` to `TurnEvent`.
 - Codex thought phases (`thinking`/`plan`/`reasoning`/`thought`) stream as `ThoughtDelta`.
 - Strict providers suppress streamed assistant chunks when needed so malformed first-pass protocol JSON is not persisted.
+- Worker persistence behavior: streamed `ThoughtDelta` and `Progress` updates drive transient progress badges and are not appended to session transcript output.
 
 <a id="architecture-agent-interaction-validation"></a>
 Final-output validation:
