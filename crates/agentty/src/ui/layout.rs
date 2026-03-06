@@ -47,6 +47,8 @@ pub fn calculate_input_height(width: u16, input: &str) -> u16 {
 /// whole words when possible; only words that exceed the full content width are
 /// split across lines. Tokens that start with `@` at a word boundary are
 /// highlighted to make file lookup references easy to spot while typing.
+/// Highlighting continues only while the token is composed of path-like
+/// characters (`[A-Za-z0-9/._-]`), so trailing punctuation is excluded.
 pub fn compute_input_layout(
     input: &str,
     width: u16,
@@ -242,7 +244,7 @@ fn compute_input_layout_data(input: &str, width: u16) -> InputLayout {
 
         if ch == '@' && last_ch.is_none_or(char::is_whitespace) {
             in_mention = true;
-        } else if ch.is_whitespace() {
+        } else if in_mention && !is_at_mention_query_character(ch) {
             in_mention = false;
         }
 
@@ -286,6 +288,11 @@ fn compute_input_layout_data(input: &str, width: u16) -> InputLayout {
         cursor_positions,
         display_lines,
     }
+}
+
+/// Returns whether a character can belong to an `@` file-lookup token.
+fn is_at_mention_query_character(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-')
 }
 
 fn target_line_index(
@@ -753,6 +760,46 @@ mod tests {
         for span in spans.iter().take(18).skip(12) {
             assert_eq!(span.style.fg, None);
         }
+    }
+
+    #[test]
+    fn test_compute_input_layout_at_mention_highlighting_stops_before_trailing_comma() {
+        // Arrange
+        let input = "hello @file, world";
+        let width = 40;
+
+        // Act
+        let (lines, _, _) = compute_input_layout(input, width, 0);
+
+        // Assert
+        let line = &lines[0];
+        let spans = &line.spans;
+
+        for span in spans.iter().take(12).skip(7) {
+            assert_eq!(span.style.fg, Some(CHAT_INPUT_AT_MENTION_COLOR));
+        }
+        assert_eq!(spans[12].content, ",");
+        assert_eq!(spans[12].style.fg, None);
+    }
+
+    #[test]
+    fn test_compute_input_layout_at_mention_highlighting_stops_before_trailing_parenthesis() {
+        // Arrange
+        let input = "hello @file) world";
+        let width = 40;
+
+        // Act
+        let (lines, _, _) = compute_input_layout(input, width, 0);
+
+        // Assert
+        let line = &lines[0];
+        let spans = &line.spans;
+
+        for span in spans.iter().take(12).skip(7) {
+            assert_eq!(span.style.fg, Some(CHAT_INPUT_AT_MENTION_COLOR));
+        }
+        assert_eq!(spans[12].content, ")");
+        assert_eq!(spans[12].style.fg, None);
     }
 
     #[test]
