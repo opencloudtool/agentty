@@ -12,6 +12,8 @@ pub mod footer_bar;
 pub mod help_overlay;
 #[path = "components/info_overlay.rs"]
 pub mod info_overlay;
+#[path = "components/open_command_overlay.rs"]
+pub mod open_command_overlay;
 #[path = "components/session_output.rs"]
 pub mod session_output;
 #[path = "components/status_bar.rs"]

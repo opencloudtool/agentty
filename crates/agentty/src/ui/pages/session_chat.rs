@@ -77,6 +77,9 @@ impl<'a> SessionChatPage<'a> {
                 done_session_output_mode,
                 ..
             } => *done_session_output_mode,
+            AppMode::OpenCommandSelector { restore_view, .. } => {
+                restore_view.done_session_output_mode
+            }
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
@@ -94,6 +97,9 @@ impl<'a> SessionChatPage<'a> {
                 focused_review_status_message,
                 ..
             } => focused_review_status_message.as_deref(),
+            AppMode::OpenCommandSelector { restore_view, .. } => {
+                restore_view.focused_review_status_message.as_deref()
+            }
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
@@ -111,6 +117,9 @@ impl<'a> SessionChatPage<'a> {
                 focused_review_text,
                 ..
             } => focused_review_text.as_deref(),
+            AppMode::OpenCommandSelector { restore_view, .. } => {
+                restore_view.focused_review_text.as_deref()
+            }
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }

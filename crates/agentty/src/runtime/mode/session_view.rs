@@ -145,7 +145,7 @@ async fn handle_view_key(
     match key.code {
         KeyCode::Char('q') => app.mode = AppMode::List,
         KeyCode::Char('o') if view_session_snapshot.can_open_worktree => {
-            app.open_session_worktree_in_tmux().await;
+            open_worktree_for_view_session(app, view_context).await;
         }
         KeyCode::Char('e') if view_session_snapshot.can_open_worktree => {
             open_external_editor_for_view_session(
@@ -241,6 +241,26 @@ fn open_merge_confirmation(app: &mut App, view_context: &ViewContext) {
         session_id: Some(view_context.session_id.clone()),
         selected_confirmation_index: DEFAULT_OPTION_INDEX,
     };
+}
+
+/// Opens the viewed session worktree directly or shows a command selector when
+/// multiple open commands are configured.
+async fn open_worktree_for_view_session(app: &mut App, view_context: &ViewContext) {
+    let open_commands = app.configured_open_commands();
+    if open_commands.len() > 1 {
+        app.mode = AppMode::OpenCommandSelector {
+            commands: open_commands,
+            restore_view: confirmation_view_mode(view_context),
+            selected_command_index: 0,
+        };
+
+        return;
+    }
+
+    let selected_open_command = open_commands.first().map(String::as_str);
+
+    app.open_session_worktree_in_tmux_with_command(selected_open_command)
+        .await;
 }
 
 /// Builds the view-mode snapshot used to restore chat context when a merge
@@ -1366,6 +1386,44 @@ mod tests {
                 && restored_session_id == &session_id
                 && mode_session_id == &session_id
                 && status_message == "Preparing focused review..."
+                && review_text == "Critical finding"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_open_worktree_for_view_session_opens_command_selector_for_multiple_commands() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.settings.open_command = "nvim . || npm run dev".to_string();
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: Some("Preparing focused review".to_string()),
+            focused_review_text: Some("Critical finding".to_string()),
+            session_id: session_id.clone(),
+            scroll_offset: Some(4),
+        };
+        let context = view_context(&mut app).expect("expected view context");
+
+        // Act
+        open_worktree_for_view_session(&mut app, &context).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::OpenCommandSelector {
+                ref commands,
+                restore_view:
+                    ConfirmationViewMode {
+                        done_session_output_mode: DoneSessionOutputMode::Summary,
+                        focused_review_status_message: Some(ref status_message),
+                        focused_review_text: Some(ref review_text),
+                        session_id: ref restored_session_id,
+                        scroll_offset: Some(4),
+                    },
+                selected_command_index: 0,
+            } if commands == &vec!["nvim .".to_string(), "npm run dev".to_string()]
+                && restored_session_id == &session_id
+                && status_message == "Preparing focused review"
                 && review_text == "Critical finding"
         ));
     }

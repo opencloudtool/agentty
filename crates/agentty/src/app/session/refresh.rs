@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use super::SESSION_REFRESH_INTERVAL;
 use crate::app::{AppServices, ProjectManager, SessionManager};
-use crate::ui::state::app_mode::AppMode;
+use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode};
 
 impl SessionManager {
     /// Reloads session rows when the metadata cache indicates a change.
@@ -140,7 +140,11 @@ impl SessionManager {
             | AppMode::Prompt { session_id, .. }
             | AppMode::Question { session_id, .. }
             | AppMode::View { session_id, .. }
-            | AppMode::Diff { session_id, .. } => Some(session_id),
+            | AppMode::Diff { session_id, .. }
+            | AppMode::OpenCommandSelector {
+                restore_view: ConfirmationViewMode { session_id, .. },
+                ..
+            } => Some(session_id),
             _ => None,
         };
         let Some(session_id) = mode_session_id else {

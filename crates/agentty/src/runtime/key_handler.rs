@@ -26,6 +26,10 @@ pub(crate) async fn handle_key_event(
         return handle_confirmation_decision(app, decision).await;
     }
 
+    if matches!(app.mode, AppMode::OpenCommandSelector { .. }) {
+        return handle_open_command_selector_key(app, key).await;
+    }
+
     if let Some(event_result) =
         handle_list_external_editor_key(app, terminal, key, event_reader_pause).await
     {
@@ -45,6 +49,84 @@ pub(crate) async fn handle_key_event(
         AppMode::Question { .. } => Ok(mode::question::handle(app, key).await),
         AppMode::Diff { .. } => Ok(mode::diff::handle(app, key)),
         AppMode::Help { .. } => Ok(mode::help::handle(app, key)),
+        AppMode::OpenCommandSelector { .. } => {
+            unreachable!("open-command selector mode is handled before dispatch matching")
+        }
+    }
+}
+
+/// Handles key input while the app is in open-command selector overlay mode.
+async fn handle_open_command_selector_key(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
+    let mode = std::mem::replace(&mut app.mode, AppMode::List);
+    let AppMode::OpenCommandSelector {
+        commands,
+        restore_view,
+        selected_command_index,
+    } = mode
+    else {
+        unreachable!("mode must be open-command selector in this handler");
+    };
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = restore_view.into_view_mode();
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.mode = AppMode::OpenCommandSelector {
+                selected_command_index: next_open_command_index(selected_command_index, &commands),
+                commands,
+                restore_view,
+            };
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.mode = AppMode::OpenCommandSelector {
+                selected_command_index: previous_open_command_index(
+                    selected_command_index,
+                    &commands,
+                ),
+                commands,
+                restore_view,
+            };
+        }
+        KeyCode::Enter => {
+            let selected_open_command = commands
+                .get(selected_command_index)
+                .map(std::string::String::as_str);
+            app.mode = restore_view.into_view_mode();
+            app.open_session_worktree_in_tmux_with_command(selected_open_command)
+                .await;
+        }
+        _ => {
+            app.mode = AppMode::OpenCommandSelector {
+                commands,
+                restore_view,
+                selected_command_index,
+            };
+        }
+    }
+
+    Ok(EventResult::Continue)
+}
+
+/// Returns the next command index with wrap-around.
+fn next_open_command_index(current_index: usize, commands: &[String]) -> usize {
+    if commands.is_empty() {
+        return 0;
+    }
+
+    (current_index + 1) % commands.len()
+}
+
+/// Returns the previous command index with wrap-around.
+fn previous_open_command_index(current_index: usize, commands: &[String]) -> usize {
+    if commands.is_empty() {
+        return 0;
+    }
+
+    if current_index == 0 {
+        commands.len() - 1
+    } else {
+        current_index - 1
     }
 }
 
@@ -184,6 +266,7 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    use crossterm::event::KeyModifiers;
     use tempfile::tempdir;
 
     use super::*;
@@ -423,5 +506,102 @@ mod tests {
         app.sessions.sync_from_handles();
         let output = app.sessions.sessions[0].output.clone();
         assert!(output.contains("[Merge Error]"));
+    }
+
+    #[test]
+    fn test_next_open_command_index_wraps_to_start() {
+        // Arrange
+        let commands = vec!["nvim .".to_string(), "npm run dev".to_string()];
+
+        // Act
+        let index = next_open_command_index(1, &commands);
+
+        // Assert
+        assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn test_previous_open_command_index_wraps_to_end() {
+        // Arrange
+        let commands = vec!["nvim .".to_string(), "npm run dev".to_string()];
+
+        // Act
+        let index = previous_open_command_index(0, &commands);
+
+        // Assert
+        assert_eq!(index, 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_open_command_selector_key_escape_restores_view_mode() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::OpenCommandSelector {
+            commands: vec!["nvim .".to_string(), "npm run dev".to_string()],
+            restore_view: ConfirmationViewMode {
+                done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+                focused_review_status_message: Some("Preparing focused review".to_string()),
+                focused_review_text: Some("Critical finding".to_string()),
+                scroll_offset: Some(3),
+                session_id: "session-id".to_string(),
+            },
+            selected_command_index: 1,
+        };
+
+        // Act
+        let event_result = handle_open_command_selector_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        )
+        .await;
+
+        // Assert
+        assert!(matches!(event_result, Ok(EventResult::Continue)));
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+                focused_review_status_message: Some(ref status_message),
+                focused_review_text: Some(ref review_text),
+                ref session_id,
+                scroll_offset: Some(3),
+            } if session_id == "session-id"
+                && status_message == "Preparing focused review"
+                && review_text == "Critical finding"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_open_command_selector_key_j_updates_selected_index() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::OpenCommandSelector {
+            commands: vec!["nvim .".to_string(), "npm run dev".to_string()],
+            restore_view: ConfirmationViewMode {
+                done_session_output_mode: DoneSessionOutputMode::Summary,
+                focused_review_status_message: None,
+                focused_review_text: None,
+                scroll_offset: None,
+                session_id: "session-id".to_string(),
+            },
+            selected_command_index: 0,
+        };
+
+        // Act
+        let event_result = handle_open_command_selector_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        )
+        .await;
+
+        // Assert
+        assert!(matches!(event_result, Ok(EventResult::Continue)));
+        assert!(matches!(
+            app.mode,
+            AppMode::OpenCommandSelector {
+                selected_command_index: 1,
+                ..
+            }
+        ));
     }
 }

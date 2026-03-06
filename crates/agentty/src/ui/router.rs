@@ -178,6 +178,7 @@ fn render_list_or_overlay_mode(
         AppMode::View { .. }
         | AppMode::Prompt { .. }
         | AppMode::Question { .. }
+        | AppMode::OpenCommandSelector { .. }
         | AppMode::Diff { .. } => {
             return false;
         }
@@ -268,6 +269,19 @@ fn render_session_or_diff_mode(
                 scroll_offset: None,
             },
         ),
+        AppMode::OpenCommandSelector {
+            commands,
+            restore_view,
+            selected_command_index,
+        } => render_open_command_selector_overlay(
+            f,
+            area,
+            sessions,
+            aux.session_progress_messages,
+            restore_view,
+            commands,
+            *selected_command_index,
+        ),
         AppMode::Diff {
             diff,
             file_explorer_selected_index,
@@ -287,6 +301,35 @@ fn render_session_or_diff_mode(
         | AppMode::SyncBlockedPopup { .. }
         | AppMode::Help { .. } => {}
     }
+}
+
+/// Renders open-command selection overlay above the originating session chat.
+fn render_open_command_selector_overlay(
+    f: &mut Frame,
+    area: Rect,
+    sessions: &[Session],
+    session_progress_messages: &HashMap<String, String>,
+    restore_view: &ConfirmationViewMode,
+    commands: &[String],
+    selected_command_index: usize,
+) {
+    let background_mode = restore_view.clone().into_view_mode();
+
+    render_session_chat(
+        f,
+        area,
+        SessionChatRenderContext {
+            mode: &background_mode,
+            session_id: &restore_view.session_id,
+            session_progress_messages,
+            sessions,
+            scroll_offset: restore_view.scroll_offset,
+        },
+    );
+
+    component::open_command_overlay::OpenCommandOverlay::new(commands)
+        .selected_command_index(selected_command_index)
+        .render(f, area);
 }
 
 /// Renders the session chat page for all session-chat modes.

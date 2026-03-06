@@ -9,7 +9,7 @@ use crate::app::session::session_branch;
 use crate::app::{SettingsManager, Tab};
 use crate::domain::project::ProjectListItem;
 use crate::domain::session::{DailyActivity, Session};
-use crate::ui::state::app_mode::{AppMode, HelpContext};
+use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
 use crate::ui::{component, router};
 
 /// A trait for UI pages that enforces a standard rendering interface.
@@ -102,6 +102,10 @@ fn render_footer_bar(
         | AppMode::Prompt { session_id, .. }
         | AppMode::Question { session_id, .. }
         | AppMode::Diff { session_id, .. }
+        | AppMode::OpenCommandSelector {
+            restore_view: ConfirmationViewMode { session_id, .. },
+            ..
+        }
         | AppMode::Help {
             context: HelpContext::View { session_id, .. } | HelpContext::Diff { session_id, .. },
             ..

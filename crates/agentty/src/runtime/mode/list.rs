@@ -323,7 +323,8 @@ mod tests {
         (app, base_dir)
     }
 
-    /// Builds a settings-focused test app with the `Open Command` row selected.
+    /// Builds a settings-focused test app with the `Open Commands` row
+    /// selected.
     async fn new_test_app_for_settings() -> (App, tempfile::TempDir) {
         let (mut app, base_dir) = new_test_app_with_git().await;
         app.create_session()
@@ -334,8 +335,8 @@ mod tests {
             .settings
             .settings_rows()
             .iter()
-            .position(|(setting_name, _)| *setting_name == "Open Command")
-            .expect("missing Open Command setting row");
+            .position(|(setting_name, _)| *setting_name == "Open Commands")
+            .expect("missing Open Commands setting row");
         app.settings
             .table_state
             .select(Some(open_command_row_index));

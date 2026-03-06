@@ -29,7 +29,7 @@ use crate::infra::{app_server, db};
 use crate::runtime::mode::sync_blocked;
 use crate::ui;
 use crate::ui::page::session_list::preferred_initial_session_index;
-use crate::ui::state::app_mode::{AppMode, HelpContext};
+use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
 use crate::ui::state::prompt::PromptAtMentionState;
 
 mod assist;
@@ -682,8 +682,20 @@ impl App {
     }
 
     /// Opens the selected session worktree in tmux and optionally runs the
-    /// configured open command.
+    /// first configured open command.
     pub async fn open_session_worktree_in_tmux(&self) {
+        let selected_open_command = self.configured_open_commands().into_iter().next();
+
+        self.open_session_worktree_in_tmux_with_command(selected_open_command.as_deref())
+            .await;
+    }
+
+    /// Opens the selected session worktree in tmux and optionally runs one
+    /// provided open command.
+    pub(crate) async fn open_session_worktree_in_tmux_with_command(
+        &self,
+        open_command: Option<&str>,
+    ) {
         let Some(session) = self.selected_session() else {
             return;
         };
@@ -696,14 +708,22 @@ impl App {
             return;
         };
 
-        let Some(open_command) = Self::open_command_to_run(self.settings.open_command.as_str())
+        let Some(open_command) = open_command
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
         else {
             return;
         };
 
         self.tmux_client
-            .run_command_in_window(window_id, open_command)
+            .run_command_in_window(window_id, open_command.to_string())
             .await;
+    }
+
+    /// Returns all configured open commands in user-defined order.
+    #[must_use]
+    pub(crate) fn configured_open_commands(&self) -> Vec<String> {
+        self.settings.open_commands()
     }
 
     /// Appends output text to a session stream and persists it.
@@ -1012,6 +1032,14 @@ impl App {
             | AppMode::Question {
                 session_id: view_id,
                 ..
+            }
+            | AppMode::OpenCommandSelector {
+                restore_view:
+                    ConfirmationViewMode {
+                        session_id: view_id,
+                        ..
+                    },
+                ..
             } => view_id == session_id,
             AppMode::List
             | AppMode::Confirmation { .. }
@@ -1103,6 +1131,22 @@ impl App {
                     result,
                 );
             }
+            AppMode::OpenCommandSelector {
+                restore_view:
+                    ConfirmationViewMode {
+                        focused_review_status_message,
+                        focused_review_text,
+                        session_id: view_session_id,
+                        ..
+                    },
+                ..
+            } if view_session_id == session_id => {
+                Self::apply_focused_review_result(
+                    focused_review_status_message,
+                    focused_review_text,
+                    result,
+                );
+            }
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
@@ -1110,6 +1154,7 @@ impl App {
             | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. }
+            | AppMode::OpenCommandSelector { .. }
             | AppMode::View { .. } => {}
         }
     }
@@ -1281,19 +1326,6 @@ impl App {
                     )
                 })
         });
-    }
-
-    /// Returns the normalized open command to execute when configured.
-    ///
-    /// Commands are trimmed without modifying the configured executable or
-    /// arguments.
-    fn open_command_to_run(open_command: &str) -> Option<String> {
-        let command = open_command.trim();
-        if command.is_empty() {
-            return None;
-        }
-
-        Some(command.to_string())
     }
 
     /// Builds final sync popup mode from background sync completion result.
@@ -1973,40 +2005,20 @@ mod tests {
         assert_eq!(stats.usage_rows_result, Ok(Vec::new()));
     }
 
-    #[test]
-    fn open_command_to_run_returns_none_for_empty_input() {
+    #[tokio::test]
+    async fn configured_open_commands_returns_trimmed_non_empty_entries() {
         // Arrange
-        let open_command = "   ";
+        let mut app = new_test_app().await;
+        app.settings.open_command = "  nvim . ||\n npm run dev \n|| ".to_string();
 
         // Act
-        let command = App::open_command_to_run(open_command);
+        let open_commands = app.configured_open_commands();
 
         // Assert
-        assert_eq!(command, None);
-    }
-
-    #[test]
-    fn open_command_to_run_trims_whitespace_without_prefixing_exec() {
-        // Arrange
-        let open_command = "  npm run dev -- --port 5173  ";
-
-        // Act
-        let command = App::open_command_to_run(open_command);
-
-        // Assert
-        assert_eq!(command, Some("npm run dev -- --port 5173".to_string()));
-    }
-
-    #[test]
-    fn open_command_to_run_preserves_existing_exec_prefix_when_provided() {
-        // Arrange
-        let open_command = "  exec nvim .  ";
-
-        // Act
-        let command = App::open_command_to_run(open_command);
-
-        // Assert
-        assert_eq!(command, Some("exec nvim .".to_string()));
+        assert_eq!(
+            open_commands,
+            vec!["nvim .".to_string(), "npm run dev".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -2047,6 +2059,33 @@ mod tests {
             .times(1)
             .returning(|_| Box::pin(async { Some("@42".to_string()) }));
         mock_tmux_client.expect_run_command_in_window().times(0);
+        app.tmux_client = Arc::new(mock_tmux_client);
+
+        // Act
+        app.open_session_worktree_in_tmux().await;
+
+        // Assert
+        // Expectations are validated by `mockall`.
+    }
+
+    #[tokio::test]
+    async fn open_session_worktree_in_tmux_uses_first_configured_command() {
+        // Arrange
+        let session_folder = PathBuf::from("/tmp/session-multiple-open-commands");
+        let mut app =
+            new_test_app_with_selected_session(session_folder.clone(), " nvim . || npm run dev ")
+                .await;
+        let mut mock_tmux_client = MockTmuxClient::new();
+        mock_tmux_client
+            .expect_open_window_for_folder()
+            .with(eq(session_folder))
+            .times(1)
+            .returning(|_| Box::pin(async { Some("@42".to_string()) }));
+        mock_tmux_client
+            .expect_run_command_in_window()
+            .with(eq("@42".to_string()), eq("nvim .".to_string()))
+            .times(1)
+            .returning(|_, _| Box::pin(async {}));
         app.tmux_client = Arc::new(mock_tmux_client);
 
         // Act

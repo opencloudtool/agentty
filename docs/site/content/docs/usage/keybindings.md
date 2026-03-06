@@ -55,7 +55,7 @@ The Settings tab includes:
 
 - `Reasoning Level` (`low`, `medium`, `high`, `xhigh`) for Codex turns.
 - `Default Smart Model`, `Default Fast Model`, and `Default Review Model`.
-- `Open Command` for launching session worktrees.
+- `Open Commands` for launching session worktrees (separate commands with `||`).
 
 ## Session View
 
@@ -84,14 +84,22 @@ state:
 <a id="usage-additional-keys"></a>
 Additional notes:
 
-- **Open command behavior**: `o` runs the configured `Open Command` as
-  `exec <command>` unless it already starts with `exec`, so the tmux window
-  exits when that command ends.
+- **Open command behavior**: `o` always opens the session worktree in tmux.
+  If one `Open Commands` entry is configured, it runs immediately.
+  If multiple entries are configured (`||` separator), Agentty opens a selector popup.
 - **Question**: opening the session enters Question Input mode until all prompts are answered or skipped.
 - **Done**: `t` toggles between summary and full output.
 - **Review**: Runs in read-only review mode. It can use internet lookup
   and non-editing verification commands, but it should not edit files or
   mutate git/workspace state.
+
+## Open Command Selector
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move selection |
+| `Enter` | Open worktree and run selected command |
+| `Esc` / `q` | Cancel and return to session view |
 
 ## Diff Mode
 

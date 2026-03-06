@@ -88,6 +88,16 @@ pub enum AppMode {
         /// Popup title describing sync state.
         title: String,
     },
+    /// Command selector overlay opened from session view when multiple open
+    /// commands are configured.
+    OpenCommandSelector {
+        /// Available open commands in display/selection order.
+        commands: Vec<String>,
+        /// View state restored after command selection or cancel.
+        restore_view: ConfirmationViewMode,
+        /// Highlighted command index in `commands`.
+        selected_command_index: usize,
+    },
     Prompt {
         at_mention_state: Option<PromptAtMentionState>,
         history_state: PromptHistoryState,

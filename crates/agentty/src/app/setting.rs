@@ -56,6 +56,9 @@ enum SettingRow {
     OpenCommand,
 }
 
+/// Separator token used to store multiple open commands in one setting value.
+const OPEN_COMMAND_SEPARATOR: &str = "||";
+
 impl SettingRow {
     const ALL: [Self; 5] = [
         Self::ReasoningLevel,
@@ -81,7 +84,7 @@ impl SettingRow {
             Self::DefaultSmartModel => "Default Smart Model",
             Self::DefaultFastModel => "Default Fast Model",
             Self::DefaultReviewModel => "Default Review Model",
-            Self::OpenCommand => "Open Command",
+            Self::OpenCommand => "Open Commands",
         }
     }
 
@@ -254,11 +257,21 @@ impl SettingsManager {
     /// Returns the footer hint text for the settings page.
     #[must_use]
     pub fn footer_hint(&self) -> &'static str {
-        if self.is_editing_text_input() {
+        if self.is_editing_text_input_for(SettingRow::OpenCommand) {
+            "Editing open commands: separate commands with `||`, Enter to finish, Esc to cancel"
+        } else if self.is_editing_text_input() {
             "Editing setting value: type text, Enter to finish, Esc to cancel"
         } else {
             "Settings: Enter cycles selector values or starts text editing"
         }
+    }
+
+    /// Returns configured open commands in persisted order.
+    ///
+    /// Commands are split by `||` and newlines, then trimmed.
+    #[must_use]
+    pub fn open_commands(&self) -> Vec<String> {
+        parse_open_commands(self.open_command.as_str())
     }
 
     /// Returns the currently selected row index.
@@ -482,6 +495,17 @@ impl SettingsManager {
     }
 }
 
+/// Parses the settings text field into executable open-command entries.
+fn parse_open_commands(open_command_setting: &str) -> Vec<String> {
+    open_command_setting
+        .split(OPEN_COMMAND_SEPARATOR)
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(std::string::ToString::to_string)
+        .collect()
+}
+
 /// Returns all selectable models in settings display order.
 fn all_models() -> Vec<AgentModel> {
     AgentKind::ALL
@@ -663,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_rows_include_reasoning_smart_fast_review_model_and_open_command() {
+    fn settings_rows_include_reasoning_smart_fast_review_model_and_open_commands() {
         // Arrange
         let manager = new_settings_manager();
 
@@ -676,7 +700,7 @@ mod tests {
         assert_eq!(rows[1].0, "Default Smart Model");
         assert_eq!(rows[2].0, "Default Fast Model");
         assert_eq!(rows[3].0, "Default Review Model");
-        assert_eq!(rows[4].0, "Open Command");
+        assert_eq!(rows[4].0, "Open Commands");
     }
 
     #[test]
@@ -691,7 +715,36 @@ mod tests {
         // Assert
         assert_eq!(
             footer_hint,
-            "Editing setting value: type text, Enter to finish, Esc to cancel"
+            "Editing open commands: separate commands with `||`, Enter to finish, Esc to cancel"
+        );
+    }
+
+    #[test]
+    fn open_commands_returns_single_trimmed_command() {
+        // Arrange
+        let mut manager = new_settings_manager();
+        manager.open_command = "  nvim .  ".to_string();
+
+        // Act
+        let open_commands = manager.open_commands();
+
+        // Assert
+        assert_eq!(open_commands, vec!["nvim .".to_string()]);
+    }
+
+    #[test]
+    fn open_commands_splits_double_pipe_and_newline_entries() {
+        // Arrange
+        let mut manager = new_settings_manager();
+        manager.open_command = " nvim . ||\n npm run dev \n||  ".to_string();
+
+        // Act
+        let open_commands = manager.open_commands();
+
+        // Assert
+        assert_eq!(
+            open_commands,
+            vec!["nvim .".to_string(), "npm run dev".to_string()]
         );
     }
 

@@ -44,6 +44,10 @@ Session statuses and what you can do in each state:
 | **Done** | Session completed and merged. | `t` toggle summary/output, scroll, help |
 | **Canceled** | Session was canceled by the user. | read-only view (`q`, scroll, help) |
 
+When `Open Commands` in Settings contains multiple entries (separated by
+`||`), pressing `o` opens a selector popup (`j`/`k` to move, `Enter` to open,
+`Esc` to cancel).
+
 ### Typical Transitions
 
 ```text
