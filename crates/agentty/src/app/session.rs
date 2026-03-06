@@ -2033,47 +2033,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_refresh_session_size_recomputes_and_persists_size() {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app_with_git(dir.path()).await;
-        let session_id = app
-            .create_session()
-            .await
-            .expect("failed to create session");
-        let session_index = app
-            .session_index_for_id(&session_id)
-            .expect("missing created session");
-        let session_folder = app.sessions.sessions[session_index].folder.clone();
-        let changed_lines = "line\n".repeat(40);
-        std::fs::write(session_folder.join("refresh-size-test.txt"), changed_lines)
-            .expect("failed to write test file");
-
-        // Act
-        app.refresh_session_size(&session_id).await;
-        let db_sessions = app
-            .services
-            .db()
-            .load_sessions()
-            .await
-            .expect("failed to load");
-
-        // Assert
-        let session = app
-            .sessions
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .expect("missing session snapshot");
-        let db_session = db_sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .expect("missing persisted session");
-        assert_eq!(session.size, SessionSize::M);
-        assert_eq!(db_session.size, "M");
-    }
-
-    #[tokio::test]
     async fn test_reply_turn_completion_persists_session_size() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");

@@ -6,7 +6,7 @@ use std::path::Path;
 use time::{OffsetDateTime, UtcOffset};
 
 use super::session_folder;
-use crate::app::{AppServices, SessionManager};
+use crate::app::SessionManager;
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::session::{
     DailyActivity, Session, SessionHandles, SessionSize, SessionStats, Status,
@@ -168,31 +168,6 @@ impl SessionManager {
         let stats_activity = aggregate_local_daily_activity(&activity_timestamps);
 
         (sessions, stats_activity)
-    }
-
-    /// Recomputes git-diff size for one session and persists it.
-    ///
-    /// This is invoked explicitly by session-open and turn-complete flows,
-    /// keeping list refreshes free of per-session git diff work.
-    pub(crate) async fn refresh_session_size(&mut self, services: &AppServices, session_id: &str) {
-        let Some(session_index) = self.session_index_for_id(session_id) else {
-            return;
-        };
-        let (base_branch, folder) = {
-            let session = &self.state.sessions[session_index];
-            (session.base_branch.clone(), session.folder.clone())
-        };
-        let computed_size =
-            Self::session_size_for_folder(services.git_client().as_ref(), &folder, &base_branch)
-                .await;
-        let _ = services
-            .db()
-            .update_session_size(session_id, &computed_size.to_string())
-            .await;
-
-        if let Some(session) = self.state.sessions.get_mut(session_index) {
-            session.size = computed_size;
-        }
     }
 
     /// Computes session-size bucket from one worktree folder's diff.

@@ -94,8 +94,6 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
 /// Handles `Enter` in list mode and triggers the selected tab primary action.
 ///
 /// On the sessions tab, any selected session can be opened in view mode.
-/// Size refresh is scheduled in the background so opening view mode remains
-/// responsive even when diff computation is expensive.
 async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
     match app.tabs.current() {
         Tab::Projects => {
@@ -108,7 +106,6 @@ async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
                 && let Some(session) = app.sessions.sessions.get(session_index)
             {
                 let session_id = session.id.clone();
-                app.refresh_session_size_in_background(&session_id);
 
                 if session.status == Status::Question {
                     app.mode = AppMode::Question {
@@ -216,10 +213,9 @@ fn list_keybindings(app: &App) -> Vec<HelpAction> {
     )
 }
 
-/// Creates a new session, refreshes its size snapshot, and opens prompt mode.
+/// Creates a new session and opens prompt mode.
 async fn open_new_session_prompt(app: &mut App) -> io::Result<()> {
     let session_id = app.create_session().await.map_err(io::Error::other)?;
-    app.refresh_session_size(&session_id).await;
 
     app.mode = AppMode::Prompt {
         at_mention_state: None,
@@ -240,7 +236,6 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use tempfile::tempdir;
-    use tokio::time::{Duration, Instant, sleep};
 
     use super::*;
     use crate::app::{AppEvent, MockSyncMainRunner, SyncMainOutcome, SyncSessionStartError};
@@ -506,7 +501,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_enter_key_refreshes_session_size_in_background() {
+    async fn test_handle_enter_key_keeps_persisted_size_until_turn_completion() {
         // Arrange
         let (mut app, _base_dir) = new_test_app_with_git().await;
         let expected_session_id = app
@@ -533,30 +528,19 @@ mod tests {
         let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await
             .expect("failed to handle key");
-
-        // Act
-        let wait_deadline = Instant::now() + Duration::from_secs(2);
-        let mut db_size = String::new();
-        while Instant::now() < wait_deadline {
-            app.process_pending_app_events().await;
-            let db_sessions = app
-                .services
-                .db()
-                .load_sessions()
-                .await
-                .expect("failed to load sessions");
-            db_size = db_sessions
-                .iter()
-                .find(|db_session| db_session.id == expected_session_id)
-                .map(|db_session| db_session.size.clone())
-                .expect("missing persisted session");
-            if db_size == "M" {
-                break;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load sessions");
 
         // Assert
+        let db_size = db_sessions
+            .iter()
+            .find(|db_session| db_session.id == expected_session_id)
+            .map(|db_session| db_session.size.clone())
+            .expect("missing persisted session");
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(
             app.mode,
@@ -566,7 +550,7 @@ mod tests {
                 ..
             } if session_id == &expected_session_id
         ));
-        assert_eq!(db_size, "M");
+        assert_eq!(db_size, "XS");
     }
 
     #[tokio::test]

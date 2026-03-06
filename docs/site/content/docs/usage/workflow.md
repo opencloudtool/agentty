@@ -86,6 +86,9 @@ Agentty classifies sessions by the number of changed lines in their diff:
 | **XL** | 201-500 |
 | **XXL** | 501+ |
 
+Session size is recalculated after each completed agent turn and persisted to
+the session record.
+
 ## Slash Commands
 
 <a id="usage-slash-commands"></a>
