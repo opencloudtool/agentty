@@ -47,7 +47,7 @@ accented row text, even while cursor selection moves to other rows.
 | `q` | Quit |
 | `j` / `k` | Navigate settings |
 | `Enter` | Edit setting / finish text edit |
-| `Shift+Enter` | Add newline while editing `Open Commands` |
+| `Alt+Enter` or `Shift+Enter` | Add newline while editing `Open Commands` |
 | `Up` / `Down` / `Left` / `Right` | Move cursor while editing `Open Commands` |
 | `Tab` | Switch tab |
 | `?` | Help |
@@ -121,7 +121,7 @@ The diff panel title shows aggregate line-change totals as `+added` and
 | Key | Action |
 |-----|--------|
 | `Enter` | Submit prompt |
-| `Shift+Enter` | Insert newline |
+| `Alt+Enter` or `Shift+Enter` | Insert newline |
 | `Option+Backspace` | Delete previous word |
 | `Cmd+Backspace` | Delete current line |
 | `Esc` | Cancel |

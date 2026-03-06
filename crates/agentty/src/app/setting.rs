@@ -285,8 +285,8 @@ impl SettingsManager {
     #[must_use]
     pub fn footer_hint(&self) -> &'static str {
         if self.is_editing_text_input_for(SettingRow::OpenCommand) {
-            "Editing open commands: one command per line, Shift+Enter inserts newline, Enter/Esc \
-             finish"
+            "Editing open commands: one command per line, Alt+Enter/Shift+Enter inserts newline, \
+             Enter/Esc finish"
         } else if self.is_editing_text_input() {
             "Editing setting value: type text, Enter to finish, Esc to cancel"
         } else {
@@ -847,8 +847,8 @@ mod tests {
         // Assert
         assert_eq!(
             footer_hint,
-            "Editing open commands: one command per line, Shift+Enter inserts newline, Enter/Esc \
-             finish"
+            "Editing open commands: one command per line, Alt+Enter/Shift+Enter inserts newline, \
+             Enter/Esc finish"
         );
     }
 

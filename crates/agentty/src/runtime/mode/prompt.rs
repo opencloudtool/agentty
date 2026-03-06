@@ -680,8 +680,17 @@ fn prompt_slash_option_count(
     }
 }
 
+/// Returns whether an Enter-like key event should insert a newline into the
+/// prompt input.
+///
+/// Prompt input accepts both `Alt+Enter` and `Shift+Enter` so newline entry
+/// remains portable across terminals that emit either modifier for multiline
+/// editing.
 fn should_insert_newline(key: KeyEvent) -> bool {
-    is_enter_key(key.code) && key.modifiers.contains(event::KeyModifiers::ALT)
+    is_enter_key(key.code)
+        && key
+            .modifiers
+            .intersects(event::KeyModifiers::ALT | event::KeyModifiers::SHIFT)
 }
 
 fn is_enter_key(key_code: KeyCode) -> bool {
@@ -1157,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn test_should_not_insert_newline_for_shift_enter() {
+    fn test_should_insert_newline_for_shift_enter() {
         // Arrange
         let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::SHIFT);
 
@@ -1165,11 +1174,11 @@ mod tests {
         let result = should_insert_newline(key);
 
         // Assert
-        assert!(!result);
+        assert!(result);
     }
 
     #[test]
-    fn test_should_not_insert_newline_for_shift_carriage_return() {
+    fn test_should_insert_newline_for_shift_carriage_return() {
         // Arrange
         let key = KeyEvent::new(KeyCode::Char('\r'), event::KeyModifiers::SHIFT);
 
@@ -1177,11 +1186,11 @@ mod tests {
         let result = should_insert_newline(key);
 
         // Assert
-        assert!(!result);
+        assert!(result);
     }
 
     #[test]
-    fn test_should_not_insert_newline_for_shift_line_feed() {
+    fn test_should_insert_newline_for_shift_line_feed() {
         // Arrange
         let key = KeyEvent::new(KeyCode::Char('\n'), event::KeyModifiers::SHIFT);
 
@@ -1189,7 +1198,7 @@ mod tests {
         let result = should_insert_newline(key);
 
         // Assert
-        assert!(!result);
+        assert!(result);
     }
 
     #[test]

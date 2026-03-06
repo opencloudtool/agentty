@@ -137,20 +137,20 @@ async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
 
 /// Handles text input while a settings editor is active.
 ///
-/// The `Open Commands` editor is multiline: `Shift+Enter` inserts a newline,
-/// `Enter` finishes editing, and arrow keys move the cursor.
+/// The `Open Commands` editor is multiline: `Alt+Enter`/`Shift+Enter` insert
+/// a newline. Terminals that emit `\r`/`\n` as character keys are also
+/// treated as newline insertion to match prompt input behavior. Plain
+/// `Enter` finishes editing.
+/// Arrow keys move the cursor.
 async fn handle_settings_text_input(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
     match key.code {
-        KeyCode::Enter => {
-            if app.settings.is_editing_open_commands()
-                && key.modifiers.contains(KeyModifiers::SHIFT)
-            {
-                app.settings
-                    .append_selected_text_character(&app.services, '\n')
-                    .await;
-            } else {
-                app.settings.stop_text_input_editing();
-            }
+        _ if should_insert_settings_newline(app, key) => {
+            app.settings
+                .append_selected_text_character(&app.services, '\n')
+                .await;
+        }
+        code if is_settings_enter_key(code) => {
+            app.settings.stop_text_input_editing();
         }
         KeyCode::Esc => {
             app.settings.stop_text_input_editing();
@@ -181,6 +181,39 @@ async fn handle_settings_text_input(app: &mut App, key: KeyEvent) -> io::Result<
     }
 
     Ok(EventResult::Continue)
+}
+
+/// Returns whether settings text editing should insert a newline.
+fn should_insert_settings_newline(app: &App, key: KeyEvent) -> bool {
+    app.settings.is_editing_open_commands()
+        && (is_settings_newline_character_key(key.code)
+            || is_settings_modified_enter_key(key)
+            || is_settings_control_newline_key(key))
+}
+
+/// Returns whether the key code is a newline character emitted as a typed key.
+fn is_settings_newline_character_key(key_code: KeyCode) -> bool {
+    matches!(key_code, KeyCode::Char('\r' | '\n'))
+}
+
+/// Returns whether the key event is a modified Enter key that should insert a
+/// newline in settings text input.
+fn is_settings_modified_enter_key(key: KeyEvent) -> bool {
+    is_settings_enter_key(key.code)
+        && key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+}
+
+/// Returns whether the key event is a control-key newline variant.
+fn is_settings_control_newline_key(key: KeyEvent) -> bool {
+    key.modifiers == KeyModifiers::CONTROL
+        && matches!(key.code, KeyCode::Char('j' | 'm' | '\n' | '\r'))
+}
+
+/// Returns whether a key code is the Enter key.
+fn is_settings_enter_key(key_code: KeyCode) -> bool {
+    matches!(key_code, KeyCode::Enter)
 }
 
 /// Returns whether a key event should insert text into a settings string value.
@@ -733,6 +766,95 @@ mod tests {
         let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
             .await
             .expect("failed to handle Shift+Enter key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(app.settings.is_editing_text_input());
+        assert_eq!(app.settings.open_command, "nvim .\n");
+    }
+
+    #[tokio::test]
+    async fn test_handle_alt_enter_key_inserts_open_command_newline_while_editing() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_for_settings().await;
+        app.settings.open_command = "nvim .".to_string();
+        handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to start settings editing");
+
+        // Act
+        let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT))
+            .await
+            .expect("failed to handle Alt+Enter key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(app.settings.is_editing_text_input());
+        assert_eq!(app.settings.open_command, "nvim .\n");
+    }
+
+    #[tokio::test]
+    async fn test_handle_shift_carriage_return_key_inserts_open_command_newline_while_editing() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_for_settings().await;
+        app.settings.open_command = "nvim .".to_string();
+        handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to start settings editing");
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('\r'), KeyModifiers::SHIFT),
+        )
+        .await
+        .expect("failed to handle Shift+carriage-return key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(app.settings.is_editing_text_input());
+        assert_eq!(app.settings.open_command, "nvim .\n");
+    }
+
+    #[tokio::test]
+    async fn test_handle_control_j_key_inserts_open_command_newline_while_editing() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_for_settings().await;
+        app.settings.open_command = "nvim .".to_string();
+        handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to start settings editing");
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        )
+        .await
+        .expect("failed to handle Control+j key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(app.settings.is_editing_text_input());
+        assert_eq!(app.settings.open_command, "nvim .\n");
+    }
+
+    #[tokio::test]
+    async fn test_handle_line_feed_key_inserts_open_command_newline_while_editing() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_for_settings().await;
+        app.settings.open_command = "nvim .".to_string();
+        handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to start settings editing");
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle line-feed key");
 
         // Assert
         assert!(matches!(event_result, EventResult::Continue));
