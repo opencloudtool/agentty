@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::setting::SettingsManager;
@@ -61,19 +62,22 @@ impl Page for SettingsPage<'_> {
 
         f.render_stateful_widget(table, main_area, &mut self.manager.table_state);
 
-        let footer = Paragraph::new(settings_footer_text(self.manager));
+        let footer = Paragraph::new(settings_footer_line(self.manager));
 
         f.render_widget(footer, chunks[1]);
     }
 }
 
-/// Returns the footer help text for settings mode.
-fn settings_footer_text(manager: &SettingsManager) -> String {
+/// Returns the footer help content for settings mode.
+///
+/// Inline text editing keeps using the manager-provided hint string, while
+/// list mode uses the shared styled help-action rendering.
+fn settings_footer_line(manager: &SettingsManager) -> Line<'static> {
     if manager.is_editing_text_input() {
-        return manager.footer_hint().to_string();
+        return Line::from(manager.footer_hint().to_string());
     }
 
     let actions = help_action::settings_footer_actions();
 
-    help_action::footer_text(&actions)
+    help_action::footer_line(&actions)
 }

@@ -193,8 +193,8 @@ impl Page for DiffPage<'_> {
             total_removed_lines,
         );
 
-        let help_text = help_action::footer_text(&help_action::diff_footer_actions());
-        let help_message = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
+        let help_message =
+            Paragraph::new(help_action::footer_line(&help_action::diff_footer_actions()));
         f.render_widget(help_message, footer_area);
     }
 }

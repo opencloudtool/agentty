@@ -73,8 +73,9 @@ impl Page for ProjectListPage<'_> {
 
         f.render_stateful_widget(table, main_area, self.table_state);
 
-        let help_text = help_action::footer_text(&help_action::project_list_footer_actions());
-        let help_message = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
+        let help_message = Paragraph::new(help_action::footer_line(
+            &help_action::project_list_footer_actions(),
+        ));
         f.render_widget(help_message, footer_area);
     }
 }

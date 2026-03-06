@@ -10,7 +10,7 @@ Status-aware UI polish plan aligned with the current Ratatui implementation in `
 | Spacing and padding | Most pages render with outer `margin(1)` and some overlays use inner padding (`InfoOverlay`). Table `column_spacing` remains `1` in major list views. | Partial |
 | Tab bar | Active tab is yellow + bold; no active background treatment or separators. | Not started |
 | Tables | Header row still uses gray background with black text; row selection still uses `>> `. | Not started |
-| Status and footer bars | Status/footer bars are present and functional, but page-level keybinding hints are rendered as plain single-style strings. | Partial |
+| Status and footer bars | Status/footer bars are present and functional, and page-level keybinding hints now render as styled key/label spans. | Partial |
 | Diff view | Strong structure exists (file explorer, line-number gutter, sign column). Added/removed lines are foreground-only (no background tinting). | Partial |
 | Overlays/dialogs | Overlay components are established. `InfoOverlay` already uses rounded borders and padding; others still use square borders and no shared dimmed backdrop. | Partial |
 | Chat presentation | Prompt blocks already have background treatment in markdown rendering; spinner/progress text exists. Input still uses square-border style with no focus variant. | Partial |
@@ -38,13 +38,13 @@ Status-aware UI polish plan aligned with the current Ratatui implementation in `
   - `pages/stat.rs`
   - `pages/setting.rs`
 
-## 2) Fix keybinding discoverability (footer hint styling)
+## 2) Fix keybinding discoverability (footer hint styling) - Done
 
 **Why now:** Highest UX payoff with small surface area.
 
-- Move footer hint rendering from plain `String` output to styled spans where keys and labels are visually distinct.
-- Keep `help_action` as the source of actions, but return richer render data for page/footer components.
-- Apply to all page footers currently using `Paragraph::new(help_text).style(Color::Gray)`.
+- [x] Move footer hint rendering from plain `String` output to styled spans where keys and labels are visually distinct.
+- [x] Keep `help_action` as the source of actions, but return richer render data for page/footer components.
+- [x] Apply to all page footers currently using `Paragraph::new(help_text).style(Color::Gray)`.
 
 ## 3) Refresh table visual language
 
@@ -122,7 +122,7 @@ Primary files:
 ## Suggested Execution Order
 
 1. Shared color palette + color token migration.
-1. Footer keybinding styling.
+1. Footer keybinding styling. (Done)
 1. Table selection/header/spacing refresh.
 1. Diff addition/deletion background tinting.
 1. Tab bar polish.

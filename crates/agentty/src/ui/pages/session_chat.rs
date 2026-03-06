@@ -420,22 +420,19 @@ impl<'a> SessionChatPage<'a> {
                 help_action::HelpAction::new("send", "Enter", "Send response"),
                 help_action::HelpAction::new("skip", "Esc", "Skip (no answer)"),
             ];
-            let help_text = help_action::footer_text(&help_actions);
-            let help_para = Paragraph::new(help_text)
-                .style(Style::default().fg(Color::Gray))
+            let help_para = Paragraph::new(help_action::footer_line(&help_actions))
                 .alignment(ratatui::layout::Alignment::Right);
             f.render_widget(help_para, input_chunks[1]);
 
             return;
         }
 
-        let help_text = Self::view_help_text(session, self.done_session_output_mode());
-        let help_message = Paragraph::new(help_text).style(Style::default().fg(Color::Gray));
+        let help_actions = Self::view_footer_actions(session, self.done_session_output_mode());
+        let help_message = Paragraph::new(help_action::footer_line(&help_actions));
         f.render_widget(help_message, bottom_area);
     }
 
-    /// Returns the static help text shown in the bottom panel for a given
-    /// session in view mode.
+    /// Returns the footer action list for a given session in view mode.
     ///
     /// `InProgress` sessions keep worktree access while hiding edit and diff
     /// actions. `Rebasing` sessions keep worktree access but hide edit and
@@ -445,10 +442,10 @@ impl<'a> SessionChatPage<'a> {
     /// confirmation before queueing), and `Done` sessions expose only
     /// read-only shortcuts. `Canceled` sessions expose only `back`, `scroll`,
     /// and `help`.
-    fn view_help_text(
+    fn view_footer_actions(
         session: &Session,
         done_session_output_mode: DoneSessionOutputMode,
-    ) -> String {
+    ) -> Vec<help_action::HelpAction> {
         if session.status == Status::Canceled {
             let canceled_actions = vec![
                 help_action::HelpAction::new("back", "q", "Back to list"),
@@ -456,7 +453,7 @@ impl<'a> SessionChatPage<'a> {
                 help_action::HelpAction::new("help", "?", "Help"),
             ];
 
-            return help_action::footer_text(&canceled_actions);
+            return canceled_actions;
         }
 
         let session_state = match session.status {
@@ -478,7 +475,7 @@ impl<'a> SessionChatPage<'a> {
             }
         }
 
-        help_action::footer_text(&actions)
+        actions
     }
 
     /// Returns the `t` footer label for `Status::Done` output mode toggling.
@@ -545,6 +542,17 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect()
+    }
+
+    fn view_help_text(
+        session: &Session,
+        done_session_output_mode: DoneSessionOutputMode,
+    ) -> String {
+        help_action::footer_line(&SessionChatPage::view_footer_actions(
+            session,
+            done_session_output_mode,
+        ))
+        .to_string()
     }
 
     #[test]
@@ -828,7 +836,7 @@ mod tests {
         session.status = Status::InProgress;
 
         // Act
-        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
         assert!(help_text.contains("q: back"));
@@ -847,7 +855,7 @@ mod tests {
         session.status = Status::Rebasing;
 
         // Act
-        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
         assert!(help_text.contains("q: back"));
@@ -871,7 +879,7 @@ mod tests {
                 let mut session = session_fixture();
                 session.status = *session_status;
 
-                SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary)
+                view_help_text(&session, DoneSessionOutputMode::Summary)
             })
             .collect();
 
@@ -892,7 +900,7 @@ mod tests {
         session.status = Status::Canceled;
 
         // Act
-        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
         assert_eq!(help_text, "q: back | j/k: scroll | ?: help");
@@ -904,7 +912,7 @@ mod tests {
         let session = session_fixture();
 
         // Act
-        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
         assert!(help_text.contains("Enter: reply"));
@@ -921,7 +929,7 @@ mod tests {
         session.status = Status::Review;
 
         // Act
-        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
         assert!(!help_text.contains("d: diff"));
@@ -936,7 +944,7 @@ mod tests {
         session.status = Status::Done;
 
         // Act
-        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Summary);
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
         assert!(!help_text.contains("o: open"));
@@ -951,7 +959,7 @@ mod tests {
         session.status = Status::Done;
 
         // Act
-        let help_text = SessionChatPage::view_help_text(&session, DoneSessionOutputMode::Output);
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Output);
 
         // Assert
         assert!(help_text.contains("t: summary"));
@@ -964,8 +972,7 @@ mod tests {
         session.status = Status::Done;
 
         // Act
-        let help_text =
-            SessionChatPage::view_help_text(&session, DoneSessionOutputMode::FocusedReview);
+        let help_text = view_help_text(&session, DoneSessionOutputMode::FocusedReview);
 
         // Assert
         assert!(help_text.contains("t: summary"));

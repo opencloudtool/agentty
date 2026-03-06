@@ -1,3 +1,6 @@
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+
 /// One user-visible shortcut entry that can be rendered in the footer and
 /// in the help popup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -297,21 +300,30 @@ pub(crate) fn diff_footer_actions() -> Vec<HelpAction> {
     ]
 }
 
-/// Renders one-line footer help text from projected actions.
-pub(crate) fn footer_text(actions: &[HelpAction]) -> String {
-    let mut help_text = String::new();
+/// Renders one-line footer help as styled spans where keys are emphasized and
+/// labels are muted for faster scanning.
+pub(crate) fn footer_line(actions: &[HelpAction]) -> Line<'static> {
+    let mut spans = Vec::new();
 
     for (index, action) in actions.iter().enumerate() {
         if index > 0 {
-            help_text.push_str(" | ");
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
         }
 
-        help_text.push_str(action.key);
-        help_text.push_str(": ");
-        help_text.push_str(action.footer_label);
+        spans.push(Span::styled(
+            action.key.to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(": ", Style::default().fg(Color::Gray)));
+        spans.push(Span::styled(
+            action.footer_label.to_string(),
+            Style::default().fg(Color::Gray),
+        ));
     }
 
-    help_text
+    Line::from(spans)
 }
 
 /// Returns list-mode actions that are shared by sessions, stats, and settings
@@ -520,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn test_footer_text_joins_actions_in_order() {
+    fn test_footer_line_styles_keys_labels_and_separator() {
         // Arrange
         let actions = vec![
             HelpAction::new("quit", "q", "Quit"),
@@ -528,9 +540,24 @@ mod tests {
         ];
 
         // Act
-        let help_text = footer_text(&actions);
+        let line = footer_line(&actions);
 
         // Assert
-        assert_eq!(help_text, "q: quit | ?: help");
+        assert_eq!(line.to_string(), "q: quit | ?: help");
+        assert_eq!(
+            line.spans[0].style,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(line.spans[1].style, Style::default().fg(Color::Gray));
+        assert_eq!(line.spans[2].style, Style::default().fg(Color::Gray));
+        assert_eq!(line.spans[3].style, Style::default().fg(Color::DarkGray));
+        assert_eq!(
+            line.spans[4].style,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        );
     }
 }

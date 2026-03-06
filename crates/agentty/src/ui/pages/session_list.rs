@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use crate::domain::session::{Session, SessionSize, Status};
@@ -104,18 +105,17 @@ impl Page for SessionListPage<'_> {
             .table_state
             .selected()
             .and_then(|selected_index| self.sessions.get(selected_index));
-        let help_message = Paragraph::new(session_list_help_text(selected_session))
-            .style(Style::default().fg(Color::Gray));
+        let help_message = Paragraph::new(session_list_help_line(selected_session));
         f.render_widget(help_message, footer_area);
     }
 }
 
-/// Builds footer help text for session list mode.
-fn session_list_help_text(selected_session: Option<&Session>) -> String {
+/// Builds footer help content for session list mode.
+fn session_list_help_line(selected_session: Option<&Session>) -> Line<'static> {
     let can_open_selected_session = selected_session.is_some();
     let actions = help_action::session_list_footer_actions(can_open_selected_session);
 
-    help_action::footer_text(&actions)
+    help_action::footer_line(&actions)
 }
 
 /// Prepares list table state for grouped row rendering.
@@ -651,48 +651,48 @@ mod tests {
     }
 
     #[test]
-    fn test_session_list_help_text_includes_sync_for_non_empty_sessions() {
+    fn test_session_list_help_line_includes_sync_for_non_empty_sessions() {
         // Arrange
         let session = test_session("session-1", Status::Review);
 
         // Act
-        let help_text = session_list_help_text(Some(&session));
+        let help_text = session_list_help_line(Some(&session)).to_string();
 
         // Assert
         assert!(help_text.contains("s: sync"));
     }
 
     #[test]
-    fn test_session_list_help_text_hides_cancel_for_non_review_session() {
+    fn test_session_list_help_line_hides_cancel_for_non_review_session() {
         // Arrange
         let session = test_session("session-1", Status::Done);
 
         // Act
-        let help_text = session_list_help_text(Some(&session));
+        let help_text = session_list_help_line(Some(&session)).to_string();
 
         // Assert
         assert!(!help_text.contains("c: cancel"));
     }
 
     #[test]
-    fn test_session_list_help_text_includes_open_for_canceled_session() {
+    fn test_session_list_help_line_includes_open_for_canceled_session() {
         // Arrange
         let session = test_session("session-1", Status::Canceled);
 
         // Act
-        let help_text = session_list_help_text(Some(&session));
+        let help_text = session_list_help_line(Some(&session)).to_string();
 
         // Assert
         assert!(help_text.contains("Enter: open session"));
     }
 
     #[test]
-    fn test_session_list_help_text_includes_open_editor_for_selected_session() {
+    fn test_session_list_help_line_includes_open_editor_for_selected_session() {
         // Arrange
         let session = test_session("session-1", Status::Review);
 
         // Act
-        let help_text = session_list_help_text(Some(&session));
+        let help_text = session_list_help_line(Some(&session)).to_string();
 
         // Assert
         assert!(help_text.contains("e: open editor"));
