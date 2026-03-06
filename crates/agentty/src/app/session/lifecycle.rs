@@ -22,6 +22,8 @@ use crate::ui::page::session_list::grouped_session_indexes;
 
 /// Maximum stored length for generated session titles.
 const GENERATED_SESSION_TITLE_MAX_CHARACTERS: usize = 72;
+const USER_PROMPT_PREFIX: &str = " › ";
+const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
 
 /// Input bag for constructing a queued session command.
 struct BuildSessionCommandInput {
@@ -261,7 +263,7 @@ impl SessionManager {
         self.persist_first_message_metadata(services, &persisted_session_id, &prompt, &title)
             .await;
 
-        let initial_output = format!(" › {prompt}\n\n");
+        let initial_output = Self::formatted_prompt_output(&prompt, false);
         SessionTaskService::append_session_output(
             &output,
             services.db(),
@@ -693,7 +695,7 @@ impl SessionManager {
         session_id: &str,
         prompt: &str,
     ) {
-        let reply_line = format!("\n › {prompt}\n\n");
+        let reply_line = Self::formatted_prompt_output(prompt, true);
         SessionTaskService::append_session_output(
             output,
             services.db(),
@@ -702,6 +704,33 @@ impl SessionManager {
             &reply_line,
         )
         .await;
+    }
+
+    /// Formats one user prompt block for persisted session output.
+    ///
+    /// The first line uses `USER_PROMPT_PREFIX`; continuation lines use
+    /// `USER_PROMPT_CONTINUATION_PREFIX` so embedded blank lines remain inside
+    /// the prompt block instead of being interpreted as prompt terminators.
+    fn formatted_prompt_output(prompt: &str, prepend_newline: bool) -> String {
+        let prompt_lines = prompt.split('\n').collect::<Vec<_>>();
+        let mut formatted_lines = Vec::with_capacity(prompt_lines.len());
+
+        for (index, prompt_line) in prompt_lines.into_iter().enumerate() {
+            let prefix = if index == 0 {
+                USER_PROMPT_PREFIX
+            } else {
+                USER_PROMPT_CONTINUATION_PREFIX
+            };
+
+            formatted_lines.push(format!("{prefix}{prompt_line}"));
+        }
+
+        let prompt_block = formatted_lines.join("\n");
+        if prepend_newline {
+            return format!("\n{prompt_block}\n\n");
+        }
+
+        format!("{prompt_block}\n\n")
     }
 
     /// Builds a queued command for starting or resuming a session interaction.
@@ -1087,6 +1116,33 @@ mod tests {
             title: title.map(ToString::to_string),
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn test_formatted_prompt_output_formats_multiline_prompt_with_continuation_prefix() {
+        // Arrange
+        let prompt = "first line\n\n\nafter gap";
+
+        // Act
+        let formatted_prompt = SessionManager::formatted_prompt_output(prompt, false);
+
+        // Assert
+        assert_eq!(
+            formatted_prompt,
+            " › first line\n   \n   \n   after gap\n\n"
+        );
+    }
+
+    #[test]
+    fn test_formatted_prompt_output_prepends_newline_for_replies() {
+        // Arrange
+        let prompt = "reply line";
+
+        // Act
+        let formatted_prompt = SessionManager::formatted_prompt_output(prompt, true);
+
+        // Assert
+        assert_eq!(formatted_prompt, "\n › reply line\n\n");
     }
 
     #[test]

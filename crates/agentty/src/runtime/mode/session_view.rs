@@ -560,6 +560,11 @@ fn view_total_lines(
         })
 }
 
+/// Extracts user prompt history entries from persisted session output text.
+///
+/// The parser accepts both legacy multiline prompts (raw continuation lines)
+/// and the current continuation-prefixed format where follow-up lines start
+/// with three spaces.
 fn prompt_history_entries(output: &str) -> Vec<String> {
     let mut entries = Vec::new();
     let mut output_lines = output.lines().peekable();
@@ -576,8 +581,9 @@ fn prompt_history_entries(output: &str) -> Vec<String> {
                 break;
             }
 
+            let prompt_line = next_line.strip_prefix("   ").unwrap_or(next_line);
             prompt.push('\n');
-            prompt.push_str(next_line);
+            prompt.push_str(prompt_line);
             let _ = output_lines.next();
         }
 
@@ -1115,13 +1121,25 @@ mod tests {
     #[test]
     fn test_prompt_history_entries_keeps_multiline_prompts() {
         // Arrange
-        let output = " › first line\nsecond line\n\nassistant\n\n";
+        let output = " › first line\n   second line\n\nassistant\n\n";
 
         // Act
         let entries = prompt_history_entries(output);
 
         // Assert
         assert_eq!(entries, vec!["first line\nsecond line".to_string()]);
+    }
+
+    #[test]
+    fn test_prompt_history_entries_keeps_multiple_blank_lines_in_prompts() {
+        // Arrange
+        let output = " › first line\n   \n   \n   after gap\n\nassistant\n\n";
+
+        // Act
+        let entries = prompt_history_entries(output);
+
+        // Assert
+        assert_eq!(entries, vec!["first line\n\n\nafter gap".to_string()]);
     }
 
     #[test]

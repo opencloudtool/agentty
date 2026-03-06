@@ -721,11 +721,15 @@ mod tests {
         );
 
         // Assert
-        let first_line = lines.first().expect("expected output line");
-        assert_eq!(first_line.to_string(), " › /model gemini");
-        assert_eq!(first_line.spans[0].style.fg, Some(Color::Cyan));
+        let prompt_line = lines
+            .iter()
+            .find(|line| line.to_string().trim_end().starts_with(" › "))
+            .expect("expected user prompt line");
+        assert_eq!(prompt_line.to_string().trim_end(), " › /model gemini");
+        assert_eq!(prompt_line.width(), 80);
+        assert_eq!(prompt_line.spans[0].style.fg, Some(Color::Cyan));
         assert!(
-            first_line.spans[0]
+            prompt_line.spans[0]
                 .style
                 .add_modifier
                 .contains(Modifier::BOLD)

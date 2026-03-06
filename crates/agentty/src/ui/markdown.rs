@@ -25,9 +25,18 @@ pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
             if starts_user_prompt_block {
                 // Prompt lines are session metadata, not markdown content.
                 block_state = BlockState::Paragraph;
+                rendered_lines.push(user_prompt_padding_line(width));
             }
 
-            rendered_lines.extend(render_user_prompt_line(prompt_line, width));
+            let closes_user_prompt_block = prompt_line.is_empty() && !is_user_prompt_block;
+            rendered_lines.extend(render_user_prompt_line(
+                prompt_line,
+                starts_user_prompt_block,
+                width,
+            ));
+            if closes_user_prompt_block {
+                rendered_lines.push(Line::from(""));
+            }
 
             continue;
         }
@@ -46,6 +55,10 @@ pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
             BlockState::FencedCode => rendered_lines.extend(render_code_line(raw_line, width)),
             BlockState::FencedStats => rendered_lines.extend(render_stats_line(raw_line, width)),
         }
+    }
+
+    if is_user_prompt_block {
+        rendered_lines.push(user_prompt_padding_line(width));
     }
 
     if rendered_lines.is_empty() {
@@ -84,12 +97,75 @@ fn user_prompt_block_line<'a>(
 
 /// Renders a user prompt line verbatim so markdown syntax in prompts is not
 /// parsed.
-fn render_user_prompt_line(raw_line: &str, width: usize) -> Vec<Line<'static>> {
+///
+/// The first prompt line keeps the `USER_PROMPT_PREFIX` marker while all
+/// continuation lines are padded to align with the prompt text.
+fn render_user_prompt_line(
+    raw_line: &str,
+    starts_user_prompt_block: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
     if raw_line.is_empty() {
-        return vec![Line::from("")];
+        return vec![user_prompt_padding_line(width)];
     }
 
-    wrap_verbatim_line(raw_line, user_prompt_style(), width)
+    let continuation_padding = user_prompt_continuation_padding();
+    let content_style = user_prompt_content_style();
+
+    let prompt_lines = if starts_user_prompt_block
+        && let Some(content) = raw_line.strip_prefix(USER_PROMPT_PREFIX)
+    {
+        render_prefixed_verbatim_line(
+            USER_PROMPT_PREFIX,
+            &continuation_padding,
+            content,
+            user_prompt_prefix_style(),
+            content_style,
+            width,
+        )
+    } else {
+        let continuation_content = raw_line
+            .strip_prefix(continuation_padding.as_str())
+            .unwrap_or(raw_line);
+
+        render_prefixed_verbatim_line(
+            &continuation_padding,
+            &continuation_padding,
+            continuation_content,
+            content_style,
+            content_style,
+            width,
+        )
+    };
+
+    prompt_lines
+        .into_iter()
+        .map(|line| pad_line_to_width(line, width, content_style))
+        .collect()
+}
+
+/// Returns one full-width line used as top or bottom padding inside the user
+/// prompt area.
+fn user_prompt_padding_line(width: usize) -> Line<'static> {
+    pad_line_to_width(Line::from(""), width, user_prompt_content_style())
+}
+
+/// Pads one rendered line to the target width using one style for trailing
+/// cells.
+fn pad_line_to_width(mut line: Line<'static>, width: usize, style: Style) -> Line<'static> {
+    if width == 0 {
+        return line;
+    }
+
+    let line_width = line.width();
+    if line_width >= width {
+        return line;
+    }
+
+    line.spans
+        .push(Span::styled(" ".repeat(width - line_width), style));
+
+    line
 }
 
 fn render_markdown_line(raw_line: &str, width: usize) -> Vec<Line<'static>> {
@@ -98,7 +174,7 @@ fn render_markdown_line(raw_line: &str, width: usize) -> Vec<Line<'static>> {
     }
 
     if raw_line.starts_with(USER_PROMPT_PREFIX) {
-        return wrap_verbatim_line(raw_line, user_prompt_style(), width);
+        return render_user_prompt_line(raw_line, true, width);
     }
 
     if let Some((level, content)) = parse_heading(raw_line) {
@@ -178,6 +254,75 @@ fn render_prefixed_inline_line(
     }
 
     lines
+}
+
+/// Wraps one verbatim line while preserving a fixed prefix for wrapped
+/// continuations.
+fn render_prefixed_verbatim_line(
+    prefix: &str,
+    continuation_prefix: &str,
+    content: &str,
+    prefix_style: Style,
+    content_style: Style,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let prefix_width = prefix.chars().count();
+    if width <= prefix_width {
+        let mut spans = vec![Span::styled(prefix.to_string(), prefix_style)];
+        spans.extend(user_prompt_lookup_spans(content, content_style));
+
+        return wrap_styled_line(spans, width);
+    }
+
+    let wrapped_content = wrap_verbatim_spans(
+        user_prompt_lookup_spans(content, content_style),
+        width - prefix_width,
+    );
+    let mut lines = Vec::with_capacity(wrapped_content.len());
+
+    for (index, line) in wrapped_content.into_iter().enumerate() {
+        let marker = if index == 0 {
+            prefix
+        } else {
+            continuation_prefix
+        };
+        let marker_style = if index == 0 {
+            prefix_style
+        } else {
+            content_style
+        };
+        let mut spans = vec![Span::styled(marker.to_string(), marker_style)];
+        spans.extend(line.spans);
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
+/// Splits one prompt content line into styled spans with `@` lookup token
+/// highlighting.
+fn user_prompt_lookup_spans(content: &str, content_style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut is_lookup = false;
+    let mut previous_character = None;
+
+    for character in content.chars() {
+        if character == '@' && previous_character.is_none_or(char::is_whitespace) {
+            is_lookup = true;
+        } else if character.is_whitespace() {
+            is_lookup = false;
+        }
+
+        let style = if is_lookup {
+            user_prompt_lookup_style()
+        } else {
+            content_style
+        };
+        push_verbatim_span_character(&mut spans, style, character);
+        previous_character = Some(character);
+    }
+
+    spans
 }
 
 fn render_inline_line(content: &str, base_style: Style, width: usize) -> Vec<Line<'static>> {
@@ -490,10 +635,34 @@ fn stats_value_style() -> Style {
     inline_code_style()
 }
 
-fn user_prompt_style() -> Style {
+/// Returns the background color used for rendered user prompt blocks.
+fn user_prompt_background_color() -> Color {
+    Color::DarkGray
+}
+
+/// Returns the style for the visible `USER_PROMPT_PREFIX` marker.
+fn user_prompt_prefix_style() -> Style {
     Style::default()
         .fg(Color::Cyan)
+        .bg(user_prompt_background_color())
         .add_modifier(Modifier::BOLD)
+}
+
+/// Returns the style for user prompt text content.
+fn user_prompt_content_style() -> Style {
+    Style::default().bg(user_prompt_background_color())
+}
+
+/// Returns the style for one `@` lookup token within user prompt content.
+fn user_prompt_lookup_style() -> Style {
+    Style::default()
+        .fg(Color::LightBlue)
+        .bg(user_prompt_background_color())
+}
+
+/// Returns continuation padding that aligns with `USER_PROMPT_PREFIX` width.
+fn user_prompt_continuation_padding() -> String {
+    " ".repeat(USER_PROMPT_PREFIX.chars().count())
 }
 
 fn inline_code_style() -> Style {
@@ -555,9 +724,20 @@ mod tests {
         let lines = render_markdown(input, 80);
 
         // Assert
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].to_string(), input);
-        assert_eq!(lines[0].spans[0].style, user_prompt_style());
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].to_string().trim_end(), "");
+        assert_eq!(lines[0].width(), 80);
+        assert_eq!(lines[1].to_string().trim_end(), input);
+        assert_eq!(lines[1].width(), 80);
+        assert_eq!(lines[1].spans[0].style, user_prompt_prefix_style());
+        assert_eq!(lines[1].spans[1].style, user_prompt_content_style());
+        assert_eq!(
+            lines[1].spans.last().expect("padding span").style,
+            user_prompt_content_style()
+        );
+        assert_eq!(lines[2].to_string().trim_end(), "");
+        assert_eq!(lines[2].width(), 80);
+        assert_eq!(lines[2].spans[0].style, user_prompt_content_style());
     }
 
     #[test]
@@ -569,13 +749,19 @@ mod tests {
         let lines = render_markdown(input, 80);
 
         // Assert
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[0].to_string(), " › first line");
-        assert_eq!(lines[1].to_string(), "second line");
-        assert_eq!(lines[3].to_string(), "assistant line");
-        assert_eq!(lines[0].spans[0].style, user_prompt_style());
-        assert_eq!(lines[1].spans[0].style, user_prompt_style());
-        assert_eq!(lines[3].spans[0].style, Style::default());
+        assert_eq!(lines.len(), 6);
+        assert_eq!(lines[0].to_string().trim_end(), "");
+        assert_eq!(lines[1].to_string().trim_end(), " › first line");
+        assert_eq!(lines[2].to_string().trim_end(), "   second line");
+        assert_eq!(lines[1].width(), 80);
+        assert_eq!(lines[2].width(), 80);
+        assert_eq!(lines[4].to_string(), "");
+        assert_eq!(lines[5].to_string(), "assistant line");
+        assert_eq!(lines[1].spans[0].style, user_prompt_prefix_style());
+        assert_eq!(lines[2].spans[0].content, "   ");
+        assert_eq!(lines[2].spans[0].style, user_prompt_content_style());
+        assert_eq!(lines[2].spans[1].style, user_prompt_content_style());
+        assert_eq!(lines[5].spans[0].style, Style::default());
     }
 
     #[test]
@@ -587,9 +773,85 @@ mod tests {
         let lines = render_markdown(input, 80);
 
         // Assert
-        assert_eq!(lines[1].to_string(), "**bold**");
-        assert_eq!(lines[1].spans[0].style, user_prompt_style());
-        assert_eq!(lines[1].spans.len(), 1);
+        assert_eq!(lines[2].to_string().trim_end(), "   **bold**");
+        assert_eq!(lines[2].spans[0].style, user_prompt_content_style());
+        assert_eq!(lines[4].to_string(), "");
+        assert_eq!(lines[5].to_string(), "assistant");
+    }
+
+    #[test]
+    fn test_render_markdown_wraps_user_prompt_content_with_continuation_padding() {
+        // Arrange
+        let input = " › one two three";
+
+        // Act
+        let lines = render_markdown(input, 8);
+
+        // Assert
+        assert!(lines.len() >= 4);
+        assert_eq!(lines[0].to_string().trim_end(), "");
+        assert!(lines[1].to_string().starts_with(" › "));
+        assert!(lines[2].to_string().starts_with("   "));
+        assert_eq!(lines[0].spans[0].style, user_prompt_content_style());
+        assert_eq!(lines[2].spans[0].style, user_prompt_content_style());
+        assert_eq!(
+            lines.last().expect("bottom padding").spans[0].style,
+            user_prompt_content_style()
+        );
+    }
+
+    #[test]
+    fn test_render_markdown_highlights_file_lookups_in_user_prompt_block() {
+        // Arrange
+        let input = " › check @crates/agentty/src/ui/markdown.rs";
+
+        // Act
+        let lines = render_markdown(input, 80);
+
+        // Assert
+        assert!(lines[1].spans.iter().any(|span| {
+            span.content.as_ref() == "@crates/agentty/src/ui/markdown.rs"
+                && span.style == user_prompt_lookup_style()
+        }));
+    }
+
+    #[test]
+    fn test_render_markdown_does_not_highlight_non_lookup_at_symbol_in_user_prompt_block() {
+        // Arrange
+        let input = " › reach me at email@example.com";
+
+        // Act
+        let lines = render_markdown(input, 80);
+
+        // Assert
+        assert!(
+            !lines[1]
+                .spans
+                .iter()
+                .any(|span| span.style == user_prompt_lookup_style())
+        );
+    }
+
+    #[test]
+    fn test_render_markdown_keeps_text_after_multiple_blank_lines_in_user_prompt_block() {
+        // Arrange
+        let input = " › first line\n   \n   \n   after gap\n\nassistant";
+
+        // Act
+        let lines = render_markdown(input, 80);
+
+        // Assert
+        assert!(lines.iter().any(|line| {
+            line.to_string().trim_end() == "   after gap"
+                && line
+                    .spans
+                    .iter()
+                    .all(|span| span.style == user_prompt_content_style())
+        }));
+        assert_eq!(
+            lines.last().expect("assistant line").to_string(),
+            "assistant"
+        );
     }
 
     #[test]
