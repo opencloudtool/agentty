@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
@@ -17,6 +17,8 @@ const DAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const HEATMAP_CELL_WIDTH: usize = 2;
 const HEATMAP_DAY_LABEL_WIDTH: usize = 4;
 const HEATMAP_SECTION_HEIGHT: u16 = 11;
+/// Horizontal spacing between token-stat table columns.
+const TABLE_COLUMN_SPACING: u16 = 2;
 
 /// Stats dashboard showing activity heatmap and per-session token statistics.
 pub struct StatsPage<'a> {
@@ -73,15 +75,15 @@ impl StatsPage<'_> {
 
     /// Renders per-session token statistics using the shared table palette.
     fn render_table(&self, f: &mut Frame, area: Rect) {
-        let selected_style = Style::default().bg(style::palette::SURFACE);
-        let normal_style = Style::default()
-            .bg(style::palette::SURFACE_ELEVATED)
-            .fg(style::palette::BORDER);
+        let header_style = Style::default()
+            .bg(style::palette::SURFACE)
+            .fg(style::palette::TEXT_MUTED)
+            .add_modifier(Modifier::BOLD);
         let header_cells = ["Session", "Project", "Model", "Input", "Output"]
             .iter()
             .map(|header| Cell::from(*header));
         let header = Row::new(header_cells)
-            .style(normal_style)
+            .style(header_style)
             .height(1)
             .bottom_margin(1);
 
@@ -107,10 +109,9 @@ impl StatsPage<'_> {
                 Constraint::Length(10),
             ],
         )
+        .column_spacing(TABLE_COLUMN_SPACING)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Token Stats"))
-        .row_highlight_style(selected_style)
-        .highlight_symbol("   ");
+        .block(Block::default().borders(Borders::ALL).title("Token Stats"));
 
         f.render_widget(table, area);
     }
@@ -245,6 +246,18 @@ mod tests {
     use super::*;
     use crate::agent::AgentModel;
     use crate::domain::session::{SessionSize, SessionStats, Status};
+
+    #[test]
+    fn test_token_stats_table_column_spacing_is_wider_for_readability() {
+        // Arrange
+        let expected_spacing = 2;
+
+        // Act
+        let spacing = TABLE_COLUMN_SPACING;
+
+        // Assert
+        assert_eq!(spacing, expected_spacing);
+    }
 
     fn session_fixture() -> Session {
         session_fixture_with(

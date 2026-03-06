@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
@@ -9,8 +9,10 @@ use crate::ui::state::help_action;
 use crate::ui::util::{first_table_column_width, truncate_with_ellipsis};
 use crate::ui::{Page, style};
 
-const ROW_HIGHLIGHT_SYMBOL: &str = ">> ";
-const TABLE_COLUMN_SPACING: u16 = 1;
+/// Uses row-background highlighting without a textual cursor glyph.
+const ROW_HIGHLIGHT_SYMBOL: &str = "";
+/// Horizontal spacing between table columns in the session list.
+const TABLE_COLUMN_SPACING: u16 = 2;
 /// Shared page margin that keeps table and footer spacing aligned with other
 /// pages.
 const PAGE_MARGIN: u16 = 1;
@@ -49,14 +51,15 @@ impl Page for SessionListPage<'_> {
         let (main_area, footer_area) = Self::content_chunks(area);
 
         let selected_style = Style::default().bg(style::palette::SURFACE);
-        let normal_style = Style::default()
-            .bg(style::palette::SURFACE_ELEVATED)
-            .fg(style::palette::BORDER);
+        let header_style = Style::default()
+            .bg(style::palette::SURFACE)
+            .fg(style::palette::TEXT_MUTED)
+            .add_modifier(Modifier::BOLD);
         let header_cells = ["Session", "Model", "Size", "Status"]
             .iter()
             .map(|h| Cell::from(*h));
         let header = Row::new(header_cells)
-            .style(normal_style)
+            .style(header_style)
             .height(1)
             .bottom_margin(1);
 
@@ -67,17 +70,11 @@ impl Page for SessionListPage<'_> {
             size_column_width(),
             status_column_width(),
         ];
-        let has_selection = !self.sessions.is_empty() && self.table_state.selected().is_some();
-        let selection_width = if has_selection {
-            u16::try_from(ROW_HIGHLIGHT_SYMBOL.chars().count()).unwrap_or(u16::MAX)
-        } else {
-            0
-        };
         let title_column_width = first_table_column_width(
             block.inner(main_area).width,
             &column_constraints,
             TABLE_COLUMN_SPACING,
-            selection_width,
+            0,
         );
         let table_rows = grouped_session_rows(self.sessions);
         let selected_session_id = selected_session_id(self.sessions, self.table_state.selected());
@@ -410,6 +407,30 @@ mod tests {
             area.width - PAGE_MARGIN.saturating_mul(2)
         );
         assert_eq!(footer_area.height, 1);
+    }
+
+    #[test]
+    fn test_row_highlight_symbol_uses_background_only_selection() {
+        // Arrange
+        let highlight_symbol = ROW_HIGHLIGHT_SYMBOL;
+
+        // Act
+        let is_empty_symbol = highlight_symbol.is_empty();
+
+        // Assert
+        assert!(is_empty_symbol);
+    }
+
+    #[test]
+    fn test_table_column_spacing_is_wider_for_readability() {
+        // Arrange
+        let expected_spacing = 2;
+
+        // Act
+        let spacing = TABLE_COLUMN_SPACING;
+
+        // Assert
+        assert_eq!(spacing, expected_spacing);
     }
 
     #[test]

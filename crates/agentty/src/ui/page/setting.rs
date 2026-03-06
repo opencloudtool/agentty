@@ -1,12 +1,17 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::setting::SettingsManager;
 use crate::ui::state::help_action;
 use crate::ui::{Page, style};
+
+/// Uses row-background highlighting without a textual cursor glyph.
+const ROW_HIGHLIGHT_SYMBOL: &str = "";
+/// Horizontal spacing between settings-table columns.
+const TABLE_COLUMN_SPACING: u16 = 2;
 
 /// Renders the settings page table and inline editing hints.
 pub struct SettingsPage<'a> {
@@ -31,12 +36,13 @@ impl Page for SettingsPage<'_> {
         // Footer area can be used for help text later
 
         let selected_style = Style::default().bg(style::palette::SURFACE);
-        let normal_style = Style::default()
-            .bg(style::palette::SURFACE_ELEVATED)
-            .fg(style::palette::BORDER);
+        let header_style = Style::default()
+            .bg(style::palette::SURFACE)
+            .fg(style::palette::TEXT_MUTED)
+            .add_modifier(Modifier::BOLD);
         let header_cells = ["Setting", "Value"].iter().map(|h| Cell::from(*h));
         let header = Row::new(header_cells)
-            .style(normal_style)
+            .style(header_style)
             .height(1)
             .bottom_margin(1);
 
@@ -57,10 +63,11 @@ impl Page for SettingsPage<'_> {
             rows,
             [Constraint::Percentage(50), Constraint::Percentage(50)],
         )
+        .column_spacing(TABLE_COLUMN_SPACING)
         .header(header)
         .block(Block::default().borders(Borders::ALL).title("Settings"))
         .row_highlight_style(selected_style)
-        .highlight_symbol(">> ");
+        .highlight_symbol(ROW_HIGHLIGHT_SYMBOL);
 
         f.render_stateful_widget(table, main_area, &mut self.manager.table_state);
 
@@ -82,4 +89,33 @@ fn settings_footer_line(manager: &SettingsManager) -> Line<'static> {
     let actions = help_action::settings_footer_actions();
 
     help_action::footer_line(&actions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_row_highlight_symbol_uses_background_only_selection() {
+        // Arrange
+        let highlight_symbol = ROW_HIGHLIGHT_SYMBOL;
+
+        // Act
+        let is_empty_symbol = highlight_symbol.is_empty();
+
+        // Assert
+        assert!(is_empty_symbol);
+    }
+
+    #[test]
+    fn test_settings_table_column_spacing_is_wider_for_readability() {
+        // Arrange
+        let expected_spacing = 2;
+
+        // Act
+        let spacing = TABLE_COLUMN_SPACING;
+
+        // Assert
+        assert_eq!(spacing, expected_spacing);
+    }
 }

@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use time::OffsetDateTime;
@@ -9,8 +9,11 @@ use crate::domain::project::ProjectListItem;
 use crate::ui::state::help_action;
 use crate::ui::{Page, style};
 
-const ROW_HIGHLIGHT_SYMBOL: &str = ">> ";
+/// Uses row-background highlighting without a textual cursor glyph.
+const ROW_HIGHLIGHT_SYMBOL: &str = "";
 const ACTIVE_PROJECT_MARKER: &str = "* ";
+/// Horizontal spacing between project-table columns.
+const TABLE_COLUMN_SPACING: u16 = 2;
 
 /// Projects tab renderer showing saved repositories and quick metadata.
 pub struct ProjectListPage<'a> {
@@ -49,8 +52,9 @@ impl Page for ProjectListPage<'_> {
         let header = Row::new(["Project", "Branch", "Sessions", "Last Opened", "Path"])
             .style(
                 Style::default()
-                    .bg(style::palette::SURFACE_ELEVATED)
-                    .fg(style::palette::BORDER),
+                    .bg(style::palette::SURFACE)
+                    .fg(style::palette::TEXT_MUTED)
+                    .add_modifier(Modifier::BOLD),
             )
             .height(1)
             .bottom_margin(1);
@@ -69,7 +73,7 @@ impl Page for ProjectListPage<'_> {
                 Constraint::Fill(1),
             ],
         )
-        .column_spacing(1)
+        .column_spacing(TABLE_COLUMN_SPACING)
         .header(header)
         .block(Block::default().borders(Borders::ALL).title("Projects"))
         .row_highlight_style(selected_style)
@@ -172,6 +176,30 @@ mod tests {
 
     use super::*;
     use crate::domain::project::Project;
+
+    #[test]
+    fn test_row_highlight_symbol_uses_background_only_selection() {
+        // Arrange
+        let highlight_symbol = ROW_HIGHLIGHT_SYMBOL;
+
+        // Act
+        let is_empty_symbol = highlight_symbol.is_empty();
+
+        // Assert
+        assert!(is_empty_symbol);
+    }
+
+    #[test]
+    fn test_project_table_column_spacing_is_wider_for_readability() {
+        // Arrange
+        let expected_spacing = 2;
+
+        // Act
+        let spacing = TABLE_COLUMN_SPACING;
+
+        // Assert
+        assert_eq!(spacing, expected_spacing);
+    }
 
     #[test]
     fn test_format_last_opened_uses_iso_like_date() {

@@ -11,9 +11,9 @@ Status-aware UI polish plan aligned with the current Ratatui implementation in `
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
 | Color system | Shared semantic palette tokens are defined in `style.rs` and migrated across target UI components/pages. Heatmap colors in `pages/stat.rs` remain a separate RGB data-visualization scale. | Done |
-| Spacing and padding | Most pages render with outer `margin(1)` and some overlays use inner padding (`InfoOverlay`). Table `column_spacing` remains `1` in major list views. | Partial |
+| Spacing and padding | Most pages render with outer `margin(1)` and some overlays use inner padding (`InfoOverlay`). Major table/list views now use `column_spacing(2)` for improved scanability. | Partial |
 | Tab bar | Active tab is yellow + bold; no active background treatment or separators. | Not started |
-| Tables | Header row still uses gray background with black text; row selection still uses `>> `. | Not started |
+| Tables | Table headers now use bold muted text (without heavy gray fill), row selection uses full-row highlight (no `>> ` marker), and primary list tables have wider spacing. | Done |
 | Status and footer bars | Status/footer bars are present and functional, and page-level keybinding hints now render as styled key/label spans. | Partial |
 | Diff view | Strong structure exists (file explorer, line-number gutter, sign column). Added/removed lines are foreground-only (no background tinting). | Partial |
 | Overlays/dialogs | Overlay components are established. `InfoOverlay` already uses rounded borders and padding; others still use square borders and no shared dimmed backdrop. | Partial |
@@ -50,14 +50,14 @@ Status-aware UI polish plan aligned with the current Ratatui implementation in `
 - [x] Keep `help_action` as the source of actions, but return richer render data for page/footer components.
 - [x] Apply to all page footers currently using `Paragraph::new(help_text).style(Color::Gray)`.
 
-## 3) Refresh table visual language
+## 3) Refresh table visual language - Done
 
 **Why now:** List pages are the most frequently viewed screens.
 
-- Replace `>> ` selection marker with either full-row highlight only or a subtle single-column marker.
-- Replace heavy gray header backgrounds with lighter-weight header styling (bold + muted divider treatment).
-- Increase list table column spacing from `1` to `2` where it improves readability.
-- Consider rounded borders for list tables if consistent with the updated palette.
+- [x] Replace `>> ` selection marker with full-row highlight only.
+- [x] Replace heavy gray header backgrounds with lighter-weight header styling (bold + muted divider treatment).
+- [x] Increase list table column spacing from `1` to `2` where it improves readability.
+- [ ] Consider rounded borders for list tables if consistent with the updated palette.
 
 Primary files:
 
@@ -127,7 +127,7 @@ Primary files:
 
 1. Shared color palette + color token migration. (Done)
 1. Footer keybinding styling. (Done)
-1. Table selection/header/spacing refresh.
+1. Table selection/header/spacing refresh. (Done)
 1. Diff addition/deletion background tinting.
 1. Tab bar polish.
 1. Overlay consistency + background dimming.
