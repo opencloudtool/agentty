@@ -11,8 +11,9 @@ use crate::ui::{Page, style};
 
 const ROW_HIGHLIGHT_SYMBOL: &str = ">> ";
 const TABLE_COLUMN_SPACING: u16 = 1;
-/// Horizontal margin around table and footer content.
-const PAGE_HORIZONTAL_MARGIN: u16 = 1;
+/// Shared page margin that keeps table and footer spacing aligned with other
+/// pages.
+const PAGE_MARGIN: u16 = 1;
 /// Placeholder text rendered under group headers with no sessions.
 const GROUP_EMPTY_PLACEHOLDER: &str = "No sessions...";
 
@@ -31,20 +32,13 @@ impl<'a> SessionListPage<'a> {
         }
     }
 
-    /// Splits the available page area into main and footer regions while
-    /// preserving horizontal padding without adding top whitespace.
+    /// Splits the available page area into main and footer regions using the
+    /// shared page margin convention.
     fn content_chunks(area: Rect) -> (Rect, Rect) {
-        let content_area = Rect {
-            x: area.x.saturating_add(PAGE_HORIZONTAL_MARGIN),
-            y: area.y,
-            width: area
-                .width
-                .saturating_sub(PAGE_HORIZONTAL_MARGIN.saturating_mul(2)),
-            height: area.height,
-        };
         let chunks = Layout::default()
             .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(content_area);
+            .margin(PAGE_MARGIN)
+            .split(area);
 
         (chunks[0], chunks[1])
     }
@@ -394,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn test_content_chunks_use_horizontal_margin_without_top_spacing() {
+    fn test_content_chunks_use_shared_page_margin() {
         // Arrange
         let area = Rect::new(5, 3, 40, 10);
 
@@ -402,13 +396,19 @@ mod tests {
         let (main_area, footer_area) = SessionListPage::content_chunks(area);
 
         // Assert
-        assert_eq!(main_area.x, area.x + PAGE_HORIZONTAL_MARGIN);
-        assert_eq!(main_area.y, area.y);
+        assert_eq!(main_area.x, area.x + PAGE_MARGIN);
+        assert_eq!(main_area.y, area.y + PAGE_MARGIN);
+        assert_eq!(main_area.width, area.width - PAGE_MARGIN.saturating_mul(2));
         assert_eq!(
-            main_area.width,
-            area.width - PAGE_HORIZONTAL_MARGIN.saturating_mul(2)
+            main_area.height,
+            area.height - PAGE_MARGIN.saturating_mul(2) - 1
         );
-        assert_eq!(main_area.height, area.height - 1);
+        assert_eq!(footer_area.x, area.x + PAGE_MARGIN);
+        assert_eq!(footer_area.y, area.y + area.height - PAGE_MARGIN - 1);
+        assert_eq!(
+            footer_area.width,
+            area.width - PAGE_MARGIN.saturating_mul(2)
+        );
         assert_eq!(footer_area.height, 1);
     }
 
