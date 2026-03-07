@@ -41,8 +41,8 @@ Session statuses and what you can do in each state:
 | **Queued** | Session is waiting in the merge queue. | read-only view (`q`, scroll, help) |
 | **Rebasing** | Worktree branch is rebasing onto the base branch. | `o` open worktree, `e` open `nvim`, scroll, help |
 | **Merging** | Changes are being merged into the base branch. | read-only view (`q`, scroll, help) |
-| **Done** | Session completed and merged. | `t` toggle summary/output, scroll, help |
-| **Canceled** | Session was canceled by the user. | read-only view (`q`, scroll, help) |
+| **Done** | Session completed, merged, and its worktree checkout was removed. | `t` toggle summary/output, scroll, help |
+| **Canceled** | Session was canceled by the user and its worktree checkout was removed. | read-only view (`q`, scroll, help) |
 
 Settings values are stored per active project. Switching projects reloads that
 project's `Reasoning Level`, default models, and `Open Commands`.
@@ -112,6 +112,9 @@ Type these in the prompt input to access special actions:
 <a id="usage-data-location"></a>
 Agentty stores its data in `~/.agentty/` by default. This includes the
 SQLite database, session logs, and worktree checkouts (under `~/.agentty/wt/`).
+
+Per-session worktree folders are removed automatically after a session reaches
+`Done` or `Canceled`, and when a session record is deleted.
 
 You can override this location by setting the `AGENTTY_ROOT` environment
 variable:

@@ -526,18 +526,21 @@ impl SessionManager {
         git_client: Arc<dyn git::GitClient>,
         cleanup: DeletedSessionCleanup,
     ) {
-        if cleanup.has_git_branch {
-            if let Some(repo_root) = git_client.find_git_repo_root(cleanup.working_dir).await {
-                let _ = git_client.remove_worktree(cleanup.folder.clone()).await;
-                let _ = git_client
-                    .delete_branch(repo_root, cleanup.branch_name)
-                    .await;
-            } else {
-                let _ = git_client.remove_worktree(cleanup.folder.clone()).await;
-            }
-        }
+        let repo_root = if cleanup.has_git_branch {
+            git_client.find_git_repo_root(cleanup.working_dir).await
+        } else {
+            None
+        };
 
-        let _ = fs_client.remove_dir_all(cleanup.folder).await;
+        Self::cleanup_session_worktree_resources(
+            fs_client,
+            git_client,
+            cleanup.folder,
+            cleanup.branch_name,
+            repo_root,
+            cleanup.has_git_branch,
+        )
+        .await;
     }
 
     /// Validates and queues a follow-up prompt for an existing session.
@@ -1048,7 +1051,10 @@ impl SessionManager {
         .await;
     }
 
-    /// Cancels a session that is currently in review.
+    /// Cancels a session that is currently in review and drops its worktree.
+    ///
+    /// Persisted transcript metadata remains available after the worktree
+    /// checkout and session branch are removed.
     ///
     /// # Errors
     /// Returns an error if the session is not found or not in review status.
@@ -1062,11 +1068,13 @@ impl SessionManager {
             return Err("Session must be in review to be canceled".to_string());
         }
 
+        let branch_name = session_branch(&session.id);
+        let folder = session.folder.clone();
         let handles = self.session_handles_or_err(session_id)?;
         let status = Arc::clone(&handles.status);
         let app_event_tx = services.event_sender();
 
-        let _ = SessionTaskService::update_status(
+        let status_updated = SessionTaskService::update_status(
             &status,
             services.db(),
             &app_event_tx,
@@ -1075,7 +1083,50 @@ impl SessionManager {
         )
         .await;
 
+        if status_updated {
+            let repo_root = services
+                .git_client()
+                .main_repo_root(folder.clone())
+                .await
+                .ok();
+
+            Self::cleanup_session_worktree_resources(
+                services.fs_client(),
+                services.git_client(),
+                folder,
+                branch_name,
+                repo_root,
+                true,
+            )
+            .await;
+        }
+
         Ok(())
+    }
+
+    /// Removes git and filesystem resources for one session worktree.
+    ///
+    /// This best-effort helper is shared by terminal-state cleanup and session
+    /// deletion so both paths remove the linked worktree checkout, delete the
+    /// session branch when the shared repository root is known, and finally
+    /// remove the directory from disk.
+    async fn cleanup_session_worktree_resources(
+        fs_client: Arc<dyn FsClient>,
+        git_client: Arc<dyn git::GitClient>,
+        folder: PathBuf,
+        branch_name: String,
+        repo_root: Option<PathBuf>,
+        remove_git_resources: bool,
+    ) {
+        if remove_git_resources {
+            let _ = git_client.remove_worktree(folder.clone()).await;
+
+            if let Some(repo_root) = repo_root {
+                let _ = git_client.delete_branch(repo_root, branch_name).await;
+            }
+        }
+
+        let _ = fs_client.remove_dir_all(folder).await;
     }
 }
 

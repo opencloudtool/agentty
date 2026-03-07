@@ -3383,28 +3383,24 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Ensures canceling a review session persists `Canceled` status and
+    /// removes its dedicated worktree checkout.
     async fn test_cancel_session() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
-        let repo_root = dir.path().to_path_buf();
-        let mut mock_git_client = git::MockGitClient::new();
-        mock_git_client
-            .expect_find_git_repo_root()
-            .times(1)
-            .returning(move |_| {
-                let repo_root = repo_root.clone();
-                Box::pin(async move { Some(repo_root) })
-            });
-        mock_git_client
-            .expect_create_worktree()
-            .times(1)
-            .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
-        install_mock_git_client(&mut app, mock_git_client);
         let session_id = app
             .create_session()
             .await
             .expect("failed to create session");
+        let session_folder = app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing session")
+            .folder
+            .clone();
         set_session_status_for_test(&mut app, &session_id, Status::Review);
 
         // Act
@@ -3433,6 +3429,10 @@ mod tests {
             .find(|session| session.id == session_id)
             .expect("missing persisted session");
         assert_eq!(db_session.status, "Canceled");
+        assert!(
+            !session_folder.exists(),
+            "session worktree should be removed after cancellation"
+        );
     }
 
     #[tokio::test]

@@ -45,7 +45,7 @@ created automatically when the session starts:
 
 <a id="overview-worktree-cleanup"></a>
 Worktrees are stored under `~/.agentty/wt/` and are cleaned up automatically
-when you delete a session.
+when a session reaches `Done` or `Canceled`, or when you delete a session.
 
 ## Key Concepts
 
