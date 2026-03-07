@@ -7,6 +7,10 @@ use super::backend::{
 };
 use crate::infra::agent::protocol::agent_response_output_schema_json;
 
+/// Lists the Claude tools Agentty enables for unattended sessions, including
+/// file editing, multi-edit, and write operations.
+const CLAUDE_ALLOWED_TOOLS: &str = "Edit,MultiEdit,Write,Bash,EnterPlanMode,ExitPlanMode";
+
 /// Backend implementation for the Claude CLI.
 ///
 /// Commands are built with `--strict-mcp-config` so provider-level MCP
@@ -47,9 +51,7 @@ impl AgentBackend for ClaudeBackend {
         }
 
         command.arg("-p").arg(prompt);
-        command
-            .arg("--allowedTools")
-            .arg("Edit,Bash,EnterPlanMode,ExitPlanMode");
+        command.arg("--allowedTools").arg(CLAUDE_ALLOWED_TOOLS);
         command.arg("--strict-mcp-config");
         command.arg("--verbose");
         command.arg("--output-format").arg("json");
@@ -74,7 +76,8 @@ mod tests {
     use crate::domain::agent::ReasoningLevel;
 
     #[test]
-    fn test_claude_auto_edit_mode_uses_allowed_tools_edit() {
+    /// Verifies Claude sessions allow Agentty's required write-capable tools.
+    fn test_claude_auto_edit_mode_uses_write_capable_allowed_tools() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let backend = ClaudeBackend;
@@ -96,7 +99,9 @@ mod tests {
 
         // Assert
         assert!(debug_command.contains("--allowedTools"));
-        assert!(debug_command.contains("Edit,Bash,EnterPlanMode,ExitPlanMode"));
+        assert!(debug_command.contains(CLAUDE_ALLOWED_TOOLS));
+        assert!(debug_command.contains("MultiEdit"));
+        assert!(debug_command.contains("Write"));
         assert!(debug_command.contains("--strict-mcp-config"));
         assert!(debug_command.contains("--output-format"));
         assert!(debug_command.contains("json"));

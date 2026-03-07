@@ -77,6 +77,8 @@ Agentty validates final agent output against the structured response protocol.
   `--output-format json` (no Claude `stream-json` mode).
 - Claude turns pass `--strict-mcp-config`, so only MCP servers explicitly
   provided by Agentty are allowed (none by default).
+- Claude turns allow file-modifying tools (`Edit`, `MultiEdit`, `Write`) plus
+  `Bash`, `EnterPlanMode`, and `ExitPlanMode` for unattended worktree edits.
 - Codex app-server turns enforce structured output through transport
   `outputSchema`; Codex prompts do not prepend schema text.
 - Claude always uses structured protocol output (including utility/plain
