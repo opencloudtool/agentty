@@ -1,11 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
-use crate::ui::Component;
+use crate::ui::style::palette;
 use crate::ui::text_util::truncate_with_ellipsis;
+use crate::ui::{Component, overlay};
 
 const MIN_OVERLAY_HEIGHT: u16 = 7;
 const MIN_OVERLAY_WIDTH: u16 = 30;
@@ -42,27 +43,21 @@ impl<'a> ConfirmationOverlay<'a> {
 
 impl Component for ConfirmationOverlay<'_> {
     fn render(&self, f: &mut Frame, area: Rect) {
-        let width = (area.width * OVERLAY_WIDTH_PERCENT / 100)
-            .max(MIN_OVERLAY_WIDTH)
-            .min(area.width);
-        let height = (area.height * OVERLAY_HEIGHT_PERCENT / 100)
-            .max(MIN_OVERLAY_HEIGHT)
-            .min(area.height);
-        let popup_area = Rect::new(
-            area.x + (area.width.saturating_sub(width)) / 2,
-            area.y + (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
+        let popup_area = overlay::centered_popup_area(
+            area,
+            OVERLAY_WIDTH_PERCENT,
+            OVERLAY_HEIGHT_PERCENT,
+            MIN_OVERLAY_WIDTH,
+            MIN_OVERLAY_HEIGHT,
         );
-        let message_width = usize::from(popup_area.width.saturating_sub(4));
+        let message_width = overlay::overlay_content_width(popup_area.width);
         let message = truncate_with_ellipsis(self.message, message_width);
 
-        let title = format!(" {} ", self.title);
         let selected_option_style = Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
+            .fg(palette::SURFACE_OVERLAY)
+            .bg(palette::ACCENT)
             .add_modifier(Modifier::BOLD);
-        let unselected_option_style = Style::default().fg(Color::White);
+        let unselected_option_style = Style::default().fg(palette::TEXT);
         let yes_option_style = if self.selected_yes {
             selected_option_style
         } else {
@@ -75,7 +70,7 @@ impl Component for ConfirmationOverlay<'_> {
         };
 
         let paragraph = Paragraph::new(vec![
-            Line::from(Span::styled(message, Style::default().fg(Color::White))),
+            Line::from(Span::styled(message, Style::default().fg(palette::TEXT))),
             Line::from(""),
             Line::from(vec![
                 Span::styled(" Yes ", yes_option_style),
@@ -84,12 +79,7 @@ impl Component for ConfirmationOverlay<'_> {
             ]),
         ])
         .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
-                .title(Span::styled(title, Style::default().fg(Color::Yellow))),
-        );
+        .block(overlay::overlay_block(self.title, palette::WARNING));
 
         f.render_widget(Clear, popup_area);
         f.render_widget(paragraph, popup_area);

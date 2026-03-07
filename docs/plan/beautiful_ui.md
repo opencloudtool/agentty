@@ -16,7 +16,7 @@ Status-aware UI polish plan aligned with the current Ratatui implementation in `
 | Tables | Table headers now use bold muted text (without heavy gray fill), row selection uses full-row highlight (no `>> ` marker), and primary list tables have wider spacing. | Done |
 | Status and footer bars | Status/footer bars are present and functional, and page-level keybinding hints now render as styled key/label spans. | Partial |
 | Diff view | Strong structure exists (file explorer, line-number gutter, sign column). Added/removed lines now include subtle background tinting for faster scanning. | Done |
-| Overlays/dialogs | Overlay components are established. `InfoOverlay` already uses rounded borders and padding; others still use square borders and no shared dimmed backdrop. | Partial |
+| Overlays/dialogs | Overlay components now share a rounded frame system (title style + padding defaults) and all modal overlays render with a dimmed backdrop over their source page. | Done |
 | Chat presentation | Prompt blocks already have background treatment in markdown rendering; spinner/progress text exists. Input still uses square-border style with no focus variant. | Partial |
 | Empty-state and badge UX | Session group placeholders are still generic (`No sessions...`), and session size/status display remains text-color only (no badge/pill styling). | Not started |
 | Typography consistency | Bold/dim/color usage is inconsistent across pages/components. | Partial |
@@ -87,11 +87,11 @@ Primary files:
 - `pages/diff.rs`
 - `diff_util.rs` (only if tokenization helpers need extension)
 
-## 6) Make overlay styling consistent
+## 6) Make overlay styling consistent - Done
 
-- Introduce a shared overlay frame style (border type, title style, padding defaults).
-- Normalize `ConfirmationOverlay`, `HelpOverlay`, and `OpenCommandOverlay` with the same visual system used by `InfoOverlay`.
-- Add background dimming behind overlays (currently background is redrawn and popup area is `Clear`ed only).
+- [x] Introduce a shared overlay frame style (border type, title style, padding defaults).
+- [x] Normalize `ConfirmationOverlay`, `HelpOverlay`, and `OpenCommandOverlay` with the same visual system used by `InfoOverlay`.
+- [x] Add background dimming behind overlays (currently background is redrawn and popup area is `Clear`ed only).
 
 Primary files:
 
@@ -130,7 +130,7 @@ Primary files:
 1. Table selection/header/spacing refresh. (Done)
 1. Diff addition/deletion background tinting. (Done)
 1. Tab bar polish. (Done)
-1. Overlay consistency + background dimming.
+1. Overlay consistency + background dimming. (Done)
 1. Chat input focus and output border follow-up.
 1. Empty states and optional badges.
 

@@ -220,6 +220,7 @@ fn render_merge_confirmation_overlay(
             scroll_offset: view_mode.scroll_offset,
         },
     );
+    overlay::render_overlay_backdrop(f, area);
 
     component::confirmation_overlay::ConfirmationOverlay::new(
         context.confirmation_title,
@@ -326,6 +327,7 @@ fn render_open_command_selector_overlay(
             scroll_offset: restore_view.scroll_offset,
         },
     );
+    overlay::render_overlay_backdrop(f, area);
 
     component::open_command_overlay::OpenCommandOverlay::new(commands)
         .selected_command_index(selected_command_index)

@@ -1,11 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
-use crate::ui::Component;
+use crate::ui::style::palette;
 use crate::ui::text_util::truncate_with_ellipsis;
+use crate::ui::{Component, overlay};
 
 const MIN_OVERLAY_HEIGHT: u16 = 9;
 const MIN_OVERLAY_WIDTH: u16 = 50;
@@ -35,15 +36,22 @@ impl<'a> OpenCommandOverlay<'a> {
     }
 
     /// Returns all render lines for this popup.
+    ///
+    /// The header and bottom help hint rows are centered, while the selected
+    /// command row is emphasized by background color only (no prefix marker
+    /// glyph).
     fn lines(&self, command_width: usize) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
-        lines.push(Line::from(vec![Span::styled(
-            "Select open command",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]));
+        lines.push(
+            Line::from(vec![Span::styled(
+                "Select open command",
+                Style::default()
+                    .fg(palette::WARNING)
+                    .add_modifier(Modifier::BOLD),
+            )])
+            .alignment(Alignment::Center),
+        );
         lines.push(Line::from(""));
 
         for (index, command) in self.commands.iter().enumerate() {
@@ -51,26 +59,18 @@ impl<'a> OpenCommandOverlay<'a> {
             let command_label = truncate_with_ellipsis(command, command_width);
 
             let line = if is_selected {
-                Line::from(vec![
-                    Span::styled(
-                        " > ",
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        command_label,
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ])
+                let selected_label = format!(" {command_label:<command_width$}");
+                Line::from(Span::styled(
+                    selected_label,
+                    Style::default()
+                        .fg(palette::SURFACE_OVERLAY)
+                        .bg(palette::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ))
             } else {
                 Line::from(vec![
-                    Span::styled("   ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(command_label, Style::default().fg(Color::White)),
+                    Span::styled(" ", Style::default().fg(palette::TEXT_SUBTLE)),
+                    Span::styled(command_label, Style::default().fg(palette::TEXT)),
                 ])
             };
 
@@ -78,28 +78,25 @@ impl<'a> OpenCommandOverlay<'a> {
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(
-            "j/k: move | Enter: open | Esc: cancel",
-            Style::default().fg(Color::Gray),
-        )]));
+        lines.push(
+            Line::from(vec![Span::styled(
+                "j/k: move | Enter: open | Esc: cancel",
+                Style::default().fg(palette::TEXT_MUTED),
+            )])
+            .alignment(Alignment::Center),
+        );
 
         lines
     }
 
     /// Returns the centered popup rectangle constrained to terminal bounds.
     fn popup_area(area: Rect) -> Rect {
-        let popup_width = (area.width * OVERLAY_WIDTH_PERCENT / 100)
-            .max(MIN_OVERLAY_WIDTH)
-            .min(area.width);
-        let popup_height = (area.height * OVERLAY_HEIGHT_PERCENT / 100)
-            .max(MIN_OVERLAY_HEIGHT)
-            .min(area.height);
-
-        Rect::new(
-            area.x + (area.width.saturating_sub(popup_width)) / 2,
-            area.y + (area.height.saturating_sub(popup_height)) / 2,
-            popup_width,
-            popup_height,
+        overlay::centered_popup_area(
+            area,
+            OVERLAY_WIDTH_PERCENT,
+            OVERLAY_HEIGHT_PERCENT,
+            MIN_OVERLAY_WIDTH,
+            MIN_OVERLAY_HEIGHT,
         )
     }
 }
@@ -107,24 +104,15 @@ impl<'a> OpenCommandOverlay<'a> {
 impl Component for OpenCommandOverlay<'_> {
     fn render(&self, f: &mut Frame, area: Rect) {
         let popup_area = Self::popup_area(area);
-        let command_width = usize::from(popup_area.width.saturating_sub(8).max(1));
+        let command_width = overlay::overlay_content_width(popup_area.width)
+            .saturating_sub(1)
+            .max(1);
         let lines = self.lines(command_width);
 
         let paragraph = Paragraph::new(lines)
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
-                    .title(Span::styled(
-                        " Open Command ",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ))
-                    .title_alignment(Alignment::Center),
-            );
+            .block(overlay::overlay_block("Open Command", palette::ACCENT));
 
         f.render_widget(Clear, popup_area);
         f.render_widget(paragraph, popup_area);
@@ -134,6 +122,7 @@ impl Component for OpenCommandOverlay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::style::palette;
 
     #[test]
     fn test_open_command_overlay_new_stores_default_selection() {
@@ -188,5 +177,60 @@ mod tests {
             .collect();
         assert!(text.contains("Select open command"));
         assert!(text.contains("j/k: move | Enter: open | Esc: cancel"));
+    }
+
+    #[test]
+    fn test_open_command_overlay_lines_selected_row_uses_background_without_marker() {
+        // Arrange
+        let commands = vec!["nvim .".to_string(), "npm run dev".to_string()];
+        let overlay = OpenCommandOverlay::new(&commands).selected_command_index(1);
+
+        // Act
+        let lines = overlay.lines(24);
+        let selected_line = &lines[3];
+        let selected_text: String = selected_line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        // Assert
+        assert!(!selected_text.contains('>'));
+        assert!(
+            selected_line
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(palette::ACCENT))
+        );
+    }
+
+    #[test]
+    fn test_open_command_overlay_lines_center_bottom_help_text() {
+        // Arrange
+        let commands = vec!["nvim .".to_string()];
+        let overlay = OpenCommandOverlay::new(&commands);
+
+        // Act
+        let lines = overlay.lines(24);
+        let help_line = lines
+            .last()
+            .expect("overlay should include a bottom help line");
+
+        // Assert
+        assert_eq!(help_line.alignment, Some(Alignment::Center));
+    }
+
+    #[test]
+    fn test_open_command_overlay_lines_center_header_text() {
+        // Arrange
+        let commands = vec!["nvim .".to_string()];
+        let overlay = OpenCommandOverlay::new(&commands);
+
+        // Act
+        let lines = overlay.lines(24);
+        let header_line = lines.first().expect("overlay should include a header line");
+
+        // Assert
+        assert_eq!(header_line.alignment, Some(Alignment::Center));
     }
 }

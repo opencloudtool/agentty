@@ -29,6 +29,8 @@ pub mod palette {
     pub const SURFACE_ELEVATED: Color = Color::Gray;
     /// Subtle success-tinted surface used behind added diff lines.
     pub const SURFACE_SUCCESS: Color = Color::Rgb(18, 44, 26);
+    /// Dark surface used to dim background content behind modal overlays.
+    pub const SURFACE_OVERLAY: Color = Color::Black;
     /// Primary readable text color.
     pub const TEXT: Color = Color::White;
     /// Muted text color for secondary copy.

@@ -1,11 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
-use crate::ui::Component;
 use crate::ui::state::app_mode::HelpContext;
+use crate::ui::style::palette;
+use crate::ui::{Component, overlay};
 
 const OVERLAY_WIDTH_PERCENT: u16 = 40;
 
@@ -43,11 +44,9 @@ impl<'a> HelpOverlay<'a> {
 
 impl Component for HelpOverlay<'_> {
     fn render(&self, f: &mut Frame, area: Rect) {
-        let popup_area = centered_rect(area);
+        let popup_area = popup_area(area);
 
         f.render_widget(Clear, popup_area);
-
-        let title = format!(" {} ", self.context.title());
 
         let bindings = self.context.keybindings();
 
@@ -63,8 +62,8 @@ impl Component for HelpOverlay<'_> {
             .max()
             .unwrap_or(0);
 
-        let left_padding =
-            (popup_area.width.saturating_sub(2) as usize).saturating_sub(max_content_width) / 2;
+        let content_width = overlay::overlay_content_width(popup_area.width);
+        let left_padding = content_width.saturating_sub(max_content_width) / 2;
 
         let indent = " ".repeat(left_padding);
 
@@ -77,21 +76,19 @@ impl Component for HelpOverlay<'_> {
                 Span::styled(
                     format!("{:>key_width$}", binding.key),
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(palette::ACCENT)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(": ", Style::default().fg(Color::White)),
-                Span::styled(binding.popup_label, Style::default().fg(Color::White)),
+                Span::styled(": ", Style::default().fg(palette::TEXT)),
+                Span::styled(binding.popup_label, Style::default().fg(palette::TEXT)),
             ]));
         }
 
         let paragraph = Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
-                    .title(Span::styled(title, Style::default().fg(Color::Cyan))),
-            )
+            .block(overlay::overlay_block(
+                self.context.title(),
+                palette::ACCENT,
+            ))
             .scroll((self.scroll_offset, SCROLL_X_OFFSET));
 
         f.render_widget(paragraph, popup_area);
@@ -99,20 +96,14 @@ impl Component for HelpOverlay<'_> {
 }
 
 /// Computes a centered rectangle within the given `area`.
-fn centered_rect(area: Rect) -> Rect {
-    let popup_width = (area.width * OVERLAY_WIDTH_PERCENT / 100).max(MIN_OVERLAY_WIDTH);
-
-    let popup_height = (area.height * OVERLAY_HEIGHT_PERCENT / 100).max(MIN_OVERLAY_HEIGHT);
-
-    let width = popup_width.min(area.width);
-
-    let height = popup_height.min(area.height);
-
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-
-    Rect::new(x, y, width, height)
+fn popup_area(area: Rect) -> Rect {
+    overlay::centered_popup_area(
+        area,
+        OVERLAY_WIDTH_PERCENT,
+        OVERLAY_HEIGHT_PERCENT,
+        MIN_OVERLAY_WIDTH,
+        MIN_OVERLAY_HEIGHT,
+    )
 }
 
 #[cfg(test)]
@@ -122,14 +113,14 @@ mod tests {
 
     #[test]
 
-    fn test_centered_rect_centers_within_area() {
+    fn test_popup_area_centers_within_area() {
         // Arrange
 
         let area = Rect::new(0, 0, 100, 50);
 
         // Act
 
-        let popup = centered_rect(area);
+        let popup = popup_area(area);
 
         // Assert
 
@@ -144,14 +135,14 @@ mod tests {
 
     #[test]
 
-    fn test_centered_rect_clamps_to_area_when_small() {
+    fn test_popup_area_clamps_to_area_when_small() {
         // Arrange
 
         let area = Rect::new(0, 0, 20, 8);
 
         // Act
 
-        let popup = centered_rect(area);
+        let popup = popup_area(area);
 
         // Assert — min sizes clamped to area
 
@@ -162,14 +153,14 @@ mod tests {
 
     #[test]
 
-    fn test_centered_rect_respects_minimum_dimensions() {
+    fn test_popup_area_respects_minimum_dimensions() {
         // Arrange
 
         let area = Rect::new(0, 0, 40, 20);
 
         // Act
 
-        let popup = centered_rect(area);
+        let popup = popup_area(area);
 
         // Assert — 40% of 40=16 < MIN 30, so width = 30; 60% of 20=12 >= MIN 10
 

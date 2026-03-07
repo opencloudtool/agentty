@@ -2,14 +2,13 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
-use crate::ui::Component;
 use crate::ui::icon::Icon;
 use crate::ui::markdown::render_markdown;
+use crate::ui::style::palette;
+use crate::ui::{Component, overlay};
 
-const BODY_HORIZONTAL_PADDING: u16 = 2;
-const BODY_VERTICAL_PADDING: u16 = 1;
 const MIN_OVERLAY_HEIGHT: u16 = 9;
 const MIN_OVERLAY_WIDTH: u16 = 44;
 const OVERLAY_HEIGHT_PERCENT: u16 = 26;
@@ -157,9 +156,9 @@ impl<'a> InfoOverlay<'a> {
     /// complete.
     fn border_color(&self) -> Color {
         if self.is_loading {
-            Color::Cyan
+            palette::ACCENT
         } else {
-            Color::Yellow
+            palette::WARNING
         }
     }
 
@@ -180,27 +179,16 @@ impl<'a> InfoOverlay<'a> {
             .min(area.width)
     }
 
-    /// Returns the message rendering width after subtracting borders and
-    /// horizontal padding.
-    fn message_width(width: u16) -> usize {
-        let horizontal_chrome = 2 + (BODY_HORIZONTAL_PADDING * 2);
-
-        usize::from(width.saturating_sub(horizontal_chrome).max(1))
-    }
-
     /// Returns popup height sized to keep wrapped body content and the action
     /// row visible.
     fn popup_height(&self, area: Rect, width: u16) -> u16 {
-        let vertical_chrome = 2 + (BODY_VERTICAL_PADDING * 2);
         let min_height = (area.height * OVERLAY_HEIGHT_PERCENT / 100)
             .max(MIN_OVERLAY_HEIGHT)
             .min(area.height);
-        let message_width = Self::message_width(width);
+        let message_width = overlay::overlay_content_width(width);
         let required_inner_lines = self.body_lines(message_width).len();
         let required_height =
-            u16::try_from(required_inner_lines.saturating_add(usize::from(vertical_chrome)))
-                .unwrap_or(area.height)
-                .min(area.height);
+            overlay::overlay_required_height(required_inner_lines).min(area.height);
 
         required_height.max(min_height)
     }
@@ -209,31 +197,18 @@ impl<'a> InfoOverlay<'a> {
 impl Component for InfoOverlay<'_> {
     fn render(&self, f: &mut Frame, area: Rect) {
         let width = Self::popup_width(area);
-        let message_width = Self::message_width(width);
+        let message_width = overlay::overlay_content_width(width);
         let border_color = self.border_color();
-        let title_text = format!(" {} ", self.title);
         let paragraph = Paragraph::new(self.body_lines(message_width))
             .alignment(self.body_alignment())
             .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(border_color))
-                    .padding(Padding::new(
-                        BODY_HORIZONTAL_PADDING,
-                        BODY_HORIZONTAL_PADDING,
-                        BODY_VERTICAL_PADDING,
-                        BODY_VERTICAL_PADDING,
-                    ))
-                    .title(Span::styled(title_text, title_style(border_color)))
-                    .title_alignment(Alignment::Center),
-            );
+            .block(overlay::overlay_block(self.title, border_color));
 
         let height = self.popup_height(area, width);
-        let popup_area = Rect::new(
-            area.x + (area.width.saturating_sub(width)) / 2,
-            area.y + (area.height.saturating_sub(height)) / 2,
+        let popup_area = overlay::centered_popup_area(
+            area,
+            OVERLAY_WIDTH_PERCENT,
+            OVERLAY_HEIGHT_PERCENT,
             width,
             height,
         );
@@ -243,25 +218,18 @@ impl Component for InfoOverlay<'_> {
     }
 }
 
-/// Style for the popup title text, colored to match the border.
-fn title_style(border_color: Color) -> Style {
-    Style::default()
-        .fg(border_color)
-        .add_modifier(Modifier::BOLD)
-}
-
 /// Style for the `OK` confirmation button.
 fn ok_button_style() -> Style {
     Style::default()
-        .fg(Color::Black)
-        .bg(Color::Cyan)
+        .fg(palette::SURFACE_OVERLAY)
+        .bg(palette::ACCENT)
         .add_modifier(Modifier::BOLD)
 }
 
 /// Style for the loading spinner text.
 fn loading_indicator_style() -> Style {
     Style::default()
-        .fg(Color::Cyan)
+        .fg(palette::ACCENT)
         .add_modifier(Modifier::BOLD)
 }
 
