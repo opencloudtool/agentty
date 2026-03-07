@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::ui::util::{
     CHAT_INPUT_MAX_VISIBLE_LINES, calculate_input_viewport, compute_input_layout,
@@ -58,6 +58,48 @@ impl<'a> ChatInput<'a> {
         self
     }
 
+    /// Returns the shared block styling for the focused prompt input frame.
+    fn input_block(&self) -> Block<'a> {
+        let title = format!(" {} ", self.title);
+
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Self::focused_border_style())
+            .title(Span::styled(title, Self::focused_title_style()))
+    }
+
+    /// Returns the border style used to keep the active prompt field visually
+    /// prominent.
+    fn focused_border_style() -> Style {
+        Style::default()
+            .fg(style::palette::ACCENT)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Returns the title style used by the focused prompt input frame.
+    fn focused_title_style() -> Style {
+        Style::default()
+            .fg(style::palette::ACCENT)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Returns the shared block styling for slash-command and file suggestion
+    /// dropdowns.
+    fn dropdown_block(title: &str) -> Block<'_> {
+        let title = format!(" {title} ");
+
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(style::palette::ACCENT_SOFT))
+            .title(Span::styled(
+                title,
+                Style::default().fg(style::palette::ACCENT_SOFT),
+            ))
+    }
+
+    /// Renders the slash-command dropdown using the shared chat input chrome.
     fn render_slash_dropdown(f: &mut Frame, area: Rect, slash_menu: &SlashMenu<'_>) {
         let rows = slash_menu
             .options
@@ -86,15 +128,7 @@ impl<'a> ChatInput<'a> {
             })
             .collect::<Vec<_>>();
 
-        let dropdown = Paragraph::new(rows).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(style::palette::BORDER))
-                .title(Span::styled(
-                    slash_menu.title,
-                    Style::default().fg(style::palette::ACCENT),
-                )),
-        );
+        let dropdown = Paragraph::new(rows).block(Self::dropdown_block(slash_menu.title));
 
         f.render_widget(Clear, area);
         f.render_widget(dropdown, area);
@@ -102,13 +136,7 @@ impl<'a> ChatInput<'a> {
 
     /// Render the prompt input with an internally scrollable viewport.
     fn render_input(&self, f: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(style::palette::ACCENT))
-            .title(Span::styled(
-                self.title,
-                Style::default().fg(style::palette::ACCENT),
-            ));
+        let block = self.input_block();
 
         if self.input.is_empty() {
             let prefix = " › ";
@@ -184,6 +212,16 @@ impl Component for ChatInput<'_> {
 mod tests {
     use super::*;
 
+    fn buffer_row_text(buffer: &ratatui::buffer::Buffer, row: u16, width: u16) -> String {
+        let start = usize::from(row) * usize::from(width);
+        let end = start + usize::from(width);
+
+        buffer.content()[start..end]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
     #[test]
     fn test_builder_methods() {
         // Arrange
@@ -228,5 +266,59 @@ mod tests {
 
         // Assert
         assert_eq!(total_line_count, 2);
+    }
+
+    #[test]
+    fn test_render_uses_rounded_focused_frame_for_prompt_input() {
+        // Arrange
+        let width = 32;
+        let backend = ratatui::backend::TestBackend::new(width, 5);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let chat_input = ChatInput::new("Prompt", "", 0).placeholder("Type your message");
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                chat_input.render(frame, area);
+            })
+            .expect("failed to draw prompt input");
+
+        // Assert
+        let top_row = buffer_row_text(terminal.backend().buffer(), 0, width);
+        assert!(top_row.starts_with("╭"));
+        assert!(top_row.contains(" Prompt "));
+        assert!(top_row.contains("╮"));
+    }
+
+    #[test]
+    fn test_render_uses_matching_rounded_dropdown_frame() {
+        // Arrange
+        let width = 40;
+        let backend = ratatui::backend::TestBackend::new(width, 8);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let slash_menu = SlashMenu {
+            options: vec![SlashMenuOption {
+                description: "Choose a model".to_string(),
+                label: "/model".to_string(),
+            }],
+            selected_index: 0,
+            title: "Slash Command",
+        };
+        let chat_input = ChatInput::new("Prompt", "/", 1).slash_menu(slash_menu);
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                chat_input.render(frame, area);
+            })
+            .expect("failed to draw prompt input with dropdown");
+
+        // Assert
+        let top_row = buffer_row_text(terminal.backend().buffer(), 0, width);
+        assert!(top_row.starts_with("╭"));
+        assert!(top_row.contains(" Slash Command "));
+        assert!(top_row.contains("╮"));
     }
 }

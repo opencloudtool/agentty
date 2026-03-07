@@ -170,10 +170,15 @@ impl<'a> SessionOutput<'a> {
 
     /// Returns borders used for the session output panel.
     ///
-    /// Vertical borders are intentionally hidden so copying terminal
-    /// selections does not include `|` gutter characters.
+    /// Vertical borders stay hidden so terminal copy/select flows do not pick
+    /// up extra gutter characters.
     fn output_panel_borders() -> Borders {
         Borders::TOP | Borders::BOTTOM
+    }
+
+    /// Returns the border style used for the session output frame.
+    fn output_panel_border_style(status: Status) -> Style {
+        Style::default().fg(style::status_color(status))
     }
 
     /// Returns the inline shortcut hint for toggling done-session content.
@@ -441,7 +446,7 @@ impl Component for SessionOutput<'_> {
             .block(
                 Block::default()
                     .borders(Self::output_panel_borders())
-                    .border_style(Style::default().fg(style::status_color(status))),
+                    .border_style(Self::output_panel_border_style(status)),
             )
             .scroll((final_scroll, 0));
 
@@ -781,7 +786,10 @@ mod tests {
             .find(|line| line.to_string().trim_end().starts_with(" › "))
             .expect("expected user prompt line");
         assert_eq!(prompt_line.to_string().trim_end(), " › /model gemini");
-        assert_eq!(prompt_line.width(), 80);
+        assert_eq!(
+            prompt_line.width(),
+            80 - usize::from(SessionOutput::output_horizontal_border_width())
+        );
         assert_eq!(prompt_line.spans[0].style.fg, Some(style::palette::ACCENT));
         assert!(
             prompt_line.spans[0]

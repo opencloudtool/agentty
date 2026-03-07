@@ -17,7 +17,7 @@ Status-aware UI polish plan aligned with the current Ratatui implementation in `
 | Status and footer bars | Status/footer bars are present and functional, and page-level keybinding hints now render as styled key/label spans. | Partial |
 | Diff view | Strong structure exists (file explorer, line-number gutter, sign column). Added/removed lines now include subtle background tinting for faster scanning. | Done |
 | Overlays/dialogs | Overlay components now share a rounded frame system (title style + padding defaults) and all modal overlays render with a dimmed backdrop over their source page. | Done |
-| Chat presentation | Prompt blocks already have background treatment in markdown rendering; spinner/progress text exists. Input still uses square-border style with no focus variant. | Partial |
+| Chat presentation | Prompt blocks keep their markdown background treatment, the input now uses rounded focused chrome, and the output panel keeps copy-friendly top/bottom borders. | Done |
 | Empty-state and badge UX | Session group placeholders are still generic (`No sessions...`), and session size/status display remains text-color only (no badge/pill styling). | Not started |
 | Typography consistency | Bold/dim/color usage is inconsistent across pages/components. | Partial |
 
@@ -101,11 +101,11 @@ Primary files:
 - `components/info_overlay.rs`
 - `components/open_command_overlay.rs`
 
-## 7) Chat panel polish
+## 7) Chat panel polish - Done
 
-- Keep existing prompt block background styling from `markdown.rs`.
-- Add a clear focused-input border treatment in `chat_input.rs`.
-- Evaluate whether output panel should keep top/bottom-only borders or move to a subtle full box after palette migration.
+- [x] Keep existing prompt block background styling from `markdown.rs`.
+- [x] Add a clear focused-input border treatment in `chat_input.rs`.
+- [x] Keep the output panel copy-friendly by retaining top/bottom-only borders in `session_output.rs`.
 
 Primary files:
 
@@ -131,7 +131,6 @@ Primary files:
 1. Diff addition/deletion background tinting. (Done)
 1. Tab bar polish. (Done)
 1. Overlay consistency + background dimming. (Done)
-1. Chat input focus and output border follow-up.
 1. Empty states and optional badges.
 
 ## Out of Scope for This Pass
