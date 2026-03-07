@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use super::{Clock, SessionTaskService};
 use crate::app::assist::AssistContext;
 use crate::app::{AppEvent, AppServices, SessionManager};
-use crate::domain::agent::AgentModel;
+use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{SessionStats, Status};
 use crate::domain::setting::SettingName;
 use crate::infra::agent;
@@ -307,7 +307,8 @@ impl SessionWorkerService {
             .await;
         }
 
-        let reasoning_level = context.db.load_reasoning_level().await.unwrap_or_default();
+        let session_project_id = load_session_project_id(&context.db, &context.session_id).await;
+        let reasoning_level = load_project_reasoning_level(&context.db, session_project_id).await;
         let provider_conversation_id = context
             .db
             .get_session_provider_conversation_id(&context.session_id)
@@ -342,7 +343,14 @@ impl SessionWorkerService {
             Some("Thinking".to_string()),
         );
 
-        spawn_start_turn_title_generation(context, &mode, &prompt, session_model).await;
+        spawn_start_turn_title_generation(
+            context,
+            session_project_id,
+            &mode,
+            &prompt,
+            session_model,
+        )
+        .await;
 
         let turn_result = context
             .channel
@@ -613,6 +621,7 @@ async fn apply_turn_result(
 /// Spawns first-turn session title generation from the initial user prompt.
 async fn spawn_start_turn_title_generation(
     context: &SessionWorkerContext,
+    session_project_id: Option<i64>,
     mode: &TurnMode,
     prompt: &str,
     session_model: AgentModel,
@@ -621,14 +630,13 @@ async fn spawn_start_turn_title_generation(
         return;
     }
 
-    let title_model = context
-        .db
-        .get_setting(SettingName::DefaultFastModel.as_str())
-        .await
-        .ok()
-        .flatten()
-        .and_then(|setting_value| AgentModel::from_str(&setting_value).ok())
-        .unwrap_or(session_model);
+    let title_model = load_project_model_setting(
+        &context.db,
+        session_project_id,
+        SettingName::DefaultFastModel,
+    )
+    .await
+    .unwrap_or(session_model);
 
     SessionManager::spawn_session_title_generation_task(
         context.app_event_tx.clone(),
@@ -638,6 +646,37 @@ async fn spawn_start_turn_title_generation(
         prompt,
         title_model,
     );
+}
+
+/// Loads the project identifier associated with one persisted session.
+async fn load_session_project_id(db: &Database, session_id: &str) -> Option<i64> {
+    db.load_session_project_id(session_id).await.ok().flatten()
+}
+
+/// Loads the project-scoped reasoning level for one session context.
+async fn load_project_reasoning_level(db: &Database, project_id: Option<i64>) -> ReasoningLevel {
+    let Some(project_id) = project_id else {
+        return ReasoningLevel::default();
+    };
+
+    db.load_project_reasoning_level(project_id)
+        .await
+        .unwrap_or_default()
+}
+
+/// Loads one project-scoped model setting and parses it into an [`AgentModel`].
+async fn load_project_model_setting(
+    db: &Database,
+    project_id: Option<i64>,
+    setting_name: SettingName,
+) -> Option<AgentModel> {
+    let project_id = project_id?;
+
+    db.get_project_setting(project_id, setting_name.as_str())
+        .await
+        .ok()
+        .flatten()
+        .and_then(|setting_value| AgentModel::from_str(&setting_value).ok())
 }
 
 /// Builds the persisted transcript chunk for one parsed assistant response.

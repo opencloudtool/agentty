@@ -133,7 +133,9 @@ impl SessionManager {
         let base_branch = projects
             .git_branch()
             .ok_or_else(|| "Git branch is required to create a session".to_string())?;
-        let session_model = self.resolve_default_session_model(services).await;
+        let session_model = self
+            .resolve_default_session_model(services, projects.active_project_id())
+            .await;
         self.default_session_model = session_model;
 
         let session_id = Uuid::new_v4().to_string();
@@ -370,10 +372,15 @@ impl SessionManager {
             self.clear_session_worker(session_id);
         }
 
-        if Self::should_persist_last_used_model_as_default(services).await? {
+        let session_project_id = services.db().load_session_project_id(session_id).await?;
+
+        if Self::should_persist_last_used_model_as_default(services, session_project_id).await?
+            && let Some(project_id) = session_project_id
+        {
             services
                 .db()
-                .upsert_setting(
+                .upsert_project_setting(
+                    project_id,
                     SettingName::DefaultSmartModel.as_str(),
                     session_model.as_str(),
                 )
@@ -396,10 +403,15 @@ impl SessionManager {
     /// `DefaultSmartModel`.
     async fn should_persist_last_used_model_as_default(
         services: &AppServices,
+        project_id: Option<i64>,
     ) -> Result<bool, String> {
+        let Some(project_id) = project_id else {
+            return Ok(false);
+        };
+
         let should_persist = services
             .db()
-            .get_setting(SettingName::LastUsedModelAsDefault.as_str())
+            .get_project_setting(project_id, SettingName::LastUsedModelAsDefault.as_str())
             .await?
             .and_then(|setting_value| setting_value.parse::<bool>().ok())
             .unwrap_or(false);
@@ -972,8 +984,17 @@ impl SessionManager {
         Some(truncated)
     }
 
-    async fn resolve_default_session_model(&self, services: &AppServices) -> AgentModel {
-        setting::load_default_smart_model_setting(services, self.default_session_model).await
+    async fn resolve_default_session_model(
+        &self,
+        services: &AppServices,
+        project_id: i64,
+    ) -> AgentModel {
+        setting::load_default_smart_model_setting(
+            services,
+            Some(project_id),
+            self.default_session_model,
+        )
+        .await
     }
 
     /// Reverts filesystem and database changes after session creation failure.

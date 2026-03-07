@@ -32,3 +32,4 @@ SQLite migrations for the `agentty` crate.
 - [`026_rename_devserver_setting_to_open_command.sql`](026_rename_devserver_setting_to_open_command.sql) - Renames legacy `DevServer` setting records to `OpenCommand`.
 - [`027_add_provider_conversation_id_to_session.sql`](027_add_provider_conversation_id_to_session.sql) - Adds persisted provider-native conversation IDs to `session`.
 - [`028_add_questions_to_session.sql`](028_add_questions_to_session.sql) - Adds persisted clarification-question payloads to `session`.
+- [`029_create_project_setting.sql`](029_create_project_setting.sql) - Creates project-scoped settings and backfills existing global values to each project.

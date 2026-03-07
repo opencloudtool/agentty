@@ -11,9 +11,12 @@ use crate::domain::setting::SettingName;
 /// `DefaultModel` key for backward compatibility.
 pub(crate) async fn load_default_smart_model_setting(
     services: &AppServices,
+    project_id: Option<i64>,
     fallback_model: AgentModel,
 ) -> AgentModel {
-    if let Some(model) = load_model_setting(services, SettingName::DefaultSmartModel).await {
+    if let Some(model) =
+        load_model_setting(services, project_id, SettingName::DefaultSmartModel).await
+    {
         return model;
     }
 
@@ -31,13 +34,16 @@ pub(crate) async fn load_default_smart_model_setting(
 /// default when the fast-model setting is missing.
 pub(crate) async fn load_default_fast_model_setting(
     services: &AppServices,
+    project_id: Option<i64>,
     fallback_model: AgentModel,
 ) -> AgentModel {
-    if let Some(model) = load_model_setting(services, SettingName::DefaultFastModel).await {
+    if let Some(model) =
+        load_model_setting(services, project_id, SettingName::DefaultFastModel).await
+    {
         return model;
     }
 
-    load_default_smart_model_setting(services, fallback_model).await
+    load_default_smart_model_setting(services, project_id, fallback_model).await
 }
 
 /// Declares how a settings row is edited.
@@ -111,10 +117,6 @@ impl SettingRow {
 
 /// Manages user-configurable application settings.
 pub struct SettingsManager {
-    /// Reasoning effort preference for models that support this setting.
-    ///
-    /// Currently applied to Codex turns.
-    pub reasoning_level: ReasoningLevel,
     /// Default fast model used by fast-path workflows.
     pub default_fast_model: AgentModel,
     /// Default model used by review workflows.
@@ -123,37 +125,48 @@ pub struct SettingsManager {
     pub default_smart_model: AgentModel,
     /// Optional command run in tmux when opening a session worktree.
     pub open_command: String,
+    /// Reasoning effort preference for models that support this setting.
+    ///
+    /// Currently applied to Codex turns.
+    pub reasoning_level: ReasoningLevel,
     /// Table selection state for the settings page.
     pub table_state: TableState,
     editing_text_row: Option<SettingRow>,
     open_command_input: Option<InputState>,
+    /// Active project identifier that owns these persisted settings.
+    project_id: i64,
     use_last_used_model_as_default: bool,
 }
 
 impl SettingsManager {
     /// Creates a settings manager and loads persisted values from the database.
-    pub async fn new(services: &AppServices) -> Self {
-        let default_smart_model =
-            load_default_smart_model_setting(services, AgentKind::Gemini.default_model()).await;
+    pub async fn new(services: &AppServices, project_id: i64) -> Self {
+        let default_smart_model = load_default_smart_model_setting(
+            services,
+            Some(project_id),
+            AgentKind::Gemini.default_model(),
+        )
+        .await;
 
         let default_fast_model =
-            load_default_fast_model_setting(services, default_smart_model).await;
+            load_default_fast_model_setting(services, Some(project_id), default_smart_model).await;
 
-        let default_review_model = load_model_setting(services, SettingName::DefaultReviewModel)
-            .await
-            .unwrap_or(default_smart_model);
-        let reasoning_level = load_reasoning_level_setting(services).await;
+        let default_review_model =
+            load_model_setting(services, Some(project_id), SettingName::DefaultReviewModel)
+                .await
+                .unwrap_or(default_smart_model);
+        let reasoning_level = load_reasoning_level_setting(services, Some(project_id)).await;
 
         let open_command = services
             .db()
-            .get_setting(SettingName::OpenCommand.as_str())
+            .get_project_setting(project_id, SettingName::OpenCommand.as_str())
             .await
             .unwrap_or(None)
             .unwrap_or_default();
 
         let use_last_used_model_as_default = services
             .db()
-            .get_setting(SettingName::LastUsedModelAsDefault.as_str())
+            .get_project_setting(project_id, SettingName::LastUsedModelAsDefault.as_str())
             .await
             .unwrap_or(None)
             .and_then(|setting| setting.parse::<bool>().ok())
@@ -163,14 +176,15 @@ impl SettingsManager {
         table_state.select(Some(0));
 
         Self {
-            reasoning_level,
             default_fast_model,
             default_review_model,
             default_smart_model,
             open_command,
+            reasoning_level,
             table_state,
             editing_text_row: None,
             open_command_input: None,
+            project_id,
             use_last_used_model_as_default,
         }
     }
@@ -483,7 +497,11 @@ impl SettingsManager {
             SettingName::OpenCommand => {
                 let _ = services
                     .db()
-                    .upsert_setting(SettingName::OpenCommand.as_str(), &self.open_command)
+                    .upsert_project_setting(
+                        self.project_id,
+                        SettingName::OpenCommand.as_str(),
+                        &self.open_command,
+                    )
                     .await;
             }
             SettingName::ReasoningLevel
@@ -552,14 +570,16 @@ impl SettingsManager {
 
         let _ = services
             .db()
-            .upsert_setting(
+            .upsert_project_setting(
+                self.project_id,
                 SettingName::DefaultSmartModel.as_str(),
                 self.default_smart_model.as_str(),
             )
             .await;
         let _ = services
             .db()
-            .upsert_setting(
+            .upsert_project_setting(
+                self.project_id,
                 SettingName::LastUsedModelAsDefault.as_str(),
                 &last_used_model_as_default_value,
             )
@@ -570,7 +590,7 @@ impl SettingsManager {
     async fn persist_reasoning_level_setting(&self, services: &AppServices) {
         let _ = services
             .db()
-            .set_reasoning_level(self.reasoning_level)
+            .set_project_reasoning_level(self.project_id, self.reasoning_level)
             .await;
     }
 
@@ -578,7 +598,8 @@ impl SettingsManager {
     async fn persist_default_fast_model_setting(&self, services: &AppServices) {
         let _ = services
             .db()
-            .upsert_setting(
+            .upsert_project_setting(
+                self.project_id,
                 SettingName::DefaultFastModel.as_str(),
                 self.default_fast_model.as_str(),
             )
@@ -589,7 +610,8 @@ impl SettingsManager {
     async fn persist_default_review_model_setting(&self, services: &AppServices) {
         let _ = services
             .db()
-            .upsert_setting(
+            .upsert_project_setting(
+                self.project_id,
                 SettingName::DefaultReviewModel.as_str(),
                 self.default_review_model.as_str(),
             )
@@ -661,11 +683,14 @@ fn next_model(current_model: AgentModel) -> AgentModel {
 /// Loads a model setting and parses it into an [`AgentModel`].
 async fn load_model_setting(
     services: &AppServices,
+    project_id: Option<i64>,
     setting_name: SettingName,
 ) -> Option<AgentModel> {
+    let project_id = project_id?;
+
     services
         .db()
-        .get_setting(setting_name.as_str())
+        .get_project_setting(project_id, setting_name.as_str())
         .await
         .unwrap_or(None)
         .and_then(|setting_value| setting_value.parse().ok())
@@ -675,10 +700,17 @@ async fn load_model_setting(
 ///
 /// Falls back to [`ReasoningLevel::default`] when the setting is missing
 /// or cannot be parsed.
-async fn load_reasoning_level_setting(services: &AppServices) -> ReasoningLevel {
+async fn load_reasoning_level_setting(
+    services: &AppServices,
+    project_id: Option<i64>,
+) -> ReasoningLevel {
+    let Some(project_id) = project_id else {
+        return ReasoningLevel::default();
+    };
+
     services
         .db()
-        .load_reasoning_level()
+        .load_project_reasoning_level(project_id)
         .await
         .unwrap_or_default()
 }
@@ -704,14 +736,15 @@ mod tests {
         table_state.select(Some(0));
 
         SettingsManager {
-            reasoning_level: ReasoningLevel::High,
             default_fast_model: AgentKind::Gemini.default_model(),
             default_review_model: AgentKind::Gemini.default_model(),
             default_smart_model: AgentKind::Gemini.default_model(),
             open_command: String::new(),
+            reasoning_level: ReasoningLevel::High,
             table_state,
             editing_text_row: None,
             open_command_input: None,
+            project_id: 1,
             use_last_used_model_as_default: false,
         }
     }

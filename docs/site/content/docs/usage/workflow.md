@@ -22,7 +22,7 @@ Agentty organizes its interface into four tabs, accessible with `Tab`:
 | **Sessions** | List, create, and manage agent sessions. When a project is active, this tab appears as `Sessions (<project-name>)`. |
 | **Projects** | Select between projects (git repositories) in a split view: Agentty info (ASCII art, version, short description) on top, project table below. |
 | **Stats** | View usage statistics. |
-| **Settings** | Configure Codex reasoning level, default models, and other preferences. |
+| **Settings** | Configure reasoning level, default models, and `Open Commands` for the active project. |
 
 In session chat view, the status and session title render in a dedicated
 header row above the output panel.
@@ -44,8 +44,11 @@ Session statuses and what you can do in each state:
 | **Done** | Session completed and merged. | `t` toggle summary/output, scroll, help |
 | **Canceled** | Session was canceled by the user. | read-only view (`q`, scroll, help) |
 
-When `Open Commands` in Settings contains multiple entries (separated by
-`||`), pressing `o` opens a selector popup (`j`/`k` to move, `Enter` to open,
+Settings values are stored per active project. Switching projects reloads that
+project's `Reasoning Level`, default models, and `Open Commands`.
+
+When `Open Commands` in Settings contains multiple entries (one command per
+line), pressing `o` opens a selector popup (`j`/`k` to move, `Enter` to open,
 `Esc` to cancel).
 
 ### Typical Transitions

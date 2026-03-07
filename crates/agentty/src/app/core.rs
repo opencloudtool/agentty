@@ -321,9 +321,10 @@ impl App {
             project_items,
             startup_working_dir,
         );
-        let settings = SettingsManager::new(&services).await;
+        let settings = SettingsManager::new(&services, active_project_id).await;
         let default_session_model = SessionManager::load_default_session_model(
             &services,
+            Some(active_project_id),
             AgentKind::Gemini.default_model(),
         )
         .await;
@@ -511,6 +512,15 @@ impl App {
             git_branch,
             project.path,
         );
+        self.settings = SettingsManager::new(&self.services, project.id).await;
+        let default_session_model = SessionManager::load_default_session_model(
+            &self.services,
+            Some(project.id),
+            AgentKind::Gemini.default_model(),
+        )
+        .await;
+        self.sessions
+            .set_default_session_model(default_session_model);
         self.restart_git_status_task();
         self.reload_projects().await;
         self.refresh_sessions_now().await;
@@ -1770,6 +1780,7 @@ mod tests {
     use super::*;
     use crate::domain::agent::AgentModel;
     use crate::domain::session::{SESSION_DATA_DIR, Session, SessionSize, SessionStats, Status};
+    use crate::domain::setting::SettingName;
     use crate::infra::agent::protocol::AgentResponseMessage;
     use crate::infra::db::Database;
     use crate::infra::file_index::FileEntry;
@@ -1818,6 +1829,78 @@ mod tests {
             mock_app_server(),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn test_switch_project_reloads_project_scoped_settings() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let second_project_dir = tempdir().expect("failed to create second temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let first_project_id = database
+            .upsert_project(&base_path.to_string_lossy(), None)
+            .await
+            .expect("failed to insert first project");
+        let second_project_id = database
+            .upsert_project(&second_project_dir.path().to_string_lossy(), None)
+            .await
+            .expect("failed to insert second project");
+        database
+            .upsert_project_setting(
+                first_project_id,
+                SettingName::DefaultSmartModel.as_str(),
+                AgentModel::ClaudeHaiku4520251001.as_str(),
+            )
+            .await
+            .expect("failed to persist first project smart model");
+        database
+            .upsert_project_setting(
+                first_project_id,
+                SettingName::OpenCommand.as_str(),
+                "npm run dev",
+            )
+            .await
+            .expect("failed to persist first project open command");
+        database
+            .upsert_project_setting(
+                second_project_id,
+                SettingName::DefaultSmartModel.as_str(),
+                AgentModel::Gpt53Codex.as_str(),
+            )
+            .await
+            .expect("failed to persist second project smart model");
+        database
+            .upsert_project_setting(
+                second_project_id,
+                SettingName::OpenCommand.as_str(),
+                "cargo test",
+            )
+            .await
+            .expect("failed to persist second project open command");
+        database
+            .set_active_project_id(first_project_id)
+            .await
+            .expect("failed to persist initial active project");
+        let mut app = App::new(
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            mock_app_server(),
+        )
+        .await;
+
+        // Act
+        app.switch_project(second_project_id)
+            .await
+            .expect("failed to switch project");
+
+        // Assert
+        assert_eq!(app.settings.default_smart_model, AgentModel::Gpt53Codex);
+        assert_eq!(app.settings.open_command, "cargo test");
     }
 
     #[tokio::test]

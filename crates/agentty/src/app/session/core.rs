@@ -111,12 +111,18 @@ impl SessionManager {
         self.default_session_model
     }
 
+    /// Replaces the default smart model used for newly created sessions.
+    pub(crate) fn set_default_session_model(&mut self, session_model: AgentModel) {
+        self.default_session_model = session_model;
+    }
+
     /// Loads the default smart model persisted for new sessions.
     pub(crate) async fn load_default_session_model(
         services: &AppServices,
+        project_id: Option<i64>,
         fallback_model: AgentModel,
     ) -> AgentModel {
-        setting::load_default_smart_model_setting(services, fallback_model).await
+        setting::load_default_smart_model_setting(services, project_id, fallback_model).await
     }
 
     /// Returns session snapshots and stats payloads required for rendering.
@@ -1104,10 +1110,11 @@ mod tests {
         app.set_session_model(&first_session_id, AgentModel::Gpt53Codex)
             .await
             .expect("failed to set session model");
+        let active_project_id = app.active_project_id();
         let default_smart_model_setting = app
             .services
             .db()
-            .get_setting(SettingName::DefaultSmartModel.as_str())
+            .get_project_setting(active_project_id, SettingName::DefaultSmartModel.as_str())
             .await
             .expect("failed to load setting");
 
@@ -1152,9 +1159,14 @@ mod tests {
             .await
             .expect("failed to open in-memory db");
         let mut app = new_test_app_with_git_and_db(dir.path(), db.clone()).await;
+        let active_project_id = app.active_project_id();
         app.services
             .db()
-            .upsert_setting(SettingName::LastUsedModelAsDefault.as_str(), "true")
+            .upsert_project_setting(
+                active_project_id,
+                SettingName::LastUsedModelAsDefault.as_str(),
+                "true",
+            )
             .await
             .expect("failed to upsert last-used-model setting");
         let first_session_id = app
@@ -1169,7 +1181,7 @@ mod tests {
         let default_smart_model_setting = app
             .services
             .db()
-            .get_setting(SettingName::DefaultSmartModel.as_str())
+            .get_project_setting(active_project_id, SettingName::DefaultSmartModel.as_str())
             .await
             .expect("failed to load setting");
         drop(app);
@@ -1198,9 +1210,11 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let mut app = new_test_app_with_git(dir.path()).await;
+        let active_project_id = app.active_project_id();
         app.services
             .db()
-            .upsert_setting(
+            .upsert_project_setting(
+                active_project_id,
                 SettingName::DefaultSmartModel.as_str(),
                 AgentModel::ClaudeHaiku4520251001.as_str(),
             )
@@ -1557,7 +1571,8 @@ mod tests {
         )
         .await
         .expect("failed to insert beta00002");
-        db.upsert_setting(
+        db.upsert_project_setting(
+            project_id,
             SettingName::DefaultSmartModel.as_str(),
             AgentModel::ClaudeHaiku4520251001.as_str(),
         )

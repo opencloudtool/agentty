@@ -55,9 +55,9 @@ accented row text, even while cursor selection moves to other rows.
 <a id="usage-settings-options"></a>
 The Settings tab includes:
 
-- `Reasoning Level` (`low`, `medium`, `high`, `xhigh`) for Codex turns.
-- `Default Smart Model`, `Default Fast Model`, and `Default Review Model`.
-- `Open Commands` for launching session worktrees (one command per line).
+- `Reasoning Level` (`low`, `medium`, `high`, `xhigh`) for Codex turns in the active project.
+- `Default Smart Model`, `Default Fast Model`, and `Default Review Model` for the active project.
+- `Open Commands` for launching session worktrees in the active project (one command per line).
 
 ## Session View
 
@@ -87,7 +87,7 @@ state:
 Additional notes:
 
 - **Open command behavior**: `o` always opens the session worktree in tmux.
-  If one `Open Commands` entry is configured, it runs immediately.
+  If one `Open Commands` entry is configured for the active project, it runs immediately.
   If multiple entries are configured (one command per line), Agentty opens a selector popup.
 - **Question**: opening the session enters Question Input mode until all prompts are answered or skipped.
 - **Done**: `t` toggles between summary and full output.

@@ -1262,6 +1262,34 @@ SET value = excluded.value
         Ok(())
     }
 
+    /// Inserts or updates one project-scoped setting by project and name.
+    ///
+    /// # Errors
+    /// Returns an error if the project-setting row cannot be written.
+    pub async fn upsert_project_setting(
+        &self,
+        project_id: i64,
+        name: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r"
+INSERT INTO project_setting (project_id, name, value)
+VALUES (?, ?, ?)
+ON CONFLICT(project_id, name) DO UPDATE
+SET value = excluded.value
+",
+        )
+        .bind(project_id)
+        .bind(name)
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to upsert project setting: {err}"))?;
+
+        Ok(())
+    }
+
     /// Looks up a setting value by name.
     ///
     /// # Errors
@@ -1282,7 +1310,72 @@ WHERE name = ?
         Ok(row.map(|row| row.get("value")))
     }
 
-    /// Persists the reasoning-effort setting.
+    /// Looks up one project-scoped setting value by project and name.
+    ///
+    /// # Errors
+    /// Returns an error if the project-setting lookup query fails.
+    pub async fn get_project_setting(
+        &self,
+        project_id: i64,
+        name: &str,
+    ) -> Result<Option<String>, String> {
+        let row = sqlx::query(
+            r"
+SELECT value
+FROM project_setting
+WHERE project_id = ?
+  AND name = ?
+",
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to get project setting: {err}"))?;
+
+        Ok(row.map(|row| row.get("value")))
+    }
+
+    /// Persists one project-scoped reasoning-effort setting.
+    ///
+    /// # Errors
+    /// Returns an error if project settings persistence fails.
+    pub async fn set_project_reasoning_level(
+        &self,
+        project_id: i64,
+        reasoning_level: ReasoningLevel,
+    ) -> Result<(), String> {
+        self.upsert_project_setting(
+            project_id,
+            SettingName::ReasoningLevel.as_str(),
+            reasoning_level.codex(),
+        )
+        .await
+    }
+
+    /// Loads one project-scoped reasoning-effort setting.
+    ///
+    /// Missing or unparsable values fall back to [`ReasoningLevel::default`].
+    ///
+    /// # Errors
+    /// Returns an error if project settings lookup fails.
+    pub async fn load_project_reasoning_level(
+        &self,
+        project_id: i64,
+    ) -> Result<ReasoningLevel, String> {
+        let setting_value = self
+            .get_project_setting(project_id, SettingName::ReasoningLevel.as_str())
+            .await?;
+
+        let reasoning_level = setting_value
+            .as_deref()
+            .and_then(|value| value.parse::<ReasoningLevel>().ok())
+            .unwrap_or_default();
+
+        Ok(reasoning_level)
+    }
+
+    /// Persists the global reasoning-effort setting.
     ///
     /// # Errors
     /// Returns an error if settings persistence fails.
@@ -1311,6 +1404,26 @@ WHERE name = ?
             .unwrap_or_default();
 
         Ok(reasoning_level)
+    }
+
+    /// Loads the project identifier associated with one session.
+    ///
+    /// # Errors
+    /// Returns an error if the session lookup query fails.
+    pub async fn load_session_project_id(&self, session_id: &str) -> Result<Option<i64>, String> {
+        let row = sqlx::query(
+            r"
+SELECT project_id
+FROM session
+WHERE id = ?
+",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to load session project id: {err}"))?;
+
+        Ok(row.and_then(|row| row.get("project_id")))
     }
 
     /// Persists the active project identifier in application settings.
@@ -1518,6 +1631,112 @@ mod tests {
             default_review_model,
             Some(AgentModel::ClaudeOpus46.as_str().to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_project_setting_round_trip_is_isolated_per_project() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let first_project_id = database
+            .upsert_project("/tmp/project-a", Some("main"))
+            .await
+            .expect("failed to insert first project");
+        let second_project_id = database
+            .upsert_project("/tmp/project-b", Some("main"))
+            .await
+            .expect("failed to insert second project");
+
+        database
+            .upsert_project_setting(
+                first_project_id,
+                SettingName::OpenCommand.as_str(),
+                "npm run dev",
+            )
+            .await
+            .expect("failed to persist first project setting");
+        database
+            .upsert_project_setting(
+                second_project_id,
+                SettingName::OpenCommand.as_str(),
+                "cargo test",
+            )
+            .await
+            .expect("failed to persist second project setting");
+
+        // Act
+        let first_project_setting = database
+            .get_project_setting(first_project_id, SettingName::OpenCommand.as_str())
+            .await
+            .expect("failed to load first project setting");
+        let second_project_setting = database
+            .get_project_setting(second_project_id, SettingName::OpenCommand.as_str())
+            .await
+            .expect("failed to load second project setting");
+
+        // Assert
+        assert_eq!(first_project_setting, Some("npm run dev".to_string()));
+        assert_eq!(second_project_setting, Some("cargo test".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_project_reasoning_level_round_trip_uses_typed_setting_helpers() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to insert project");
+
+        // Act
+        database
+            .set_project_reasoning_level(project_id, ReasoningLevel::Low)
+            .await
+            .expect("failed to persist project reasoning level");
+        let reasoning_level = database
+            .load_project_reasoning_level(project_id)
+            .await
+            .expect("failed to load project reasoning level");
+
+        // Assert
+        assert_eq!(reasoning_level, ReasoningLevel::Low);
+    }
+
+    #[tokio::test]
+    async fn test_load_project_reasoning_level_defaults_when_setting_is_missing_or_invalid() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to insert project");
+
+        // Act
+        let missing_setting_level = database
+            .load_project_reasoning_level(project_id)
+            .await
+            .expect("failed to load default project reasoning level");
+        database
+            .upsert_project_setting(
+                project_id,
+                SettingName::ReasoningLevel.as_str(),
+                "unsupported",
+            )
+            .await
+            .expect("failed to insert unsupported project reasoning level");
+        let invalid_setting_level = database
+            .load_project_reasoning_level(project_id)
+            .await
+            .expect("failed to load fallback project reasoning level");
+
+        // Assert
+        assert_eq!(missing_setting_level, ReasoningLevel::High);
+        assert_eq!(invalid_setting_level, ReasoningLevel::High);
     }
 
     #[tokio::test]
@@ -1762,6 +1981,31 @@ mod tests {
 
         // Assert
         assert_eq!(active_project_id, Some(project_id));
+    }
+
+    #[tokio::test]
+    async fn test_load_session_project_id_returns_associated_project() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to insert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert session");
+
+        // Act
+        let loaded_project_id = database
+            .load_session_project_id("session-a")
+            .await
+            .expect("failed to load session project id");
+
+        // Assert
+        assert_eq!(loaded_project_id, Some(project_id));
     }
 
     #[tokio::test]
