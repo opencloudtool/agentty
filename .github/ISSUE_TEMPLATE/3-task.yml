@@ -1,0 +1,19 @@
+name: General Task
+description: Use this for general tasks and chores
+type: Task
+labels: []
+body:
+  - type: textarea
+    id: why-is-it-needed
+    attributes:
+      label: Why is it needed?
+      description: Please provide a detailed description of this task.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Please provide the expected state for closing this issue.
+    validations:
+      required: true
