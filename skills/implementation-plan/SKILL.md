@@ -1,6 +1,6 @@
 ---
 name: implementation-plan
-description: Create and maintain actionable implementation plans for this repository. Use when asked to draft a new plan in docs/plan, revise an existing plan document, or convert a request into a prioritized execution checklist with clear scope, status tracking, and file targets.
+description: Create and maintain actionable implementation plans for this repository. Use when asked to draft a new plan in docs/plan, revise an existing plan document, or convert a request into a prioritized execution checklist with clear scope, status tracking, file targets, and clarified requirements.
 ---
 
 # Implementation Plan Workflow
@@ -9,11 +9,18 @@ Use this skill when producing or updating implementation plans in `docs/plan/`.
 
 ## Workflow
 
+1. **Clarify the plan request first**
+
+   - Check whether the user has specified the plan goal, intended outcome, scope boundaries, exclusions, and any delivery constraints.
+   - If any of those requirements are unclear, ask focused follow-up questions before drafting or revising the plan.
+   - Prefer the smallest useful set of questions. Ask about missing scope, success criteria, priority, deadlines, ownership, or non-goals only when they materially affect the plan.
+   - Wait for the user response before continuing when the missing information would change the plan structure or contents.
+
 1. **Collect planning context**
 
    - Read `docs/plan/AGENTS.md` to enforce the required plan structure.
    - Review related source files and existing plan documents before writing.
-   - Capture concrete constraints from the user request (scope, deadlines, quality gates, excluded work).
+   - Capture concrete constraints from the user request and clarification answers (scope, deadlines, quality gates, excluded work).
 
 1. **Define scope and success boundaries**
 
@@ -44,6 +51,7 @@ Use this skill when producing or updating implementation plans in `docs/plan/`.
    - Confirm the plan structure exactly matches `docs/plan/AGENTS.md`.
    - Remove duplicated or contradictory checklist items.
    - Ensure every priority can be executed independently and validated.
+   - Verify the final plan reflects the clarified requirements the user provided.
 
 ## Plan Skeleton
 
