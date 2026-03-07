@@ -18,7 +18,7 @@ Baseline measured on March 6, 2026 using `cargo llvm-cov --workspace --json --su
 | `crates/ag-xtask` | 93.18% line coverage (`670/719`) | Healthy |
 | Zero-coverage files | Added focused tests for `ui/router.rs`, `ui/render.rs`, and `runtime/core.rs`; coverage refresh pending | Implemented |
 | Large uncovered totals | Added targeted lifecycle/error-path tests for `infra/codex_app_server.rs`, `infra/gemini_acp.rs`, `infra/app_server_transport.rs`, and `app/session/workflow/merge.rs`; coverage refresh pending | Implemented |
-| External boundary error paths | Added transport and sync-rebase assistance error-path tests; `infra/tmux.rs` and git rebase boundary follow-up still remain | Partial |
+| External boundary error paths | Added deterministic retry/error-path coverage for `infra/git/rebase.rs` and command sequencing/failure coverage for `infra/tmux.rs`; coverage refresh pending | Implemented |
 | Coverage policy in CI | No ratcheting line/function threshold in routine checks | Not started |
 
 ## Updated Priorities
@@ -72,9 +72,9 @@ Primary files:
 
 **Why now:** Lower-coverage external boundary modules are risk-prone and can be tested cheaply with DI/mocks.
 
-- [ ] Increase failure/retry path coverage in `crates/agentty/src/infra/git/rebase.rs`.
-- [ ] Add additional command failure and parsing tests for `crates/agentty/src/infra/tmux.rs`.
-- [ ] Ensure multi-command flows rely on trait boundaries and `mockall`-based mocks for deterministic behavior.
+- [x] Increase failure/retry path coverage in `crates/agentty/src/infra/git/rebase.rs`.
+- [x] Add additional command failure and parsing tests for `crates/agentty/src/infra/tmux.rs`.
+- [x] Ensure multi-command flows rely on trait boundaries and `mockall`-based mocks for deterministic behavior.
 
 Primary files:
 

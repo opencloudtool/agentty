@@ -445,9 +445,11 @@ fn is_git_index_lock_error(detail: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::process::{Command, Output};
 
     use mockall::predicate::eq;
+    use tempfile::tempdir;
 
     use super::*;
     use crate::MockSleeper;
@@ -491,6 +493,69 @@ mod tests {
     }
 
     #[test]
+    fn test_run_git_command_with_index_lock_retry_returns_last_lock_failure() {
+        // Arrange
+        let mut command_runner = MockGitCommandRunner::new();
+        let mut sleeper = MockSleeper::new();
+        let repo_path = Path::new(".");
+        let args = ["rebase", "main"];
+        let environment: [(&str, &str); 0] = [];
+
+        command_runner
+            .expect_run_git_command_output_with_env()
+            .times(GIT_INDEX_LOCK_RETRY_ATTEMPTS)
+            .returning(|_, _, _| Ok(git_index_lock_output()));
+        sleeper
+            .expect_sleep()
+            .with(eq(GIT_INDEX_LOCK_RETRY_DELAY))
+            .times(GIT_INDEX_LOCK_RETRY_ATTEMPTS - 1)
+            .returning(|_| {});
+
+        // Act
+        let output = run_git_command_with_index_lock_retry_with_dependencies(
+            repo_path,
+            &args,
+            &environment,
+            &command_runner,
+            &sleeper,
+        )
+        .expect("retry helper should return command output");
+
+        // Assert
+        assert!(!output.status.success());
+        assert!(command_output_detail(&output.stdout, &output.stderr).contains("index.lock"));
+    }
+
+    #[test]
+    fn test_run_git_command_with_index_lock_retry_returns_command_error_without_sleeping() {
+        // Arrange
+        let mut command_runner = MockGitCommandRunner::new();
+        let mut sleeper = MockSleeper::new();
+        let repo_path = Path::new(".");
+        let args = ["rebase", "main"];
+        let environment: [(&str, &str); 0] = [];
+
+        command_runner
+            .expect_run_git_command_output_with_env()
+            .times(1)
+            .return_once(|_, _, _| Err("git execution failed".to_string()));
+        sleeper.expect_sleep().times(0);
+
+        // Act
+        let error = run_git_command_with_index_lock_retry_with_dependencies(
+            repo_path,
+            &args,
+            &environment,
+            &command_runner,
+            &sleeper,
+        )
+        .expect_err("retry helper should surface command execution errors");
+
+        // Assert
+        assert_eq!(error, "git execution failed");
+    }
+
+    #[test]
     fn test_run_git_command_with_index_lock_retry_does_not_sleep_for_non_lock_errors() {
         // Arrange
         let mut command_runner = MockGitCommandRunner::new();
@@ -517,6 +582,52 @@ mod tests {
 
         // Assert
         assert!(!output.status.success());
+    }
+
+    #[test]
+    fn test_is_rebase_conflict_matches_unmerged_files_message() {
+        // Arrange
+        let detail = "Committing is not possible because you have unmerged files.";
+
+        // Act
+        let is_conflict = is_rebase_conflict(detail);
+
+        // Assert
+        assert!(is_conflict);
+    }
+
+    #[test]
+    fn test_is_stale_or_inactive_rebase_error_matches_no_rebase_message() {
+        // Arrange
+        let detail = "fatal: No rebase in progress?";
+
+        // Act
+        let is_stale_metadata_error = is_stale_or_inactive_rebase_error(detail);
+
+        // Assert
+        assert!(is_stale_metadata_error);
+    }
+
+    #[test]
+    fn test_clean_stale_rebase_metadata_removes_existing_paths() {
+        // Arrange
+        let temp_dir = tempdir().expect("tempdir should be created");
+        let git_dir = temp_dir.path().join(".git");
+        let rebase_merge = git_dir.join("rebase-merge");
+        let rebase_apply = git_dir.join("rebase-apply");
+
+        fs::create_dir(&git_dir).expect("git dir should be created");
+        fs::create_dir(&rebase_merge).expect("rebase-merge dir should be created");
+        fs::write(&rebase_apply, "apply state").expect("rebase-apply file should be created");
+
+        // Act
+        let cleaned = clean_stale_rebase_metadata(temp_dir.path())
+            .expect("stale metadata cleanup should succeed");
+
+        // Assert
+        assert!(cleaned);
+        assert!(!rebase_merge.exists());
+        assert!(!rebase_apply.exists());
     }
 
     /// Returns a successful git command output.
