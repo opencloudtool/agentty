@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::atomic::AtomicBool;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::app::{App, Tab};
 use crate::runtime::mode::confirmation::ConfirmationDecision;
@@ -133,7 +133,9 @@ fn previous_open_command_index(current_index: usize, commands: &[String]) -> usi
 /// Handles list-mode external open shortcuts for the sessions tab.
 ///
 /// The action is available only on the sessions tab when a session row is
-/// selected. Lowercase `e` opens `nvim` in the active project root.
+/// selected. Only a plain lowercase `e` key press opens `nvim` in the active
+/// project root so modifier chords, repeats, and release events do not launch
+/// the editor unexpectedly.
 async fn handle_list_external_editor_key(
     app: &mut App,
     terminal: &mut TuiTerminal,
@@ -144,7 +146,7 @@ async fn handle_list_external_editor_key(
         return None;
     }
 
-    if !matches!(key.code, KeyCode::Char('e')) || app.tabs.current() != Tab::Sessions {
+    if !is_list_external_editor_shortcut(key) || app.tabs.current() != Tab::Sessions {
         return None;
     }
 
@@ -161,6 +163,14 @@ async fn handle_list_external_editor_key(
     let _ = terminal::open_nvim(terminal, event_reader_pause, &project_root).await;
 
     Some(EventResult::Continue)
+}
+
+/// Returns whether a key event matches the plain `e` shortcut used to open an
+/// editor from the session list.
+fn is_list_external_editor_shortcut(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && key.modifiers == KeyModifiers::NONE
+        && matches!(key.code, KeyCode::Char('e'))
 }
 
 /// Applies the semantic result of a generic confirmation interaction.
@@ -266,7 +276,7 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use crossterm::event::KeyModifiers;
+    use crossterm::event::{KeyEventKind, KeyEventState};
     use tempfile::tempdir;
 
     use super::*;
@@ -549,6 +559,64 @@ mod tests {
 
         // Assert
         assert_eq!(index, 1);
+    }
+
+    #[test]
+    fn test_is_list_external_editor_shortcut_accepts_plain_e_press() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE);
+
+        // Act
+        let matches_shortcut = is_list_external_editor_shortcut(key);
+
+        // Assert
+        assert!(matches_shortcut);
+    }
+
+    #[test]
+    fn test_is_list_external_editor_shortcut_rejects_modified_e_press() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT);
+
+        // Act
+        let matches_shortcut = is_list_external_editor_shortcut(key);
+
+        // Assert
+        assert!(!matches_shortcut);
+    }
+
+    #[test]
+    fn test_is_list_external_editor_shortcut_rejects_release_event() {
+        // Arrange
+        let key = KeyEvent {
+            code: KeyCode::Char('e'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::empty(),
+        };
+
+        // Act
+        let matches_shortcut = is_list_external_editor_shortcut(key);
+
+        // Assert
+        assert!(!matches_shortcut);
+    }
+
+    #[test]
+    fn test_is_list_external_editor_shortcut_rejects_repeat_event() {
+        // Arrange
+        let key = KeyEvent {
+            code: KeyCode::Char('e'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: KeyEventState::empty(),
+        };
+
+        // Act
+        let matches_shortcut = is_list_external_editor_shortcut(key);
+
+        // Assert
+        assert!(!matches_shortcut);
     }
 
     #[tokio::test]
