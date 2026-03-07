@@ -6,5 +6,5 @@ Use `skills/implementation-plan/SKILL.md` for plan structure and implementation-
 
 ## Directory Index
 
+- [`coverage_follow_up.md`](coverage_follow_up.md) - Follow-up implementation plan for improving post-ratchet coverage hot spots.
 - [`forge_review_request_support.md`](forge_review_request_support.md) - Implementation plan for adding forge-generic review request workflows across GitHub and GitLab.
-- [`test_coverage.md`](test_coverage.md) - Workspace test coverage improvement plan.

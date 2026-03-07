@@ -27,6 +27,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install pre-commit
 ```
 
+### Install `cargo-llvm-cov`
+
+```sh
+cargo install cargo-llvm-cov
+```
+
 ## Website
 
 `agentty.xyz` is a Zola site stored in `docs/site/` and deployed through GitHub Pages.
@@ -44,11 +50,14 @@ zola build --root docs/site
 Run the following checks before opening a pull request:
 
 ```sh
-cargo test
-cargo clippy -- -D warnings
-cargo fmt --all -- --check
-cargo shear
+pre-commit run rustfmt-fix --all-files --hook-stage manual
+pre-commit run clippy-fix --all-files --hook-stage manual
+pre-commit run --all-files
+cargo test -q -- --test-threads=1
 ```
+
+`pre-commit run --all-files` now includes the workspace coverage ratchet via
+`cargo llvm-cov --workspace --summary-only --fail-under-lines 87 --fail-under-functions 85`.
 
 ## Architecture Documentation
 

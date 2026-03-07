@@ -61,6 +61,13 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: coverage
+        name: coverage
+        description: Verify workspace coverage meets ratchet thresholds.
+        entry: cargo llvm-cov --workspace --summary-only --fail-under-lines 87 --fail-under-functions 85
+        language: system
+        types: [rust]
+        pass_filenames: false
       - id: cargo-shear
         name: cargo-shear
         description: Check for unused dependencies.
