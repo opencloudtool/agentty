@@ -5,7 +5,7 @@ weight = 1
 +++
 
 <a id="installation-introduction"></a>
-`agentty` is a terminal-first environment for running AI coding agents in isolated git worktrees.
+`agentty` is an ADE (Agentic Development Environment) for structured, controllable AI-assisted software development.
 
 <!-- more -->
 

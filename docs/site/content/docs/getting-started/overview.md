@@ -5,7 +5,7 @@ weight = 0
 +++
 
 <a id="overview-introduction"></a>
-`agentty` is a terminal-first Agentic Development Environment (ADE), designed for building software alongside AI agents.
+`agentty` is an ADE (Agentic Development Environment) for structured, controllable AI-assisted software development.
 This project is built using `agentty` itself, including the docs and docs-site you are reading.
 
 <a id="overview-ai-sessions"></a>

@@ -11,7 +11,7 @@ authors = [
 edition = "2024"
 license = "Apache-2.0"
 readme = "README.md"
-description = "Agentic Development Environment (ADE) in your terminal"
+description = "Agentty is an ADE (Agentic Development Environment) for structured, controllable AI-assisted software development."
 repository = "https://github.com/agentty-xyz/agentty"
 homepage = "https://github.com/agentty-xyz/agentty"
 

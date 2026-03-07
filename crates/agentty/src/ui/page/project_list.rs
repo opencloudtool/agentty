@@ -25,8 +25,9 @@ const AGENTTY_ASCII_ART_WIDTH: u16 = 45;
 /// Compile-time version text shown in the projects info panel.
 const AGENTTY_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 /// Short overview text shown alongside the Agentty version.
-const AGENTTY_SHORT_DESCRIPTION: &str =
-    "ADE (agentic development environment) for running AI coding agents in isolated git worktrees.";
+const AGENTTY_SHORT_DESCRIPTION: &str = "Agentty is an ADE (Agentic Development Environment) for \
+                                         structured, controllable AI-assisted software \
+                                         development.";
 /// ASCII logo shown in the projects info panel.
 const AGENTTY_ASCII_ART: &str = r"    _    ____ _____ _   _ _____ _____ __   __
    / \  / ___| ____| \ | |_   _|_   _|\ \ / /
