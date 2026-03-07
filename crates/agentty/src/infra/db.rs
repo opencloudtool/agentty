@@ -237,7 +237,7 @@ LEFT JOIN (
     SELECT project_id,
            MAX(updated_at) AS last_session_updated_at,
            COUNT(*) AS session_count,
-           COUNT(CASE WHEN status NOT IN ('Done', 'Canceled', 'Question', 'Queued', 'Merging')
+           COUNT(CASE WHEN status NOT IN ('Done', 'Canceled', 'Queued', 'Merging')
                       THEN 1 END) AS active_session_count
     FROM session
     WHERE project_id IS NOT NULL
