@@ -59,7 +59,7 @@ choose the correct module when implementing changes.
 |------|------------------|
 | `crates/agentty/src/infra/db.rs` | SQLite persistence and queries; database open config enables `WAL` and foreign keys. |
 | `crates/agentty/src/infra/fs.rs` | `FsClient` trait and production async filesystem adapter used by app orchestration. |
-| `crates/agentty/src/infra/forge.rs` | `ReviewRequestClient` trait, normalized forge review-request types, remote detection, and GitHub/GitLab adapter routing. |
+| `crates/agentty/src/infra/forge.rs` + `infra/forge/` | Forge review-request router plus submodules for normalized types, remote detection, mockable CLI execution, and GitHub/GitLab adapter parsing. |
 | `crates/agentty/src/infra/git.rs` + `infra/git/` | Git module router plus async git workflow commands (`merge.rs`, `rebase.rs`, `repo.rs`, `sync.rs`, `worktree.rs`). |
 | `crates/agentty/src/infra/git/client.rs` | `GitClient` trait boundary, `RealGitClient` production adapter, and git client integration tests. |
 | `crates/agentty/src/infra/channel.rs` + `infra/channel/` | `AgentChannel` trait and provider-agnostic turn execution: |

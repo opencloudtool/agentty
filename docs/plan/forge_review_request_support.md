@@ -12,9 +12,9 @@ Plan for extending `crates/agentty/src/app`, `crates/agentty/src/infra`, and `cr
 |------|---------------------------|--------|
 | Session lifecycle and review actions | `crates/agentty/src/domain/session.rs`, `crates/agentty/src/runtime/mode/session_view.rs`, and `crates/agentty/src/ui/state/help_action.rs` already expose reply, diff, focused-review, rebase, and merge-queue flows for `Review` sessions. | Healthy |
 | Git remote and push foundations | `crates/agentty/src/infra/git/client.rs` exposes `repo_url()` and `push_current_branch()`, `crates/agentty/src/infra/git/repo.rs` normalizes GitHub remotes to HTTPS, and `crates/agentty/src/app/core.rs` already shows actionable push-auth guidance. | Partial |
-| Forge CLI foundations | The codebase already leans on external CLIs for integration boundaries, but there is no dedicated `gh` or `glab` client boundary for review-request operations. | Not started |
+| Forge CLI foundations | `crates/agentty/src/infra/forge.rs` and `crates/agentty/src/infra/forge/` now provide a dedicated review-request client boundary plus a mockable forge CLI runner for `gh` and `glab` operations. | Healthy |
 | Background polling infrastructure | `crates/agentty/src/app/task.rs` already runs periodic git-status and version-check jobs, and `crates/agentty/src/app/session/workflow/refresh.rs` performs low-frequency session metadata refresh, but nothing polls remote review-request state or auto-reconciles session statuses from merged or closed outcomes. | Partial |
-| Forge-specific integrations | There is no boundary for GitHub pull requests, GitLab merge requests, forge detection, or cross-forge review-request refresh. | Not started |
+| Forge-specific integrations | `crates/agentty/src/infra/forge/github.rs` and `crates/agentty/src/infra/forge/gitlab.rs` now implement create, find, and refresh adapter flows, but session persistence and UI wiring are still pending. | Partial |
 | Session persistence model | `crates/agentty/src/infra/db.rs` and `crates/agentty/migrations/` persist session title, summary, questions, size, and provider conversation ids, but no forge review-request linkage or sync metadata. | Not started |
 | User-facing docs | `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` document merge, rebase, diff, and review flows only. | Not started |
 
@@ -42,12 +42,12 @@ Primary files:
 
 **Why now:** GitHub and GitLab diverge on review metadata, approval models, and checks or pipelines, so the implementation plan needs explicit adapter boundaries before any persistence or UI work starts.
 
-- [ ] Implement a GitHub adapter around `gh` commands such as `gh pr create`, `gh pr view`, and `gh api`, reusing the existing `gh auth login` guidance for authentication failures.
-- [ ] Implement a GitLab adapter around `glab` commands such as `glab mr create`, `glab mr view`, and `glab api`, with explicit handling for both `gitlab.com` and self-hosted GitLab instances.
-- [ ] Keep provider-specific detail mapping inside each adapter and expose only a normalized review-request summary to the app layer.
-- [ ] Normalize missing-CLI, unauthenticated-CLI, and host-resolution failures into actionable messages that tell users whether they need `gh auth login`, `glab auth login`, or local CLI installation.
-- [ ] Store any unavoidable provider-specific extras in adapter-owned metadata rather than expanding the generic contract for one-off fields.
-- [ ] Add adapter-level tests for GitHub and GitLab request construction, response parsing, and provider-specific error mapping so this section can merge without UI or database changes.
+- [x] Implement a GitHub adapter around `gh` commands such as `gh pr create`, `gh pr view`, and `gh api`, reusing the existing `gh auth login` guidance for authentication failures.
+- [x] Implement a GitLab adapter around `glab` commands such as `glab mr create`, `glab mr view`, and `glab api`, with explicit handling for both `gitlab.com` and self-hosted GitLab instances.
+- [x] Keep provider-specific detail mapping inside each adapter and expose only a normalized review-request summary to the app layer.
+- [x] Normalize missing-CLI, unauthenticated-CLI, and host-resolution failures into actionable messages that tell users whether they need `gh auth login`, `glab auth login`, or local CLI installation.
+- [x] Store any unavoidable provider-specific extras in adapter-owned metadata rather than expanding the generic contract for one-off fields.
+- [x] Add adapter-level tests for GitHub and GitLab request construction, response parsing, and provider-specific error mapping so this section can merge without UI or database changes.
 
 Primary files:
 

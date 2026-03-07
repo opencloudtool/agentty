@@ -18,7 +18,8 @@ Implementations of external interfaces (Database, Git, System).
 - [`codex_app_server.rs`](codex_app_server.rs) - Persistent Codex app-server client and per-session turn execution.
 - [`db.rs`](db.rs) - SQLite database implementation.
 - [`file_index.rs`](file_index.rs) - Gitignore-aware file listing and fuzzy filtering for `@` mentions.
-- [`forge.rs`](forge.rs) - Cross-forge review-request trait boundary, remote detection, and provider adapter scaffolding.
+- [`forge/`](forge/) - Forge review-request submodules for CLI execution, remote parsing, and GitHub/GitLab adapters.
+- [`forge.rs`](forge.rs) - Forge review-request module router and public re-exports.
 - [`fs.rs`](fs.rs) - Async filesystem trait boundary and production implementation.
 - [`gemini_acp.rs`](gemini_acp.rs) - Persistent Gemini ACP app-server client and per-session turn execution.
 - [`git/`](git/) - Workflow-focused git operation modules (`merge`, `rebase`, `repo`, `sync`, `worktree`).
