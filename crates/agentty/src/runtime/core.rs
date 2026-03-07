@@ -1,6 +1,8 @@
 //! Runtime event loop and terminal rendering orchestration.
 
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -63,14 +65,53 @@ async fn run_main_loop(
     tick: &mut tokio::time::Interval,
     event_reader_pause: &Arc<AtomicBool>,
 ) -> io::Result<()> {
-    loop {
-        app.sessions.sync_from_handles();
-        render_frame(app, terminal)?;
+    let mut main_loop_state = MainLoopState {
+        app,
+        event_reader_pause,
+        event_rx,
+        terminal,
+        tick,
+    };
 
-        if matches!(
-            event::process_events(app, terminal, event_rx, tick, event_reader_pause).await?,
-            EventResult::Quit
-        ) {
+    run_until_quit(&mut main_loop_state, |state| Box::pin(state.run_cycle())).await
+}
+
+/// Borrowed runtime state required to process one main-loop cycle.
+struct MainLoopState<'a> {
+    app: &'a mut App,
+    event_reader_pause: &'a Arc<AtomicBool>,
+    event_rx: &'a mut mpsc::UnboundedReceiver<crossterm::event::Event>,
+    terminal: &'a mut TuiTerminal,
+    tick: &'a mut tokio::time::Interval,
+}
+
+impl MainLoopState<'_> {
+    /// Runs one render/event cycle and returns the continuation result.
+    async fn run_cycle(&mut self) -> io::Result<EventResult> {
+        self.app.sessions.sync_from_handles();
+        render_frame(self.app, self.terminal)?;
+
+        event::process_events(
+            self.app,
+            self.terminal,
+            self.event_rx,
+            self.tick,
+            self.event_reader_pause,
+        )
+        .await
+    }
+}
+
+/// Repeats an async runtime cycle until one cycle returns `EventResult::Quit`.
+async fn run_until_quit<State, CycleFn>(state: &mut State, mut cycle: CycleFn) -> io::Result<()>
+where
+    CycleFn: for<'state> FnMut(
+        &'state mut State,
+    )
+        -> Pin<Box<dyn Future<Output = io::Result<EventResult>> + 'state>>,
+{
+    loop {
+        if matches!(cycle(state).await?, EventResult::Quit) {
             break;
         }
     }
@@ -82,4 +123,71 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
     terminal.draw(|frame| app.draw(frame))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    /// Test-only loop state that records call counts and scripted outcomes.
+    struct TestLoopState {
+        cycle_count: usize,
+        results: VecDeque<io::Result<EventResult>>,
+    }
+
+    impl TestLoopState {
+        /// Runs one scripted test cycle.
+        fn run_cycle(&mut self) -> io::Result<EventResult> {
+            self.cycle_count += 1;
+
+            self.results
+                .pop_front()
+                .expect("test should provide one result per cycle")
+        }
+    }
+
+    #[tokio::test]
+    async fn run_until_quit_stops_after_first_quit_result() {
+        // Arrange
+        let mut state = TestLoopState {
+            cycle_count: 0,
+            results: VecDeque::from([
+                Ok(EventResult::Continue),
+                Ok(EventResult::Quit),
+                Ok(EventResult::Continue),
+            ]),
+        };
+
+        // Act
+        let loop_result = run_until_quit(&mut state, |loop_state| {
+            Box::pin(async move { loop_state.run_cycle() })
+        })
+        .await;
+
+        // Assert
+        assert!(loop_result.is_ok());
+        assert_eq!(state.cycle_count, 2);
+    }
+
+    #[tokio::test]
+    async fn run_until_quit_returns_cycle_error_without_extra_iterations() {
+        // Arrange
+        let mut state = TestLoopState {
+            cycle_count: 0,
+            results: VecDeque::from([Err(io::Error::other("cycle failed"))]),
+        };
+
+        // Act
+        let loop_result = run_until_quit(&mut state, |loop_state| {
+            Box::pin(async move { loop_state.run_cycle() })
+        })
+        .await;
+
+        // Assert
+        let error = loop_result.expect_err("loop should return the cycle error");
+        assert_eq!(error.to_string(), "cycle failed");
+        assert_eq!(state.cycle_count, 1);
+    }
 }

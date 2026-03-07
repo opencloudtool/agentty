@@ -136,3 +136,124 @@ fn render_footer_bar(
         .git_status(footer_status)
         .render(f, footer_bar_area);
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+    use crate::domain::agent::AgentModel;
+    use crate::domain::session::{SessionSize, SessionStats, Status};
+    use crate::ui::state::app_mode::DoneSessionOutputMode;
+
+    /// Builds one deterministic session fixture for footer render tests.
+    fn session_fixture(session_id: &str, folder: &str) -> Session {
+        Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::from(folder),
+            id: session_id.to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            project_name: "project".to_string(),
+            prompt: "prompt".to_string(),
+            questions: Vec::new(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::Review,
+            summary: Some("summary".to_string()),
+            title: Some("title".to_string()),
+            updated_at: 0,
+        }
+    }
+
+    /// Flattens one test backend buffer into plain text for assertions.
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn render_footer_bar_prefers_session_folder_and_branch_for_view_mode() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 3);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let session_id = "session-view-mode";
+        let session = session_fixture(session_id, "/tmp/session-view-folder");
+        let mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            session_id: session_id.to_string(),
+            scroll_offset: None,
+        };
+        let sessions = vec![session];
+
+        // Act
+        terminal
+            .draw(|frame| {
+                render_footer_bar(
+                    frame,
+                    frame.area(),
+                    &mode,
+                    &sessions,
+                    Path::new("/tmp/workspace-root"),
+                    Some("main"),
+                    Some((2, 1)),
+                );
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("/tmp/session-view-folder"));
+        assert!(text.contains(&session_branch(session_id)));
+    }
+
+    #[test]
+    fn render_footer_bar_uses_working_directory_when_mode_has_no_session() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 3);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let mode = AppMode::List;
+        let sessions = Vec::new();
+        let working_dir = Path::new("/tmp/current-workspace");
+        let git_branch = Some("feature/test-render");
+        let git_status = Some((0, 0));
+
+        // Act
+        terminal
+            .draw(|frame| {
+                render_footer_bar(
+                    frame,
+                    frame.area(),
+                    &mode,
+                    &sessions,
+                    working_dir,
+                    git_branch,
+                    git_status,
+                );
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("/tmp/current-workspace"));
+        assert!(text.contains("feature/test-render"));
+    }
+
+    #[test]
+    fn current_version_display_text_includes_v_prefix() {
+        // Arrange
+
+        // Act
+        let version = current_version_display_text();
+
+        // Assert
+        assert!(version.starts_with('v'));
+        assert!(version.len() > 1);
+    }
+}

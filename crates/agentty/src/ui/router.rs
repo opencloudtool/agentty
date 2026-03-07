@@ -426,3 +426,198 @@ pub(crate) fn render_list_background(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ratatui::widgets::Paragraph;
+
+    use super::*;
+    use crate::domain::agent::AgentModel;
+    use crate::domain::session::{SessionSize, SessionStats, Status};
+    use crate::ui::state::app_mode::DoneSessionOutputMode;
+
+    /// Builds one deterministic session fixture for router render tests.
+    fn session_fixture(session_id: &str) -> Session {
+        Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::from(format!("/tmp/{session_id}")),
+            id: session_id.to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: "Captured output".to_string(),
+            project_name: "project".to_string(),
+            prompt: "Prompt".to_string(),
+            questions: Vec::new(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::Review,
+            summary: Some("Summary line for router test".to_string()),
+            title: Some("Router Session".to_string()),
+            updated_at: 0,
+        }
+    }
+
+    /// Flattens a rendered test buffer into a plain string for text assertions.
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn render_session_or_diff_mode_renders_view_session_content() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let session_id = "session-1234";
+        let sessions = vec![session_fixture(session_id)];
+        let mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            session_id: session_id.to_string(),
+            scroll_offset: None,
+        };
+        let progress_messages = HashMap::new();
+
+        // Act
+        terminal
+            .draw(|frame| {
+                render_session_or_diff_mode(
+                    frame,
+                    frame.area(),
+                    &mode,
+                    &sessions,
+                    RouteAuxContext {
+                        session_progress_messages: &progress_messages,
+                    },
+                );
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Router Session"));
+        assert!(text.contains("Captured output"));
+    }
+
+    #[test]
+    fn render_session_or_diff_mode_keeps_background_when_session_is_missing() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            session_id: "missing-session".to_string(),
+            scroll_offset: None,
+        };
+        let progress_messages = HashMap::new();
+        let sessions = Vec::new();
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(Paragraph::new("sentinel"), area);
+                render_session_or_diff_mode(
+                    frame,
+                    area,
+                    &mode,
+                    &sessions,
+                    RouteAuxContext {
+                        session_progress_messages: &progress_messages,
+                    },
+                );
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("sentinel"));
+    }
+
+    #[test]
+    fn render_session_or_diff_mode_renders_diff_page_for_matching_session() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let session_id = "session-diff";
+        let mut session = session_fixture(session_id);
+        session.title = Some("Diff Session".to_string());
+        let sessions = vec![session];
+        let mode = AppMode::Diff {
+            session_id: session_id.to_string(),
+            diff: String::new(),
+            scroll_offset: 0,
+            file_explorer_selected_index: 0,
+        };
+        let progress_messages = HashMap::new();
+
+        // Act
+        terminal
+            .draw(|frame| {
+                render_session_or_diff_mode(
+                    frame,
+                    frame.area(),
+                    &mode,
+                    &sessions,
+                    RouteAuxContext {
+                        session_progress_messages: &progress_messages,
+                    },
+                );
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Diff Session"));
+        assert!(text.contains("No changes found."));
+    }
+
+    #[test]
+    fn render_merge_confirmation_overlay_renders_confirmation_text() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let session_id = "session-merge";
+        let sessions = vec![session_fixture(session_id)];
+        let progress_messages = HashMap::new();
+        let confirmation_context = MergeConfirmationContext {
+            confirmation_message: "Queue merge now?",
+            confirmation_title: "Confirm Merge",
+            selected_confirmation_index: 0,
+        };
+        let view_mode = ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            scroll_offset: None,
+            session_id: session_id.to_string(),
+        };
+
+        // Act
+        terminal
+            .draw(|frame| {
+                render_merge_confirmation_overlay(
+                    frame,
+                    frame.area(),
+                    &confirmation_context,
+                    &view_mode,
+                    &sessions,
+                    &progress_messages,
+                );
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Confirm Merge"));
+        assert!(text.contains("Queue merge now?"));
+    }
+}

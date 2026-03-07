@@ -16,7 +16,7 @@ Baseline measured on March 6, 2026 using `cargo llvm-cov --workspace --json --su
 | Workspace function coverage | 83.11% (`3606/4339`) | Baseline captured |
 | `crates/agentty` | 85.08% line coverage (`31368/36870`) | Baseline captured |
 | `crates/ag-xtask` | 93.18% line coverage (`670/719`) | Healthy |
-| Zero-coverage files | `ui/router.rs`, `ui/render.rs`, `runtime/core.rs` are at 0% line coverage | Not started |
+| Zero-coverage files | Added focused tests for `ui/router.rs`, `ui/render.rs`, and `runtime/core.rs`; coverage refresh pending | Implemented |
 | Large uncovered totals | Highest gaps in `infra/codex_app_server.rs`, `runtime/mode/prompt.rs`, `app/session/workflow/merge.rs`, `runtime/mode/session_view.rs` | Not started |
 | External boundary error paths | `infra/app_server_transport.rs`, `infra/tmux.rs`, and git rebase flows still have thin failure-path coverage | Partial |
 | Coverage policy in CI | No ratcheting line/function threshold in routine checks | Not started |
@@ -27,10 +27,10 @@ Baseline measured on March 6, 2026 using `cargo llvm-cov --workspace --json --su
 
 **Why now:** These files represent core orchestration surfaces currently unexercised by tests.
 
-- [ ] Add focused tests for `crates/agentty/src/ui/router.rs`.
-- [ ] Add focused tests for `crates/agentty/src/ui/render.rs`.
-- [ ] Add focused tests for `crates/agentty/src/runtime/core.rs`.
-- [ ] Assert behavior at integration boundaries instead of only smoke-compiling paths.
+- [x] Add focused tests for `crates/agentty/src/ui/router.rs`.
+- [x] Add focused tests for `crates/agentty/src/ui/render.rs`.
+- [x] Add focused tests for `crates/agentty/src/runtime/core.rs`.
+- [x] Assert behavior at integration boundaries instead of only smoke-compiling paths.
 
 Primary files:
 
