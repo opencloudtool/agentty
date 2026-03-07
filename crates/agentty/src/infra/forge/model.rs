@@ -3,43 +3,15 @@
 use std::future::Future;
 use std::pin::Pin;
 
+/// Shared forge family enum reused by persistence and forge adapters.
+pub use crate::domain::session::ForgeKind;
+/// Shared review-request remote state reused by persistence and forge adapters.
+pub use crate::domain::session::ReviewRequestState;
+/// Shared normalized review-request summary reused by persistence and adapters.
+pub use crate::domain::session::ReviewRequestSummary;
+
 /// Boxed async result used by review-request trait methods.
 pub type ForgeFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-
-/// Supported forge families that Agentty can target for review requests.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ForgeKind {
-    /// GitHub pull requests managed through the `gh` CLI.
-    GitHub,
-    /// GitLab merge requests managed through the `glab` CLI.
-    GitLab,
-}
-
-impl ForgeKind {
-    /// Returns the user-facing forge name.
-    pub fn display_name(self) -> &'static str {
-        match self {
-            Self::GitHub => "GitHub",
-            Self::GitLab => "GitLab",
-        }
-    }
-
-    /// Returns the CLI executable name used for this forge.
-    pub fn cli_name(self) -> &'static str {
-        match self {
-            Self::GitHub => "gh",
-            Self::GitLab => "glab",
-        }
-    }
-
-    /// Returns the login command users should run to authorize forge access.
-    pub fn auth_login_command(self) -> &'static str {
-        match self {
-            Self::GitHub => "gh auth login",
-            Self::GitLab => "glab auth login",
-        }
-    }
-}
 
 /// Normalized repository remote metadata for one supported forge.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,38 +48,6 @@ pub struct CreateReviewRequestInput {
     pub target_branch: String,
     /// Title shown in the forge review-request UI.
     pub title: String,
-}
-
-/// Normalized lifecycle state for one forge review request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReviewRequestState {
-    /// The review request is still open.
-    Open,
-    /// The review request was merged.
-    Merged,
-    /// The review request was closed without merge.
-    Closed,
-}
-
-/// Normalized review-request summary used by the app layer.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReviewRequestSummary {
-    /// Provider display id such as GitHub `#123` or GitLab `!42`.
-    pub display_id: String,
-    /// Forge family that owns the review request.
-    pub forge_kind: ForgeKind,
-    /// Source branch associated with the review request.
-    pub source_branch: String,
-    /// Normalized lifecycle state.
-    pub state: ReviewRequestState,
-    /// Compact provider-specific status text shown in the UI.
-    pub status_summary: Option<String>,
-    /// Target branch associated with the review request.
-    pub target_branch: String,
-    /// Review request title.
-    pub title: String,
-    /// Browser-openable review request URL.
-    pub web_url: String,
 }
 
 /// Review-request failures normalized for actionable UI messaging.

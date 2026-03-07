@@ -33,3 +33,4 @@ SQLite migrations for the `agentty` crate.
 - [`027_add_provider_conversation_id_to_session.sql`](027_add_provider_conversation_id_to_session.sql) - Adds persisted provider-native conversation IDs to `session`.
 - [`028_add_questions_to_session.sql`](028_add_questions_to_session.sql) - Adds persisted clarification-question payloads to `session`.
 - [`029_create_project_setting.sql`](029_create_project_setting.sql) - Creates project-scoped settings and backfills existing global values to each project.
+- [`030_create_session_review_request.sql`](030_create_session_review_request.sql) - Creates the `session_review_request` table for normalized forge review-request linkage.

@@ -449,6 +449,7 @@ mod tests {
             output: "Captured output".to_string(),
             project_name: "project".to_string(),
             prompt: "Prompt".to_string(),
+            review_request: None,
             questions: Vec::new(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),

@@ -15,7 +15,7 @@ Plan for extending `crates/agentty/src/app`, `crates/agentty/src/infra`, and `cr
 | Forge CLI foundations | `crates/agentty/src/infra/forge.rs` and `crates/agentty/src/infra/forge/` now provide a dedicated review-request client boundary plus a mockable forge CLI runner for `gh` and `glab` operations. | Healthy |
 | Background polling infrastructure | `crates/agentty/src/app/task.rs` already runs periodic git-status and version-check jobs, and `crates/agentty/src/app/session/workflow/refresh.rs` performs low-frequency session metadata refresh, but nothing polls remote review-request state or auto-reconciles session statuses from merged or closed outcomes. | Partial |
 | Forge-specific integrations | `crates/agentty/src/infra/forge/github.rs` and `crates/agentty/src/infra/forge/gitlab.rs` now implement create, find, and refresh adapter flows, but session persistence and UI wiring are still pending. | Partial |
-| Session persistence model | `crates/agentty/src/infra/db.rs` and `crates/agentty/migrations/` persist session title, summary, questions, size, and provider conversation ids, but no forge review-request linkage or sync metadata. | Not started |
+| Session persistence model | `crates/agentty/src/infra/db.rs`, `crates/agentty/migrations/`, `crates/agentty/src/domain/session.rs`, and `crates/agentty/src/app/session/workflow/load.rs` now persist and reload normalized forge review-request linkage metadata through a dedicated `session_review_request` table. | Healthy |
 | User-facing docs | `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` document merge, rebase, diff, and review flows only. | Not started |
 
 ## Updated Priorities
@@ -60,15 +60,15 @@ Primary files:
 
 **Why now:** Session view, refresh, and post-rebase flows need durable review-request identity that works for both GitHub pull requests and GitLab merge requests.
 
-- [ ] Add a migration for generic linkage fields on `session`, such as forge kind, display id, web URL, state, source branch, target branch, title, status summary, and last-refresh timestamp.
-- [ ] Extend `crates/agentty/src/infra/db.rs::SessionRow`, session update helpers, and `crates/agentty/src/domain/session.rs::Session` to carry the new normalized metadata.
-- [ ] Avoid GitHub-only naming such as `pull_request_number`; use generic names that can represent GitHub numbers and GitLab IIDs without ambiguity.
-- [ ] Define lifecycle rules for linked review-request metadata when sessions are rebased, merged, canceled, or when the remote review request is already closed or merged.
-- [ ] Add database and session-loading tests that prove the new metadata round-trips cleanly without any live forge integration.
+- [x] Add a migration for generic linkage fields on `session`, such as forge kind, display id, web URL, state, source branch, target branch, title, status summary, and last-refresh timestamp.
+- [x] Extend `crates/agentty/src/infra/db.rs::SessionRow`, session update helpers, and `crates/agentty/src/domain/session.rs::Session` to carry the new normalized metadata.
+- [x] Avoid GitHub-only naming such as `pull_request_number`; use generic names that can represent GitHub numbers and GitLab IIDs without ambiguity.
+- [x] Define lifecycle rules for linked review-request metadata when sessions are rebased, merged, canceled, or when the remote review request is already closed or merged.
+- [x] Add database and session-loading tests that prove the new metadata round-trips cleanly without any live forge integration.
 
 Primary files:
 
-- `crates/agentty/migrations/NNN_add_review_request_metadata_to_session.sql`
+- `crates/agentty/migrations/030_create_session_review_request.sql`
 - `crates/agentty/src/infra/db.rs`
 - `crates/agentty/src/domain/session.rs`
 - `crates/agentty/src/app/session/workflow/load.rs`

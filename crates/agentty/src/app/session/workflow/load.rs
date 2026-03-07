@@ -9,9 +9,10 @@ use super::session_folder;
 use crate::app::SessionManager;
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::session::{
-    DailyActivity, Session, SessionHandles, SessionSize, SessionStats, Status,
+    DailyActivity, ReviewRequest, ReviewRequestSummary, Session, SessionHandles, SessionSize,
+    SessionStats, Status,
 };
-use crate::infra::db::Database;
+use crate::infra::db::{Database, SessionRow};
 use crate::infra::fs::{FsClient, RealFsClient};
 use crate::infra::git::GitClient;
 
@@ -138,9 +139,11 @@ impl SessionManager {
                 (row.output.clone(), persisted_status)
             };
 
+            let review_request = parse_review_request(&row);
             let questions = row
                 .questions
-                .and_then(|q| serde_json::from_str::<Vec<String>>(&q).ok())
+                .as_deref()
+                .and_then(|question_json| serde_json::from_str::<Vec<String>>(question_json).ok())
                 .unwrap_or_default();
 
             sessions.push(Session {
@@ -152,6 +155,7 @@ impl SessionManager {
                 output: session_output,
                 project_name: project_name.clone(),
                 prompt: row.prompt,
+                review_request,
                 questions,
                 size: persisted_size,
                 stats: SessionStats {
@@ -206,6 +210,38 @@ fn merge_loaded_session_status(status_from_db: Status, status_from_handle: Statu
     status_from_handle
 }
 
+/// Parses normalized review-request metadata from one loaded database row.
+///
+/// Incomplete or invalid persisted metadata is ignored so stale partial rows do
+/// not block session loading.
+fn parse_review_request(row: &SessionRow) -> Option<ReviewRequest> {
+    let review_request_row = row.review_request.as_ref()?;
+    let forge_kind = parse_optional_enum(Some(review_request_row.forge_kind.as_str())).ok()?;
+    let state = parse_optional_enum(Some(review_request_row.state.as_str())).ok()?;
+
+    Some(ReviewRequest {
+        last_refreshed_at: review_request_row.last_refreshed_at,
+        summary: ReviewRequestSummary {
+            display_id: review_request_row.display_id.clone(),
+            forge_kind,
+            source_branch: review_request_row.source_branch.clone(),
+            state,
+            status_summary: review_request_row.status_summary.clone(),
+            target_branch: review_request_row.target_branch.clone(),
+            title: review_request_row.title.clone(),
+            web_url: review_request_row.web_url.clone(),
+        },
+    })
+}
+
+/// Converts one optional persisted string into a parsed enum value.
+fn parse_optional_enum<T>(value: Option<&str>) -> Result<T, ()>
+where
+    T: std::str::FromStr,
+{
+    value.ok_or(())?.parse().map_err(|_| ())
+}
+
 /// Aggregates persisted session-creation timestamps into local-day totals.
 fn aggregate_local_daily_activity(activity_timestamps: &[i64]) -> Vec<DailyActivity> {
     let mut activity_by_day: BTreeMap<i64, u32> = BTreeMap::new();
@@ -255,6 +291,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::domain::session::{ForgeKind, ReviewRequestState, ReviewRequestSummary};
+    use crate::infra::db::SessionReviewRequestRow;
     use crate::infra::fs;
 
     /// Returns a filesystem mock that reports the supplied directories as
@@ -399,6 +437,69 @@ mod tests {
         assert_eq!(handle_status, Status::Done);
     }
 
+    /// Ensures persisted review-request metadata is mapped onto loaded session
+    /// snapshots.
+    #[tokio::test]
+    async fn test_load_sessions_maps_review_request_metadata() {
+        // Arrange
+        let db = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = db
+            .upsert_project("/tmp/test", None)
+            .await
+            .expect("failed to upsert project");
+        let review_request = ReviewRequest {
+            last_refreshed_at: 999,
+            summary: ReviewRequestSummary {
+                display_id: "!17".to_string(),
+                forge_kind: ForgeKind::GitLab,
+                source_branch: "feature/forge".to_string(),
+                state: ReviewRequestState::Closed,
+                status_summary: Some("closed by maintainer".to_string()),
+                target_branch: "main".to_string(),
+                title: "Add forge review support".to_string(),
+                web_url: "https://gitlab.example.com/team/project/-/merge_requests/17".to_string(),
+            },
+        };
+
+        let session_id = "test-session";
+        db.insert_session(
+            session_id,
+            "gemini-3-flash-preview",
+            "main",
+            "Done",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        db.update_session_review_request(session_id, Some(&review_request))
+            .await
+            .expect("failed to persist review request metadata");
+
+        let base_path = Path::new("/virtual/session-base");
+        let mock_fs_client = create_folder_lookup_mock(Vec::new());
+        let mut handles = HashMap::new();
+
+        // Act
+        let (sessions, _) = SessionManager::load_sessions_with_fs_client(
+            base_path,
+            &db,
+            project_id,
+            Path::new("/tmp/test"),
+            &mut handles,
+            &mock_fs_client,
+        )
+        .await;
+
+        // Assert
+        let session = sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing reloaded session");
+        assert_eq!(session.review_request, Some(review_request));
+    }
+
     #[test]
     /// Verifies terminal DB statuses override stale in-memory handle statuses.
     fn merge_loaded_session_status_prefers_terminal_status_from_db() {
@@ -425,5 +526,45 @@ mod tests {
 
         // Assert
         assert_eq!(merged_status, Status::InProgress);
+    }
+
+    #[test]
+    /// Verifies invalid review-request rows are ignored during session load.
+    fn parse_review_request_returns_none_for_invalid_row() {
+        // Arrange
+        let row = SessionRow {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            id: "session-a".to_string(),
+            input_tokens: 0,
+            model: "gpt-5.3-codex".to_string(),
+            output: String::new(),
+            output_tokens: 0,
+            project_id: Some(1),
+            prompt: String::new(),
+            questions: None,
+            review_request: Some(SessionReviewRequestRow {
+                display_id: "#42".to_string(),
+                forge_kind: "UnknownForge".to_string(),
+                last_refreshed_at: 0,
+                source_branch: "feature/forge".to_string(),
+                state: "Open".to_string(),
+                status_summary: None,
+                target_branch: "main".to_string(),
+                title: "Add forge review support".to_string(),
+                web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
+            }),
+            size: "XS".to_string(),
+            status: "Review".to_string(),
+            summary: None,
+            title: None,
+            updated_at: 0,
+        };
+
+        // Act
+        let review_request = parse_review_request(&row);
+
+        // Assert
+        assert_eq!(review_request, None);
     }
 }

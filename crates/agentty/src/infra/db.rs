@@ -3,11 +3,11 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
 
 use crate::domain::agent::ReasoningLevel;
-use crate::domain::session::SessionStats;
+use crate::domain::session::{ReviewRequest, SessionStats};
 use crate::domain::setting::SettingName;
 
 /// Subdirectory under the agentty home where the database file is stored.
@@ -55,7 +55,25 @@ pub struct ProjectListRow {
     pub updated_at: i64,
 }
 
+/// Row returned when loading one `session_review_request`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionReviewRequestRow {
+    pub display_id: String,
+    pub forge_kind: String,
+    pub last_refreshed_at: i64,
+    pub source_branch: String,
+    pub state: String,
+    pub status_summary: Option<String>,
+    pub target_branch: String,
+    pub title: String,
+    pub web_url: String,
+}
+
 /// Row returned when loading a session from the `session` table.
+///
+/// Includes optional normalized forge review-request linkage metadata loaded
+/// through the `session_review_request` table when the session has been
+/// published for remote review.
 pub struct SessionRow {
     pub base_branch: String,
     pub created_at: i64,
@@ -67,6 +85,7 @@ pub struct SessionRow {
     pub project_id: Option<i64>,
     pub prompt: String,
     pub questions: Option<String>,
+    pub review_request: Option<SessionReviewRequestRow>,
     pub size: String,
     pub status: String,
     pub summary: Option<String>,
@@ -97,6 +116,56 @@ pub struct SessionUsageRow {
     pub model: String,
     pub output_tokens: i64,
     pub session_id: Option<String>,
+}
+
+/// Maps one joined `session` query row into the public session row model.
+fn parse_session_row(row: &SqliteRow) -> SessionRow {
+    SessionRow {
+        base_branch: row.get("base_branch"),
+        created_at: row.get("created_at"),
+        id: row.get("id"),
+        input_tokens: row.get("input_tokens"),
+        model: row.get("model"),
+        output: row.get("output"),
+        output_tokens: row.get("output_tokens"),
+        project_id: row.get("project_id"),
+        prompt: row.get("prompt"),
+        questions: row.get("questions"),
+        review_request: parse_session_review_request_row(row),
+        size: row.get("size"),
+        status: row.get("status"),
+        summary: row.get("summary"),
+        title: row.get("title"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+/// Maps one joined `session_review_request` row when all required fields exist.
+///
+/// A partially populated join is treated as absent so callers never observe an
+/// invalid review-request row model.
+fn parse_session_review_request_row(row: &SqliteRow) -> Option<SessionReviewRequestRow> {
+    let display_id: Option<String> = row.get("review_request_display_id");
+    let forge_kind: Option<String> = row.get("review_request_forge_kind");
+    let last_refreshed_at: Option<i64> = row.get("review_request_last_refreshed_at");
+    let source_branch: Option<String> = row.get("review_request_source_branch");
+    let state: Option<String> = row.get("review_request_state");
+    let status_summary: Option<String> = row.get("review_request_status_summary");
+    let target_branch: Option<String> = row.get("review_request_target_branch");
+    let title: Option<String> = row.get("review_request_title");
+    let web_url: Option<String> = row.get("review_request_web_url");
+
+    Some(SessionReviewRequestRow {
+        display_id: display_id?,
+        forge_kind: forge_kind?,
+        last_refreshed_at: last_refreshed_at?,
+        source_branch: source_branch?,
+        state: state?,
+        status_summary,
+        target_branch: target_branch?,
+        title: title?,
+        web_url: web_url?,
+    })
 }
 
 impl Database {
@@ -410,11 +479,24 @@ ON CONFLICT(session_id) DO NOTHING
     ) -> Result<Vec<SessionRow>, String> {
         let rows = sqlx::query(
             r"
-SELECT id, model, base_branch, status, title, project_id, prompt, output,
-       created_at, updated_at, input_tokens, output_tokens, size, summary, questions
+SELECT session.id, session.model, session.base_branch, session.status, session.title,
+       session.project_id, session.prompt, session.output, session.created_at,
+       session.updated_at, session.input_tokens, session.output_tokens, session.size,
+       session.summary, session.questions,
+       session_review_request.display_id AS review_request_display_id,
+       session_review_request.forge_kind AS review_request_forge_kind,
+       session_review_request.last_refreshed_at AS review_request_last_refreshed_at,
+       session_review_request.source_branch AS review_request_source_branch,
+       session_review_request.state AS review_request_state,
+       session_review_request.status_summary AS review_request_status_summary,
+       session_review_request.target_branch AS review_request_target_branch,
+       session_review_request.title AS review_request_title,
+       session_review_request.web_url AS review_request_web_url
 FROM session
-WHERE project_id = ?
-ORDER BY updated_at DESC, id
+LEFT JOIN session_review_request
+ON session_review_request.session_id = session.id
+WHERE session.project_id = ?
+ORDER BY session.updated_at DESC, session.id
 ",
         )
         .bind(project_id)
@@ -422,26 +504,7 @@ ORDER BY updated_at DESC, id
         .await
         .map_err(|err| format!("Failed to load sessions: {err}"))?;
 
-        Ok(rows
-            .iter()
-            .map(|row| SessionRow {
-                base_branch: row.get("base_branch"),
-                created_at: row.get("created_at"),
-                id: row.get("id"),
-                input_tokens: row.get("input_tokens"),
-                model: row.get("model"),
-                output: row.get("output"),
-                output_tokens: row.get("output_tokens"),
-                project_id: row.get("project_id"),
-                prompt: row.get("prompt"),
-                questions: row.get("questions"),
-                size: row.get("size"),
-                status: row.get("status"),
-                summary: row.get("summary"),
-                title: row.get("title"),
-                updated_at: row.get("updated_at"),
-            })
-            .collect())
+        Ok(rows.iter().map(parse_session_row).collect())
     }
 
     /// Loads all sessions ordered by most recent update.
@@ -451,36 +514,30 @@ ORDER BY updated_at DESC, id
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
         let rows = sqlx::query(
             r"
-SELECT id, model, base_branch, status, title, project_id, prompt, output,
-       created_at, updated_at, input_tokens, output_tokens, size, summary, questions
+SELECT session.id, session.model, session.base_branch, session.status, session.title,
+       session.project_id, session.prompt, session.output, session.created_at,
+       session.updated_at, session.input_tokens, session.output_tokens, session.size,
+       session.summary, session.questions,
+       session_review_request.display_id AS review_request_display_id,
+       session_review_request.forge_kind AS review_request_forge_kind,
+       session_review_request.last_refreshed_at AS review_request_last_refreshed_at,
+       session_review_request.source_branch AS review_request_source_branch,
+       session_review_request.state AS review_request_state,
+       session_review_request.status_summary AS review_request_status_summary,
+       session_review_request.target_branch AS review_request_target_branch,
+       session_review_request.title AS review_request_title,
+       session_review_request.web_url AS review_request_web_url
 FROM session
-ORDER BY updated_at DESC, id
+LEFT JOIN session_review_request
+ON session_review_request.session_id = session.id
+ORDER BY session.updated_at DESC, session.id
 ",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|err| format!("Failed to load sessions: {err}"))?;
 
-        Ok(rows
-            .iter()
-            .map(|row| SessionRow {
-                base_branch: row.get("base_branch"),
-                created_at: row.get("created_at"),
-                id: row.get("id"),
-                input_tokens: row.get("input_tokens"),
-                model: row.get("model"),
-                output: row.get("output"),
-                output_tokens: row.get("output_tokens"),
-                project_id: row.get("project_id"),
-                prompt: row.get("prompt"),
-                questions: row.get("questions"),
-                size: row.get("size"),
-                status: row.get("status"),
-                summary: row.get("summary"),
-                title: row.get("title"),
-                updated_at: row.get("updated_at"),
-            })
-            .collect())
+        Ok(rows.iter().map(parse_session_row).collect())
     }
 
     /// Loads persisted activity event timestamps used for activity stats.
@@ -836,6 +893,76 @@ WHERE id = ?
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to update session provider conversation id: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Updates the persisted forge review-request linkage for a session.
+    ///
+    /// Passing `None` deletes the linked `session_review_request` row. Local
+    /// session status transitions should keep the link intact by persisting the
+    /// latest metadata instead of clearing it.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be updated.
+    pub async fn update_session_review_request(
+        &self,
+        id: &str,
+        review_request: Option<&ReviewRequest>,
+    ) -> Result<(), String> {
+        if let Some(review_request) = review_request {
+            sqlx::query(
+                r"
+INSERT INTO session_review_request (
+    session_id,
+    display_id,
+    forge_kind,
+    last_refreshed_at,
+    source_branch,
+    state,
+    status_summary,
+    target_branch,
+    title,
+    web_url
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE
+SET display_id = excluded.display_id,
+    forge_kind = excluded.forge_kind,
+    last_refreshed_at = excluded.last_refreshed_at,
+    source_branch = excluded.source_branch,
+    state = excluded.state,
+    status_summary = excluded.status_summary,
+    target_branch = excluded.target_branch,
+    title = excluded.title,
+    web_url = excluded.web_url
+",
+            )
+            .bind(id)
+            .bind(review_request.summary.display_id.as_str())
+            .bind(review_request.summary.forge_kind.as_str())
+            .bind(review_request.last_refreshed_at)
+            .bind(review_request.summary.source_branch.as_str())
+            .bind(review_request.summary.state.as_str())
+            .bind(review_request.summary.status_summary.as_deref())
+            .bind(review_request.summary.target_branch.as_str())
+            .bind(review_request.summary.title.as_str())
+            .bind(review_request.summary.web_url.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|err| format!("Failed to upsert session review request: {err}"))?;
+        } else {
+            sqlx::query(
+                r"
+DELETE FROM session_review_request
+WHERE session_id = ?
+",
+            )
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|err| format!("Failed to clear session review request: {err}"))?;
+        }
 
         Ok(())
     }
@@ -1583,6 +1710,83 @@ impl Database {
 mod tests {
     use super::*;
     use crate::agent::AgentModel;
+    use crate::domain::session::{ForgeKind, ReviewRequestState, ReviewRequestSummary};
+
+    /// Builds one deterministic persisted review-request fixture for DB tests.
+    fn review_request_fixture() -> ReviewRequest {
+        ReviewRequest {
+            last_refreshed_at: 456,
+            summary: ReviewRequestSummary {
+                display_id: "#42".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "feature/forge".to_string(),
+                state: ReviewRequestState::Open,
+                status_summary: Some("2 approvals, checks passing".to_string()),
+                target_branch: "main".to_string(),
+                title: "Add forge review support".to_string(),
+                web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
+            },
+        }
+    }
+
+    /// Asserts that one loaded session row carries the expected review-request
+    /// linkage.
+    fn assert_review_request_row(row: &SessionRow) {
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .map(|review_request| review_request.display_id.as_str()),
+            Some("#42")
+        );
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .map(|review_request| review_request.forge_kind.as_str()),
+            Some("GitHub")
+        );
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .map(|review_request| review_request.last_refreshed_at),
+            Some(456)
+        );
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .map(|review_request| review_request.source_branch.as_str()),
+            Some("feature/forge")
+        );
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .map(|review_request| review_request.state.as_str()),
+            Some("Open")
+        );
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .and_then(|review_request| review_request.status_summary.as_deref()),
+            Some("2 approvals, checks passing")
+        );
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .map(|review_request| review_request.target_branch.as_str()),
+            Some("main")
+        );
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .map(|review_request| review_request.title.as_str()),
+            Some("Add forge review support")
+        );
+        assert_eq!(
+            row.review_request
+                .as_ref()
+                .map(|review_request| review_request.web_url.as_str()),
+            Some("https://github.com/agentty-xyz/agentty/pull/42")
+        );
+    }
 
     #[tokio::test]
     async fn test_setting_round_trip_supports_default_smart_fast_and_review_models() {
@@ -1822,6 +2026,51 @@ mod tests {
         // Assert
         assert_eq!(stored_id, Some("thread-123".to_string()));
         assert_eq!(cleared_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_session_review_request_round_trip_and_clear() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Review", project_id)
+            .await
+            .expect("failed to insert session");
+        let review_request = review_request_fixture();
+
+        // Act
+        database
+            .update_session_review_request("session-a", Some(&review_request))
+            .await
+            .expect("failed to persist session review request");
+        let persisted_row = database
+            .load_sessions()
+            .await
+            .expect("failed to load sessions")
+            .into_iter()
+            .find(|row| row.id == "session-a")
+            .expect("missing persisted session row");
+        database
+            .update_session_review_request("session-a", None)
+            .await
+            .expect("failed to clear session review request");
+        let cleared_row = database
+            .load_sessions()
+            .await
+            .expect("failed to load sessions after clearing")
+            .into_iter()
+            .find(|row| row.id == "session-a")
+            .expect("missing cleared session row");
+
+        // Assert
+        assert_review_request_row(&persisted_row);
+        assert_eq!(cleared_row.review_request, None);
     }
 
     #[tokio::test]

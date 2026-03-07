@@ -289,6 +289,7 @@ mod tests {
             output: String::new(),
             project_name: "project".to_string(),
             prompt: String::new(),
+            review_request: None,
             questions: Vec::new(),
             size: SessionSize::Xs,
             stats: SessionStats {

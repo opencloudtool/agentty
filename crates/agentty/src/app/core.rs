@@ -1803,6 +1803,7 @@ mod tests {
             output: String::new(),
             project_name: "test-project".to_string(),
             prompt: "test prompt".to_string(),
+            review_request: None,
             questions: Vec::new(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),

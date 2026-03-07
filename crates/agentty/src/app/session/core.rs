@@ -611,6 +611,7 @@ mod tests {
             output: String::new(),
             project_name: String::new(),
             prompt: prompt.to_string(),
+            review_request: None,
             questions: Vec::new(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),
