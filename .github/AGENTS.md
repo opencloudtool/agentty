@@ -8,3 +8,4 @@ Configuration files for GitHub Actions, Dependabot, and other GitHub-specific fe
 - [`workflows/`](workflows/) - GitHub Actions workflows.
 - [`CODEOWNERS`](CODEOWNERS) - Defines code owners for pull request reviews.
 - [`dependabot.yml`](dependabot.yml) - Configuration for automated dependency updates.
+- [`pull_request_template.md`](pull_request_template.md) - Default GitHub pull request template shown when contributors open a pull request.
