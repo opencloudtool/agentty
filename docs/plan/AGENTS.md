@@ -34,5 +34,4 @@ Use the following structure for every plan document in this directory:
 
 ## Directory Index
 
-- [`beautiful_ui.md`](beautiful_ui.md) - UI beautification plan.
 - [`test_coverage.md`](test_coverage.md) - Workspace test coverage improvement plan.
