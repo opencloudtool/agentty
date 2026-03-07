@@ -17,7 +17,7 @@ pub struct Tabs<'a> {
 
 impl Tabs<'_> {
     /// Creates a tabs component with the provided active tab and project
-    /// context used to label the sessions tab.
+    /// context used to label the project-scoped tab group.
     pub fn new(current_tab: Tab, active_project_id: i64, projects: &[ProjectListItem]) -> Tabs<'_> {
         Tabs {
             active_project_id,
@@ -44,24 +44,21 @@ impl Component for Tabs<'_> {
     }
 }
 
-/// Returns styled tab spans with separators and a project-qualified sessions
-/// tab label.
+/// Returns styled tab spans with separators and a shared project-scope label.
 fn tab_spans(
     current_tab: Tab,
     active_project_id: i64,
     projects: &[ProjectListItem],
 ) -> Vec<Span<'static>> {
-    let mut spans = Vec::with_capacity(7);
+    let mut spans = Vec::with_capacity(9);
 
-    for (tab_index, tab) in [Tab::Projects, Tab::Sessions, Tab::Stats, Tab::Settings]
-        .iter()
-        .enumerate()
-    {
-        if tab_index > 0 {
-            spans.push(tab_separator_span());
-        }
+    spans.push(tab_span(Tab::Projects, current_tab));
+    spans.push(tab_separator_span());
+    spans.push(project_context_span(active_project_id, projects));
 
-        spans.push(tab_span(*tab, current_tab, active_project_id, projects));
+    for tab in Tab::PROJECT_SCOPED {
+        spans.push(tab_separator_span());
+        spans.push(tab_span(tab, current_tab));
     }
 
     spans
@@ -73,13 +70,8 @@ fn tab_separator_span() -> Span<'static> {
 }
 
 /// Returns one styled tab span with active/inactive affordance treatment.
-fn tab_span(
-    tab: Tab,
-    current_tab: Tab,
-    active_project_id: i64,
-    projects: &[ProjectListItem],
-) -> Span<'static> {
-    let label = format!(" {} ", tab_label(tab, active_project_id, projects));
+fn tab_span(tab: Tab, current_tab: Tab) -> Span<'static> {
+    let label = format!(" {} ", tab_label(tab));
 
     if tab == current_tab {
         return Span::styled(
@@ -93,24 +85,41 @@ fn tab_span(
     Span::styled(label, Style::default().fg(style::palette::TEXT_MUTED))
 }
 
-/// Returns the display label for a top-level tab.
-fn tab_label(tab: Tab, active_project_id: i64, projects: &[ProjectListItem]) -> String {
-    if tab == Tab::Sessions {
-        return sessions_tab_title(active_project_id, projects);
-    }
+/// Returns a styled span describing the active project for project-scoped tabs.
+fn project_context_span(active_project_id: i64, projects: &[ProjectListItem]) -> Span<'static> {
+    let (project_name, project_scope_style) = active_project_name(active_project_id, projects)
+        .map_or_else(
+            || {
+                (
+                    "None".to_string(),
+                    Style::default().fg(style::palette::TEXT_SUBTLE),
+                )
+            },
+            |project_name| {
+                (
+                    project_name,
+                    Style::default()
+                        .fg(style::palette::ACCENT_SOFT)
+                        .add_modifier(Modifier::BOLD),
+                )
+            },
+        );
+    let project_scope = format!(" Project: {project_name} ");
 
-    tab.title().to_string()
+    Span::styled(project_scope, project_scope_style)
 }
 
-/// Returns the sessions tab label with the selected project name when present.
-fn sessions_tab_title(active_project_id: i64, projects: &[ProjectListItem]) -> String {
+/// Returns the display label for a top-level tab.
+fn tab_label(tab: Tab) -> &'static str {
+    tab.title()
+}
+
+/// Returns the active project name shown before project-scoped tabs.
+fn active_project_name(active_project_id: i64, projects: &[ProjectListItem]) -> Option<String> {
     projects
         .iter()
         .find(|project_item| project_item.project.id == active_project_id)
-        .map_or_else(
-            || Tab::Sessions.title().to_string(),
-            |project_item| format!("Sessions ({})", project_item.project.display_label()),
-        )
+        .map(|project_item| project_item.project.display_label())
 }
 
 #[cfg(test)]
@@ -134,7 +143,10 @@ mod tests {
             .join("");
 
         // Assert
-        assert_eq!(rendered_tabs, " Projects | Sessions | Stats | Settings ");
+        assert_eq!(
+            rendered_tabs,
+            " Projects | Project: None | Sessions | Stats | Settings "
+        );
     }
 
     #[test]
@@ -147,15 +159,16 @@ mod tests {
 
         // Assert
         assert_eq!(spans[0].style.fg, Some(style::palette::TEXT_MUTED));
-        assert_eq!(spans[2].style.fg, Some(style::palette::TEXT_MUTED));
-        assert_eq!(spans[4].style.fg, Some(style::palette::WARNING));
-        assert_eq!(spans[4].style.bg, None);
-        assert_eq!(spans[6].style.fg, Some(style::palette::TEXT_MUTED));
-        assert!(spans[4].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[2].style.fg, Some(style::palette::TEXT_SUBTLE));
+        assert_eq!(spans[4].style.fg, Some(style::palette::TEXT_MUTED));
+        assert_eq!(spans[6].style.fg, Some(style::palette::WARNING));
+        assert_eq!(spans[6].style.bg, None);
+        assert_eq!(spans[8].style.fg, Some(style::palette::TEXT_MUTED));
+        assert!(spans[6].style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
-    fn test_tab_spans_include_selected_project_name_in_sessions_label() {
+    fn test_tab_spans_include_selected_project_name_in_project_scope_label() {
         // Arrange
         let current_tab = Tab::Sessions;
         let projects = vec![
@@ -174,10 +187,12 @@ mod tests {
         // Assert
         assert_eq!(
             rendered_tabs,
-            " Projects | Sessions (Primary) | Stats | Settings "
+            " Projects | Project: Primary | Sessions | Stats | Settings "
         );
-        assert_eq!(spans[2].style.fg, Some(style::palette::WARNING));
-        assert_eq!(spans[2].style.bg, None);
+        assert_eq!(spans[2].style.fg, Some(style::palette::ACCENT_SOFT));
+        assert!(spans[2].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[4].style.fg, Some(style::palette::WARNING));
+        assert_eq!(spans[4].style.bg, None);
     }
 
     #[test]
@@ -192,9 +207,24 @@ mod tests {
         assert_eq!(spans[1].content.as_ref(), "|");
         assert_eq!(spans[3].content.as_ref(), "|");
         assert_eq!(spans[5].content.as_ref(), "|");
+        assert_eq!(spans[7].content.as_ref(), "|");
         assert_eq!(spans[1].style.fg, Some(style::palette::BORDER));
         assert_eq!(spans[3].style.fg, Some(style::palette::BORDER));
         assert_eq!(spans[5].style.fg, Some(style::palette::BORDER));
+        assert_eq!(spans[7].style.fg, Some(style::palette::BORDER));
+    }
+
+    #[test]
+    fn test_tab_spans_dim_project_scope_when_no_project_is_selected() {
+        // Arrange
+        let current_tab = Tab::Stats;
+
+        // Act
+        let spans = tab_spans(current_tab, 0, &[]);
+
+        // Assert
+        assert_eq!(spans[2].content.as_ref(), " Project: None ");
+        assert_eq!(spans[2].style.fg, Some(style::palette::TEXT_SUBTLE));
     }
 
     /// Creates a `ProjectListItem` for tab-label rendering tests.

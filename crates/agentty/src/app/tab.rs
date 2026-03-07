@@ -1,4 +1,11 @@
-//! Top-level tab definitions and state management.
+//! List-view tab definitions and state management.
+
+/// Describes whether a tab is global or tied to the active project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TabScope {
+    Global,
+    Project,
+}
 
 /// Available top-level tabs in list mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -10,6 +17,11 @@ pub enum Tab {
 }
 
 impl Tab {
+    /// Tabs in the order they are rendered and cycled in list mode.
+    pub const ALL: [Self; 4] = [Self::Projects, Self::Sessions, Self::Stats, Self::Settings];
+    /// Project-scoped tabs in display order.
+    pub const PROJECT_SCOPED: [Self; 3] = [Self::Sessions, Self::Stats, Self::Settings];
+
     /// Returns the display label used in the tabs header.
     pub fn title(self) -> &'static str {
         match self {
@@ -20,25 +32,38 @@ impl Tab {
         }
     }
 
+    /// Returns whether the tab is global or tied to the active project.
+    #[must_use]
+    pub fn scope(self) -> TabScope {
+        match self {
+            Tab::Projects => TabScope::Global,
+            Tab::Sessions | Tab::Stats | Tab::Settings => TabScope::Project,
+        }
+    }
+
     /// Cycles to the next tab in display order.
     #[must_use]
     pub fn next(self) -> Self {
-        match self {
-            Tab::Projects => Tab::Sessions,
-            Tab::Sessions => Tab::Stats,
-            Tab::Stats => Tab::Settings,
-            Tab::Settings => Tab::Projects,
-        }
+        let tab_index = self.index();
+        let next_index = (tab_index + 1) % Self::ALL.len();
+
+        Self::ALL[next_index]
     }
 
     /// Cycles to the previous tab in display order.
     #[must_use]
     pub fn previous(self) -> Self {
-        match self {
-            Tab::Projects => Tab::Settings,
-            Tab::Sessions => Tab::Projects,
-            Tab::Stats => Tab::Sessions,
-            Tab::Settings => Tab::Stats,
+        let tab_index = self.index();
+        let previous_index = (tab_index + Self::ALL.len() - 1) % Self::ALL.len();
+
+        Self::ALL[previous_index]
+    }
+
+    /// Returns the display-order index for the tab.
+    fn index(self) -> usize {
+        match Self::ALL.iter().position(|tab| *tab == self) {
+            Some(tab_index) => tab_index,
+            None => unreachable!("tab must exist in the display order"),
         }
     }
 }
@@ -93,16 +118,29 @@ mod tests {
         // Arrange
 
         // Act
-        let project_title = Tab::Projects.title();
-        let session_title = Tab::Sessions.title();
-        let stats_title = Tab::Stats.title();
-        let settings_title = Tab::Settings.title();
+        let titles = Tab::ALL.map(Tab::title);
 
         // Assert
-        assert_eq!(project_title, "Projects");
-        assert_eq!(session_title, "Sessions");
-        assert_eq!(stats_title, "Stats");
-        assert_eq!(settings_title, "Settings");
+        assert_eq!(titles, ["Projects", "Sessions", "Stats", "Settings"]);
+    }
+
+    #[test]
+    fn test_tab_scope_marks_only_projects_as_global() {
+        // Arrange
+
+        // Act
+        let scopes = Tab::ALL.map(Tab::scope);
+
+        // Assert
+        assert_eq!(
+            scopes,
+            [
+                TabScope::Global,
+                TabScope::Project,
+                TabScope::Project,
+                TabScope::Project
+            ]
+        );
     }
 
     #[test]
@@ -110,16 +148,13 @@ mod tests {
         // Arrange
 
         // Act
-        let project_next = Tab::Projects.next();
-        let session_next = Tab::Sessions.next();
-        let stats_next = Tab::Stats.next();
-        let settings_next = Tab::Settings.next();
+        let next_tabs = Tab::ALL.map(Tab::next);
 
         // Assert
-        assert_eq!(project_next, Tab::Sessions);
-        assert_eq!(session_next, Tab::Stats);
-        assert_eq!(stats_next, Tab::Settings);
-        assert_eq!(settings_next, Tab::Projects);
+        assert_eq!(
+            next_tabs,
+            [Tab::Sessions, Tab::Stats, Tab::Settings, Tab::Projects]
+        );
     }
 
     #[test]
@@ -127,16 +162,27 @@ mod tests {
         // Arrange
 
         // Act
-        let project_previous = Tab::Projects.previous();
-        let session_previous = Tab::Sessions.previous();
-        let stats_previous = Tab::Stats.previous();
-        let settings_previous = Tab::Settings.previous();
+        let previous_tabs = Tab::ALL.map(Tab::previous);
 
         // Assert
-        assert_eq!(project_previous, Tab::Settings);
-        assert_eq!(session_previous, Tab::Projects);
-        assert_eq!(stats_previous, Tab::Sessions);
-        assert_eq!(settings_previous, Tab::Stats);
+        assert_eq!(
+            previous_tabs,
+            [Tab::Settings, Tab::Projects, Tab::Sessions, Tab::Stats]
+        );
+    }
+
+    #[test]
+    fn test_tab_project_scoped_order_keeps_project_pages_grouped() {
+        // Arrange
+
+        // Act
+        let project_scoped_tabs = Tab::PROJECT_SCOPED;
+
+        // Assert
+        assert_eq!(
+            project_scoped_tabs,
+            [Tab::Sessions, Tab::Stats, Tab::Settings]
+        );
     }
 
     #[test]
