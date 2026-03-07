@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.5] - 2026-03-07
+
+### Added
+
+- **Skill:** Add `implementation-plan` skill for managing project plans.
+- **Docs:** Add Forge review request support plan.
+- **Docs:** Add GitHub issue form templates and directory indexing.
+- **Infra:** Add default pull request template for the repository.
+- **UI:** Add Agentty info panel to the project list.
+- **UI:** Chat panel gets polished chrome and unified overlay styling with dimmed backdrop.
+
+### Changed
+
+- **Codex:** Promote `gpt-5.4` as the default Codex model.
+- **UI:** Keep question input visible in tight terminal layouts.
+- **Docs:** Refine Agentty description.
+
+### Fixed
+
+- **Skill:** Clarify requirements and plan structure for `implementation-plan` skill.
+
+### Contributors
+
+- @minev-dev
+
 ## [v0.5.4] - 2026-03-06
 
 ### Added
