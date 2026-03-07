@@ -25,6 +25,13 @@ This skill is the source of truth for plan structure and execution-planning requ
    - Review related source files and existing plan documents before writing.
    - Capture concrete constraints from the user request and clarification answers (scope, deadlines, quality gates, excluded work).
 
+1. **Check for plan conflicts before drafting or revising**
+
+   - Review other files in `docs/plan/` for overlapping scope, file ownership, sequencing, or dependency assumptions.
+   - When drafting a new plan, compare it against any existing plan that touches the same code paths or user workflow.
+   - Resolve obvious duplication or stale plan content directly when the intended replacement is clear.
+   - If plans conflict and the correct resolution or precedence is not explicit, ask the user before finalizing the plan or starting implementation.
+
 1. **Define scope and success boundaries**
 
    - Write one concise scope/context line tied to the relevant code area.
@@ -58,6 +65,7 @@ This skill is the source of truth for plan structure and execution-planning requ
 
    - Confirm the plan structure matches this skill's plan skeleton and workflow requirements.
    - Remove duplicated or contradictory checklist items.
+   - Verify overlapping plan documents are either aligned, explicitly superseded, or called out for user resolution.
    - Ensure every priority section can be executed, validated, and merged independently.
    - Verify the execution order explains both the merge order and any safe parallel work.
    - Verify the Mermaid dependency graph matches the checklist dependencies and ordered sequence.
@@ -71,6 +79,11 @@ Use this skeleton when creating a new file in `docs/plan/`:
 # <Plan Title>
 
 <One-sentence scope/context line tied to the relevant code area.>
+
+## Cross-Plan Check Before Implementation
+
+- Before starting implementation, review other files in `docs/plan/` for overlapping scope, file ownership, sequencing, or dependency conflicts.
+- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
 
 ## Status Maintenance Rule
 
