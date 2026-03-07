@@ -962,7 +962,7 @@ impl App {
     /// routing. `answer` messages are already appended to transcript output by
     /// the session worker before this event is handled.
     fn apply_agent_response_received(&mut self, session_id: &str, response: &AgentResponse) {
-        let questions = response.questions();
+        let questions = response.question_items();
         if questions.is_empty() {
             return;
         }
@@ -1014,6 +1014,7 @@ impl App {
                 responses: Vec::new(),
                 current_index: 0,
                 input: InputState::default(),
+                selected_option_index: None,
             };
         }
     }
@@ -2323,16 +2324,13 @@ mod tests {
             session_id: "session-1".to_string(),
             scroll_offset: None,
         };
-        let expected_questions = vec![
-            "Need a target branch?".to_string(),
-            "Need integration tests?".to_string(),
-        ];
         let response = AgentResponse {
-            messages: expected_questions
-                .iter()
-                .map(|question| AgentResponseMessage::question(question.as_str()))
-                .collect(),
+            messages: vec![
+                AgentResponseMessage::question("Need a target branch?"),
+                AgentResponseMessage::question("Need integration tests?"),
+            ],
         };
+        let expected_questions = response.question_items();
 
         // Act
         app.apply_app_events(AppEvent::AgentResponseReceived {
@@ -2350,6 +2348,7 @@ mod tests {
                 ref responses,
                 current_index: 0,
                 ref input,
+                selected_option_index: None,
             } if session_id == "session-1"
                 && questions == &expected_questions
                 && responses.is_empty()

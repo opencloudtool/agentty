@@ -538,8 +538,8 @@ async fn apply_turn_result(
                 .await;
             }
 
-            let questions = assistant_message.questions();
-            let target_status = if questions.is_empty() {
+            let question_items = assistant_message.question_items();
+            let target_status = if question_items.is_empty() {
                 let _ = context
                     .db
                     .update_session_questions(&context.session_id, "")
@@ -547,7 +547,7 @@ async fn apply_turn_result(
 
                 Status::Review
             } else {
-                if let Ok(questions_json) = serde_json::to_string(&questions) {
+                if let Ok(questions_json) = serde_json::to_string(&question_items) {
                     let _ = context
                         .db
                         .update_session_questions(&context.session_id, &questions_json)
@@ -696,10 +696,10 @@ fn build_assistant_transcript_output(
     }
 
     let question_text = assistant_message
-        .questions()
+        .question_items()
         .into_iter()
-        .filter_map(|question| {
-            let trimmed_question = question.trim();
+        .filter_map(|question_item| {
+            let trimmed_question = question_item.text.trim();
             if trimmed_question.is_empty() {
                 return None;
             }
@@ -875,16 +875,12 @@ mod tests {
         };
 
         // Act
-        let questions = agent_response.questions();
+        let items = agent_response.question_items();
 
         // Assert
-        assert_eq!(
-            questions,
-            vec![
-                "Need a target branch?".to_string(),
-                "Need migration notes?".to_string(),
-            ]
-        );
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].text, "Need a target branch?");
+        assert_eq!(items[1].text, "Need migration notes?");
     }
 
     #[test]
@@ -902,10 +898,11 @@ mod tests {
         };
 
         // Act
-        let questions = agent_response.questions();
+        let items = agent_response.question_items();
 
         // Assert
-        assert_eq!(questions, vec![numbered_questions.to_string()]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, numbered_questions);
     }
 
     #[test]

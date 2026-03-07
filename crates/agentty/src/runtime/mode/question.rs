@@ -2,6 +2,7 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 
 use crate::app::App;
 use crate::domain::input::InputState;
+use crate::infra::agent::protocol::QuestionItem;
 use crate::runtime::EventResult;
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode};
 
@@ -25,13 +26,22 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> EventResult {
 }
 
 /// Inserts pasted text into the active question response input.
+///
+/// Deselects any highlighted option so the pasted text is treated as a custom
+/// free-text response.
 pub(crate) fn handle_paste(app: &mut App, pasted_text: &str) {
     let normalized_text = normalize_pasted_text(pasted_text);
     if normalized_text.is_empty() {
         return;
     }
 
-    if let AppMode::Question { input, .. } = &mut app.mode {
+    if let AppMode::Question {
+        input,
+        selected_option_index,
+        ..
+    } = &mut app.mode
+    {
+        *selected_option_index = None;
         input.insert_text(&normalized_text);
     }
 }
@@ -43,17 +53,61 @@ enum QuestionAction {
 }
 
 /// Resolves and applies one key event against question input state.
+///
+/// When the active question has predefined options, `Up`/`Down` navigate the
+/// option list instead of moving the text cursor. Typing any character
+/// deselects the highlighted option so the input acts as free-text.
 fn resolve_question_action(app: &mut App, key: KeyEvent) -> Option<QuestionAction> {
-    let AppMode::Question { input, .. } = &mut app.mode else {
+    let AppMode::Question {
+        current_index,
+        input,
+        questions,
+        selected_option_index,
+        ..
+    } = &mut app.mode
+    else {
         return None;
     };
+
+    let option_count = questions
+        .get(*current_index)
+        .map_or(0, |item| item.options.len());
+    let has_options = option_count > 0;
 
     let action = match key.code {
         KeyCode::Esc => QuestionAction::Submit(NO_ANSWER.to_string()),
         KeyCode::Enter => {
-            let response_text = input.take_text();
+            if let Some(option_index) = *selected_option_index {
+                let selected_text = questions
+                    .get(*current_index)
+                    .and_then(|item| item.options.get(option_index))
+                    .cloned()
+                    .unwrap_or_default();
 
-            QuestionAction::Submit(normalize_response_text(&response_text))
+                QuestionAction::Submit(normalize_response_text(&selected_text))
+            } else {
+                let response_text = input.take_text();
+
+                QuestionAction::Submit(normalize_response_text(&response_text))
+            }
+        }
+        KeyCode::Up if has_options => {
+            *selected_option_index = match *selected_option_index {
+                None => Some(option_count.saturating_sub(1)),
+                Some(0) => None,
+                Some(index) => Some(index.saturating_sub(1)),
+            };
+
+            QuestionAction::Continue
+        }
+        KeyCode::Down if has_options => {
+            *selected_option_index = match *selected_option_index {
+                None => Some(0),
+                Some(index) if index + 1 >= option_count => None,
+                Some(index) => Some(index + 1),
+            };
+
+            QuestionAction::Continue
         }
         KeyCode::Backspace => {
             input.delete_backward();
@@ -106,6 +160,7 @@ fn resolve_question_action(app: &mut App, key: KeyEvent) -> Option<QuestionActio
             QuestionAction::Continue
         }
         KeyCode::Char(character) if is_insertable_char_key(key) => {
+            *selected_option_index = None;
             input.insert_char(character);
 
             QuestionAction::Continue
@@ -168,12 +223,13 @@ async fn submit_response(app: &mut App, response: String) {
 fn store_question_response(
     app: &mut App,
     response: String,
-) -> Option<(String, Vec<String>, Vec<String>)> {
+) -> Option<(String, Vec<QuestionItem>, Vec<String>)> {
     let AppMode::Question {
         current_index,
         input,
         questions,
         responses,
+        selected_option_index,
         session_id,
     } = &mut app.mode
     else {
@@ -183,6 +239,7 @@ fn store_question_response(
     responses.push(response);
     *current_index += 1;
     *input = InputState::default();
+    *selected_option_index = None;
 
     if *current_index < questions.len() {
         return None;
@@ -207,14 +264,14 @@ fn normalize_response_text(response_text: &str) -> String {
 
 /// Builds the follow-up prompt sent after all clarification responses are
 /// collected.
-fn build_question_reply_prompt(questions: &[String], responses: &[String]) -> String {
+fn build_question_reply_prompt(questions: &[QuestionItem], responses: &[String]) -> String {
     let mut lines = vec!["Clarifications:".to_string()];
 
     for (question_index, question) in questions.iter().enumerate() {
         let response = responses
             .get(question_index)
             .map_or(NO_ANSWER, std::string::String::as_str);
-        lines.push(format!("{}. Q: {}", question_index + 1, question));
+        lines.push(format!("{}. Q: {}", question_index + 1, question.text));
         lines.push(format!("   A: {response}"));
     }
 
@@ -262,12 +319,19 @@ mod tests {
         app.mode = AppMode::Question {
             session_id: "missing-session".to_string(),
             questions: vec![
-                "Need a target branch?".to_string(),
-                "Need tests?".to_string(),
+                QuestionItem {
+                    options: Vec::new(),
+                    text: "Need a target branch?".to_string(),
+                },
+                QuestionItem {
+                    options: Vec::new(),
+                    text: "Need tests?".to_string(),
+                },
             ],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::default(),
+            selected_option_index: None,
         };
 
         // Act
@@ -279,6 +343,7 @@ mod tests {
             AppMode::Question {
                 current_index: 1,
                 ref responses,
+                selected_option_index: None,
                 ..
             } if responses == &vec![NO_ANSWER.to_string()]
         ));
@@ -291,12 +356,19 @@ mod tests {
         app.mode = AppMode::Question {
             session_id: "missing-session".to_string(),
             questions: vec![
-                "Need design details?".to_string(),
-                "Need acceptance tests?".to_string(),
+                QuestionItem {
+                    options: Vec::new(),
+                    text: "Need design details?".to_string(),
+                },
+                QuestionItem {
+                    options: Vec::new(),
+                    text: "Need acceptance tests?".to_string(),
+                },
             ],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::with_text("typed answer".to_string()),
+            selected_option_index: None,
         };
 
         // Act
@@ -320,10 +392,14 @@ mod tests {
         let mut app = new_test_app().await;
         app.mode = AppMode::Question {
             session_id: "missing-session".to_string(),
-            questions: vec!["Need exact date?".to_string()],
+            questions: vec![QuestionItem {
+                options: Vec::new(),
+                text: "Need exact date?".to_string(),
+            }],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::with_text("March 4, 2026".to_string()),
+            selected_option_index: None,
         };
 
         // Act
@@ -346,10 +422,14 @@ mod tests {
         let mut app = new_test_app().await;
         app.mode = AppMode::Question {
             session_id: "session-id".to_string(),
-            questions: vec!["Question".to_string()],
+            questions: vec![QuestionItem {
+                options: Vec::new(),
+                text: "Question".to_string(),
+            }],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::default(),
+            selected_option_index: None,
         };
 
         // Act
@@ -362,10 +442,196 @@ mod tests {
         ));
     }
 
+    /// Creates a question mode with predefined options for navigation tests.
+    fn question_mode_with_options() -> AppMode {
+        AppMode::Question {
+            session_id: "session-id".to_string(),
+            questions: vec![QuestionItem {
+                options: vec![
+                    "Option A".to_string(),
+                    "Option B".to_string(),
+                    "Option C".to_string(),
+                ],
+                text: "Pick one?".to_string(),
+            }],
+            responses: Vec::new(),
+            current_index: 0,
+            input: InputState::default(),
+            selected_option_index: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_down_from_none_selects_first_option() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = question_mode_with_options();
+
+        // Act
+        let _ = handle(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                selected_option_index: Some(0),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_up_from_none_selects_last_option() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = question_mode_with_options();
+
+        // Act
+        let _ = handle(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                selected_option_index: Some(2),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_down_wraps_past_last_to_none() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = question_mode_with_options();
+        if let AppMode::Question {
+            selected_option_index,
+            ..
+        } = &mut app.mode
+        {
+            *selected_option_index = Some(2);
+        }
+
+        // Act
+        let _ = handle(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                selected_option_index: None,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_up_wraps_past_first_to_none() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = question_mode_with_options();
+        if let AppMode::Question {
+            selected_option_index,
+            ..
+        } = &mut app.mode
+        {
+            *selected_option_index = Some(0);
+        }
+
+        // Act
+        let _ = handle(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                selected_option_index: None,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_enter_with_selected_option_submits_option_text() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = AppMode::Question {
+            session_id: "missing-session".to_string(),
+            questions: vec![
+                QuestionItem {
+                    options: vec!["Yes".to_string(), "No".to_string()],
+                    text: "Continue?".to_string(),
+                },
+                QuestionItem {
+                    options: Vec::new(),
+                    text: "Follow-up?".to_string(),
+                },
+            ],
+            responses: Vec::new(),
+            current_index: 0,
+            input: InputState::default(),
+            selected_option_index: Some(1),
+        };
+
+        // Act
+        let _ = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                current_index: 1,
+                ref responses,
+                selected_option_index: None,
+                ..
+            } if responses == &vec!["No".to_string()]
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_char_resets_selected_option_to_none() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = question_mode_with_options();
+        if let AppMode::Question {
+            selected_option_index,
+            ..
+        } = &mut app.mode
+        {
+            *selected_option_index = Some(1);
+        }
+
+        // Act
+        let _ = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        )
+        .await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                selected_option_index: None,
+                ref input,
+                ..
+            } if input.text() == "x"
+        ));
+    }
+
     #[test]
     fn test_build_question_reply_prompt_formats_all_pairs() {
         // Arrange
-        let questions = vec!["Need target?".to_string(), "Need tests?".to_string()];
+        let questions = vec![
+            QuestionItem {
+                options: Vec::new(),
+                text: "Need target?".to_string(),
+            },
+            QuestionItem {
+                options: Vec::new(),
+                text: "Need tests?".to_string(),
+            },
+        ];
         let responses = vec!["main".to_string(), NO_ANSWER.to_string()];
 
         // Act

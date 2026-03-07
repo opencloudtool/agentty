@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use ratatui::style::Color;
 
 use super::agent::AgentModel;
+use crate::infra::agent::protocol::QuestionItem;
 
 /// Folder name under a project root that stores Agentty session metadata.
 pub const SESSION_DATA_DIR: &str = ".agentty";
@@ -372,7 +373,7 @@ pub struct Session {
     /// Persisted forge review-request link for this session, when available.
     pub review_request: Option<ReviewRequest>,
     /// Model clarification questions emitted by the agent.
-    pub questions: Vec<String>,
+    pub questions: Vec<QuestionItem>,
     /// Derived size bucket computed from diff size.
     pub size: SessionSize,
     /// Token usage statistics associated with this session.

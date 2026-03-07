@@ -41,6 +41,7 @@ each entry has:
 
 - `type`: `answer` or `question`
 - `text`: markdown text payload
+- `options` (optional): array of predefined answer strings (only for `question` type)
 
 Session discussion turns add one extra prompt contract on top of the JSON
 envelope:
@@ -65,7 +66,7 @@ Example payload:
       "type": "answer",
       "text": "Implemented the change.\n\n## Change Summary\n### Current Turn\n- Updated the protocol prompt templates.\n### Session Changes\n- Added mandatory per-turn change summaries to the structured response contract."
     },
-    { "type": "question", "text": "Should I run the full test suite?" }
+    { "type": "question", "text": "Should I run the full test suite?", "options": ["Yes", "No", "Only changed files"] }
   ]
 }
 ```

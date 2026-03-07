@@ -1,6 +1,7 @@
 use super::help_action::{self, HelpAction, ViewHelpState, ViewSessionState};
 use super::prompt::{PromptAtMentionState, PromptHistoryState, PromptSlashState};
 use crate::domain::input::InputState;
+use crate::infra::agent::protocol::QuestionItem;
 
 /// Selects the visible panel content for session view output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,13 +130,16 @@ pub enum AppMode {
         /// Session receiving the follow-up clarification reply.
         session_id: String,
         /// Ordered clarification prompts emitted by the model.
-        questions: Vec<String>,
+        questions: Vec<QuestionItem>,
         /// Collected user responses aligned to `questions`.
         responses: Vec<String>,
         /// Active question index inside `questions`.
         current_index: usize,
         /// Editable response input for the active question.
         input: InputState,
+        /// Highlighted option index when the current question has predefined
+        /// options. `None` means free-text input is active.
+        selected_option_index: Option<usize>,
     },
 
     Help {

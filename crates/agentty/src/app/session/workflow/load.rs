@@ -12,6 +12,7 @@ use crate::domain::session::{
     DailyActivity, ReviewRequest, ReviewRequestSummary, Session, SessionHandles, SessionSize,
     SessionStats, Status,
 };
+use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::db::{Database, SessionRow};
 use crate::infra::fs::{FsClient, RealFsClient};
 use crate::infra::git::GitClient;
@@ -143,7 +144,7 @@ impl SessionManager {
             let questions = row
                 .questions
                 .as_deref()
-                .and_then(|question_json| serde_json::from_str::<Vec<String>>(question_json).ok())
+                .and_then(parse_questions_json)
                 .unwrap_or_default();
 
             sessions.push(Session {
@@ -283,6 +284,33 @@ fn local_utc_offset_seconds(timestamp_seconds: i64) -> i64 {
     };
 
     i64::from(local_offset.whole_seconds())
+}
+
+/// Parses persisted question JSON with backward compatibility.
+///
+/// Attempts to deserialize as `Vec<QuestionItem>` first (new format). Falls
+/// back to `Vec<String>` (legacy format) and converts each entry into a
+/// `QuestionItem` without predefined options.
+fn parse_questions_json(raw_json: &str) -> Option<Vec<QuestionItem>> {
+    if raw_json.is_empty() {
+        return None;
+    }
+
+    if let Ok(items) = serde_json::from_str::<Vec<QuestionItem>>(raw_json) {
+        return Some(items);
+    }
+
+    serde_json::from_str::<Vec<String>>(raw_json)
+        .ok()
+        .map(|texts| {
+            texts
+                .into_iter()
+                .map(|text| QuestionItem {
+                    options: Vec::new(),
+                    text,
+                })
+                .collect()
+        })
 }
 
 #[cfg(test)]
@@ -566,5 +594,55 @@ mod tests {
 
         // Assert
         assert_eq!(review_request, None);
+    }
+
+    #[test]
+    fn test_parse_questions_json_new_format() {
+        // Arrange
+        let json = r#"[{"text":"Pick one?","options":["A","B"]}]"#;
+
+        // Act
+        let result = parse_questions_json(json);
+
+        // Assert
+        let items = result.expect("expected Some");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "Pick one?");
+        assert_eq!(items[0].options, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn test_parse_questions_json_legacy_format() {
+        // Arrange
+        let json = r#"["Need target?","Need tests?"]"#;
+
+        // Act
+        let result = parse_questions_json(json);
+
+        // Assert
+        let items = result.expect("expected Some");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].text, "Need target?");
+        assert!(items[0].options.is_empty());
+        assert_eq!(items[1].text, "Need tests?");
+        assert!(items[1].options.is_empty());
+    }
+
+    #[test]
+    fn test_parse_questions_json_empty_string_returns_none() {
+        // Arrange / Act
+        let result = parse_questions_json("");
+
+        // Assert
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_questions_json_invalid_json_returns_none() {
+        // Arrange / Act
+        let result = parse_questions_json("{not valid json");
+
+        // Assert
+        assert!(result.is_none());
     }
 }

@@ -80,6 +80,14 @@ If an agent emits structured `question` messages, the session moves to
 skip with `no answer`), and Agentty sends one consolidated follow-up message
 back to the same session before returning it to normal execution.
 
+<a id="usage-question-options"></a>
+Questions may include predefined answer options. When options are present,
+Agentty displays them as a numbered list under an "Options:" header. Use
+`Up`/`Down` to highlight an option and `Enter` to submit it. You can also
+type a free-text answer instead — typing deselects any highlighted option.
+The input field shows an "Or type a custom answer" placeholder when options
+are available.
+
 ## Session Sizes
 
 <a id="usage-session-size"></a>

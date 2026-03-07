@@ -135,7 +135,7 @@ The diff panel title shows aggregate line-change totals as `+added` and
 | `Enter` | Submit response for current question |
 | `Esc` | Skip current question (`no answer`) |
 | `Left` / `Right` | Move cursor |
-| `Up` / `Down` | Move cursor across wrapped lines |
+| `Up` / `Down` | Navigate options (when present) or move cursor across wrapped lines |
 | `Backspace` / `Delete` | Delete character |
 | `Home` / `End` | Move cursor to start/end |
 | `Ctrl+u` | Delete current line |

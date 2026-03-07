@@ -114,6 +114,7 @@ async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
                         responses: Vec::new(),
                         current_index: 0,
                         input: InputState::default(),
+                        selected_option_index: None,
                     };
                 } else {
                     app.mode = AppMode::View {
@@ -296,6 +297,7 @@ mod tests {
     use super::*;
     use crate::app::{AppEvent, MockSyncMainRunner, SyncMainOutcome, SyncSessionStartError};
     use crate::db::Database;
+    use crate::infra::agent::protocol::QuestionItem;
     use crate::infra::app_server;
 
     /// Returns a mock app-server client wrapped in `Arc` for test injection.
@@ -522,9 +524,15 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create session");
-        let expected_questions = vec![
-            "Need a target branch?".to_string(),
-            "Need migration notes?".to_string(),
+        let expected_questions: Vec<QuestionItem> = vec![
+            QuestionItem {
+                options: Vec::new(),
+                text: "Need a target branch?".to_string(),
+            },
+            QuestionItem {
+                options: Vec::new(),
+                text: "Need migration notes?".to_string(),
+            },
         ];
         if let Some(session) = app.sessions.sessions.first_mut() {
             session.status = Status::Question;
@@ -549,6 +557,7 @@ mod tests {
                 current_index: 0,
                 ref responses,
                 ref input,
+                selected_option_index: None,
             } if session_id == &expected_session_id
                 && questions == &expected_questions
                 && responses.is_empty()

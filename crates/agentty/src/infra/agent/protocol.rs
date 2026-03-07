@@ -33,6 +33,12 @@ pub struct AgentResponseMessage {
     /// Message kind selector.
     #[serde(rename = "type")]
     pub kind: AgentResponseMessageKind,
+    /// Optional predefined answer choices for `question` messages.
+    ///
+    /// When present, the UI renders a selectable option list before the
+    /// free-text input. Users can pick one option or type a custom answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
     /// Human-readable markdown text for this message.
     pub text: String,
 }
@@ -42,17 +48,46 @@ impl AgentResponseMessage {
     pub fn answer(text: impl Into<String>) -> Self {
         Self {
             kind: AgentResponseMessageKind::Answer,
+            options: None,
             text: text.into(),
         }
     }
 
-    /// Constructs one `question` protocol message.
+    /// Constructs one `question` protocol message without predefined options.
     pub fn question(text: impl Into<String>) -> Self {
         Self {
             kind: AgentResponseMessageKind::Question,
+            options: None,
             text: text.into(),
         }
     }
+
+    /// Constructs one `question` protocol message with predefined answer
+    /// options.
+    pub fn question_with_options(text: impl Into<String>, options: Vec<String>) -> Self {
+        Self {
+            kind: AgentResponseMessageKind::Question,
+            options: if options.is_empty() {
+                None
+            } else {
+                Some(options)
+            },
+            text: text.into(),
+        }
+    }
+}
+
+/// One extracted question with optional predefined answer choices.
+///
+/// Produced by [`AgentResponse::question_items`] from the raw protocol
+/// messages. The UI and persistence layers use this as the canonical question
+/// representation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionItem {
+    /// Predefined answer choices the user can select from.
+    pub options: Vec<String>,
+    /// The clarification question text.
+    pub text: String,
 }
 
 /// Wire-format protocol payload used for schema-driven provider output.
@@ -128,9 +163,17 @@ impl AgentResponse {
         self.messages_by_kind(AgentResponseMessageKind::Answer)
     }
 
-    /// Returns all `question` messages in response order.
-    pub fn questions(&self) -> Vec<String> {
-        self.messages_by_kind(AgentResponseMessageKind::Question)
+    /// Returns all `question` messages as [`QuestionItem`] values in response
+    /// order.
+    pub fn question_items(&self) -> Vec<QuestionItem> {
+        self.messages
+            .iter()
+            .filter(|message| message.kind == AgentResponseMessageKind::Question)
+            .map(|message| QuestionItem {
+                options: message.options.clone().unwrap_or_default(),
+                text: message.text.clone(),
+            })
+            .collect()
     }
 
     /// Collects all messages matching one kind while preserving order.
@@ -286,6 +329,7 @@ fn normalize_schema_for_codex(value: &mut Value) {
             }
 
             normalize_ref_object_for_codex(object);
+            normalize_required_for_codex(object);
 
             let one_of_values = object
                 .get("oneOf")
@@ -337,7 +381,8 @@ fn is_likely_protocol_json_fragment(raw: &str) -> bool {
 
     let has_protocol_key = trimmed.contains("\"messages\"")
         || trimmed.contains("\"type\"")
-        || trimmed.contains("\"text\"");
+        || trimmed.contains("\"text\"")
+        || trimmed.contains("\"options\"");
     if !has_protocol_key {
         return false;
     }
@@ -431,6 +476,40 @@ fn extract_next_json_object_range(raw: &str, search_from: usize) -> Option<(usiz
     }
 
     None
+}
+
+/// Ensures all `properties` keys appear in `required` for Codex compatibility.
+///
+/// Codex rejects schemas where `properties` contains keys not listed in
+/// `required`. Schemars omits optional fields from `required`, so this
+/// normalizer adds any missing property keys.
+fn normalize_required_for_codex(object: &mut serde_json::Map<String, Value>) {
+    let Some(properties) = object.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+
+    let property_keys: Vec<String> = properties.keys().cloned().collect();
+    if property_keys.is_empty() {
+        return;
+    }
+
+    let required = object
+        .entry("required")
+        .or_insert_with(|| Value::Array(Vec::new()));
+
+    let Some(required_array) = required.as_array_mut() else {
+        return;
+    };
+
+    for key in &property_keys {
+        let already_listed = required_array
+            .iter()
+            .any(|value| value.as_str() == Some(key));
+
+        if !already_listed {
+            required_array.push(Value::String(key.clone()));
+        }
+    }
 }
 
 /// Rewrites one `$ref` schema object to Codex-compatible form.
@@ -660,8 +739,8 @@ mod tests {
     }
 
     #[test]
-    /// Returns ordered `question` messages for question-mode routing.
-    fn test_questions_returns_only_question_messages_in_order() {
+    /// Returns ordered `question` items for question-mode routing.
+    fn test_question_items_returns_only_question_messages_in_order() {
         // Arrange
         let response = AgentResponse {
             messages: vec![
@@ -672,16 +751,83 @@ mod tests {
         };
 
         // Act
-        let questions = response.questions();
+        let items = response.question_items();
 
         // Assert
         assert_eq!(
-            questions,
+            items,
             vec![
-                "Need one decision.".to_string(),
-                "Need migration details?".to_string(),
+                QuestionItem {
+                    options: Vec::new(),
+                    text: "Need one decision.".to_string(),
+                },
+                QuestionItem {
+                    options: Vec::new(),
+                    text: "Need migration details?".to_string(),
+                },
             ]
         );
+    }
+
+    #[test]
+    /// Extracts question items with predefined answer options.
+    fn test_question_items_preserves_options() {
+        // Arrange
+        let response = AgentResponse {
+            messages: vec![AgentResponseMessage::question_with_options(
+                "Which approach?",
+                vec!["Option A".to_string(), "Option B".to_string()],
+            )],
+        };
+
+        // Act
+        let items = response.question_items();
+
+        // Assert
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "Which approach?");
+        assert_eq!(items[0].options, vec!["Option A", "Option B"]);
+    }
+
+    #[test]
+    /// Parses a question message with `options` from JSON.
+    fn test_parse_agent_response_question_with_options() {
+        // Arrange
+        let raw =
+            r#"{"messages":[{"type":"question","text":"Pick one:","options":["A","B","C"]}]}"#;
+
+        // Act
+        let response = parse_agent_response(raw);
+
+        // Assert
+        assert_eq!(response.messages.len(), 1);
+        assert_eq!(
+            response.messages[0].options,
+            Some(vec!["A".to_string(), "B".to_string(), "C".to_string()])
+        );
+    }
+
+    #[test]
+    /// Omits `options` key when serializing messages without options.
+    fn test_agent_response_message_serialization_omits_null_options() {
+        // Arrange
+        let message = AgentResponseMessage::question("Need details?");
+
+        // Act
+        let json = serde_json::to_string(&message).expect("serialization should succeed");
+
+        // Assert
+        assert!(!json.contains("options"));
+    }
+
+    #[test]
+    /// Constructs question with empty options vec as `None`.
+    fn test_question_with_options_empty_vec_stores_none() {
+        // Arrange / Act
+        let message = AgentResponseMessage::question_with_options("Q?", Vec::new());
+
+        // Assert
+        assert_eq!(message.options, None);
     }
 
     #[test]
@@ -864,6 +1010,19 @@ mod tests {
     }
 
     #[test]
+    /// Ensures every `properties` object has all keys listed in `required`.
+    fn test_agent_response_output_schema_all_properties_are_required() {
+        // Arrange / Act
+        let schema = agent_response_output_schema();
+
+        // Assert
+        assert!(
+            all_properties_in_required(&schema),
+            "every properties key must appear in required for Codex compatibility"
+        );
+    }
+
+    #[test]
     /// Ensures generated schema avoids `oneOf` so Codex `outputSchema`
     /// accepts the payload contract.
     fn test_agent_response_output_schema_does_not_contain_one_of() {
@@ -972,6 +1131,32 @@ mod tests {
             }
             Value::Array(array) => array.iter().any(contains_ref_with_sibling_keywords),
             _ => false,
+        }
+    }
+
+    /// Recursively checks that every object with `properties` lists all
+    /// property keys in `required`.
+    fn all_properties_in_required(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => {
+                if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+                    let required_keys: Vec<&str> = object
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .map(|array| array.iter().filter_map(Value::as_str).collect())
+                        .unwrap_or_default();
+
+                    for key in properties.keys() {
+                        if !required_keys.contains(&key.as_str()) {
+                            return false;
+                        }
+                    }
+                }
+
+                object.values().all(all_properties_in_required)
+            }
+            Value::Array(array) => array.iter().all(all_properties_in_required),
+            _ => true,
         }
     }
 }

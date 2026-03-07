@@ -1,11 +1,13 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::domain::agent::{AgentKind, AgentSelectionMetadata};
-use crate::domain::input::extract_at_mention_query;
+use crate::domain::input::{self, extract_at_mention_query};
 use crate::domain::session::{Session, Status};
+use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::file_index;
 use crate::ui::component::chat_input::{ChatInput, SlashMenu, SlashMenuOption};
 use crate::ui::component::session_output::SessionOutput;
@@ -330,10 +332,25 @@ impl<'a> SessionChatPage<'a> {
             ..
         } = self.mode
         {
-            let question = questions.get(*current_index).map_or("", String::as_str);
+            let question_item = questions.get(*current_index);
+            let question = question_item.map_or("", |item| item.text.as_str());
+            let options = question_item
+                .map(|item| item.options.as_slice())
+                .unwrap_or_default();
+            let options_height = if options.is_empty() {
+                0
+            } else {
+                u16::try_from(options.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(1)
+                    .min(area.height.saturating_sub(1))
+            };
+
+            let layout_available_height =
+                area.height.saturating_sub(1).saturating_sub(options_height);
             let panel_layout = question_panel_layout(
                 area.width,
-                area.height.saturating_sub(1),
+                layout_available_height,
                 question,
                 input.text(),
                 CHAT_INPUT_MAX_PANEL_HEIGHT,
@@ -341,6 +358,7 @@ impl<'a> SessionChatPage<'a> {
 
             return panel_layout
                 .question_height
+                .saturating_add(options_height)
                 .saturating_add(panel_layout.spacer_height)
                 .saturating_add(panel_layout.input_height)
                 .saturating_add(panel_layout.help_height);
@@ -393,50 +411,18 @@ impl<'a> SessionChatPage<'a> {
             questions,
             current_index,
             input,
+            selected_option_index,
             ..
         } = self.mode
         {
-            let question = questions.get(*current_index).map_or("", String::as_str);
-            let panel_layout = question_panel_layout(
-                bottom_area.width,
-                bottom_area.height,
-                question,
-                input.text(),
-                CHAT_INPUT_MAX_PANEL_HEIGHT,
+            render_question_panel(
+                f,
+                bottom_area,
+                questions,
+                *current_index,
+                input,
+                *selected_option_index,
             );
-            let chunks = Layout::default()
-                .constraints([
-                    Constraint::Length(panel_layout.question_height),
-                    Constraint::Length(panel_layout.spacer_height),
-                    Constraint::Length(panel_layout.input_height),
-                    Constraint::Length(panel_layout.help_height),
-                ])
-                .split(bottom_area);
-
-            let question_title = format!("Question {}/{}", current_index + 1, questions.len());
-            if panel_layout.question_height > 0 {
-                let question_para =
-                    Paragraph::new(wrap_lines(question, usize::from(bottom_area.width.max(1))))
-                        .style(Style::default().fg(Color::Yellow));
-                f.render_widget(question_para, chunks[0]);
-            }
-
-            let input_title = format!(" [{question_title}] ");
-            let chat_input = ChatInput::new(&input_title, input.text(), input.cursor)
-                .placeholder("Type response (Enter: send, Esc: skip)");
-            if panel_layout.input_height > 0 {
-                chat_input.render(f, chunks[2]);
-            }
-
-            let help_actions = vec![
-                help_action::HelpAction::new("send", "Enter", "Send response"),
-                help_action::HelpAction::new("skip", "Esc", "Skip (no answer)"),
-            ];
-            if panel_layout.help_height > 0 {
-                let help_para = Paragraph::new(help_action::footer_line(&help_actions))
-                    .alignment(ratatui::layout::Alignment::Right);
-                f.render_widget(help_para, chunks[3]);
-            }
 
             return;
         }
@@ -501,6 +487,132 @@ impl<'a> SessionChatPage<'a> {
     }
 }
 
+/// Renders the question-mode bottom panel with question text, options, input,
+/// and help footer.
+fn render_question_panel(
+    f: &mut Frame,
+    bottom_area: Rect,
+    questions: &[QuestionItem],
+    current_index: usize,
+    input: &input::InputState,
+    selected_option_index: Option<usize>,
+) {
+    let question_item = questions.get(current_index);
+    let question = question_item.map_or("", |item| item.text.as_str());
+    let options = question_item
+        .map(|item| item.options.as_slice())
+        .unwrap_or_default();
+    let options_height = if options.is_empty() {
+        0
+    } else {
+        u16::try_from(options.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(1)
+            .min(bottom_area.height)
+    };
+
+    let layout_available_height = bottom_area.height.saturating_sub(options_height);
+    let panel_layout = question_panel_layout(
+        bottom_area.width,
+        layout_available_height,
+        question,
+        input.text(),
+        CHAT_INPUT_MAX_PANEL_HEIGHT,
+    );
+    let chunks = Layout::default()
+        .constraints([
+            Constraint::Length(panel_layout.question_height),
+            Constraint::Length(options_height),
+            Constraint::Length(panel_layout.spacer_height),
+            Constraint::Length(panel_layout.input_height),
+            Constraint::Length(panel_layout.help_height),
+        ])
+        .split(bottom_area);
+
+    let question_title = format!("Question {}/{}", current_index + 1, questions.len());
+    if panel_layout.question_height > 0 {
+        let question_para =
+            Paragraph::new(wrap_lines(question, usize::from(bottom_area.width.max(1))))
+                .style(Style::default().fg(Color::Yellow));
+        f.render_widget(question_para, chunks[0]);
+    }
+
+    if !options.is_empty() {
+        render_question_options(f, chunks[1], options, selected_option_index);
+    }
+
+    let input_placeholder = if options.is_empty() {
+        "Type response (Enter: send, Esc: skip)"
+    } else {
+        "Or type a custom answer"
+    };
+    let input_title = format!(" [{question_title}] ");
+    let chat_input =
+        ChatInput::new(&input_title, input.text(), input.cursor).placeholder(input_placeholder);
+    if panel_layout.input_height > 0 {
+        chat_input.render(f, chunks[3]);
+    }
+
+    let mut help_actions = Vec::new();
+    if !options.is_empty() {
+        help_actions.push(help_action::HelpAction::new(
+            "navigate",
+            "Up/Down",
+            "Select option",
+        ));
+    }
+    help_actions.push(help_action::HelpAction::new(
+        "send",
+        "Enter",
+        "Send response",
+    ));
+    help_actions.push(help_action::HelpAction::new(
+        "skip",
+        "Esc",
+        "Skip (no answer)",
+    ));
+    if panel_layout.help_height > 0 {
+        let help_para = Paragraph::new(help_action::footer_line(&help_actions))
+            .alignment(ratatui::layout::Alignment::Right);
+        f.render_widget(help_para, chunks[4]);
+    }
+}
+
+/// Renders the predefined answer option list for the active question.
+///
+/// Each option is shown as a numbered line. The highlighted option (if any)
+/// is rendered with reversed colors.
+fn render_question_options(
+    f: &mut Frame,
+    area: Rect,
+    options: &[String],
+    selected_option_index: Option<usize>,
+) {
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(options.len() + 1);
+    lines.push(Line::from(Span::styled(
+        "Options:",
+        Style::default().fg(Color::Yellow),
+    )));
+
+    for (option_index, option_text) in options.iter().enumerate() {
+        let is_selected = selected_option_index == Some(option_index);
+        let prefix = if is_selected { "▸ " } else { "  " };
+        let label = format!("{prefix}{}. {option_text}", option_index + 1);
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        lines.push(Line::from(Span::styled(label, style)));
+    }
+
+    f.render_widget(Paragraph::new(lines), area);
+}
+
 impl Page for SessionChatPage<'_> {
     fn render(&mut self, f: &mut Frame, area: Rect) {
         if let Some(session) = self.sessions.get(self.session_index) {
@@ -517,6 +629,7 @@ mod tests {
     use crate::agent::AgentModel;
     use crate::domain::input::InputState;
     use crate::domain::session::{SessionSize, SessionStats};
+    use crate::infra::agent::protocol::QuestionItem;
     use crate::infra::file_index::FileEntry;
     use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
 
@@ -1045,10 +1158,14 @@ mod tests {
         let answer = "Use two phases: schema and runtime.";
         let mode = AppMode::Question {
             session_id: "session-id".to_string(),
-            questions: vec![question.clone()],
+            questions: vec![QuestionItem {
+                options: Vec::new(),
+                text: question.clone(),
+            }],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::with_text(answer.to_string()),
+            selected_option_index: None,
         };
         let page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
         let area = Rect::new(0, 0, 120, 30);
@@ -1078,10 +1195,14 @@ mod tests {
         let session = session_fixture();
         let mode = AppMode::Question {
             session_id: "session-id".to_string(),
-            questions: vec!["Need details?".to_string()],
+            questions: vec![QuestionItem {
+                options: Vec::new(),
+                text: "Need details?".to_string(),
+            }],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::with_text("answer\n".repeat(50)),
+            selected_option_index: None,
         };
         let page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
         let area = Rect::new(0, 0, 120, 8);
@@ -1091,6 +1212,50 @@ mod tests {
 
         // Assert
         assert_eq!(bottom_height, 7);
+    }
+
+    #[test]
+    fn test_bottom_height_question_mode_includes_options_height() {
+        // Arrange
+        let session = session_fixture();
+        let mode = AppMode::Question {
+            session_id: "session-id".to_string(),
+            questions: vec![QuestionItem {
+                options: vec!["Yes".to_string(), "No".to_string()],
+                text: "Continue?".to_string(),
+            }],
+            responses: Vec::new(),
+            current_index: 0,
+            input: InputState::default(),
+            selected_option_index: None,
+        };
+        let page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
+        let area = Rect::new(0, 0, 80, 20);
+
+        // Act
+        let bottom_height = page.bottom_height(area, &session);
+
+        // Assert — options_height = 2 options + 1 header = 3
+        let options_height: u16 = 3;
+        let layout_available = area.height.saturating_sub(1).saturating_sub(options_height);
+        let panel_layout = question_panel_layout(
+            area.width,
+            layout_available,
+            "Continue?",
+            "",
+            CHAT_INPUT_MAX_PANEL_HEIGHT,
+        );
+        let expected = panel_layout
+            .question_height
+            .saturating_add(options_height)
+            .saturating_add(panel_layout.spacer_height)
+            .saturating_add(panel_layout.input_height)
+            .saturating_add(panel_layout.help_height);
+        assert_eq!(bottom_height, expected);
+        assert!(
+            bottom_height > 3,
+            "should have room for question, options, input and help"
+        );
     }
 
     #[test]
@@ -1150,10 +1315,14 @@ mod tests {
         let session = session_fixture();
         let mode = AppMode::Question {
             session_id: "session-id".to_string(),
-            questions: vec!["Need a detailed migration plan with rollback guidance?".to_string()],
+            questions: vec![QuestionItem {
+                options: Vec::new(),
+                text: "Need a detailed migration plan with rollback guidance?".to_string(),
+            }],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::with_text("typed answer".to_string()),
+            selected_option_index: None,
         };
         let mut page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
         let backend = ratatui::backend::TestBackend::new(32, 8);
@@ -1179,10 +1348,14 @@ mod tests {
         let question = "Need a detailed migration plan with rollback guidance?".to_string();
         let mode = AppMode::Question {
             session_id: "session-id".to_string(),
-            questions: vec![question.clone()],
+            questions: vec![QuestionItem {
+                options: Vec::new(),
+                text: question.clone(),
+            }],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::with_text("typed answer".to_string()),
+            selected_option_index: None,
         };
         let mut page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
         let width = 40;
@@ -1212,5 +1385,75 @@ mod tests {
         let spacer_row = bottom_top + panel_layout.question_height;
         let spacer_text = buffer_row_text(terminal.backend().buffer(), spacer_row, width);
         assert!(spacer_text.trim().is_empty());
+    }
+
+    #[test]
+    fn test_render_question_mode_with_options_shows_option_text() {
+        // Arrange
+        let session = session_fixture();
+        let mode = AppMode::Question {
+            session_id: "session-id".to_string(),
+            questions: vec![QuestionItem {
+                options: vec!["Yes".to_string(), "No".to_string()],
+                text: "Continue?".to_string(),
+            }],
+            responses: Vec::new(),
+            current_index: 0,
+            input: InputState::default(),
+            selected_option_index: Some(0),
+        };
+        let mut page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
+        let width = 50;
+        let height = 14;
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Page::render(&mut page, frame, area);
+            })
+            .expect("failed to draw question mode with options");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Options:"), "should render options header");
+        assert!(text.contains("Yes"), "should render first option");
+        assert!(text.contains("No"), "should render second option");
+    }
+
+    #[test]
+    fn test_render_question_mode_with_options_in_small_terminal_does_not_panic() {
+        // Arrange
+        let session = session_fixture();
+        let mode = AppMode::Question {
+            session_id: "session-id".to_string(),
+            questions: vec![QuestionItem {
+                options: vec![
+                    "A".to_string(),
+                    "B".to_string(),
+                    "C".to_string(),
+                    "D".to_string(),
+                    "E".to_string(),
+                ],
+                text: "Pick one of the many options?".to_string(),
+            }],
+            responses: Vec::new(),
+            current_index: 0,
+            input: InputState::default(),
+            selected_option_index: None,
+        };
+        let mut page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
+        let backend = ratatui::backend::TestBackend::new(30, 6);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        // Act + Assert (should not panic)
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Page::render(&mut page, frame, area);
+            })
+            .expect("failed to draw question mode with many options in small terminal");
     }
 }
