@@ -37,21 +37,21 @@ impl GitLabReviewRequestAdapter {
         remote: ForgeRemote,
         source_branch: String,
     ) -> Result<Option<ReviewRequestSummary>, ReviewRequestError> {
-        self.ensure_authenticated(&remote).await?;
-
-        self.find_by_source_branch_after_auth(remote, source_branch)
+        self.find_by_source_branch_command(remote, source_branch)
             .await
     }
 
     /// Creates one new draft merge request from `input`.
+    ///
+    /// GitLab auth is validated from the real merge-request commands instead
+    /// of `glab auth status` because some `glab` setups report false auth
+    /// failures even when review-request commands still work.
     pub(crate) async fn create_review_request(
         &self,
         remote: ForgeRemote,
         input: CreateReviewRequestInput,
     ) -> Result<ReviewRequestSummary, ReviewRequestError> {
-        self.ensure_authenticated(&remote).await?;
-
-        self.create_review_request_after_auth(remote, input).await
+        self.create_review_request_command(remote, input).await
     }
 
     /// Refreshes one existing merge request by display id.
@@ -60,14 +60,15 @@ impl GitLabReviewRequestAdapter {
         remote: ForgeRemote,
         display_id: String,
     ) -> Result<ReviewRequestSummary, ReviewRequestError> {
-        self.ensure_authenticated(&remote).await?;
-
-        self.refresh_review_request_after_auth(remote, display_id)
+        self.refresh_review_request_command(remote, display_id)
             .await
     }
 
-    /// Finds one existing merge request after authentication has been verified.
-    async fn find_by_source_branch_after_auth(
+    /// Finds one existing merge request from the GitLab lookup API.
+    ///
+    /// Using the lookup command directly avoids `glab auth status` false
+    /// negatives while still normalizing auth failures from the command output.
+    async fn find_by_source_branch_command(
         &self,
         remote: ForgeRemote,
         source_branch: String,
@@ -90,14 +91,13 @@ impl GitLabReviewRequestAdapter {
             return Ok(None);
         };
 
-        self.refresh_review_request_after_auth(remote, display_id)
+        self.refresh_review_request_command(remote, display_id)
             .await
             .map(Some)
     }
 
-    /// Creates one new draft merge request after authentication has been
-    /// verified.
-    async fn create_review_request_after_auth(
+    /// Creates one new draft merge request and reloads the normalized summary.
+    async fn create_review_request_command(
         &self,
         remote: ForgeRemote,
         input: CreateReviewRequestInput,
@@ -110,7 +110,7 @@ impl GitLabReviewRequestAdapter {
         )
         .await?;
 
-        self.find_by_source_branch_after_auth(remote, source_branch)
+        self.find_by_source_branch_command(remote, source_branch)
             .await?
             .ok_or_else(|| ReviewRequestError::OperationFailed {
                 forge_kind: ForgeKind::GitLab,
@@ -118,8 +118,8 @@ impl GitLabReviewRequestAdapter {
             })
     }
 
-    /// Refreshes one merge request after authentication has been verified.
-    async fn refresh_review_request_after_auth(
+    /// Refreshes one merge request by running the GitLab view command.
+    async fn refresh_review_request_command(
         &self,
         remote: ForgeRemote,
         display_id: String,
@@ -139,42 +139,7 @@ impl GitLabReviewRequestAdapter {
         })
     }
 
-    /// Verifies that `glab` is installed and authenticated for `remote.host`.
-    async fn ensure_authenticated(&self, remote: &ForgeRemote) -> Result<(), ReviewRequestError> {
-        let output = self
-            .command_runner
-            .run(auth_status_command(remote))
-            .await
-            .map_err(|error| map_spawn_error(remote, error))?;
-        if output.success() || Self::auth_status_indicates_authenticated(&output) {
-            return Ok(());
-        }
-
-        if looks_like_host_resolution_failure(&command_output_detail(&output)) {
-            return Err(ReviewRequestError::HostResolutionFailed {
-                forge_kind: ForgeKind::GitLab,
-                host: remote.host.clone(),
-            });
-        }
-
-        Err(ReviewRequestError::AuthenticationRequired {
-            forge_kind: ForgeKind::GitLab,
-            host: remote.host.clone(),
-        })
-    }
-
-    /// Returns whether one `glab auth status` output still proves valid auth.
-    ///
-    /// Some `glab` versions report a non-zero exit status for incomplete local
-    /// git-protocol setup even when the API token is present and usable. Treat
-    /// those responses as authenticated so review-request creation can proceed.
-    fn auth_status_indicates_authenticated(output: &ForgeCommandOutput) -> bool {
-        let detail = format!("{}\n{}", output.stdout, output.stderr).to_ascii_lowercase();
-
-        detail.contains("logged in to") && detail.contains("token found:")
-    }
-
-    /// Runs one authenticated `glab` command and normalizes common failures.
+    /// Runs one `glab` review-request command and normalizes common failures.
     async fn run_review_command(
         &self,
         remote: &ForgeRemote,
@@ -210,11 +175,6 @@ impl GitLabReviewRequestAdapter {
             message: format!("{operation}: {detail}"),
         })
     }
-}
-
-/// Builds the `glab auth status` command for one GitLab host.
-fn auth_status_command(remote: &ForgeRemote) -> ForgeCommand {
-    glab_command(remote, vec!["auth".to_string(), "status".to_string()])
 }
 
 /// Builds the `glab api` lookup command for `source_branch`.
@@ -555,16 +515,6 @@ mod tests {
             .withf({
                 let remote = remote.clone();
 
-                move |command| command == &auth_status_command(&remote)
-            })
-            .returning(|_| Box::pin(async { Ok(success_output(String::new())) }));
-        command_runner
-            .expect_run()
-            .once()
-            .in_sequence(&mut sequence)
-            .withf({
-                let remote = remote.clone();
-
                 move |command| command == &lookup_command(&remote, "feature/forge")
             })
             .returning(|_| Box::pin(async { Ok(success_output(r#"[{"iid":17}]"#.to_string())) }));
@@ -620,16 +570,6 @@ mod tests {
             .in_sequence(&mut sequence)
             .withf({
                 let remote = remote.clone();
-
-                move |command| command == &auth_status_command(&remote)
-            })
-            .returning(|_| Box::pin(async { Ok(success_output(String::new())) }));
-        command_runner
-            .expect_run()
-            .once()
-            .in_sequence(&mut sequence)
-            .withf({
-                let remote = remote.clone();
                 let input = input.clone();
 
                 move |command| command == &create_command(&remote, &input)
@@ -672,63 +612,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_by_source_branch_accepts_non_zero_auth_status_when_glab_reports_logged_in() {
+    async fn find_by_source_branch_maps_authentication_failure_from_lookup_command() {
         // Arrange
         let remote = gitlab_remote();
-        let mut sequence = Sequence::new();
         let mut command_runner = MockForgeCommandRunner::new();
         command_runner
             .expect_run()
             .once()
-            .in_sequence(&mut sequence)
-            .withf({
-                let remote = remote.clone();
-
-                move |command| command == &auth_status_command(&remote)
-            })
-            .returning(|_| {
-                Box::pin(async {
-                    Ok(ForgeCommandOutput {
-                        exit_code: Some(1),
-                        stderr: String::new(),
-                        stdout: "gitlab.example.com\n  ✓ Logged in to gitlab.example.com as \
-                                 minev.dev\n  ✓ Token found: **************************"
-                            .to_string(),
-                    })
-                })
-            });
-        command_runner
-            .expect_run()
-            .once()
-            .in_sequence(&mut sequence)
             .withf({
                 let remote = remote.clone();
 
                 move |command| command == &lookup_command(&remote, "feature/forge")
             })
-            .returning(|_| Box::pin(async { Ok(success_output(r#"[{"iid":17}]"#.to_string())) }));
-        command_runner
-            .expect_run()
-            .once()
-            .in_sequence(&mut sequence)
-            .withf({
-                let remote = remote.clone();
-
-                move |command| command == &view_command(&remote, "17")
-            })
-            .returning(|_| Box::pin(async { Ok(success_output(gitlab_view_json())) }));
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(ForgeCommandOutput {
+                        exit_code: Some(1),
+                        stderr: "HTTP 401 Unauthorized. Run `glab auth login` to authenticate."
+                            .to_string(),
+                        stdout: String::new(),
+                    })
+                })
+            });
         let adapter = GitLabReviewRequestAdapter::new(Arc::new(command_runner));
 
         // Act
-        let review_request = adapter
+        let error = adapter
             .find_by_source_branch(remote, "feature/forge".to_string())
             .await
-            .expect("logged-in auth status output should be accepted");
+            .expect_err("auth failures should be normalized from lookup output");
 
         // Assert
         assert_eq!(
-            review_request.map(|summary| summary.display_id),
-            Some("!17".to_string())
+            error,
+            ReviewRequestError::AuthenticationRequired {
+                forge_kind: ForgeKind::GitLab,
+                host: "gitlab.example.com".to_string(),
+            }
         );
     }
 
@@ -823,16 +743,6 @@ mod tests {
         let remote = gitlab_remote();
         let mut sequence = Sequence::new();
         let mut command_runner = MockForgeCommandRunner::new();
-        command_runner
-            .expect_run()
-            .once()
-            .in_sequence(&mut sequence)
-            .withf({
-                let remote = remote.clone();
-
-                move |command| command == &auth_status_command(&remote)
-            })
-            .returning(|_| Box::pin(async { Ok(success_output(String::new())) }));
         command_runner
             .expect_run()
             .once()
