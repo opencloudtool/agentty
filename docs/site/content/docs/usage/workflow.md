@@ -48,6 +48,10 @@ Session statuses and what you can do in each state:
 Settings values are stored per active project. Switching projects reloads that
 project's `Reasoning Level`, default models, and `Open Commands`.
 
+When a session enters **Review**, Agentty starts generating the focused review
+in the background. Pressing `f` opens the cached review immediately when it is
+ready, or shows a loading message while generation is still running.
+
 When `Open Commands` in Settings contains multiple entries (one command per
 line), pressing `o` opens a selector popup (`j`/`k` to move, `Enter` to open,
 `Esc` to cancel).

@@ -1403,6 +1403,13 @@ impl App {
         focused_review_update: FocusedReviewUpdate,
     ) {
         let FocusedReviewUpdate { diff_hash, result } = focused_review_update;
+        let Some(cache_entry) = self.focused_review_cache.get(session_id) else {
+            return;
+        };
+
+        if cache_entry.diff_hash() != diff_hash {
+            return;
+        }
 
         match &result {
             Ok(review_text) => {
@@ -3888,6 +3895,10 @@ mod tests {
         let mut app = new_test_app().await;
         let session_id = "session-review-cache";
         let review_text = "## Review\nLooks good.";
+        app.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::Loading { diff_hash: 123 },
+        );
 
         // Act
         app.apply_focused_review_update(
@@ -3911,6 +3922,10 @@ mod tests {
         let mut app = new_test_app().await;
         let session_id = "session-review-fail";
         let error_message = "Review assist failed with exit code 1";
+        app.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::Loading { diff_hash: 456 },
+        );
 
         // Act
         app.apply_focused_review_update(
@@ -3925,6 +3940,32 @@ mod tests {
         assert!(matches!(
             app.focused_review_cache.get(session_id),
             Some(FocusedReviewCacheEntry::Failed { error, diff_hash }) if error == error_message && *diff_hash == 456
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_focused_review_update_ignores_stale_diff_hash() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-review-stale";
+        app.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::Loading { diff_hash: 999 },
+        );
+
+        // Act
+        app.apply_focused_review_update(
+            session_id,
+            FocusedReviewUpdate {
+                diff_hash: 111,
+                result: Ok("stale review".to_string()),
+            },
+        );
+
+        // Assert
+        assert!(matches!(
+            app.focused_review_cache.get(session_id),
+            Some(FocusedReviewCacheEntry::Loading { diff_hash }) if *diff_hash == 999
         ));
     }
 
@@ -3991,6 +4032,38 @@ mod tests {
         assert!(matches!(
             app.focused_review_cache.get(session_id),
             Some(FocusedReviewCacheEntry::Ready { text, .. }) if text == "existing review"
+        ));
+    }
+
+    #[tokio::test]
+    async fn auto_start_focused_reviews_starts_loading_for_review_transition() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-1";
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-hash-start")));
+        app.sessions.sessions[0].status = Status::Review;
+
+        let diff_text = "diff --git a/file.rs b/file.rs\n+new line";
+        let expected_hash = diff_content_hash(diff_text);
+        let session_ids = HashSet::from([session_id.to_string()]);
+        let previous_states = HashMap::from([(session_id.to_string(), Status::InProgress)]);
+
+        let mut mock_git_client = crate::infra::git::MockGitClient::new();
+        mock_git_client
+            .expect_diff()
+            .returning(move |_, _| Box::pin(async move { Ok(diff_text.to_string()) }));
+        install_mock_git_client(&mut app, mock_git_client);
+
+        // Act
+        app.auto_start_focused_reviews(&session_ids, &previous_states)
+            .await;
+
+        // Assert
+        assert!(matches!(
+            app.focused_review_cache.get(session_id),
+            Some(FocusedReviewCacheEntry::Loading { diff_hash }) if *diff_hash == expected_hash
         ));
     }
 

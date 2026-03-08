@@ -2,7 +2,7 @@ use std::io;
 
 use crossterm::event::{self, KeyCode, KeyEvent};
 
-use crate::app::{App, FocusedReviewCacheEntry};
+use crate::app::{App, FocusedReviewCacheEntry, diff_content_hash};
 use crate::domain::agent::AgentModel;
 use crate::domain::input::InputState;
 use crate::domain::session::{ReviewRequestAction, Status};
@@ -72,6 +72,8 @@ struct ViewSessionSnapshot {
 /// Prefix for the review loading status while assist output is being
 /// prepared.
 const REVIEW_LOADING_MESSAGE_PREFIX: &str = "Preparing review with agent help";
+/// Fallback copy shown when a review-ready session has no diff to inspect.
+const REVIEW_NO_DIFF_MESSAGE: &str = "No diff changes found for review.";
 
 /// Processes view-mode key presses and keeps shortcut availability aligned with
 /// session status (`o` disabled for `Done`/`Canceled`/`Merging`/`Queued`, and
@@ -185,7 +187,7 @@ async fn handle_view_key(
                 && !key.modifiers.contains(event::KeyModifiers::CONTROL)
                 && is_view_focused_review_allowed(view_session_snapshot.session_status) =>
         {
-            toggle_focused_review(app, view_context, pending_update);
+            toggle_focused_review(app, view_context, pending_update).await;
         }
         KeyCode::Char('m') if view_session_snapshot.is_action_allowed => {
             open_merge_confirmation(app, view_context);
@@ -264,7 +266,7 @@ fn confirmation_view_mode(view_context: &ViewContext) -> ConfirmationViewMode {
 ///
 /// When currently in focused review mode, switches back to summary. Otherwise,
 /// opens focused review and resets scroll to bottom-aligned mode.
-fn toggle_focused_review(
+async fn toggle_focused_review(
     app: &mut App,
     view_context: &ViewContext,
     pending_update: &mut ViewPendingUpdate,
@@ -282,7 +284,8 @@ fn toggle_focused_review(
         &mut pending_update.done_session_output_mode,
         &mut pending_update.focused_review_status_message,
         &mut pending_update.focused_review_text,
-    );
+    )
+    .await;
 
     pending_update.scroll_offset = None;
 }
@@ -604,10 +607,11 @@ fn half_page_scroll_step(metrics: ViewMetrics) -> u16 {
 /// Opens review mode and serves cached review or loading status.
 ///
 /// Reviews are auto-generated when sessions transition to `Review`. When the
-/// user presses `f` and no cached review exists yet, a loading message is
-/// shown until the background generation completes. Toggling back to summary
-/// is handled by `toggle_focused_review`.
-fn open_focused_review_output_mode(
+/// user presses `f` and no cached review exists yet, Agentty computes the
+/// current diff, starts background generation, and shows a loading message
+/// immediately. Toggling back to summary is handled by
+/// `toggle_focused_review`.
+async fn open_focused_review_output_mode(
     app: &mut App,
     view_context: &ViewContext,
     done_session_output_mode: &mut DoneSessionOutputMode,
@@ -644,9 +648,44 @@ fn open_focused_review_output_mode(
         return;
     }
 
+    let Some(session) = app.sessions.sessions.get(view_context.session_index) else {
+        *focused_review_status_message = None;
+        *focused_review_text = Some(String::new());
+
+        return;
+    };
+    let session_folder = session.folder.clone();
+    let session_summary = session.summary.clone();
+    let diff = load_view_session_diff(app, view_context).await;
+    if diff.trim().is_empty() {
+        *focused_review_status_message = None;
+        *focused_review_text = Some(REVIEW_NO_DIFF_MESSAGE.to_string());
+
+        return;
+    }
+
+    if diff.starts_with("Failed to run git diff:") {
+        *focused_review_status_message = None;
+        *focused_review_text = Some(diff);
+
+        return;
+    }
+
+    let diff_hash = diff_content_hash(&diff);
     let review_model = focused_review_assist_model(app);
+    app.focused_review_cache.insert(
+        view_context.session_id.clone(),
+        FocusedReviewCacheEntry::Loading { diff_hash },
+    );
     *focused_review_status_message = Some(focused_review_loading_message(review_model));
     *focused_review_text = None;
+    app.start_focused_review_assist(
+        &view_context.session_id,
+        &session_folder,
+        diff_hash,
+        &diff,
+        session_summary.as_deref(),
+    );
 }
 
 async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) {
@@ -1295,7 +1334,8 @@ mod tests {
             &mut next_done_session_output_mode,
             &mut next_focused_review_status_message,
             &mut next_focused_review_text,
-        );
+        )
+        .await;
 
         // Assert
         assert_eq!(
@@ -1307,10 +1347,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_open_focused_review_output_mode_shows_loading_when_no_cache() {
+    async fn test_open_focused_review_output_mode_starts_loading_when_diff_exists() {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         app.settings.default_review_model = AgentModel::ClaudeOpus46;
+        let session_folder = app.sessions.sessions[0].folder.clone();
+        std::fs::write(session_folder.join("README.md"), "review test content\n")
+            .expect("failed to update readme");
         let view_context = ViewContext {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             focused_review_status_message: None,
@@ -1330,7 +1373,8 @@ mod tests {
             &mut next_done_session_output_mode,
             &mut next_focused_review_status_message,
             &mut next_focused_review_text,
-        );
+        )
+        .await;
 
         // Assert
         assert_eq!(
@@ -1342,6 +1386,52 @@ mod tests {
             Some(focused_review_loading_message(AgentModel::ClaudeOpus46))
         );
         assert_eq!(next_focused_review_text, None);
+        assert!(matches!(
+            app.focused_review_cache.get(&view_context.session_id),
+            Some(FocusedReviewCacheEntry::Loading { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_open_focused_review_output_mode_shows_no_diff_message_when_diff_empty() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        let view_context = ViewContext {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            scroll_offset: None,
+            session_id,
+            session_index: 0,
+        };
+        let mut next_done_session_output_mode = DoneSessionOutputMode::Summary;
+        let mut next_focused_review_status_message = None;
+        let mut next_focused_review_text = None;
+
+        // Act
+        open_focused_review_output_mode(
+            &mut app,
+            &view_context,
+            &mut next_done_session_output_mode,
+            &mut next_focused_review_status_message,
+            &mut next_focused_review_text,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(
+            next_done_session_output_mode,
+            DoneSessionOutputMode::FocusedReview
+        );
+        assert_eq!(next_focused_review_status_message, None);
+        assert_eq!(
+            next_focused_review_text.as_deref(),
+            Some(REVIEW_NO_DIFF_MESSAGE)
+        );
+        assert!(
+            !app.focused_review_cache
+                .contains_key(&view_context.session_id)
+        );
     }
 
     #[tokio::test]
@@ -1682,7 +1772,6 @@ mod tests {
         // Assert
         assert_eq!(state, ViewSessionState::Canceled);
     }
-
     #[tokio::test]
     async fn test_open_focused_review_output_mode_uses_ready_cache_entry() {
         // Arrange
@@ -1714,7 +1803,8 @@ mod tests {
             &mut next_done_session_output_mode,
             &mut next_focused_review_status_message,
             &mut next_focused_review_text,
-        );
+        )
+        .await;
 
         // Assert
         assert_eq!(
@@ -1753,7 +1843,8 @@ mod tests {
             &mut next_done_session_output_mode,
             &mut next_focused_review_status_message,
             &mut next_focused_review_text,
-        );
+        )
+        .await;
 
         // Assert
         assert_eq!(
