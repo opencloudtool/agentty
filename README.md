@@ -1,5 +1,7 @@
 # Agentty
 
+Hello world
+
 ![NPM Version](https://img.shields.io/npm/v/agentty)
 
 Agentty is an **ADE (Agentic Development Environment) for structured, controllable AI-assisted software development**. It is itself developed with Agentty, built with Rust and [Ratatui](https://ratatui.rs), and designed around a deeply integrated workflow.
