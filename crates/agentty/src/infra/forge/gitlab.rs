@@ -282,12 +282,16 @@ fn view_command(remote: &ForgeRemote, merge_request_iid: &str) -> ForgeCommand {
 }
 
 /// Adds shared non-interactive defaults to one `glab` command.
+///
+/// Uses `GLAB_NO_PROMPT` so `glab` does not emit the deprecated `NO_PROMPT`
+/// warning to stdout, which would corrupt JSON responses consumed by the
+/// adapter.
 fn glab_command(remote: &ForgeRemote, arguments: Vec<String>) -> ForgeCommand {
     ForgeCommand::new("glab", arguments)
         .with_environment("CLICOLOR", "0")
         .with_environment("GL_HOST", format!("https://{}", remote.host))
+        .with_environment("GLAB_NO_PROMPT", "1")
         .with_environment("NO_COLOR", "1")
-        .with_environment("NO_PROMPT", "1")
 }
 
 /// Maps one spawn-time failure into a normalized GitLab review-request error.
@@ -699,6 +703,28 @@ mod tests {
                 forge_kind: ForgeKind::GitLab,
                 host: "gitlab.example.com".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn glab_commands_use_glab_no_prompt_without_legacy_no_prompt() {
+        // Arrange
+        let remote = gitlab_remote();
+
+        // Act
+        let command = lookup_command(&remote, "feature/forge");
+
+        // Assert
+        assert!(
+            command
+                .environment
+                .contains(&("GLAB_NO_PROMPT".to_string(), "1".to_string()))
+        );
+        assert!(
+            !command
+                .environment
+                .iter()
+                .any(|(key, _value)| key == "NO_PROMPT")
         );
     }
 
