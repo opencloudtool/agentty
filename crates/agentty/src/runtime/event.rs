@@ -413,11 +413,11 @@ mod tests {
         );
     }
 
-    /// Verifies pasted text updates question input and clears the selected
-    /// canned option.
+    /// Verifies pasted text updates question input in free-text mode.
     #[tokio::test]
-    async fn test_process_event_with_key_handler_pastes_into_question_mode() {
-        // Arrange
+    async fn test_process_event_with_key_handler_pastes_into_question_free_text_mode() {
+        // Arrange — paste only works in free-text mode (`selected_option_index`
+        // is `None`).
         let mut app = new_test_app().await;
         app.mode = AppMode::Question {
             current_index: 0,
@@ -427,7 +427,7 @@ mod tests {
                 text: "Is this enough?".to_string(),
             }],
             responses: Vec::new(),
-            selected_option_index: Some(0),
+            selected_option_index: None,
             session_id: "session-1".to_string(),
         };
         let mut terminal = ();

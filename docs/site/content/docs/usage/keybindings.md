@@ -129,14 +129,26 @@ The diff panel title shows aggregate line-change totals as `+added` and
 | `@` | Open file picker |
 | `/` | Open slash commands |
 
-## Question Input
+## Question Input — Option Selection
+
+When predefined options are shown (including "Type custom answer"):
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Submit response for current question |
+| `j` / `k` / `Up` / `Down` | Navigate options |
+| `Enter` | Choose highlighted option (or enter free-text mode for "Type custom answer") |
+| `Esc` | Skip current question (`no answer`) |
+
+## Question Input — Free Text
+
+After selecting "Type custom answer", or when no predefined options exist:
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Submit typed response |
 | `Esc` | Skip current question (`no answer`) |
 | `Left` / `Right` | Move cursor |
-| `Up` / `Down` | Navigate options (when present) or move cursor across wrapped lines |
+| `Up` / `Down` | Move cursor across wrapped lines |
 | `Backspace` / `Delete` | Delete character |
 | `Home` / `End` | Move cursor to start/end |
 | `Ctrl+u` | Delete current line |

@@ -107,11 +107,13 @@ back to the same session before returning it to normal execution.
 
 <a id="usage-question-options"></a>
 Questions may include predefined answer options. When options are present,
-Agentty displays them as a numbered list under an "Options:" header. Use
-`Up`/`Down` to highlight an option and `Enter` to submit it. You can also
-type a free-text answer instead — typing deselects any highlighted option.
-The input field shows an "Or type a custom answer" placeholder when options
-are available.
+Agentty displays them as a numbered list under an "Options:" header with the
+first option pre-selected. A "Type custom answer" entry always appears at
+the end of the list. Use `j`/`k` or `Up`/`Down` to navigate options and
+`Enter` to submit the highlighted choice. If you select "Type custom
+answer" and press `Enter`, the option list is replaced by a free-text input
+where you can type any response. Press `Esc` at any point to skip the
+question with `no answer`.
 
 ## Session Sizes
 

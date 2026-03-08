@@ -27,6 +27,10 @@ Structured response protocol:
 
   - When a question has a finite set of choices (2–5), always provide them in the `options` array so the user can select instead of typing.
 
+  - Do not include non-answer choices such as "skip for now", "do not do anything", "let me think", or similar deferral options. The user can skip any question without selecting an option, so those choices are redundant.
+
+  - When providing `options`, place the recommended choice first. The UI defaults to the first option.
+
 {% if include_change_summary %}
 
 - Every turn must include at least one `answer` message that ends with a `## Change Summary` section in markdown.

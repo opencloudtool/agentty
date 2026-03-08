@@ -9,6 +9,7 @@ use crate::domain::input::{self, extract_at_mention_query};
 use crate::domain::session::{ReviewRequestState, Session, Status};
 use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::file_index;
+use crate::runtime::mode::question;
 use crate::ui::component::chat_input::{ChatInput, SlashMenu, SlashMenuOption};
 use crate::ui::component::session_output::SessionOutput;
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode};
@@ -555,29 +556,46 @@ fn render_question_panel(
     let options = question_item
         .map(|item| item.options.as_slice())
         .unwrap_or_default();
-    let options_height = if options.is_empty() {
-        0
-    } else {
+    let has_options = !options.is_empty();
+    let is_free_text_mode = selected_option_index.is_none();
+    let show_input = !has_options || is_free_text_mode;
+
+    // Options height includes the header line and predefined options. When
+    // navigating, a virtual "Type custom answer" entry is appended (+1).
+    // In free-text mode, that entry is replaced by the text input below.
+    let options_height = if has_options {
+        let virtual_entry_count: u16 = u16::from(!is_free_text_mode);
         u16::try_from(options.len())
             .unwrap_or(u16::MAX)
-            .saturating_add(1)
+            .saturating_add(1) // +1 header
+            .saturating_add(virtual_entry_count)
             .min(bottom_area.height)
+    } else {
+        0
     };
 
     let layout_available_height = bottom_area.height.saturating_sub(options_height);
+    let input_text = if show_input { input.text() } else { "" };
     let panel_layout = question_panel_layout(
         bottom_area.width,
         layout_available_height,
         question,
-        input.text(),
+        input_text,
         CHAT_INPUT_MAX_PANEL_HEIGHT,
     );
+
+    let (input_height, spacer_height) = if show_input {
+        (panel_layout.input_height, panel_layout.spacer_height)
+    } else {
+        (0, 0)
+    };
+
     let chunks = Layout::default()
         .constraints([
             Constraint::Length(panel_layout.question_height),
             Constraint::Length(options_height),
-            Constraint::Length(panel_layout.spacer_height),
-            Constraint::Length(panel_layout.input_height),
+            Constraint::Length(spacer_height),
+            Constraint::Length(input_height),
             Constraint::Length(panel_layout.help_height),
         ])
         .split(bottom_area);
@@ -590,35 +608,43 @@ fn render_question_panel(
         f.render_widget(question_para, chunks[0]);
     }
 
-    if !options.is_empty() {
+    if has_options {
         render_question_options(f, chunks[1], options, selected_option_index);
     }
 
-    let input_placeholder = if options.is_empty() {
-        "Type response (Enter: send, Esc: skip)"
-    } else {
-        "Or type a custom answer"
-    };
-    let input_title = format!(" [{question_title}] ");
-    let chat_input =
-        ChatInput::new(&input_title, input.text(), input.cursor).placeholder(input_placeholder);
-    if panel_layout.input_height > 0 {
-        chat_input.render(f, chunks[3]);
+    if show_input {
+        let input_placeholder = if has_options {
+            "Type custom answer (Enter: send, Esc: skip)"
+        } else {
+            "Type response (Enter: send, Esc: skip)"
+        };
+        let input_title = format!(" [{question_title}] ");
+        let chat_input =
+            ChatInput::new(&input_title, input.text(), input.cursor).placeholder(input_placeholder);
+        if input_height > 0 {
+            chat_input.render(f, chunks[3]);
+        }
     }
 
     let mut help_actions = Vec::new();
-    if !options.is_empty() {
+    if has_options && !is_free_text_mode {
         help_actions.push(help_action::HelpAction::new(
             "navigate",
-            "Up/Down",
+            "j/k/Up/Down",
             "Select option",
         ));
+        help_actions.push(help_action::HelpAction::new(
+            "choose",
+            "Enter",
+            "Choose option",
+        ));
+    } else {
+        help_actions.push(help_action::HelpAction::new(
+            "send",
+            "Enter",
+            "Send response",
+        ));
     }
-    help_actions.push(help_action::HelpAction::new(
-        "send",
-        "Enter",
-        "Send response",
-    ));
     help_actions.push(help_action::HelpAction::new(
         "skip",
         "Esc",
@@ -633,15 +659,19 @@ fn render_question_panel(
 
 /// Renders the predefined answer option list for the active question.
 ///
-/// Each option is shown as a numbered line. The highlighted option (if any)
-/// is rendered with reversed colors.
+/// Each option is shown as a numbered line. When navigating options
+/// (`selected_option_index` is `Some`), a virtual "Type custom answer" entry
+/// is appended. In free-text mode the virtual entry is omitted because the
+/// text input appears directly below the options instead.
 fn render_question_options(
     f: &mut Frame,
     area: Rect,
     options: &[String],
     selected_option_index: Option<usize>,
 ) {
-    let mut lines: Vec<Line<'_>> = Vec::with_capacity(options.len() + 1);
+    let is_navigating = selected_option_index.is_some();
+    let capacity = options.len() + 1 + usize::from(is_navigating);
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(capacity);
     lines.push(Line::from(Span::styled(
         "Options:",
         Style::default().fg(Color::Yellow),
@@ -661,6 +691,34 @@ fn render_question_options(
         };
 
         lines.push(Line::from(Span::styled(label, style)));
+    }
+
+    // Virtual "Type custom answer" entry — only shown while navigating.
+    if is_navigating {
+        let type_custom_index = options.len();
+        let is_type_custom_selected = selected_option_index == Some(type_custom_index);
+        let type_custom_prefix = if is_type_custom_selected {
+            "▸ "
+        } else {
+            "  "
+        };
+        let type_custom_label = format!(
+            "{type_custom_prefix}{}. {}",
+            type_custom_index + 1,
+            question::TYPE_CUSTOM_ANSWER,
+        );
+        let type_custom_style = if is_type_custom_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(Span::styled(
+            type_custom_label,
+            type_custom_style,
+        )));
     }
 
     f.render_widget(Paragraph::new(lines), area);

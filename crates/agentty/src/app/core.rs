@@ -39,7 +39,7 @@ use crate::infra::fs::{FsClient, RealFsClient};
 use crate::infra::git::{GitClient, RealGitClient, detect_git_info};
 use crate::infra::tmux::{RealTmuxClient, TmuxClient};
 use crate::infra::{app_server, db};
-use crate::runtime::mode::sync_blocked;
+use crate::runtime::mode::{question, sync_blocked};
 use crate::ui::page::session_list::preferred_initial_session_index;
 use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
 use crate::ui::state::prompt::PromptAtMentionState;
@@ -1350,12 +1350,12 @@ impl App {
 
         if is_viewing_session {
             self.mode = AppMode::Question {
+                selected_option_index: question::default_option_index(&questions, 0),
                 session_id: session_id.to_string(),
                 questions,
                 responses: Vec::new(),
                 current_index: 0,
                 input: InputState::default(),
-                selected_option_index: None,
             };
         }
     }
