@@ -623,22 +623,16 @@ impl SessionManager {
         let (merge_outcome, commit_message) = if squash_diff.trim().is_empty() {
             (git::SquashMergeOutcome::AlreadyPresentInTarget, None)
         } else {
-            let fallback_commit_message =
-                Self::fallback_merge_commit_message(&source_branch, &base_branch);
             let commit_message = {
                 let folder = folder.clone();
                 let squash_diff = squash_diff.clone();
-                let fallback_commit_message_for_task = fallback_commit_message.clone();
-                let generate_message = Self::generate_merge_commit_message_from_diff(
+
+                Self::generate_merge_commit_message(
                     folder.as_path(),
                     session_model,
                     squash_diff.as_str(),
-                );
-
-                match tokio::time::timeout(MERGE_COMMIT_MESSAGE_TIMEOUT, generate_message).await {
-                    Ok(Some(message)) => message,
-                    Ok(None) | Err(_) => fallback_commit_message_for_task,
-                }
+                )
+                .await?
             };
 
             let merge_outcome = {
@@ -716,6 +710,44 @@ impl SessionManager {
             .squash_merge_diff(repo_root, source_branch, base_branch)
             .await
             .map_err(|error| format!("Failed to inspect merge diff: {error}"))
+    }
+
+    /// Generates the squash-merge commit message and fails if the agent does
+    /// not return one before the timeout expires.
+    ///
+    /// # Errors
+    /// Returns an error when prompt rendering fails, the one-shot agent call
+    /// fails, the agent returns blank answer text, or generation exceeds the
+    /// timeout.
+    async fn generate_merge_commit_message(
+        folder: &Path,
+        session_model: AgentModel,
+        diff: &str,
+    ) -> Result<String, String> {
+        Self::run_merge_commit_message_generation_with_timeout(
+            MERGE_COMMIT_MESSAGE_TIMEOUT,
+            Self::generate_merge_commit_message_from_diff(folder, session_model, diff),
+        )
+        .await
+    }
+
+    /// Waits for commit-message generation to finish before the caller's
+    /// timeout deadline.
+    ///
+    /// # Errors
+    /// Returns an error when the inner generation future fails or does not
+    /// complete before `timeout_duration`.
+    async fn run_merge_commit_message_generation_with_timeout<F>(
+        timeout_duration: Duration,
+        generate_message: F,
+    ) -> Result<String, String>
+    where
+        F: Future<Output = Result<String, String>>,
+    {
+        match tokio::time::timeout(timeout_duration, generate_message).await {
+            Ok(result) => result,
+            Err(_) => Err(Self::merge_commit_message_timeout_error(timeout_duration)),
+        }
     }
 
     async fn finalize_merge_task(
@@ -1585,16 +1617,20 @@ impl SessionManager {
         let _ = input.git_client.abort_rebase(folder).await;
     }
 
+    /// Renders the squash-merge prompt, submits it to the one-shot agent, and
+    /// returns the normalized commit message text.
+    ///
+    /// # Errors
+    /// Returns an error when prompt rendering fails, the one-shot agent call
+    /// fails, or the returned `answer` text is blank.
     async fn generate_merge_commit_message_from_diff(
         folder: &Path,
         session_model: AgentModel,
         diff: &str,
-    ) -> Option<String> {
-        let prompt = Self::merge_commit_message_prompt(diff).ok()?;
+    ) -> Result<String, String> {
+        let prompt = Self::merge_commit_message_prompt(diff)?;
         let answer_text =
-            Self::generate_merge_commit_message_with_model(folder, session_model, &prompt)
-                .await
-                .ok()?;
+            Self::generate_merge_commit_message_with_model(folder, session_model, &prompt).await?;
 
         Self::merge_commit_message_from_answer_text(&answer_text)
     }
@@ -1630,33 +1666,38 @@ impl SessionManager {
 
     /// Normalizes merge commit-message answer text returned by the one-shot
     /// protocol runner.
-    fn merge_commit_message_from_answer_text(answer_text: &str) -> Option<String> {
-        let trimmed_answer_text = answer_text.trim();
-        if trimmed_answer_text.is_empty() {
-            return None;
-        }
-
-        Some(trimmed_answer_text.to_string())
-    }
-
-    /// Renders the merge commit-message prompt from the markdown template.
     ///
     /// # Errors
-    /// Returns an error if Askama template rendering fails.
-    pub(crate) fn merge_commit_message_prompt(diff: &str) -> Result<String, String> {
-        let template = MergeCommitMessagePromptTemplate { diff };
+    /// Returns an error when the agent does not provide any non-whitespace
+    /// answer text.
+    fn merge_commit_message_from_answer_text(answer_text: &str) -> Result<String, String> {
+        let trimmed_answer_text = answer_text.trim();
+        if trimmed_answer_text.is_empty() {
+            return Err("Merge commit message model returned blank answer text".to_string());
+        }
 
-        template
-            .render()
-            .map_err(|error| format!("Failed to render `merge_commit_message_prompt.md`: {error}"))
+        Ok(trimmed_answer_text.to_string())
     }
 
-    /// Builds a deterministic fallback merge commit message.
-    pub(crate) fn fallback_merge_commit_message(
-        source_branch: &str,
-        target_branch: &str,
-    ) -> String {
-        format!("Apply session updates\n\n- Squash merge `{source_branch}` into `{target_branch}`.")
+    /// Formats a user-visible timeout error for commit-message generation.
+    fn merge_commit_message_timeout_error(timeout_duration: Duration) -> String {
+        if timeout_duration.as_secs() > 0 {
+            let seconds = timeout_duration.as_secs();
+            let unit = if seconds == 1 { "second" } else { "seconds" };
+
+            return format!(
+                "Timed out after {seconds} {unit} while generating merge commit message"
+            );
+        }
+
+        let milliseconds = timeout_duration.as_millis();
+        let unit = if milliseconds == 1 {
+            "millisecond"
+        } else {
+            "milliseconds"
+        };
+
+        format!("Timed out after {milliseconds} {unit} while generating merge commit message")
     }
 
     /// Removes a merged session worktree and deletes its source branch.
@@ -1687,6 +1728,18 @@ impl SessionManager {
         let _ = fs_client.remove_dir_all(folder).await;
 
         Ok(())
+    }
+
+    /// Renders the merge commit-message prompt from the markdown template.
+    ///
+    /// # Errors
+    /// Returns an error if Askama template rendering fails.
+    pub(crate) fn merge_commit_message_prompt(diff: &str) -> Result<String, String> {
+        let template = MergeCommitMessagePromptTemplate { diff };
+
+        template
+            .render()
+            .map_err(|error| format!("Failed to render `merge_commit_message_prompt.md`: {error}"))
     }
 
     /// Commits all changes using a caller-provided git client.
@@ -1728,6 +1781,7 @@ impl SessionManager {
 mod tests {
     use mockall::Sequence;
     use tempfile::{TempDir, tempdir};
+    use tokio::time::sleep;
 
     use super::*;
 
@@ -1896,7 +1950,7 @@ mod tests {
         // Assert
         assert_eq!(
             commit_message.as_deref(),
-            Some("Refine merge flow\n\n- Keep generated title")
+            Ok("Refine merge flow\n\n- Keep generated title")
         );
     }
 
@@ -1909,7 +1963,65 @@ mod tests {
         let commit_message = SessionManager::merge_commit_message_from_answer_text(answer_text);
 
         // Assert
-        assert!(commit_message.is_none());
+        assert_eq!(
+            commit_message,
+            Err("Merge commit message model returned blank answer text".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_merge_commit_message_generation_with_timeout_returns_message() {
+        // Arrange
+        let generate_message = async { Ok("Refine merge flow".to_string()) };
+
+        // Act
+        let commit_message = SessionManager::run_merge_commit_message_generation_with_timeout(
+            Duration::from_millis(10),
+            generate_message,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(commit_message, Ok("Refine merge flow".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_run_merge_commit_message_generation_with_timeout_returns_inner_error() {
+        // Arrange
+        let generate_message = async { Err("agent failed".to_string()) };
+
+        // Act
+        let commit_message = SessionManager::run_merge_commit_message_generation_with_timeout(
+            Duration::from_millis(10),
+            generate_message,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(commit_message, Err("agent failed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_run_merge_commit_message_generation_with_timeout_reports_elapsed_timeout() {
+        // Arrange
+        let generate_message = async {
+            sleep(Duration::from_millis(20)).await;
+
+            Ok("late reply".to_string())
+        };
+
+        // Act
+        let commit_message = SessionManager::run_merge_commit_message_generation_with_timeout(
+            Duration::from_millis(1),
+            generate_message,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(
+            commit_message,
+            Err("Timed out after 1 millisecond while generating merge commit message".to_string())
+        );
     }
 
     #[tokio::test]

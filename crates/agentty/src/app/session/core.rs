@@ -3789,22 +3789,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_fallback_merge_commit_message() {
-        // Arrange
-        let source_branch = "agentty/12345678";
-        let target_branch = "main";
-
-        // Act
-        let message = SessionManager::fallback_merge_commit_message(source_branch, target_branch);
-
-        // Assert
-        assert_eq!(
-            message,
-            "Apply session updates\n\n- Squash merge `agentty/12345678` into `main`."
-        );
-    }
-
     // --- session_folder / session_branch ---
 
     #[test]

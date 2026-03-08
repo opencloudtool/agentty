@@ -52,6 +52,11 @@ When a session enters **Review**, Agentty starts generating the focused review
 in the background. Pressing `f` opens the cached review immediately when it is
 ready, or shows a loading message while generation is still running.
 
+When a session enters **Merging**, Agentty generates the squash commit message
+through the configured agent model. If that message cannot be produced, the
+merge stops, the session returns to **Review**, and the output panel shows the
+merge error instead of using a fallback commit message.
+
 When `Open Commands` in Settings contains multiple entries (one command per
 line), pressing `o` opens a selector popup (`j`/`k` to move, `Enter` to open,
 `Esc` to cancel).
