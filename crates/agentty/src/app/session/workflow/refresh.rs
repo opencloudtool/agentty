@@ -87,9 +87,7 @@ impl SessionManager {
             .refresh_review_request(remote, linked_review_request.summary.display_id.clone())
             .await
             .map_err(|error| error.detail_message())?;
-        let review_request = self.build_review_request(refreshed_summary);
-
-        self.store_review_request(services, session_index, review_request)
+        self.store_review_request_summary(services, session_id, refreshed_summary)
             .await
     }
 

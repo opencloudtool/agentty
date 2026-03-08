@@ -7,7 +7,7 @@ use ratatui::widgets::TableState;
 use crate::app::{SettingsManager, Tab};
 use crate::domain::project::ProjectListItem;
 use crate::domain::session::{DailyActivity, Session};
-use crate::ui::overlay::SyncBlockedPopupRenderContext;
+use crate::ui::overlay::{SyncBlockedPopupRenderContext, ViewInfoPopupRenderContext};
 use crate::ui::state::app_mode::{AppMode, ConfirmationIntent, ConfirmationViewMode};
 use crate::ui::{Component, Page, RenderContext, component, overlay, page};
 
@@ -164,6 +164,25 @@ fn render_list_or_overlay_mode(
                 title,
             },
         ),
+        AppMode::ViewInfoPopup {
+            is_loading,
+            loading_label,
+            message,
+            restore_view,
+            title,
+        } => overlay::render_view_info_popup(
+            f,
+            area,
+            restore_view,
+            shared.sessions,
+            aux.session_progress_messages,
+            ViewInfoPopupRenderContext {
+                is_loading: *is_loading,
+                loading_label,
+                message,
+                title,
+            },
+        ),
         AppMode::Help {
             context: help_context,
             scroll_offset,
@@ -300,6 +319,7 @@ fn render_session_or_diff_mode(
         AppMode::List
         | AppMode::Confirmation { .. }
         | AppMode::SyncBlockedPopup { .. }
+        | AppMode::ViewInfoPopup { .. }
         | AppMode::Help { .. } => {}
     }
 }

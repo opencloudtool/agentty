@@ -31,6 +31,7 @@ pub(crate) async fn handle_key_event(
     match &app.mode {
         AppMode::List => mode::list::handle(app, key).await,
         AppMode::SyncBlockedPopup { .. } => Ok(mode::sync_blocked::handle(app, key)),
+        AppMode::ViewInfoPopup { .. } => Ok(handle_view_info_popup_key(app, key)),
         AppMode::Confirmation { .. } => {
             unreachable!("confirmation mode is handled before dispatch matching")
         }
@@ -43,6 +44,34 @@ pub(crate) async fn handle_key_event(
             unreachable!("open-command selector mode is handled before dispatch matching")
         }
     }
+}
+
+/// Handles key input while a session-scoped informational popup is visible.
+fn handle_view_info_popup_key(app: &mut App, key: KeyEvent) -> EventResult {
+    let AppMode::ViewInfoPopup {
+        is_loading,
+        restore_view,
+        ..
+    } = &app.mode
+    else {
+        return EventResult::Continue;
+    };
+
+    if *is_loading {
+        return EventResult::Continue;
+    }
+
+    match key.code {
+        KeyCode::Enter | KeyCode::Esc => {
+            app.mode = restore_view.clone().into_view_mode();
+        }
+        KeyCode::Char(character) if character.eq_ignore_ascii_case(&'q') => {
+            app.mode = restore_view.clone().into_view_mode();
+        }
+        _ => {}
+    }
+
+    EventResult::Continue
 }
 
 /// Handles key input while the app is in open-command selector overlay mode.
@@ -321,6 +350,40 @@ mod tests {
     /// Builds one git-backed test app with a strict mocked tmux boundary.
     async fn new_test_app_with_git() -> (App, tempfile::TempDir) {
         new_test_app_with_git_and_tmux_client(Arc::new(MockTmuxClient::new())).await
+    }
+
+    #[tokio::test]
+    async fn test_handle_view_info_popup_key_restores_view_mode() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        app.mode = AppMode::ViewInfoPopup {
+            is_loading: false,
+            loading_label: "Refreshing review request...".to_string(),
+            message: "Review request refreshed.".to_string(),
+            restore_view: ConfirmationViewMode {
+                done_session_output_mode: DoneSessionOutputMode::Summary,
+                focused_review_status_message: None,
+                focused_review_text: None,
+                scroll_offset: Some(2),
+                session_id: "session-id".to_string(),
+            },
+            title: "Review request refreshed".to_string(),
+        };
+
+        // Act
+        let event_result =
+            handle_view_info_popup_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                ref session_id,
+                scroll_offset: Some(2),
+                ..
+            } if session_id == "session-id"
+        ));
     }
 
     #[tokio::test]

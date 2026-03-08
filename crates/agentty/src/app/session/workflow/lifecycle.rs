@@ -500,9 +500,7 @@ impl SessionManager {
                 .await
                 .map_err(|error| error.detail_message())?,
         };
-        let review_request = self.build_review_request(review_request_summary);
-
-        self.store_review_request(services, session_index, review_request)
+        self.store_review_request_summary(services, session_id, review_request_summary)
             .await
     }
 
@@ -676,6 +674,23 @@ impl SessionManager {
             last_refreshed_at: unix_timestamp_from_system_time(self.state.clock.now_system_time()),
             summary,
         }
+    }
+
+    /// Persists one normalized review-request summary for a session.
+    ///
+    /// # Errors
+    /// Returns an error if the session disappears or persistence fails.
+    pub(crate) async fn store_review_request_summary(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+        summary: forge::ReviewRequestSummary,
+    ) -> Result<ReviewRequest, String> {
+        let session_index = self.session_index_or_err(session_id)?;
+        let review_request = self.build_review_request(summary);
+
+        self.store_review_request(services, session_index, review_request)
+            .await
     }
 
     /// Persists one linked review request in memory and the database.

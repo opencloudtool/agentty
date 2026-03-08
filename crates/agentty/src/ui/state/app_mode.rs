@@ -1,6 +1,7 @@
 use super::help_action::{self, HelpAction, ViewHelpState, ViewSessionState};
 use super::prompt::{PromptAtMentionState, PromptHistoryState, PromptSlashState};
 use crate::domain::input::InputState;
+use crate::domain::session::ReviewRequestAction;
 use crate::infra::agent::protocol::QuestionItem;
 
 /// Selects the visible panel content for session view output.
@@ -89,6 +90,21 @@ pub enum AppMode {
         /// Popup title describing sync state.
         title: String,
     },
+    /// Informational popup rendered above session view for review-request
+    /// workflows.
+    ViewInfoPopup {
+        /// Whether the background review-request workflow is still running.
+        is_loading: bool,
+        /// Spinner label rendered while the popup remains in the loading
+        /// state.
+        loading_label: String,
+        /// Body text describing the current review-request outcome.
+        message: String,
+        /// View state restored after the popup is dismissed.
+        restore_view: ConfirmationViewMode,
+        /// Popup title describing the current review-request phase.
+        title: String,
+    },
     /// Command selector overlay opened from session view when multiple open
     /// commands are configured.
     OpenCommandSelector {
@@ -156,6 +172,7 @@ pub enum HelpContext {
         done_session_output_mode: DoneSessionOutputMode,
         focused_review_status_message: Option<String>,
         focused_review_text: Option<String>,
+        review_request_action: Option<ReviewRequestAction>,
         session_id: String,
         session_state: ViewSessionState,
         scroll_offset: Option<u16>,
@@ -172,7 +189,12 @@ impl HelpContext {
     /// Returns projected keybinding entries for the originating page.
     pub fn keybindings(&self) -> Vec<HelpAction> {
         match self {
-            HelpContext::View { session_state, .. } => help_action::view_actions(ViewHelpState {
+            HelpContext::View {
+                review_request_action,
+                session_state,
+                ..
+            } => help_action::view_actions(ViewHelpState {
+                review_request_action: *review_request_action,
                 session_state: *session_state,
             }),
             HelpContext::List { keybindings } => keybindings.clone(),
@@ -188,6 +210,7 @@ impl HelpContext {
                 done_session_output_mode,
                 focused_review_status_message,
                 focused_review_text,
+                review_request_action: _,
                 session_id,
                 scroll_offset,
                 ..
@@ -221,6 +244,7 @@ impl HelpContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::session::ReviewRequestAction;
 
     #[test]
     fn test_done_session_output_mode_toggle_switches_between_variants() {
@@ -276,6 +300,7 @@ mod tests {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             focused_review_status_message: None,
             focused_review_text: None,
+            review_request_action: None,
             session_id: "session-id".to_string(),
             session_state: ViewSessionState::InProgress,
             scroll_offset: Some(2),
@@ -303,6 +328,7 @@ mod tests {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             focused_review_status_message: Some("Preparing review...".to_string()),
             focused_review_text: Some("Ready".to_string()),
+            review_request_action: Some(ReviewRequestAction::Open),
             session_id: "session-id".to_string(),
             session_state: ViewSessionState::InProgress,
             scroll_offset: Some(4),
@@ -324,6 +350,26 @@ mod tests {
                 && focused_review_status_message == "Preparing review..."
                 && focused_review_text == "Ready"
         ));
+    }
+
+    #[test]
+    fn test_help_context_view_keybindings_include_review_request_action() {
+        // Arrange
+        let context = HelpContext::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            review_request_action: Some(ReviewRequestAction::Open),
+            session_id: "session-id".to_string(),
+            session_state: ViewSessionState::Interactive,
+            scroll_offset: None,
+        };
+
+        // Act
+        let bindings = context.keybindings();
+
+        // Assert
+        assert!(bindings.iter().any(|binding| binding.key == "p"));
     }
 
     #[test]

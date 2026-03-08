@@ -87,6 +87,7 @@ Flow:
 Reducer behaviors that matter for data flow:
 
 - `RefreshSessions` sets `should_force_reload`, which triggers `refresh_sessions_now()` and `reload_projects()`.
+- `ReviewRequestActionCompleted` persists refreshed PR/MR linkage when needed, then swaps the session-view popup from loading to success or blocked/failure copy.
 - `SessionUpdated` marks touched sessions so reducer can call `sync_session_from_handle()` selectively.
 - `SessionProgressUpdated` updates transient progress labels used by UI.
 - `AgentResponseReceived` routes question-mode transitions for active view sessions.
@@ -235,6 +236,7 @@ Detached/background execution paths and their trigger conditions:
 | Session title generation | First `Start` turn, before main turn execution | `spawn_start_turn_title_generation` | DB title + `AppEvent::RefreshSessions` | Runs one-shot title prompt in background and persists generated title if valid. |
 | At-mention file indexing | Prompt input activates `@` mention mode | `runtime/mode/prompt::activate_at_mention` | `AppEvent::AtMentionEntriesLoaded` | Lists session files (`spawn_blocking`) and updates mention picker entries. |
 | Background session-size refresh | Enter on session in list mode | `App::refresh_session_size_in_background` | DB size + `AppEvent::RefreshSessions` | Computes diff-size bucket without blocking key handling path. |
+| Session-view review-request action | Session view `p` for create/refresh | `App::start_review_request_action` | `AppEvent::ReviewRequestActionCompleted` | Runs forge CLI publish/refresh work in the background and updates the session-view popup plus persisted PR/MR metadata. |
 | Deferred session cleanup | Delete with deferred cleanup path | `delete_selected_session_deferred_cleanup` | Filesystem/git side effects | Removes worktree folder and branch asynchronously after DB deletion. |
 | Focused review assist | View mode focused-review toggle when diff is reviewable | `TaskService::spawn_focused_review_assist_task` | `FocusedReviewPrepared` / `FocusedReviewPreparationFailed` | Runs model review prompt and stores final review text or error. |
 | Sync-main workflow task | List-mode sync action (`s`) | `TokioSyncMainRunner::start_sync_main` | `AppEvent::SyncMainCompleted` | Pull-rebase/push selected project branch, with assisted conflict flow. |

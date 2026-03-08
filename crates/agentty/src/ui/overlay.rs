@@ -6,8 +6,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Padding};
 
+use crate::domain::session::Session;
 use crate::ui::router::{ListBackgroundRenderContext, render_list_background};
-use crate::ui::state::app_mode::{AppMode, HelpContext};
+use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
 use crate::ui::style::palette;
 use crate::ui::{Component, Page, component, page};
 
@@ -21,6 +22,15 @@ pub(crate) struct SyncBlockedPopupRenderContext<'a> {
     pub(crate) is_loading: bool,
     pub(crate) message: &'a str,
     pub(crate) project_name: Option<&'a str>,
+    pub(crate) title: &'a str,
+}
+
+/// Borrowed parameters for rendering a session-view info popup overlay.
+#[derive(Clone, Copy)]
+pub(crate) struct ViewInfoPopupRenderContext<'a> {
+    pub(crate) is_loading: bool,
+    pub(crate) loading_label: &'a str,
+    pub(crate) message: &'a str,
     pub(crate) title: &'a str,
 }
 
@@ -74,6 +84,49 @@ pub(crate) fn render_sync_blocked_popup(
 
     component::info_overlay::InfoOverlay::new(title, &popup_message)
         .is_loading(is_loading)
+        .loading_label("Sync in progress...")
+        .render(f, area);
+}
+
+/// Renders an informational popup above the restored session-view background.
+pub(crate) fn render_view_info_popup(
+    f: &mut Frame,
+    area: Rect,
+    restore_view: &ConfirmationViewMode,
+    sessions: &[Session],
+    session_progress_messages: &HashMap<String, String>,
+    context: ViewInfoPopupRenderContext<'_>,
+) {
+    let ViewInfoPopupRenderContext {
+        is_loading,
+        loading_label,
+        message,
+        title,
+    } = context;
+    let background_mode = restore_view.clone().into_view_mode();
+
+    if let Some(session_index) = sessions
+        .iter()
+        .position(|session| session.id == restore_view.session_id)
+    {
+        let active_progress = session_progress_messages
+            .get(&restore_view.session_id)
+            .map(std::string::String::as_str);
+        page::session_chat::SessionChatPage::new(
+            sessions,
+            session_index,
+            restore_view.scroll_offset,
+            &background_mode,
+            active_progress,
+        )
+        .render(f, area);
+    }
+
+    render_overlay_backdrop(f, area);
+
+    component::info_overlay::InfoOverlay::new(title, message)
+        .is_loading(is_loading)
+        .loading_label(loading_label)
         .render(f, area);
 }
 

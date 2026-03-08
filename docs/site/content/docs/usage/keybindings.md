@@ -70,6 +70,7 @@ state:
 | `q` | Back to list |
 | `Enter` | Reply to agent |
 | `o` | Open worktree in tmux |
+| `p` | Create, open, or refresh linked PR/MR |
 | `d` | Show diff |
 | `f` | Toggle focused review |
 | `m` | Add to merge queue (confirmation popup) |
@@ -87,6 +88,8 @@ Additional notes:
 - **Open command behavior**: `o` always opens the session worktree in tmux.
   If one `Open Commands` entry is configured for the active project, it runs immediately.
   If multiple entries are configured (one command per line), Agentty opens a selector popup.
+- **Review requests**: `p` is state-aware. In **Review** without a link it creates or links a PR/MR; with an open link it shows the forge URL; in **Done** or **Canceled** it refreshes the stored PR/MR metadata.
+- **Review-request prerequisites**: GitHub remotes require `gh auth login`; GitLab remotes require `glab auth login`. Missing or unauthenticated CLI state is reported in the session-view popup.
 - **Question**: opening the session enters Question Input mode until all prompts are answered or skipped.
 - **Done**: `t` toggles between summary and full output.
 - **Review**: Runs in read-only review mode. It can use internet lookup

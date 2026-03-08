@@ -18,8 +18,8 @@ Plan for extending `crates/agentty/src/app`, `crates/agentty/src/infra`, and `cr
 | Manual session review-request workflow | `crates/agentty/src/app/service.rs`, `crates/agentty/src/app/session/workflow/lifecycle.rs`, and `crates/agentty/src/app/session/workflow/refresh.rs` now wire `ReviewRequestClient` into publish, open, and refresh helpers that persist normalized PR/MR linkage and can refresh archived sessions from stored forge URLs after worktree cleanup. | Healthy |
 | Forge adapters and persistence | `crates/agentty/src/infra/forge/github.rs`, `crates/agentty/src/infra/forge/gitlab.rs`, `crates/agentty/src/infra/db.rs`, and `crates/agentty/src/app/session/workflow/load.rs` cover normalized create/find/refresh behavior plus durable `session_review_request` loading. | Healthy |
 | Background reconciliation | `crates/agentty/src/app/task.rs` still only runs git-status and version-check jobs, and no app event currently polls linked review requests or reconciles merged or closed remote outcomes back into session status. | Not started |
-| Session view UI | `crates/agentty/src/runtime/mode/session_view.rs`, `crates/agentty/src/ui/state/help_action.rs`, and `crates/agentty/src/ui/page/session_chat.rs` still expose merge, diff, focused-review, and worktree-open actions only; review-request controls and metadata rendering are not wired yet. | Not started |
-| Documentation coverage | `docs/site/content/docs/architecture/module-map.md`, `docs/site/content/docs/architecture/runtime-flow.md`, and `docs/site/content/docs/architecture/testability-boundaries.md` now describe the manual workflow baseline, but `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` still do not cover review-request actions or automatic reconciliation. | Partial |
+| Session view UI | `crates/agentty/src/runtime/mode/session_view.rs`, `crates/agentty/src/ui/state/help_action.rs`, and `crates/agentty/src/ui/page/session_chat.rs` now expose session-view review-request create/open/refresh actions, popup feedback, and inline PR/MR metadata without displacing diff or focused-review flows. | Healthy |
+| Documentation coverage | `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/runtime-flow.md` now document the manual session-view review-request flow; automatic reconciliation docs are still pending step 2. | Partial |
 
 ## Implementation Approach
 
@@ -37,12 +37,12 @@ The manual review-request workflow in `crates/agentty/src/app/session/workflow` 
 **Why now:** The baseline workflow already supports publish/create/open/refresh, so the next smallest user-visible iteration is surfacing that behavior in the main session view.
 **Usable outcome:** A user can create a PR/MR when missing, open an existing PR/MR, and refresh linked metadata directly from session view with clear help/footer guidance and updated usage docs.
 
-- [ ] Add a session-view review-request action that creates a PR/MR when no link exists and otherwise opens or refreshes the linked review request based on state.
-- [ ] Extend `AppMode`, help/footer projections, and view-mode key handling to show loading, success, and blocked states without leaving session context.
-- [ ] Render normalized review-request metadata in session UI without displacing existing diff and focused-review behavior.
-- [ ] Show actionable blocked states when `gh` or `glab` is missing or unauthenticated so users can fix local CLI setup from the same review flow.
-- [ ] Add UI-focused tests that keep the new action availability, footer/help text, and session rendering aligned with session status and linked review-request state.
-- [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` to document the manual session-view review-request flow and its local CLI prerequisites.
+- [x] Add a session-view review-request action that creates a PR/MR when no link exists and otherwise opens or refreshes the linked review request based on state.
+- [x] Extend `AppMode`, help/footer projections, and view-mode key handling to show loading, success, and blocked states without leaving session context.
+- [x] Render normalized review-request metadata in session UI without displacing existing diff and focused-review behavior.
+- [x] Show actionable blocked states when `gh` or `glab` is missing or unauthenticated so users can fix local CLI setup from the same review flow.
+- [x] Add UI-focused tests that keep the new action availability, footer/help text, and session rendering aligned with session status and linked review-request state.
+- [x] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` to document the manual session-view review-request flow and its local CLI prerequisites.
 
 Primary files:
 

@@ -328,6 +328,17 @@ pub struct ReviewRequest {
     pub summary: ReviewRequestSummary,
 }
 
+/// Session-view action currently available for forge review-request workflows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewRequestAction {
+    /// Publish the session branch and create or link a forge review request.
+    Create,
+    /// Show the linked forge review-request URL for manual browser opening.
+    Open,
+    /// Refresh persisted forge review-request metadata from the remote.
+    Refresh,
+}
+
 /// Per-session token statistics.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionStats {
@@ -392,6 +403,21 @@ impl Session {
     /// Returns the display title for this session.
     pub fn display_title(&self) -> &str {
         self.title.as_deref().unwrap_or("No title")
+    }
+
+    /// Returns the review-request action currently available in session view.
+    pub fn review_request_action(&self) -> Option<ReviewRequestAction> {
+        if let Some(review_request) = &self.review_request {
+            if matches!(self.status, Status::Done | Status::Canceled)
+                || review_request.summary.state != ReviewRequestState::Open
+            {
+                return Some(ReviewRequestAction::Refresh);
+            }
+
+            return Some(ReviewRequestAction::Open);
+        }
+
+        (self.status == Status::Review).then_some(ReviewRequestAction::Create)
     }
 }
 
@@ -513,5 +539,116 @@ mod tests {
 
         // Assert
         assert_eq!(displayed_state, "Merged");
+    }
+
+    #[test]
+    fn test_review_request_action_returns_create_for_review_session_without_link() {
+        // Arrange
+        let session = Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::new(),
+            id: "session-id".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            project_name: "project".to_string(),
+            prompt: String::new(),
+            review_request: None,
+            questions: Vec::new(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::Review,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        };
+
+        // Act
+        let action = session.review_request_action();
+
+        // Assert
+        assert_eq!(action, Some(ReviewRequestAction::Create));
+    }
+
+    #[test]
+    fn test_review_request_action_returns_open_for_linked_active_session() {
+        // Arrange
+        let session = Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::new(),
+            id: "session-id".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            project_name: "project".to_string(),
+            prompt: String::new(),
+            review_request: Some(ReviewRequest {
+                last_refreshed_at: 0,
+                summary: ReviewRequestSummary {
+                    display_id: "#42".to_string(),
+                    forge_kind: ForgeKind::GitHub,
+                    source_branch: "agentty/session-id".to_string(),
+                    state: ReviewRequestState::Open,
+                    status_summary: None,
+                    target_branch: "main".to_string(),
+                    title: "Review request".to_string(),
+                    web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
+                },
+            }),
+            questions: Vec::new(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::InProgress,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        };
+
+        // Act
+        let action = session.review_request_action();
+
+        // Assert
+        assert_eq!(action, Some(ReviewRequestAction::Open));
+    }
+
+    #[test]
+    fn test_review_request_action_returns_refresh_for_done_session_with_link() {
+        // Arrange
+        let session = Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::new(),
+            id: "session-id".to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            project_name: "project".to_string(),
+            prompt: String::new(),
+            review_request: Some(ReviewRequest {
+                last_refreshed_at: 0,
+                summary: ReviewRequestSummary {
+                    display_id: "#42".to_string(),
+                    forge_kind: ForgeKind::GitHub,
+                    source_branch: "agentty/session-id".to_string(),
+                    state: ReviewRequestState::Open,
+                    status_summary: None,
+                    target_branch: "main".to_string(),
+                    title: "Review request".to_string(),
+                    web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
+                },
+            }),
+            questions: Vec::new(),
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::Done,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        };
+
+        // Act
+        let action = session.review_request_action();
+
+        // Assert
+        assert_eq!(action, Some(ReviewRequestAction::Refresh));
     }
 }

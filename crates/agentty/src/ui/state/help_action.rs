@@ -1,6 +1,8 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::domain::session::ReviewRequestAction;
+
 /// One user-visible shortcut entry that can be rendered in the footer and
 /// in the help popup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +33,9 @@ pub enum ViewSessionState {
     /// Session is completed; only read-only view actions and output toggling
     /// remain available.
     Done,
+    /// Session was canceled locally; read-only navigation remains available,
+    /// plus any linked review-request refresh flow.
+    Canceled,
     /// Session is currently running; worktree-open remains available, while
     /// reply and diff shortcuts are hidden.
     InProgress,
@@ -51,6 +56,7 @@ pub enum ViewSessionState {
 /// Action availability snapshot for view-mode help projection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ViewHelpState {
+    pub(crate) review_request_action: Option<ReviewRequestAction>,
     pub(crate) session_state: ViewSessionState,
 }
 
@@ -199,6 +205,10 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
         actions.push(HelpAction::new("review", "f", "Toggle focused review"));
     }
 
+    if let Some(review_request_action) = state.review_request_action {
+        actions.push(review_request_help_action(review_request_action));
+    }
+
     if can_edit_session {
         actions.push(HelpAction::new(
             "add to merge queue",
@@ -258,6 +268,10 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
 
     if can_show_focused_review {
         actions.push(HelpAction::new("review", "f", "Toggle focused review"));
+    }
+
+    if let Some(review_request_action) = state.review_request_action {
+        actions.push(review_request_help_action(review_request_action));
     }
 
     if state.session_state == ViewSessionState::Done {
@@ -330,9 +344,25 @@ fn list_base_actions() -> Vec<HelpAction> {
     ]
 }
 
+/// Returns the view-mode shortcut entry for the current review-request action.
+fn review_request_help_action(action: ReviewRequestAction) -> HelpAction {
+    match action {
+        ReviewRequestAction::Create => {
+            HelpAction::new("create PR/MR", "p", "Create pull or merge request")
+        }
+        ReviewRequestAction::Open => {
+            HelpAction::new("open PR/MR", "p", "Show linked pull or merge request")
+        }
+        ReviewRequestAction::Refresh => {
+            HelpAction::new("refresh PR/MR", "p", "Refresh linked pull or merge request")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::session::ReviewRequestAction;
 
     #[test]
     fn test_session_list_actions_hide_enter_without_openable_session() {
@@ -363,6 +393,7 @@ mod tests {
     fn test_view_actions_in_progress_shows_open_and_hides_edit_actions() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: None,
             session_state: ViewSessionState::InProgress,
         };
 
@@ -380,6 +411,7 @@ mod tests {
     fn test_view_actions_rebasing_shows_open_without_stop() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: None,
             session_state: ViewSessionState::Rebasing,
         };
 
@@ -397,6 +429,7 @@ mod tests {
     fn test_view_actions_merge_queue_hides_worktree_shortcuts_and_stop() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: None,
             session_state: ViewSessionState::MergeQueue,
         };
 
@@ -414,6 +447,7 @@ mod tests {
     fn test_view_actions_review_shows_diff() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: Some(ReviewRequestAction::Create),
             session_state: ViewSessionState::Review,
         };
 
@@ -423,6 +457,11 @@ mod tests {
         // Assert
         assert!(actions.iter().any(|action| action.key == "d"));
         assert!(actions.iter().any(|action| action.key == "f"));
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.key == "p" && action.footer_label == "create PR/MR")
+        );
         assert!(actions.iter().any(|action| action.key == "o"));
         assert!(actions.iter().any(|action| action.key == "Enter"));
         assert!(!actions.iter().any(|action| action.key == "S-Tab"));
@@ -437,6 +476,7 @@ mod tests {
     fn test_view_actions_interactive_hides_diff() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: None,
             session_state: ViewSessionState::Interactive,
         };
 
@@ -453,6 +493,7 @@ mod tests {
     fn test_view_actions_done_shows_toggle_and_hides_edit_actions() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: Some(ReviewRequestAction::Refresh),
             session_state: ViewSessionState::Done,
         };
 
@@ -461,6 +502,7 @@ mod tests {
 
         // Assert
         assert!(actions.iter().any(|action| action.key == "t"));
+        assert!(actions.iter().any(|action| action.key == "p"));
         assert!(!actions.iter().any(|action| action.key == "Enter"));
         assert!(!actions.iter().any(|action| action.key == "d"));
         assert!(!actions.iter().any(|action| action.key == "f"));
@@ -472,6 +514,7 @@ mod tests {
     fn test_view_footer_actions_review_shows_advanced_actions() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: Some(ReviewRequestAction::Create),
             session_state: ViewSessionState::Review,
         };
 
@@ -482,6 +525,7 @@ mod tests {
         assert!(actions.iter().any(|action| action.key == "Enter"));
         assert!(actions.iter().any(|action| action.key == "o"));
         assert!(actions.iter().any(|action| action.key == "f"));
+        assert!(actions.iter().any(|action| action.key == "p"));
         assert!(actions.iter().any(|action| action.key == "m"));
         assert!(actions.iter().any(|action| action.key == "r"));
     }
@@ -490,6 +534,7 @@ mod tests {
     fn test_view_footer_actions_rebasing_shows_open_without_stop() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: Some(ReviewRequestAction::Open),
             session_state: ViewSessionState::Rebasing,
         };
 
@@ -498,6 +543,7 @@ mod tests {
 
         // Assert
         assert!(actions.iter().any(|action| action.key == "o"));
+        assert!(actions.iter().any(|action| action.key == "p"));
         assert!(!actions.iter().any(|action| action.key == "Ctrl+c"));
         assert!(!actions.iter().any(|action| action.key == "Enter"));
     }
@@ -506,6 +552,7 @@ mod tests {
     fn test_view_footer_actions_merge_queue_hides_worktree_shortcuts_and_stop() {
         // Arrange
         let state = ViewHelpState {
+            review_request_action: None,
             session_state: ViewSessionState::MergeQueue,
         };
 
@@ -518,6 +565,24 @@ mod tests {
         assert!(!actions.iter().any(|action| action.key == "Ctrl+c"));
         assert!(actions.iter().any(|action| action.key == "q"));
         assert!(actions.iter().any(|action| action.key == "j/k"));
+    }
+
+    #[test]
+    fn test_view_actions_canceled_can_show_review_request_refresh() {
+        // Arrange
+        let state = ViewHelpState {
+            review_request_action: Some(ReviewRequestAction::Refresh),
+            session_state: ViewSessionState::Canceled,
+        };
+
+        // Act
+        let actions = view_actions(state);
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "p"));
+        assert!(!actions.iter().any(|action| action.key == "Enter"));
+        assert!(!actions.iter().any(|action| action.key == "o"));
+        assert!(!actions.iter().any(|action| action.key == "t"));
     }
 
     #[test]

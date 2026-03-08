@@ -25,7 +25,8 @@ Agentty organizes its interface into four tabs, accessible with `Tab`:
 | **Settings** | Configure reasoning level, default models, and `Open Commands` for the active project. |
 
 In session chat view, the status and session title render in a dedicated
-header row above the output panel.
+header row above the output panel. When a session is linked to a forge review
+request, the same row also shows concise PR/MR metadata such as `GitHub #42 Open`.
 
 ## Session Lifecycle
 
@@ -35,14 +36,14 @@ Session statuses and what you can do in each state:
 | Status | Description | Available actions |
 |--------|-------------|-------------------|
 | **New** | Session created, prompt not yet sent. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, scroll, help |
-| **InProgress** | Agent is actively working. | `o` open worktree, scroll, help |
-| **Review** | Agent finished; changes are ready for review. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, `d` diff, `f` toggle focused review, scroll, help |
+| **InProgress** | Agent is actively working. | `o` open worktree, `p` open linked PR/MR, scroll, help |
+| **Review** | Agent finished; changes are ready for review. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, `p` create/open PR/MR, `d` diff, `f` toggle focused review, scroll, help |
 | **Question** | Agent requested clarification before continuing. | question input mode (`Enter` submit, `Esc` skip, text editing keys) |
-| **Queued** | Session is waiting in the merge queue. | read-only view (`q`, scroll, help) |
-| **Rebasing** | Worktree branch is rebasing onto the base branch. | `o` open worktree, scroll, help |
+| **Queued** | Session is waiting in the merge queue. | read-only view (`q`, `p` open linked PR/MR, scroll, help) |
+| **Rebasing** | Worktree branch is rebasing onto the base branch. | `o` open worktree, `p` open linked PR/MR, scroll, help |
 | **Merging** | Changes are being merged into the base branch. | read-only view (`q`, scroll, help) |
-| **Done** | Session completed, merged, and its worktree checkout was removed. | `t` toggle summary/output, scroll, help |
-| **Canceled** | Session was canceled by the user and its worktree checkout was removed. | read-only view (`q`, scroll, help) |
+| **Done** | Session completed, merged, and its worktree checkout was removed. | `t` toggle summary/output, `p` refresh linked PR/MR, scroll, help |
+| **Canceled** | Session was canceled by the user and its worktree checkout was removed. | read-only view (`q`, `p` refresh linked PR/MR, scroll, help) |
 
 Settings values are stored per active project. Switching projects reloads that
 project's `Reasoning Level`, default models, and `Open Commands`.
@@ -50,6 +51,26 @@ project's `Reasoning Level`, default models, and `Open Commands`.
 When `Open Commands` in Settings contains multiple entries (one command per
 line), pressing `o` opens a selector popup (`j`/`k` to move, `Enter` to open,
 `Esc` to cancel).
+
+## Review Request Flow
+
+<a id="usage-review-request-flow"></a>
+Session view exposes one forge-generic review-request action on `p`:
+
+- In **Review** without a linked PR/MR, `p` publishes the session branch, then creates or links a GitHub pull request or GitLab merge request.
+- While a linked PR/MR is still open, `p` shows the canonical forge URL so you can open it in your browser.
+- In **Done**, **Canceled**, or when the stored remote state is no longer open, `p` refreshes the linked PR/MR metadata from the forge CLI and keeps the stored link up to date.
+
+Review-request actions stay inside session view by using an informational popup
+for loading, success, and blocked states. Blocked popups include the exact
+local CLI fix when `gh` or `glab` is missing, unauthenticated, or pointed at an
+unsupported remote.
+
+<a id="usage-review-request-prerequisites"></a>
+Review-request actions require the forge CLI that matches the repository remote:
+
+- GitHub remotes require `gh` plus local authentication via `gh auth login`.
+- GitLab remotes require `glab` plus local authentication via `glab auth login`.
 
 ### Typical Transitions
 

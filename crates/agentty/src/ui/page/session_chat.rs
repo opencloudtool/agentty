@@ -1,12 +1,12 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::domain::agent::{AgentKind, AgentSelectionMetadata};
 use crate::domain::input::{self, extract_at_mention_query};
-use crate::domain::session::{Session, Status};
+use crate::domain::session::{ReviewRequestState, Session, Status};
 use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::file_index;
 use crate::ui::component::chat_input::{ChatInput, SlashMenu, SlashMenuOption};
@@ -17,7 +17,7 @@ use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::ui::util::{
     calculate_input_height, question_panel_layout, truncate_with_ellipsis, wrap_lines,
 };
-use crate::ui::{Component, Page};
+use crate::ui::{Component, Page, style};
 
 /// Maximum rendered height of the prompt input panel, including borders.
 const CHAT_INPUT_MAX_PANEL_HEIGHT: u16 = 10;
@@ -84,6 +84,7 @@ impl<'a> SessionChatPage<'a> {
             AppMode::OpenCommandSelector { restore_view, .. } => {
                 restore_view.done_session_output_mode
             }
+            AppMode::ViewInfoPopup { restore_view, .. } => restore_view.done_session_output_mode,
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
@@ -101,7 +102,8 @@ impl<'a> SessionChatPage<'a> {
                 focused_review_status_message,
                 ..
             } => focused_review_status_message.as_deref(),
-            AppMode::OpenCommandSelector { restore_view, .. } => {
+            AppMode::OpenCommandSelector { restore_view, .. }
+            | AppMode::ViewInfoPopup { restore_view, .. } => {
                 restore_view.focused_review_status_message.as_deref()
             }
             AppMode::List
@@ -121,7 +123,8 @@ impl<'a> SessionChatPage<'a> {
                 focused_review_text,
                 ..
             } => focused_review_text.as_deref(),
-            AppMode::OpenCommandSelector { restore_view, .. } => {
+            AppMode::OpenCommandSelector { restore_view, .. }
+            | AppMode::ViewInfoPopup { restore_view, .. } => {
                 restore_view.focused_review_text.as_deref()
             }
             AppMode::List
@@ -282,15 +285,71 @@ impl<'a> SessionChatPage<'a> {
 
     /// Renders a standalone status/title row above the output panel border.
     fn render_session_header(f: &mut Frame, header_area: Rect, session: &Session) {
-        let status_label = session.status.to_string();
-        let status_width = u16::try_from(status_label.len()).unwrap_or(u16::MAX);
-        let reserved_width = status_width.saturating_add(5);
-        let max_title_width = usize::from(header_area.width.saturating_sub(reserved_width));
-        let header_title = truncate_with_ellipsis(session.display_title(), max_title_width);
-        let header_text = format!(" {status_label} - {header_title} ");
+        let review_request_label = Self::review_request_header_label(session);
+        if let Some(review_request_label) = review_request_label {
+            let review_request_width =
+                u16::try_from(review_request_label.len()).unwrap_or(u16::MAX);
+            let header_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(review_request_width.min(header_area.width)),
+                ])
+                .split(header_area);
+            let header_text = Self::session_header_text(session, header_chunks[0].width);
+            let header =
+                Paragraph::new(header_text).style(Style::default().fg(session.status.color()));
+            let review_request = Paragraph::new(review_request_label)
+                .alignment(ratatui::layout::Alignment::Right)
+                .style(Style::default().fg(Self::review_request_state_color(session)));
+
+            f.render_widget(header, header_chunks[0]);
+            f.render_widget(review_request, header_chunks[1]);
+
+            return;
+        }
+
+        let header_text = Self::session_header_text(session, header_area.width);
         let header = Paragraph::new(header_text).style(Style::default().fg(session.status.color()));
 
         f.render_widget(header, header_area);
+    }
+
+    /// Formats the left-aligned session header text for the available width.
+    fn session_header_text(session: &Session, header_width: u16) -> String {
+        let status_label = session.status.to_string();
+        let status_width = u16::try_from(status_label.len()).unwrap_or(u16::MAX);
+        let reserved_width = status_width.saturating_add(5);
+        let max_title_width = usize::from(header_width.saturating_sub(reserved_width));
+        let header_title = truncate_with_ellipsis(session.display_title(), max_title_width);
+        format!(" {status_label} - {header_title} ")
+    }
+
+    /// Returns the concise review-request metadata rendered in the header.
+    fn review_request_header_label(session: &Session) -> Option<String> {
+        let review_request = session.review_request.as_ref()?;
+
+        Some(format!(
+            " {} {} {} ",
+            review_request.summary.forge_kind.display_name(),
+            review_request.summary.display_id,
+            review_request.summary.state,
+        ))
+    }
+
+    /// Returns the color used for the review-request header metadata.
+    fn review_request_state_color(session: &Session) -> Color {
+        session
+            .review_request
+            .as_ref()
+            .map_or(
+                style::palette::TEXT_MUTED,
+                |review_request| match review_request.summary.state {
+                    ReviewRequestState::Open => style::palette::INFO,
+                    ReviewRequestState::Merged => style::palette::SUCCESS,
+                    ReviewRequestState::Closed => style::palette::DANGER,
+                },
+            )
     }
 
     fn bottom_height(&self, area: Rect, session: &Session) -> u16 {
@@ -446,18 +505,9 @@ impl<'a> SessionChatPage<'a> {
         session: &Session,
         done_session_output_mode: DoneSessionOutputMode,
     ) -> Vec<help_action::HelpAction> {
-        if session.status == Status::Canceled {
-            let canceled_actions = vec![
-                help_action::HelpAction::new("back", "q", "Back to list"),
-                help_action::HelpAction::new("scroll", "j/k", "Scroll output"),
-                help_action::HelpAction::new("help", "?", "Help"),
-            ];
-
-            return canceled_actions;
-        }
-
         let session_state = match session.status {
             Status::Done => ViewSessionState::Done,
+            Status::Canceled => ViewSessionState::Canceled,
             Status::InProgress => ViewSessionState::InProgress,
             Status::Rebasing => ViewSessionState::Rebasing,
             Status::Merging | Status::Queued => ViewSessionState::MergeQueue,
@@ -465,7 +515,10 @@ impl<'a> SessionChatPage<'a> {
             _ => ViewSessionState::Interactive,
         };
 
-        let mut actions = help_action::view_footer_actions(ViewHelpState { session_state });
+        let mut actions = help_action::view_footer_actions(ViewHelpState {
+            review_request_action: session.review_request_action(),
+            session_state,
+        });
 
         if session_state == ViewSessionState::Done {
             let toggle_action_label = Self::done_toggle_action_label(done_session_output_mode);
@@ -628,7 +681,10 @@ mod tests {
     use super::*;
     use crate::agent::AgentModel;
     use crate::domain::input::InputState;
-    use crate::domain::session::{SessionSize, SessionStats};
+    use crate::domain::session::{
+        ForgeKind, ReviewRequest, ReviewRequestState, ReviewRequestSummary, SessionSize,
+        SessionStats,
+    };
     use crate::infra::agent::protocol::QuestionItem;
     use crate::infra::file_index::FileEntry;
     use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
@@ -660,6 +716,22 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect()
+    }
+
+    fn review_request_fixture(state: ReviewRequestState) -> ReviewRequest {
+        ReviewRequest {
+            last_refreshed_at: 0,
+            summary: ReviewRequestSummary {
+                display_id: "#42".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "agentty/session-id".to_string(),
+                state,
+                status_summary: Some("Checks pending".to_string()),
+                target_branch: "main".to_string(),
+                title: "Review request".to_string(),
+                web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
+            },
+        }
     }
 
     fn buffer_row_text(buffer: &ratatui::buffer::Buffer, row: u16, width: u16) -> String {
@@ -1063,6 +1135,19 @@ mod tests {
     }
 
     #[test]
+    fn test_view_help_text_review_without_link_shows_create_review_request_hint() {
+        // Arrange
+        let mut session = session_fixture();
+        session.status = Status::Review;
+
+        // Act
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
+
+        // Assert
+        assert!(help_text.contains("p: create PR/MR"));
+    }
+
+    #[test]
     fn test_view_help_text_done_hides_open_hint() {
         // Arrange
         let mut session = session_fixture();
@@ -1304,6 +1389,31 @@ mod tests {
         let text = buffer_text(terminal.backend().buffer());
         assert!(!text.contains(long_title));
         assert!(text.contains("..."));
+    }
+
+    #[test]
+    fn test_render_includes_review_request_metadata_in_session_header() {
+        // Arrange
+        let mut session = session_fixture();
+        session.review_request = Some(review_request_fixture(ReviewRequestState::Open));
+        session.title = Some("Header Session".to_string());
+        let mode = AppMode::List;
+        let mut page = SessionChatPage::new(std::slice::from_ref(&session), 0, None, &mode, None);
+        let width = 90;
+        let backend = ratatui::backend::TestBackend::new(width, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Page::render(&mut page, frame, area);
+            })
+            .expect("failed to draw session chat page");
+
+        // Assert
+        let header_row = buffer_row_text(terminal.backend().buffer(), 1, width);
+        assert!(header_row.contains("GitHub #42 Open"));
     }
 
     #[test]

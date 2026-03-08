@@ -17,6 +17,7 @@ const OVERLAY_WIDTH_PERCENT: u16 = 52;
 /// Centered informational popup used for non-destructive workflow guidance.
 pub struct InfoOverlay<'a> {
     is_loading: bool,
+    loading_label: &'a str,
     message: &'a str,
     title: &'a str,
 }
@@ -26,6 +27,7 @@ impl<'a> InfoOverlay<'a> {
     pub fn new(title: &'a str, message: &'a str) -> Self {
         Self {
             is_loading: false,
+            loading_label: "Sync in progress...",
             message,
             title,
         }
@@ -35,6 +37,13 @@ impl<'a> InfoOverlay<'a> {
     #[must_use]
     pub fn is_loading(mut self, loading: bool) -> Self {
         self.is_loading = loading;
+        self
+    }
+
+    /// Sets the spinner label shown while the overlay is loading.
+    #[must_use]
+    pub fn loading_label(mut self, loading_label: &'a str) -> Self {
+        self.loading_label = loading_label;
         self
     }
 
@@ -143,7 +152,7 @@ impl<'a> InfoOverlay<'a> {
     /// button when complete.
     fn action_row(&self) -> Line<'static> {
         if self.is_loading {
-            let loading_text = format!("{} Sync in progress...", Icon::current_spinner());
+            let loading_text = format!("{} {}", Icon::current_spinner(), self.loading_label);
 
             Line::from(vec![Span::styled(loading_text, loading_indicator_style())])
                 .alignment(Alignment::Center)
