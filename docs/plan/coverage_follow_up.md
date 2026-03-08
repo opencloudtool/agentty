@@ -5,7 +5,8 @@ Second-pass coverage uplift plan for the remaining runtime, UI, settings, and wo
 ## Cross-Plan Check Before Implementation
 
 - Before starting implementation, review other files in `docs/plan/` for overlapping scope, file ownership, sequencing, or dependency conflicts.
-- `forge_review_request_support.md` is the only neighboring plan that touches related infrastructure paths; keep any follow-up coverage work there limited to tests unless that feature plan explicitly requires behavior changes.
+- `continue_in_progress_sessions_after_exit.md` owns behavior changes in `crates/agentty/src/infra/codex_app_server.rs` and related session-runner paths; coverage work here should stay limited to additive tests or narrow testability refactors that do not redefine detached-runner behavior.
+- `forge_review_request_support.md` owns behavior changes in `crates/agentty/src/app/task.rs`, `crates/agentty/src/runtime/mode/session_view.rs`, and related review-request flows; follow-up coverage work there should align to its final reducer and UI behavior instead of introducing alternate control flow.
 - If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
 
 ## Status Maintenance Rule
@@ -19,17 +20,24 @@ Baseline captured on March 7, 2026 from `cargo llvm-cov --workspace --json --sum
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
 | Workspace baseline | 87.57% line coverage (`36614/41813`) and 85.30% function coverage (`4137/4850`) | Baseline captured |
-| Runtime/editor boundaries | `crates/agentty/src/runtime/terminal.rs` is at 36.57% line coverage (`111` uncovered), `crates/agentty/src/app/task.rs` is at 45.28% (`116` uncovered), and `crates/agentty/src/runtime/event.rs` is at 71.71% (`73` uncovered) | Needs follow-up |
-| UI overlay and page helpers | `crates/agentty/src/ui/overlay.rs` is at 54.22% line coverage (`114` uncovered), `crates/agentty/src/ui/page/project_list.rs` is at 55.65% (`102` uncovered), and `crates/agentty/src/ui/page/setting.rs` is at 16.39% (`51` uncovered) | Needs follow-up |
+| Runtime/editor boundaries | `crates/agentty/src/runtime/terminal.rs` is at 36.57% line coverage (`111` uncovered), `crates/agentty/src/app/task.rs` is at 45.28% (`116` uncovered), and `crates/agentty/src/runtime/event.rs` is at 71.71% (`73` uncovered) | Not started |
+| UI overlay and page helpers | `crates/agentty/src/ui/overlay.rs` is at 54.22% line coverage (`114` uncovered), `crates/agentty/src/ui/page/project_list.rs` is at 55.65% (`102` uncovered), and `crates/agentty/src/ui/page/setting.rs` is at 16.39% (`51` uncovered) | Not started |
 | Workflow hot spots after first pass | `crates/agentty/src/app/session/workflow/merge.rs` remains at 81.08% line coverage (`371` uncovered), `crates/agentty/src/infra/codex_app_server.rs` at 82.98% (`365` uncovered), `crates/agentty/src/runtime/mode/prompt.rs` at 80.46% (`299` uncovered), and `crates/agentty/src/runtime/mode/session_view.rs` at 81.27% (`234` uncovered) | Partial |
 | Settings and git orchestration | `crates/agentty/src/app/setting.rs` is at 75.37% line coverage (`149` uncovered), `crates/agentty/src/infra/git/sync.rs` at 73.99% (`116` uncovered), `crates/agentty/src/infra/git/repo.rs` at 70.95% (`61` uncovered), and `crates/agentty/src/infra/git/merge.rs` at 52.38% (`30` uncovered) | Partial |
-| Coverage ratchet | `.pre-commit-config.yaml` already enforces `--fail-under-lines 87 --fail-under-functions 85` | Implemented |
+| Coverage ratchet | `.pre-commit-config.yaml` already enforces `--fail-under-lines 87 --fail-under-functions 85` | Healthy |
+
+## Implementation Approach
+
+- Start with one deterministic runtime/task slice that raises coverage in the weakest non-UI modules and establishes any reusable test helpers needed later.
+- Run UI-helper and settings/git unhappy-path work as independent follow-up slices because they touch separate validation paths and can land without waiting on workflow-heavy modules.
+- Tackle the larger workflow and transport hotspots only after the smaller slices land so the remaining uncovered branches are narrower and the final ratchet update is based on a stable merged baseline.
 
 ## Updated Priorities
 
-## 1) Cover runtime/editor and background task boundaries
+## 1) Lock in a deterministic runtime/task coverage slice
 
-**Why now:** These files still have some of the lowest line coverage in the workspace, but their behavior is concentrated behind deterministic trait boundaries and helper functions.
+**Why now:** These files still have some of the lowest line coverage in the workspace, but they are already structured around deterministic helpers and event boundaries that can land as one reviewable slice.
+**Usable outcome:** `runtime/terminal`, `app/task`, and `runtime/event` gain the missing unhappy-path and branch coverage needed to validate the current harness approach before the plan expands into heavier modules.
 
 - [ ] Add failure-path tests around `open_external_editor_with_launcher()` in `crates/agentty/src/runtime/terminal.rs`, including suspend failure, resume failure, and pause-flag restoration.
 - [ ] Expand `crates/agentty/src/app/task.rs` tests for version-check event emission, review-assist command failures, and output-detail formatting branches without relying on live network or subprocess behavior.
@@ -41,9 +49,10 @@ Primary files:
 - `crates/agentty/src/app/task.rs`
 - `crates/agentty/src/runtime/event.rs`
 
-## 2) Raise UI overlay and page-helper coverage
+## 2) Land page-helper UI coverage without snapshot-heavy tests
 
-**Why now:** The biggest UI gaps are in pure helper logic and small page render branches, which can increase coverage cheaply without brittle golden-frame tests.
+**Why now:** The biggest UI gaps are in pure helper logic and small page render branches, which can move coverage quickly without waiting on broader session-view or forge-flow work.
+**Usable outcome:** The overlay, project-list, and settings pages have deterministic branch coverage for their helper logic and footer/render edge cases without introducing brittle frame snapshots.
 
 - [ ] Add helper-focused tests for popup sizing, content width, and help-background fallback branches in `crates/agentty/src/ui/overlay.rs`.
 - [ ] Expand row/value/formatting coverage in `crates/agentty/src/ui/page/project_list.rs`, especially active-project markers, session count rendering, and footer/help text assembly.
@@ -55,24 +64,10 @@ Primary files:
 - `crates/agentty/src/ui/page/project_list.rs`
 - `crates/agentty/src/ui/page/setting.rs`
 
-## 3) Add a second pass over the highest uncovered workflow modules
+## 3) Tighten settings and git-orchestration unhappy paths
 
-**Why now:** The first coverage pass landed, but a small number of workflow-heavy modules still account for the largest absolute uncovered line totals.
-
-- [ ] Add remaining no-progress, cleanup-failure, and retry-exhaustion tests in `crates/agentty/src/app/session/workflow/merge.rs`.
-- [ ] Expand `crates/agentty/src/infra/codex_app_server.rs` coverage for restart, resume, timeout, and compaction branches using transport fixtures instead of live subprocesses.
-- [ ] Add residual branch tests in `crates/agentty/src/runtime/mode/prompt.rs` and `crates/agentty/src/runtime/mode/session_view.rs` for stale selections, empty states, and status-gated actions still left uncovered.
-
-Primary files:
-
-- `crates/agentty/src/app/session/workflow/merge.rs`
-- `crates/agentty/src/infra/codex_app_server.rs`
-- `crates/agentty/src/runtime/mode/prompt.rs`
-- `crates/agentty/src/runtime/mode/session_view.rs`
-
-## 4) Tighten settings and git-orchestration coverage
-
-**Why now:** Default-model persistence and git sync flows remain branch-heavy, user-visible, and still below the current workspace baseline.
+**Why now:** Default-model persistence and git sync flows remain below the workspace baseline, yet they sit behind existing mockable boundaries and can land independently of the larger workflow-heavy follow-up.
+**Usable outcome:** Settings persistence and git sync/merge edge cases are covered behind deterministic boundaries, reducing regressions in user-visible configuration and repository-state flows.
 
 - [ ] Add persistence fallback and row-edit lifecycle tests in `crates/agentty/src/app/setting.rs` for project overrides, legacy fallbacks, and open-command editing transitions.
 - [ ] Add deterministic unhappy-path tests in `crates/agentty/src/infra/git/sync.rs`, `crates/agentty/src/infra/git/repo.rs`, and `crates/agentty/src/infra/git/merge.rs` for branch-state validation, already-present results, and command-detail error reporting.
@@ -85,9 +80,26 @@ Primary files:
 - `crates/agentty/src/infra/git/repo.rs`
 - `crates/agentty/src/infra/git/merge.rs`
 
+## 4) Finish the remaining workflow and transport hot spots
+
+**Why now:** After the smaller slices land, the highest uncovered totals concentrate in workflow-heavy modules that should be reviewed after the shared runtime and git test seams are already proven.
+**Usable outcome:** The remaining merge, app-server, prompt, and session-view hotspots only retain genuinely hard-to-reach branches, making the next baseline and ratchet increase credible.
+
+- [ ] Add remaining no-progress, cleanup-failure, and retry-exhaustion tests in `crates/agentty/src/app/session/workflow/merge.rs`.
+- [ ] Expand `crates/agentty/src/infra/codex_app_server.rs` coverage for restart, resume, timeout, and compaction branches using transport fixtures instead of live subprocesses.
+- [ ] Add residual branch tests in `crates/agentty/src/runtime/mode/prompt.rs` and `crates/agentty/src/runtime/mode/session_view.rs` for stale selections, empty states, and status-gated actions still left uncovered.
+
+Primary files:
+
+- `crates/agentty/src/app/session/workflow/merge.rs`
+- `crates/agentty/src/infra/codex_app_server.rs`
+- `crates/agentty/src/runtime/mode/prompt.rs`
+- `crates/agentty/src/runtime/mode/session_view.rs`
+
 ## 5) Refresh the baseline and ratchet again
 
-**Why now:** The current ratchet only protects the first improved baseline; a second pass should convert these follow-up wins into a higher floor.
+**Why now:** The current ratchet only protects the first improved baseline; a second pass should convert the landed follow-up slices into a stronger enforced floor.
+**Usable outcome:** The plan snapshot, ratchet thresholds, and any contributor guidance all reflect the new post-follow-up baseline instead of the first-pass numbers.
 
 - [ ] Re-run `cargo llvm-cov --workspace --json --summary-only` after priorities 1 through 4 land and refresh this snapshot table with the new metrics.
 - [ ] Raise `--fail-under-lines` and `--fail-under-functions` in `.pre-commit-config.yaml` only after the refreshed baseline remains stable across the full suite.
@@ -103,20 +115,21 @@ Primary files:
 
 ```mermaid
 graph TD
-    P1[1. Runtime/editor and background task boundaries] --> P3[3. Second workflow pass]
-    P4[4. Settings and git orchestration] --> P3
-    P2[2. UI overlay and page helpers] --> P5[5. Refresh baseline and ratchet]
+    P1[1. Runtime/task slice] --> P4[4. Workflow and transport hot spots]
+    P3[3. Settings and git unhappy paths] --> P4
+    P2[2. Page-helper UI coverage] --> P5[5. Refresh baseline and ratchet]
     P3 --> P5
+    P4 --> P5
 ```
 
-1. Start with `Cover runtime/editor and background task boundaries`; it targets the lowest-coverage non-UI modules and may expose reusable test helpers for later workflow work.
-1. Run `Raise UI overlay and page-helper coverage` in parallel with priority 1 because it stays inside pure UI helpers and page-local rendering branches.
-1. Run `Tighten settings and git-orchestration coverage` in parallel with priorities 1 and 2 because it stays in separate app/git modules with deterministic test boundaries.
-1. Start `Add a second pass over the highest uncovered workflow modules` only after priorities 1 and 4 are merged so the larger workflow diff can reuse any smaller boundary refinements and stay reviewable.
-1. Run `Refresh the baseline and ratchet again` only after priorities 2 and 3 are complete, then raise thresholds only if the refreshed baseline is stable across the full suite.
+1. Start with `Lock in a deterministic runtime/task coverage slice`; it is the smallest non-UI iteration that can raise coverage immediately and establish reusable harness patterns.
+1. Run `Land page-helper UI coverage without snapshot-heavy tests` in parallel with priority 1 because it stays inside pure UI helpers and page-local rendering branches.
+1. Run `Tighten settings and git-orchestration unhappy paths` in parallel with priorities 1 and 2 because it stays in separate settings/git modules with deterministic test boundaries.
+1. Start `Finish the remaining workflow and transport hot spots` only after priorities 1 and 3 are merged so the larger workflow diff can reuse the proven runtime and git test seams and avoid conflicting with active feature-plan behavior changes.
+1. Run `Refresh the baseline and ratchet again` only after priorities 2 through 4 are complete, then raise thresholds only if the refreshed baseline is stable across the full suite.
 
 ## Out of Scope for This Pass
 
 - Adding live-network or credential-dependent coverage for real provider integrations.
 - Replacing the existing coverage ratchet with a different automation system.
-- Folding product-behavior work from `docs/plan/forge_review_request_support.md` into this coverage-only follow-up.
+- Folding product-behavior work from `docs/plan/continue_in_progress_sessions_after_exit.md` or `docs/plan/forge_review_request_support.md` into this coverage-only follow-up.
