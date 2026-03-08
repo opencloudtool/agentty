@@ -145,7 +145,7 @@ impl GitLabReviewRequestAdapter {
             .run(auth_status_command(remote))
             .await
             .map_err(|error| map_spawn_error(remote, error))?;
-        if output.success() {
+        if output.success() || Self::auth_status_indicates_authenticated(&output) {
             return Ok(());
         }
 
@@ -160,6 +160,17 @@ impl GitLabReviewRequestAdapter {
             forge_kind: ForgeKind::GitLab,
             host: remote.host.clone(),
         })
+    }
+
+    /// Returns whether one `glab auth status` output still proves valid auth.
+    ///
+    /// Some `glab` versions report a non-zero exit status for incomplete local
+    /// git-protocol setup even when the API token is present and usable. Treat
+    /// those responses as authenticated so review-request creation can proceed.
+    fn auth_status_indicates_authenticated(output: &ForgeCommandOutput) -> bool {
+        let detail = format!("{}\n{}", output.stdout, output.stderr).to_ascii_lowercase();
+
+        detail.contains("logged in to") && detail.contains("token found:")
     }
 
     /// Runs one authenticated `glab` command and normalizes common failures.
@@ -202,15 +213,7 @@ impl GitLabReviewRequestAdapter {
 
 /// Builds the `glab auth status` command for one GitLab host.
 fn auth_status_command(remote: &ForgeRemote) -> ForgeCommand {
-    glab_command(
-        remote,
-        vec![
-            "auth".to_string(),
-            "status".to_string(),
-            "--hostname".to_string(),
-            remote.host.clone(),
-        ],
-    )
+    glab_command(remote, vec!["auth".to_string(), "status".to_string()])
 }
 
 /// Builds the `glab api` lookup command for `source_branch`.
@@ -219,8 +222,6 @@ fn lookup_command(remote: &ForgeRemote, source_branch: &str) -> ForgeCommand {
         remote,
         vec![
             "api".to_string(),
-            "--hostname".to_string(),
-            remote.host.clone(),
             "--method".to_string(),
             "GET".to_string(),
             format!(
@@ -251,8 +252,6 @@ fn lookup_command(remote: &ForgeRemote, source_branch: &str) -> ForgeCommand {
 fn create_command(remote: &ForgeRemote, input: &CreateReviewRequestInput) -> ForgeCommand {
     let mut arguments = vec![
         "api".to_string(),
-        "--hostname".to_string(),
-        remote.host.clone(),
         "--method".to_string(),
         "POST".to_string(),
         format!(
@@ -296,13 +295,23 @@ fn view_command(remote: &ForgeRemote, merge_request_iid: &str) -> ForgeCommand {
 ///
 /// Uses `GLAB_NO_PROMPT` so `glab` does not emit the deprecated `NO_PROMPT`
 /// warning to stdout, which would corrupt JSON responses consumed by the
-/// adapter.
+/// adapter. `GITLAB_HOST` and `GL_HOST` pin `glab` to the target server URL so
+/// self-managed instances with explicit HTTPS ports do not rely on
+/// `--hostname`, which rejects `host:port` values.
 fn glab_command(remote: &ForgeRemote, arguments: Vec<String>) -> ForgeCommand {
+    let server_url = gitlab_server_url(remote);
+
     ForgeCommand::new("glab", arguments)
         .with_environment("CLICOLOR", "0")
-        .with_environment("GL_HOST", format!("https://{}", remote.host))
+        .with_environment("GITLAB_HOST", server_url.clone())
+        .with_environment("GL_HOST", server_url)
         .with_environment("GLAB_NO_PROMPT", "1")
         .with_environment("NO_COLOR", "1")
+}
+
+/// Returns the base server URL that `glab` should target for one remote.
+fn gitlab_server_url(remote: &ForgeRemote) -> String {
+    format!("https://{}", remote.host)
 }
 
 /// Maps one spawn-time failure into a normalized GitLab review-request error.
@@ -374,6 +383,7 @@ fn looks_like_authentication_failure(detail: &str) -> bool {
     let normalized_detail = detail.to_ascii_lowercase();
 
     normalized_detail.contains("glab auth login")
+        || normalized_detail.contains("has not been authenticated with glab")
         || normalized_detail.contains("not logged")
         || normalized_detail.contains("authentication failed")
         || normalized_detail.contains("authentication required")
@@ -659,6 +669,67 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn find_by_source_branch_accepts_non_zero_auth_status_when_glab_reports_logged_in() {
+        // Arrange
+        let remote = gitlab_remote();
+        let mut sequence = Sequence::new();
+        let mut command_runner = MockForgeCommandRunner::new();
+        command_runner
+            .expect_run()
+            .once()
+            .in_sequence(&mut sequence)
+            .withf({
+                let remote = remote.clone();
+
+                move |command| command == &auth_status_command(&remote)
+            })
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(ForgeCommandOutput {
+                        exit_code: Some(1),
+                        stderr: String::new(),
+                        stdout: "gitlab.example.com\n  ✓ Logged in to gitlab.example.com as \
+                                 minev.dev\n  ✓ Token found: **************************"
+                            .to_string(),
+                    })
+                })
+            });
+        command_runner
+            .expect_run()
+            .once()
+            .in_sequence(&mut sequence)
+            .withf({
+                let remote = remote.clone();
+
+                move |command| command == &lookup_command(&remote, "feature/forge")
+            })
+            .returning(|_| Box::pin(async { Ok(success_output(r#"[{"iid":17}]"#.to_string())) }));
+        command_runner
+            .expect_run()
+            .once()
+            .in_sequence(&mut sequence)
+            .withf({
+                let remote = remote.clone();
+
+                move |command| command == &view_command(&remote, "17")
+            })
+            .returning(|_| Box::pin(async { Ok(success_output(gitlab_view_json())) }));
+        let adapter = GitLabReviewRequestAdapter::new(Arc::new(command_runner));
+
+        // Act
+        let review_request = adapter
+            .find_by_source_branch(remote, "feature/forge".to_string())
+            .await
+            .expect("logged-in auth status output should be accepted");
+
+        // Assert
+        assert_eq!(
+            review_request.map(|summary| summary.display_id),
+            Some("!17".to_string())
+        );
+    }
+
     #[test]
     fn create_command_omits_description_field_when_body_is_missing() {
         // Arrange
@@ -677,8 +748,6 @@ mod tests {
         assert_eq!(command.executable, "glab");
         assert!(command.arguments.starts_with(&[
             "api".to_string(),
-            "--hostname".to_string(),
-            "gitlab.example.com".to_string(),
             "--method".to_string(),
             "POST".to_string(),
             "projects/team%2Fproject/merge_requests".to_string(),
@@ -745,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn glab_commands_use_glab_no_prompt_without_legacy_no_prompt() {
+    fn glab_commands_use_environment_host_targeting_without_legacy_no_prompt() {
         // Arrange
         let remote = gitlab_remote();
 
@@ -753,16 +822,62 @@ mod tests {
         let command = lookup_command(&remote, "feature/forge");
 
         // Assert
+        assert!(command.environment.contains(&(
+            "GITLAB_HOST".to_string(),
+            "https://gitlab.example.com".to_string()
+        )));
         assert!(
             command
                 .environment
                 .contains(&("GLAB_NO_PROMPT".to_string(), "1".to_string()))
         );
+        assert!(command.environment.contains(&(
+            "GL_HOST".to_string(),
+            "https://gitlab.example.com".to_string()
+        )));
         assert!(
             !command
                 .environment
                 .iter()
                 .any(|(key, _value)| key == "NO_PROMPT")
+        );
+        assert!(
+            !command
+                .arguments
+                .iter()
+                .any(|argument| argument == "--hostname")
+        );
+    }
+
+    #[test]
+    fn glab_commands_keep_explicit_https_ports_in_environment_host_targeting() {
+        // Arrange
+        let mut remote = gitlab_remote();
+        remote.host = "gitlab.example.com:8443".to_string();
+        remote.repo_url = "https://gitlab.example.com:8443/team/project.git".to_string();
+        remote.web_url = "https://gitlab.example.com:8443/team/project".to_string();
+
+        // Act
+        let command = create_command(
+            &remote,
+            &CreateReviewRequestInput {
+                body: None,
+                source_branch: "feature/forge".to_string(),
+                target_branch: "main".to_string(),
+                title: "Add forge review support".to_string(),
+            },
+        );
+
+        // Assert
+        assert!(command.environment.contains(&(
+            "GITLAB_HOST".to_string(),
+            "https://gitlab.example.com:8443".to_string(),
+        )));
+        assert!(
+            !command
+                .arguments
+                .iter()
+                .any(|argument| argument == "--hostname")
         );
     }
 
