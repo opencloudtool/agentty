@@ -4,12 +4,16 @@ Plan for extending `crates/agentty/src/app`, `crates/agentty/src/infra`, and `cr
 
 ## Cross-Plan Check Before Implementation
 
+- Before starting implementation, review other files in `docs/plan/` for overlapping scope, file ownership, sequencing, or dependency conflicts.
 - `docs/plan/coverage_follow_up.md` only tracks coverage-ratchet follow-up work and does not overlap forge review-request sequencing, file ownership, or rollout assumptions.
-- No other active plan in `docs/plan/` currently claims the remaining review-request poller, session-view action, or usage-doc work.
+- `docs/plan/continue_in_progress_sessions_after_exit.md` overlaps on `crates/agentty/src/app/core.rs` and app-level task ownership, but it does not define review-request polling or session-status transitions from forge state; if both plans are active, the detached-session plan controls session-turn lifetime while this plan controls review-request reconciliation behavior.
+- No other active plan in `docs/plan/` currently claims the remaining review-request poller or automatic reconciliation docs work.
+- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
 
 ## Status Maintenance Rule
 
-- After implementing any step in this plan, immediately update its status in this document.
+- After implementing any step in this plan, immediately update its checklist status in this document and refresh any current-state snapshot rows that changed.
+- When a step changes user-visible behavior or contributor guidance, update the corresponding documentation in that same step before marking it complete.
 
 ## Current State Snapshot
 

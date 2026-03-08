@@ -12,6 +12,7 @@ Second-pass coverage uplift plan for the remaining runtime, UI, settings, and wo
 ## Status Maintenance Rule
 
 - After implementing any step in this plan, immediately update its checklist status, refresh any affected snapshot rows, and record whether the coverage ratchet threshold should move.
+- When a step changes contributor guidance or enforced thresholds, update the corresponding documentation in that same step before marking it complete.
 
 ## Current State Snapshot
 

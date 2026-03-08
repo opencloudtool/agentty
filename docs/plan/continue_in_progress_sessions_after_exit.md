@@ -12,6 +12,7 @@ Plan for changing `crates/agentty/src/app`, `crates/agentty/src/infra`, and `cra
 ## Status Maintenance Rule
 
 - After implementing any step in this plan, immediately update its checklist status, refresh the current-state snapshot rows that changed, and note any new migration or docs dependency before moving to the next step.
+- When a step changes user-visible behavior or contributor guidance, update the corresponding documentation in that same step before marking it complete.
 
 ## Current State Snapshot
 
@@ -25,49 +26,41 @@ Plan for changing `crates/agentty/src/app`, `crates/agentty/src/infra`, and `cra
 
 ## Implementation Approach
 
-- Start with one detached execution path for queued session turns so a user can close Agentty mid-turn, reopen it later, and still observe the session progressing or finishing without manual repair.
+- Start with one detached execution path plus restart-safe reconciliation so a user can close Agentty mid-turn, reopen it later, and still observe the same turn progressing or finishing without manual repair.
 - Keep SQLite plus the session worktree as the source of truth; the TUI should enqueue and observe work, while the long-running runner process owns turn execution, output persistence, and final status transitions.
-- Add stronger liveness, cancel, and duplicate-runner protection only after the detached happy path works end to end so the first shipped slice is already usable.
+- Fold usage and concept docs into the same iterations that change session-lifetime behavior; keep deeper architecture-boundary docs with the step that finalizes those boundaries.
+- Add stronger cancel, duplicate-runner protection, and provider-resume hardening only after the detached happy path works end to end so the first shipped slice is already usable.
 
 ## Updated Priorities
 
-## 1) Move session-turn execution into a detached runner
+## 1) Ship detached execution with restart-safe reconciliation
 
-**Why now:** The current in-process worker model guarantees that quitting the TUI aborts active work, so no later recovery logic can help until turn execution stops depending on the UI process.
-**Usable outcome:** A user can start a session turn, close Agentty, reopen it later, and still find the same turn running or completed because execution moved to a detached process.
+**Why now:** Detached execution is not actually user-usable until restart stops failing healthy unfinished work, so the first landed slice needs both the runner and the reconciliation path together.
+**Usable outcome:** A user can start a session turn, close Agentty, reopen it later, and still find the same turn running or completed because execution survives outside the TUI and restart preserves healthy work.
 
 - [ ] Add a dedicated background-runner entry point, most likely as an `agentty` subcommand or a small sibling binary, that loads one queued `session_operation` and executes the existing session-turn flow without starting the Ratatui runtime.
 - [ ] Refactor `crates/agentty/src/app/session/workflow/worker.rs` so queue persistence, turn execution, and post-turn status updates can be reused by both the TUI enqueue path and the detached runner without direct `App` ownership.
 - [ ] Launch detached runners from the enqueue path with enough persisted context to reconstruct shared services (`Database`, git client, app-server router, worktree folder, session model) while keeping process spawning behind an explicit infrastructure boundary instead of direct orchestration-layer subprocess calls.
 - [ ] Ensure the detached runner, not the TUI process, owns CLI child processes and app-server runtimes for the duration of the turn so closing the TUI no longer tears down active provider work.
-
-Primary files:
-
-- `crates/agentty/src/main.rs`
-- `crates/agentty/src/app/core.rs`
-- `crates/agentty/src/app/session/workflow/worker.rs`
-- `crates/agentty/src/infra/db.rs`
-
-## 2) Replace blanket restart failure with liveness-based reconciliation
-
-**Why now:** Detached runners only help if restart logic stops converting healthy unfinished work into failed operations the moment the TUI starts again.
-**Usable outcome:** Reopening Agentty preserves healthy detached work as `InProgress`, while genuinely orphaned operations still recover to a visible terminal state instead of hanging forever.
-
 - [ ] Replace `SessionManager::fail_unfinished_operations_from_previous_run()` with reconciliation that checks whether a detached runner still owns each unfinished operation before deciding to keep it active or mark it failed.
 - [ ] Extend `session_operation` persistence with the minimum runner metadata needed for liveness checks and single ownership, such as runner PID, claim token, or last-known heartbeat timestamp, using a new migration instead of editing `012_create_session_operation.sql`.
 - [ ] Add a small infrastructure boundary for process-liveness inspection so `app/` and `runtime/` code do not perform direct OS process checks.
 - [ ] Update session load and refresh flows to trust DB-driven status and transcript updates from detached runners even when there is no live in-memory `SessionHandles` producer in the current TUI process.
+- [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/getting-started/overview.md` in the same slice so the shipped behavior explains that active sessions continue after the TUI exits and refresh from persisted state on reopen.
 
 Primary files:
 
+- `crates/agentty/src/main.rs`
 - `crates/agentty/src/app/core.rs`
 - `crates/agentty/src/app/session/workflow/load.rs`
 - `crates/agentty/src/app/session/workflow/refresh.rs`
 - `crates/agentty/src/app/session/workflow/worker.rs`
 - `crates/agentty/src/infra/db.rs`
 - `crates/agentty/migrations/`
+- `docs/site/content/docs/usage/workflow.md`
+- `docs/site/content/docs/getting-started/overview.md`
 
-## 3) Preserve cancel, stop, and resume safety across detached execution
+## 2) Preserve cancel, stop, and resume safety across detached execution
 
 **Why now:** Keeping work alive after exit must not regress explicit user stop behavior, duplicate-runner protection, or provider resume correctness.
 **Usable outcome:** Cancel still stops detached work, reopening the app does not start duplicate runners, and follow-up replies continue using the right provider-native conversation state.
@@ -75,6 +68,7 @@ Primary files:
 - [ ] Rework cancel and stop flows so app exit is no longer treated as a cancel signal, while explicit user-driven cancel still propagates through persisted cancel flags and the detached runner's process boundary.
 - [ ] Enforce single-runner ownership per unfinished operation and per session turn so rapid reopen, repeated enqueue, or crash recovery cannot execute the same operation twice.
 - [ ] Keep provider conversation identifiers and transcript replay rules correct when a detached runner restarts an app-server runtime or a resumed reply happens after the user reopens Agentty.
+- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/module-map.md`, and `docs/site/content/docs/architecture/testability-boundaries.md` to describe detached session runners, ownership of provider subprocesses, and the liveness boundary once those interfaces settle.
 - [ ] Add mock-driven tests around detached execution for CLI and app-server transports, including duplicate suppression, cancel-before-execution, cancel-during-execution, and reply-after-restart scenarios.
 
 Primary files:
@@ -86,40 +80,36 @@ Primary files:
 - `crates/agentty/src/infra/codex_app_server.rs`
 - `crates/agentty/src/infra/gemini_acp.rs`
 - `crates/agentty/src/infra/db.rs`
+- `docs/site/content/docs/architecture/runtime-flow.md`
+- `docs/site/content/docs/architecture/module-map.md`
+- `docs/site/content/docs/architecture/testability-boundaries.md`
 
-## 4) Document the new session-lifetime model and validate it end to end
+## 3) Validate detached session lifetime end to end
 
-**Why now:** Once the detached runner flow works, users and future contributors need the new shutdown semantics, runtime ownership, and contributor-safe boundaries documented before the behavior ships broadly.
-**Usable outcome:** Docs and tests describe that quitting Agentty does not stop active sessions, and the repository has regression coverage for close-and-reopen behavior.
+**Why now:** The detached-runner model changes failure recovery and restart semantics, so one end-to-end regression pass is needed before treating the behavior as stable.
+**Usable outcome:** The repository has regression coverage for close-and-reopen behavior and the full validation gates confirm the final detached-session flow is ready to ship.
 
-- [ ] Update `docs/site/content/docs/usage/workflow.md` to explain that `InProgress` sessions keep running after the TUI exits and will refresh from persisted output on reopen.
-- [ ] Update `docs/site/content/docs/getting-started/overview.md`, `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/module-map.md`, and `docs/site/content/docs/architecture/testability-boundaries.md` to describe detached session runners, ownership of provider subprocesses, and the new liveness boundary.
 - [ ] Add an integration-style regression test that starts a turn, simulates TUI shutdown while the runner continues, and verifies that a fresh `App` instance observes either continued `InProgress` output or the final `Review` state from persistence.
 - [ ] Run the repository validation gates after the implementation lands, including the full pre-commit checks and full test suite.
 
 Primary files:
 
-- `docs/site/content/docs/usage/workflow.md`
-- `docs/site/content/docs/getting-started/overview.md`
-- `docs/site/content/docs/architecture/runtime-flow.md`
-- `docs/site/content/docs/architecture/module-map.md`
-- `docs/site/content/docs/architecture/testability-boundaries.md`
+- `crates/agentty/src/app/core.rs`
 - `crates/agentty/src/app/session/core.rs`
+- `crates/agentty/src/app/session/workflow/worker.rs`
 
 ## Suggested Execution Order
 
 ```mermaid
 graph TD
-    P1[1. Detached runner] --> P2[2. Liveness reconciliation]
-    P1 --> P3[3. Cancel and resume safety]
-    P2 --> P3
-    P3 --> P4[4. Docs and end-to-end validation]
+    P1[1. Detached execution and reconciliation] --> P2[2. Cancel and resume safety]
+    P2 --> P3[3. End-to-end validation]
 ```
 
-1. Start with `1) Move session-turn execution into a detached runner`; it is the smallest usable slice that can change the observed behavior on app exit.
-1. Start `2) Replace blanket restart failure with liveness-based reconciliation` immediately after priority 1 because detached execution is not user-visible on reopen until startup stops failing healthy operations.
-1. Start `3) Preserve cancel, stop, and resume safety across detached execution` only after priorities 1 and 2 are merged, because it depends on the final runner ownership and restart-reconciliation shape.
-1. Start `4) Document the new session-lifetime model and validate it end to end` after priority 3 so the docs and regression tests describe the final behavior rather than an intermediate runner-only slice.
+1. Start with `1) Ship detached execution with restart-safe reconciliation`; it is the first slice that produces an end-to-end usable close-and-reopen workflow instead of runner groundwork alone.
+1. Start `2) Preserve cancel, stop, and resume safety across detached execution` only after priority 1 is merged, because it depends on the detached-runner ownership and reconciliation shape established there.
+1. Start `3) Validate detached session lifetime end to end` only after priority 2 is merged so the final regression test and validation pass cover the stabilized behavior.
+1. No top-level priorities are safe to run in parallel because each step depends on the detached-runner behavior and ownership model finalized by the previous one.
 
 ## Out of Scope for This Pass
 
