@@ -126,13 +126,15 @@ fn render_list_or_overlay_mode(
             selected_confirmation_index,
             ..
         } => {
-            if *confirmation_intent == ConfirmationIntent::MergeSession
-                && let Some(view_mode) = restore_view
+            if matches!(
+                confirmation_intent,
+                ConfirmationIntent::MergeSession | ConfirmationIntent::RegenerateFocusedReview
+            ) && let Some(view_mode) = restore_view
             {
-                render_merge_confirmation_overlay(
+                render_session_confirmation_overlay(
                     f,
                     area,
-                    &MergeConfirmationContext {
+                    &SessionConfirmationContext {
                         confirmation_message,
                         confirmation_title,
                         selected_confirmation_index: *selected_confirmation_index,
@@ -206,9 +208,9 @@ fn render_list_or_overlay_mode(
     true
 }
 
-/// Borrowed context for the confirmation overlay portion of a merge
-/// confirmation render.
-struct MergeConfirmationContext<'a> {
+/// Borrowed context for the confirmation overlay portion of a session-scoped
+/// confirmation render (merge, regenerate focused review).
+struct SessionConfirmationContext<'a> {
     /// The body text displayed inside the confirmation dialog.
     confirmation_message: &'a str,
     /// The header title of the confirmation dialog.
@@ -217,11 +219,12 @@ struct MergeConfirmationContext<'a> {
     selected_confirmation_index: usize,
 }
 
-/// Renders merge confirmation above the originating session chat page.
-fn render_merge_confirmation_overlay(
+/// Renders a session-scoped confirmation above the originating session chat
+/// page.
+fn render_session_confirmation_overlay(
     f: &mut Frame,
     area: Rect,
-    context: &MergeConfirmationContext<'_>,
+    context: &SessionConfirmationContext<'_>,
     view_mode: &ConfirmationViewMode,
     sessions: &[Session],
     session_progress_messages: &HashMap<String, String>,
@@ -602,14 +605,14 @@ mod tests {
     }
 
     #[test]
-    fn render_merge_confirmation_overlay_renders_confirmation_text() {
+    fn render_session_confirmation_overlay_renders_confirmation_text() {
         // Arrange
         let backend = ratatui::backend::TestBackend::new(120, 30);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let session_id = "session-merge";
         let sessions = vec![session_fixture(session_id)];
         let progress_messages = HashMap::new();
-        let confirmation_context = MergeConfirmationContext {
+        let confirmation_context = SessionConfirmationContext {
             confirmation_message: "Queue merge now?",
             confirmation_title: "Confirm Merge",
             selected_confirmation_index: 0,
@@ -625,7 +628,7 @@ mod tests {
         // Act
         terminal
             .draw(|frame| {
-                render_merge_confirmation_overlay(
+                render_session_confirmation_overlay(
                     frame,
                     frame.area(),
                     &confirmation_context,

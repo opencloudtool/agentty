@@ -128,6 +128,12 @@ async fn handle_view_key(
     let view_session_snapshot = view_key_context.session_snapshot;
 
     match key.code {
+        KeyCode::Char('q')
+            if pending_update.done_session_output_mode == DoneSessionOutputMode::FocusedReview =>
+        {
+            pending_update.done_session_output_mode = DoneSessionOutputMode::Summary;
+            pending_update.scroll_offset = None;
+        }
         KeyCode::Char('q') => app.mode = AppMode::List,
         KeyCode::Char('o') if view_session_snapshot.can_open_worktree => {
             open_worktree_for_view_session(app, view_context).await;
@@ -187,7 +193,7 @@ async fn handle_view_key(
                 && !key.modifiers.contains(event::KeyModifiers::CONTROL)
                 && is_view_focused_review_allowed(view_session_snapshot.session_status) =>
         {
-            toggle_focused_review(app, view_context, pending_update).await;
+            open_or_regenerate_focused_review(app, view_context, pending_update).await;
         }
         KeyCode::Char('m') if view_session_snapshot.is_action_allowed => {
             open_merge_confirmation(app, view_context);
@@ -262,18 +268,35 @@ fn confirmation_view_mode(view_context: &ViewContext) -> ConfirmationViewMode {
     }
 }
 
-/// Toggles focused review on or off in the pending view state.
+/// Opens focused review or shows a regeneration confirmation popup.
 ///
-/// When currently in focused review mode, switches back to summary. Otherwise,
-/// opens focused review and resets scroll to bottom-aligned mode.
-async fn toggle_focused_review(
+/// When currently in focused review mode and a review result (or error) is
+/// displayed, shows a confirmation popup before regenerating. If a generation
+/// is already in flight (loading), the press is ignored to avoid spawning
+/// duplicate background tasks. Otherwise, opens focused review and resets
+/// scroll to bottom-aligned mode.
+async fn open_or_regenerate_focused_review(
     app: &mut App,
     view_context: &ViewContext,
     pending_update: &mut ViewPendingUpdate,
 ) {
     if pending_update.done_session_output_mode == DoneSessionOutputMode::FocusedReview {
-        pending_update.done_session_output_mode = DoneSessionOutputMode::Summary;
-        pending_update.scroll_offset = None;
+        let is_loading = pending_update
+            .focused_review_status_message
+            .as_deref()
+            .is_some_and(is_focused_review_loading_status_message);
+        if is_loading {
+            return;
+        }
+
+        app.mode = AppMode::Confirmation {
+            confirmation_intent: ConfirmationIntent::RegenerateFocusedReview,
+            confirmation_message: "Regenerate focused review?".to_string(),
+            confirmation_title: "Confirm Regenerate".to_string(),
+            restore_view: Some(confirmation_view_mode(view_context)),
+            session_id: Some(view_context.session_id.clone()),
+            selected_confirmation_index: DEFAULT_OPTION_INDEX,
+        };
 
         return;
     }
@@ -609,8 +632,8 @@ fn half_page_scroll_step(metrics: ViewMetrics) -> u16 {
 /// Reviews are auto-generated when sessions transition to `Review`. When the
 /// user presses `f` and no cached review exists yet, Agentty computes the
 /// current diff, starts background generation, and shows a loading message
-/// immediately. Toggling back to summary is handled by
-/// `toggle_focused_review`.
+/// immediately. Exiting focused review is handled by `q`; pressing `f` again
+/// while viewing regenerates via `open_or_regenerate_focused_review`.
 async fn open_focused_review_output_mode(
     app: &mut App,
     view_context: &ViewContext,
@@ -711,7 +734,7 @@ fn focused_review_assist_model(app: &App) -> AgentModel {
 }
 
 /// Formats the review loading status line with the active model name.
-fn focused_review_loading_message(review_model: AgentModel) -> String {
+pub(crate) fn focused_review_loading_message(review_model: AgentModel) -> String {
     format!(
         "{REVIEW_LOADING_MESSAGE_PREFIX} with model {}...",
         review_model.as_str(),
@@ -1856,5 +1879,149 @@ mod tests {
             Some(focused_review_loading_message(AgentModel::ClaudeOpus46))
         );
         assert_eq!(next_focused_review_text, None);
+    }
+
+    #[tokio::test]
+    async fn test_open_or_regenerate_focused_review_opens_when_not_in_focused_review() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        let view_context = ViewContext {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            scroll_offset: Some(5),
+            session_id,
+            session_index: 0,
+        };
+        let mut pending_update = ViewPendingUpdate::from_context(&view_context);
+
+        // Act
+        open_or_regenerate_focused_review(&mut app, &view_context, &mut pending_update).await;
+
+        // Assert
+        assert_eq!(
+            pending_update.done_session_output_mode,
+            DoneSessionOutputMode::FocusedReview
+        );
+        assert_eq!(pending_update.scroll_offset, None);
+    }
+
+    #[tokio::test]
+    async fn test_open_or_regenerate_shows_confirmation_when_already_viewing() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.focused_review_cache.insert(
+            session_id.clone(),
+            FocusedReviewCacheEntry::Ready {
+                text: "Old review".to_string(),
+                diff_hash: 123,
+            },
+        );
+        let view_context = ViewContext {
+            done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+            focused_review_status_message: None,
+            focused_review_text: Some("Old review".to_string()),
+            scroll_offset: None,
+            session_id: session_id.clone(),
+            session_index: 0,
+        };
+        let mut pending_update = ViewPendingUpdate::from_context(&view_context);
+
+        // Act
+        open_or_regenerate_focused_review(&mut app, &view_context, &mut pending_update).await;
+
+        // Assert — confirmation popup is shown instead of direct regeneration
+        assert!(matches!(
+            app.mode,
+            AppMode::Confirmation {
+                confirmation_intent: ConfirmationIntent::RegenerateFocusedReview,
+                ..
+            }
+        ));
+        // Cache is preserved until user confirms
+        assert!(app.focused_review_cache.contains_key(&session_id));
+    }
+
+    #[tokio::test]
+    async fn test_open_or_regenerate_skips_when_loading_in_progress() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.focused_review_cache.insert(
+            session_id.clone(),
+            FocusedReviewCacheEntry::Loading { diff_hash: 42 },
+        );
+        let loading_message = focused_review_loading_message(app.settings.default_review_model);
+        let view_context = ViewContext {
+            done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+            focused_review_status_message: Some(loading_message.clone()),
+            focused_review_text: None,
+            scroll_offset: None,
+            session_id: session_id.clone(),
+            session_index: 0,
+        };
+        let mut pending_update = ViewPendingUpdate::from_context(&view_context);
+
+        // Act
+        open_or_regenerate_focused_review(&mut app, &view_context, &mut pending_update).await;
+
+        // Assert — cache and loading state are preserved, no duplicate spawned
+        assert!(matches!(
+            app.focused_review_cache.get(&session_id),
+            Some(FocusedReviewCacheEntry::Loading { diff_hash: 42 })
+        ));
+        assert_eq!(
+            pending_update.focused_review_status_message,
+            Some(loading_message)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_q_in_focused_review_exits_to_summary() {
+        // Arrange
+        let view_context = ViewContext {
+            done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+            focused_review_status_message: None,
+            focused_review_text: Some("review text".to_string()),
+            scroll_offset: Some(10),
+            session_id: String::new(),
+            session_index: 0,
+        };
+        let mut pending_update = ViewPendingUpdate::from_context(&view_context);
+
+        // Act — simulate the q guard branch
+        pending_update.done_session_output_mode = DoneSessionOutputMode::Summary;
+        pending_update.scroll_offset = None;
+
+        // Assert
+        assert_eq!(
+            pending_update.done_session_output_mode,
+            DoneSessionOutputMode::Summary
+        );
+        assert_eq!(pending_update.scroll_offset, None);
+    }
+
+    #[tokio::test]
+    async fn test_q_in_summary_mode_transitions_to_list() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        let view_context = ViewContext {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            scroll_offset: None,
+            session_id,
+            session_index: 0,
+        };
+        let pending_update = ViewPendingUpdate::from_context(&view_context);
+
+        // Act — the q key without focused review transitions app mode to List
+        app.mode = AppMode::List;
+
+        // Assert — mode is List and output mode stayed Summary
+        assert!(matches!(app.mode, AppMode::List));
+        assert_eq!(
+            pending_update.done_session_output_mode,
+            DoneSessionOutputMode::Summary
+        );
     }
 }

@@ -67,12 +67,12 @@ state:
 
 | Key | Action |
 |-----|--------|
-| `q` | Back to list |
+| `q` | Exit focused review (when viewing) / Back to list |
 | `Enter` | Reply to agent |
 | `o` | Open worktree in tmux |
 | `p` | Create, open, or refresh linked PR/MR |
 | `d` | Show diff |
-| `f` | Toggle focused review |
+| `f` | Focused review (regenerate if already viewing) |
 | `m` | Add to merge queue (confirmation popup) |
 | `r` | Rebase |
 | `j` / `k` | Scroll output |

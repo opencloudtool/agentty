@@ -202,7 +202,7 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
     }
 
     if can_show_focused_review {
-        actions.push(HelpAction::new("review", "f", "Toggle focused review"));
+        actions.push(HelpAction::new("review", "f", "Focused review"));
     }
 
     if let Some(review_request_action) = state.review_request_action {
@@ -267,7 +267,7 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
     }
 
     if can_show_focused_review {
-        actions.push(HelpAction::new("review", "f", "Toggle focused review"));
+        actions.push(HelpAction::new("review", "f", "Focused review"));
     }
 
     if let Some(review_request_action) = state.review_request_action {
@@ -468,7 +468,7 @@ mod tests {
         assert!(
             actions
                 .iter()
-                .any(|action| action.key == "f" && action.popup_label == "Toggle focused review")
+                .any(|action| action.key == "f" && action.popup_label == "Focused review")
         );
     }
 

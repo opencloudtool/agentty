@@ -2,10 +2,12 @@ use std::io;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::App;
+use crate::app::{App, FocusedReviewCacheEntry, diff_content_hash};
 use crate::runtime::mode::confirmation::ConfirmationDecision;
 use crate::runtime::{EventResult, TuiTerminal, mode};
-use crate::ui::state::app_mode::{AppMode, ConfirmationIntent, ConfirmationViewMode};
+use crate::ui::state::app_mode::{
+    AppMode, ConfirmationIntent, ConfirmationViewMode, DoneSessionOutputMode,
+};
 
 /// Routes key events to the active mode handler and returns the next runtime
 /// action.
@@ -168,7 +170,8 @@ async fn handle_confirmation_decision(
 /// Resolves target mode for `Cancel` in confirmation overlays.
 fn confirmation_cancel_mode(mode: &AppMode) -> AppMode {
     if let AppMode::Confirmation {
-        confirmation_intent: ConfirmationIntent::MergeSession,
+        confirmation_intent:
+            ConfirmationIntent::MergeSession | ConfirmationIntent::RegenerateFocusedReview,
         restore_view: Some(restore_view),
         ..
     } = mode
@@ -208,6 +211,14 @@ async fn handle_confirmation_confirm(app: &mut App) -> io::Result<EventResult> {
         ConfirmationIntent::MergeSession => {
             handle_merge_confirmation(app, confirmation_session_id, restore_view).await
         }
+        ConfirmationIntent::RegenerateFocusedReview => {
+            handle_regenerate_focused_review_confirmation(
+                app,
+                confirmation_session_id,
+                restore_view,
+            )
+            .await
+        }
     }
 }
 
@@ -243,6 +254,92 @@ async fn handle_merge_confirmation(
         app.append_output_for_session(&session_id, &format!("\n[Merge Error] {error}\n"))
             .await;
     }
+
+    Ok(EventResult::Continue)
+}
+
+/// Clears the focused review cache and restarts generation for the confirmed
+/// session, then restores focused review mode with loading state.
+async fn handle_regenerate_focused_review_confirmation(
+    app: &mut App,
+    confirmation_session_id: Option<String>,
+    restore_view: Option<ConfirmationViewMode>,
+) -> io::Result<EventResult> {
+    let Some(session_id) = confirmation_session_id else {
+        app.mode = AppMode::List;
+
+        return Ok(EventResult::Continue);
+    };
+
+    app.focused_review_cache.remove(&session_id);
+
+    let session = app
+        .sessions
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id);
+    let Some(session) = session else {
+        app.mode = restore_view.map_or(AppMode::List, ConfirmationViewMode::into_view_mode);
+
+        return Ok(EventResult::Continue);
+    };
+
+    let session_folder = session.folder.clone();
+    let session_summary = session.summary.clone();
+    let base_branch = session.base_branch.clone();
+
+    let diff = app
+        .services
+        .git_client()
+        .diff(session_folder.clone(), base_branch)
+        .await
+        .unwrap_or_else(|error| format!("Failed to run git diff: {error}"));
+
+    if diff.trim().is_empty() || diff.starts_with("Failed to run git diff:") {
+        let mut view_mode = restore_view.unwrap_or(ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            scroll_offset: None,
+            session_id: session_id.clone(),
+        });
+        view_mode.focused_review_status_message = None;
+        view_mode.focused_review_text = if diff.trim().is_empty() {
+            Some("No diff changes found for review.".to_string())
+        } else {
+            Some(diff)
+        };
+        app.mode = view_mode.into_view_mode();
+
+        return Ok(EventResult::Continue);
+    }
+
+    let diff_hash = diff_content_hash(&diff);
+    let review_model = app.settings.default_review_model;
+    app.focused_review_cache.insert(
+        session_id.clone(),
+        FocusedReviewCacheEntry::Loading { diff_hash },
+    );
+    app.start_focused_review_assist(
+        &session_id,
+        &session_folder,
+        diff_hash,
+        &diff,
+        session_summary.as_deref(),
+    );
+
+    let mut view_mode = restore_view.unwrap_or(ConfirmationViewMode {
+        done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+        focused_review_status_message: None,
+        focused_review_text: None,
+        scroll_offset: None,
+        session_id,
+    });
+    view_mode.done_session_output_mode = DoneSessionOutputMode::FocusedReview;
+    view_mode.focused_review_status_message =
+        Some(crate::runtime::mode::session_view::focused_review_loading_message(review_model));
+    view_mode.focused_review_text = None;
+    app.mode = view_mode.into_view_mode();
 
     Ok(EventResult::Continue)
 }
@@ -825,6 +922,100 @@ mod tests {
                 && session_id == "session-id"
                 && status_message == "Preparing focused review"
                 && review_text == "Critical finding"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_confirmation_decision_cancel_restores_view_for_regenerate_confirmation() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        app.mode = AppMode::Confirmation {
+            confirmation_intent: ConfirmationIntent::RegenerateFocusedReview,
+            confirmation_message: "Regenerate focused review?".to_string(),
+            confirmation_title: "Confirm Regenerate".to_string(),
+            restore_view: Some(ConfirmationViewMode {
+                done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+                focused_review_status_message: None,
+                focused_review_text: Some("Previous review".to_string()),
+                scroll_offset: Some(4),
+                session_id: session_id.clone(),
+            }),
+            session_id: Some(session_id.clone()),
+            selected_confirmation_index: 1,
+        };
+
+        // Act
+        let event_result =
+            handle_confirmation_decision(&mut app, ConfirmationDecision::Cancel).await;
+
+        // Assert
+        assert!(matches!(event_result, Ok(EventResult::Continue)));
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+                focused_review_text: Some(ref review_text),
+                scroll_offset: Some(4),
+                ..
+            } if review_text == "Previous review"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_confirmation_decision_confirm_regenerates_focused_review() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        let session_folder = app.sessions.sessions[0].folder.clone();
+        std::fs::write(session_folder.join("README.md"), "regenerate test\n")
+            .expect("failed to write");
+        app.focused_review_cache.insert(
+            session_id.clone(),
+            FocusedReviewCacheEntry::Ready {
+                text: "Old review".to_string(),
+                diff_hash: 99,
+            },
+        );
+        app.mode = AppMode::Confirmation {
+            confirmation_intent: ConfirmationIntent::RegenerateFocusedReview,
+            confirmation_message: "Regenerate focused review?".to_string(),
+            confirmation_title: "Confirm Regenerate".to_string(),
+            restore_view: Some(ConfirmationViewMode {
+                done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+                focused_review_status_message: None,
+                focused_review_text: Some("Old review".to_string()),
+                scroll_offset: None,
+                session_id: session_id.clone(),
+            }),
+            session_id: Some(session_id.clone()),
+            selected_confirmation_index: 0,
+        };
+
+        // Act
+        let event_result =
+            handle_confirmation_decision(&mut app, ConfirmationDecision::Confirm).await;
+
+        // Assert — view is restored with loading state, cache shows new Loading entry
+        assert!(matches!(event_result, Ok(EventResult::Continue)));
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                done_session_output_mode: DoneSessionOutputMode::FocusedReview,
+                focused_review_status_message: Some(_),
+                focused_review_text: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            app.focused_review_cache.get(&session_id),
+            Some(FocusedReviewCacheEntry::Loading { .. })
         ));
     }
 }

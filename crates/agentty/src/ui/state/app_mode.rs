@@ -35,6 +35,8 @@ pub enum ConfirmationIntent {
     DeleteSession,
     /// Confirms queueing merge for the active view session.
     MergeSession,
+    /// Confirms regenerating the focused review for the active view session.
+    RegenerateFocusedReview,
 }
 
 /// Stored view-mode values used to restore session view after merge
