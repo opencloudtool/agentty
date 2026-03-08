@@ -245,36 +245,28 @@ fn lookup_command(remote: &ForgeRemote, source_branch: &str) -> ForgeCommand {
     )
 }
 
-/// Builds the `glab api` create command for `input`.
+/// Builds the `glab mr create` command for `input`.
 ///
-/// Uses the GitLab API directly so merge-request creation does not depend on
-/// repository-local `glab mr create` state, implicit pushes, or git config
-/// writes in shared worktree metadata. New merge requests default to draft so
-/// session-published review requests remain explicitly not ready to merge.
+/// Uses `glab mr create` so GitLab draft state is expressed through the CLI's
+/// native `--draft` support while keeping the flow non-interactive with
+/// explicit title, description, branch, and confirmation arguments.
 fn create_command(remote: &ForgeRemote, input: &CreateReviewRequestInput) -> ForgeCommand {
-    let mut arguments = vec![
-        "api".to_string(),
-        "--method".to_string(),
-        "POST".to_string(),
-        format!(
-            "projects/{}/merge_requests",
-            encode_project_path(&remote.project_path())
-        ),
-        "--silent".to_string(),
-        "-f".to_string(),
-        format!("source_branch={}", input.source_branch),
-        "-f".to_string(),
-        format!("target_branch={}", input.target_branch),
-        "-f".to_string(),
-        format!("title={}", input.title),
-        "-f".to_string(),
-        "draft=true".to_string(),
+    let arguments = vec![
+        "mr".to_string(),
+        "create".to_string(),
+        "--draft".to_string(),
+        "--repo".to_string(),
+        remote.web_url.clone(),
+        "--source-branch".to_string(),
+        input.source_branch.clone(),
+        "--target-branch".to_string(),
+        input.target_branch.clone(),
+        "--title".to_string(),
+        input.title.clone(),
+        "--description".to_string(),
+        input.body.clone().unwrap_or_default(),
+        "--yes".to_string(),
     ];
-
-    if let Some(body) = input.body.as_deref() {
-        arguments.push("-f".to_string());
-        arguments.push(format!("description={body}"));
-    }
 
     glab_command(remote, arguments)
 }
@@ -405,6 +397,24 @@ fn looks_like_host_resolution_failure(detail: &str) -> bool {
         || normalized_detail.contains("lookup ")
 }
 
+/// URL-encodes one GitLab project path so subgroups can be used in API routes.
+fn encode_project_path(project_path: &str) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::new();
+    for byte in project_path.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0F)]));
+        }
+    }
+
+    encoded
+}
+
 /// Formats one optional provider-specific status summary.
 fn status_summary_parts(parts: &[String]) -> Option<String> {
     if parts.is_empty() {
@@ -426,24 +436,6 @@ fn normalize_provider_label(label: &str) -> String {
     normalized.push_str(characters.as_str());
 
     normalized
-}
-
-/// URL-encodes one GitLab project path so subgroups can be used in API routes.
-fn encode_project_path(project_path: &str) -> String {
-    const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
-
-    let mut encoded = String::new();
-    for byte in project_path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
-            encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0F)]));
-        }
-    }
-
-    encoded
 }
 
 /// Minimal GitLab API lookup payload used to find an existing merge request.
@@ -757,17 +749,20 @@ mod tests {
         // Assert
         assert_eq!(command.executable, "glab");
         assert!(command.arguments.starts_with(&[
-            "api".to_string(),
-            "--method".to_string(),
-            "POST".to_string(),
-            "projects/team%2Fproject/merge_requests".to_string(),
-            "--silent".to_string(),
+            "mr".to_string(),
+            "create".to_string(),
+            "--draft".to_string(),
+            "--repo".to_string(),
+            "https://gitlab.example.com/team/project".to_string(),
         ]));
-        assert!(
-            !command
-                .arguments
-                .iter()
-                .any(|argument| argument.starts_with("description="))
+        let description_index = command
+            .arguments
+            .iter()
+            .position(|argument| argument == "--description")
+            .expect("description flag should be present for non-interactive creation");
+        assert_eq!(
+            command.arguments.get(description_index + 1),
+            Some(&String::new())
         );
     }
 
@@ -791,7 +786,34 @@ mod tests {
             command
                 .arguments
                 .iter()
-                .any(|argument| argument == "draft=true")
+                .any(|argument| argument == "--draft")
+        );
+        assert!(command.arguments.iter().any(|argument| argument == "--yes"));
+    }
+
+    #[test]
+    fn create_command_passes_description_when_body_is_present() {
+        // Arrange
+        let remote = gitlab_remote();
+        let input = CreateReviewRequestInput {
+            body: Some("Implements the provider adapters.".to_string()),
+            source_branch: "feature/forge".to_string(),
+            target_branch: "main".to_string(),
+            title: "Add forge review support".to_string(),
+        };
+
+        // Act
+        let command = create_command(&remote, &input);
+
+        // Assert
+        let description_index = command
+            .arguments
+            .iter()
+            .position(|argument| argument == "--description")
+            .expect("description flag should be present when body is provided");
+        assert_eq!(
+            command.arguments.get(description_index + 1),
+            Some(&"Implements the provider adapters.".to_string())
         );
     }
 
