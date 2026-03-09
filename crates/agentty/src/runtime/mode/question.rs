@@ -55,16 +55,14 @@ pub(crate) fn handle_paste(app: &mut App, pasted_text: &str) {
 }
 
 /// Returns the default selected option index for a question at the given
-/// position. Defaults to the first option (`Some(0)`) when options exist,
-/// or `None` for free-text questions.
+/// position. Always returns `Some(0)` for valid questions so the UI starts
+/// in option-selection mode. The virtual "Type custom answer" entry is
+/// always available as the last selectable choice.
 pub(crate) fn default_option_index(
     questions: &[QuestionItem],
     question_index: usize,
 ) -> Option<usize> {
-    questions
-        .get(question_index)
-        .filter(|item| !item.options.is_empty())
-        .map(|_| 0)
+    questions.get(question_index).map(|_| 0)
 }
 
 /// Semantic action emitted by one question-mode key event.
@@ -345,18 +343,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_enter_with_blank_response_records_no_answer() {
-        // Arrange
+    async fn test_handle_enter_on_type_custom_answer_with_blank_input_records_no_answer() {
+        // Arrange — user navigated to "Type custom answer" and entered
+        // free-text mode, then pressed Enter with empty input.
         let mut app = new_test_app().await;
         app.mode = AppMode::Question {
             session_id: "missing-session".to_string(),
             questions: vec![
                 QuestionItem {
-                    options: Vec::new(),
+                    options: vec!["Yes".to_string(), "No".to_string()],
                     text: "Need a target branch?".to_string(),
                 },
                 QuestionItem {
-                    options: Vec::new(),
+                    options: vec!["Unit".to_string(), "Integration".to_string()],
                     text: "Need tests?".to_string(),
                 },
             ],
@@ -375,7 +374,7 @@ mod tests {
             AppMode::Question {
                 current_index: 1,
                 ref responses,
-                selected_option_index: None,
+                selected_option_index: Some(0),
                 ..
             } if responses == &vec![NO_ANSWER.to_string()]
         ));
@@ -389,18 +388,18 @@ mod tests {
             session_id: "missing-session".to_string(),
             questions: vec![
                 QuestionItem {
-                    options: Vec::new(),
+                    options: vec!["Detailed".to_string(), "Brief".to_string()],
                     text: "Need design details?".to_string(),
                 },
                 QuestionItem {
-                    options: Vec::new(),
+                    options: vec!["Yes".to_string(), "No".to_string()],
                     text: "Need acceptance tests?".to_string(),
                 },
             ],
             responses: Vec::new(),
             current_index: 0,
             input: InputState::with_text("typed answer".to_string()),
-            selected_option_index: None,
+            selected_option_index: Some(0),
         };
 
         // Act
@@ -420,12 +419,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_enter_on_last_question_transitions_to_view_mode() {
-        // Arrange
+        // Arrange — free-text mode on last question.
         let mut app = new_test_app().await;
         app.mode = AppMode::Question {
             session_id: "missing-session".to_string(),
             questions: vec![QuestionItem {
-                options: Vec::new(),
+                options: vec!["Today".to_string(), "Tomorrow".to_string()],
                 text: "Need exact date?".to_string(),
             }],
             responses: Vec::new(),
@@ -450,12 +449,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_paste_normalizes_line_endings_in_free_text_mode() {
-        // Arrange — free-text mode (no options).
+        // Arrange — free-text mode (user selected "Type custom answer").
         let mut app = new_test_app().await;
         app.mode = AppMode::Question {
             session_id: "session-id".to_string(),
             questions: vec![QuestionItem {
-                options: Vec::new(),
+                options: vec!["Default".to_string()],
                 text: "Question".to_string(),
             }],
             responses: Vec::new(),
@@ -618,7 +617,7 @@ mod tests {
                     text: "Continue?".to_string(),
                 },
                 QuestionItem {
-                    options: Vec::new(),
+                    options: vec!["Details".to_string(), "Skip".to_string()],
                     text: "Follow-up?".to_string(),
                 },
             ],
@@ -637,7 +636,7 @@ mod tests {
             AppMode::Question {
                 current_index: 1,
                 ref responses,
-                selected_option_index: None,
+                selected_option_index: Some(0),
                 ..
             } if responses == &vec!["No".to_string()]
         ));
@@ -787,14 +786,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_question_response_defaults_to_first_option_on_next_question() {
-        // Arrange
+        // Arrange — free-text mode on first question, next has options.
         let mut app = new_test_app().await;
         app.mode = AppMode::Question {
             session_id: "missing-session".to_string(),
             questions: vec![
                 QuestionItem {
-                    options: Vec::new(),
-                    text: "Free-text question?".to_string(),
+                    options: vec!["Foo".to_string()],
+                    text: "First question?".to_string(),
                 },
                 QuestionItem {
                     options: vec!["Alpha".to_string(), "Beta".to_string()],
@@ -834,15 +833,16 @@ mod tests {
     }
 
     #[test]
-    fn test_default_option_index_returns_none_for_free_text() {
-        // Arrange
+    fn test_default_option_index_returns_first_for_question_without_predefined_options() {
+        // Arrange — even without predefined options, the virtual "Type custom
+        // answer" entry is always available so the UI starts in selection mode.
         let questions = vec![QuestionItem {
             options: Vec::new(),
             text: "Type something?".to_string(),
         }];
 
         // Act & Assert
-        assert_eq!(default_option_index(&questions, 0), None);
+        assert_eq!(default_option_index(&questions, 0), Some(0));
     }
 
     #[test]
@@ -859,11 +859,11 @@ mod tests {
         // Arrange
         let questions = vec![
             QuestionItem {
-                options: Vec::new(),
+                options: vec!["main".to_string(), "develop".to_string()],
                 text: "Need target?".to_string(),
             },
             QuestionItem {
-                options: Vec::new(),
+                options: vec!["Yes".to_string(), "No".to_string()],
                 text: "Need tests?".to_string(),
             },
         ];

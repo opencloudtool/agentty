@@ -7,6 +7,7 @@ use crate::domain::input::InputState;
 use crate::domain::session::Status;
 use crate::runtime::EventResult;
 use crate::runtime::mode::confirmation::DEFAULT_OPTION_INDEX;
+use crate::runtime::mode::question;
 use crate::ui::state::app_mode::{AppMode, ConfirmationIntent, DoneSessionOutputMode, HelpContext};
 use crate::ui::state::help_action::{
     HelpAction, project_list_actions, session_list_actions, settings_actions, stats_actions,
@@ -108,13 +109,15 @@ async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
                 let session_id = session.id.clone();
 
                 if session.status == Status::Question {
+                    let questions = session.questions.clone();
+                    let selected_option_index = question::default_option_index(&questions, 0);
                     app.mode = AppMode::Question {
                         session_id,
-                        questions: session.questions.clone(),
+                        questions,
                         responses: Vec::new(),
                         current_index: 0,
                         input: InputState::default(),
-                        selected_option_index: None,
+                        selected_option_index,
                     };
                 } else {
                     app.mode = AppMode::View {
@@ -526,11 +529,11 @@ mod tests {
             .expect("failed to create session");
         let expected_questions: Vec<QuestionItem> = vec![
             QuestionItem {
-                options: Vec::new(),
+                options: vec!["main".to_string(), "develop".to_string()],
                 text: "Need a target branch?".to_string(),
             },
             QuestionItem {
-                options: Vec::new(),
+                options: vec!["Yes".to_string(), "No".to_string()],
                 text: "Need migration notes?".to_string(),
             },
         ];
@@ -557,7 +560,7 @@ mod tests {
                 current_index: 0,
                 ref responses,
                 ref input,
-                selected_option_index: None,
+                selected_option_index: Some(0),
             } if session_id == &expected_session_id
                 && questions == &expected_questions
                 && responses.is_empty()

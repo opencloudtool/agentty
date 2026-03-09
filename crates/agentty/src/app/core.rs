@@ -3772,8 +3772,14 @@ mod tests {
         };
         let response = AgentResponse {
             messages: vec![
-                AgentResponseMessage::question("Need a target branch?"),
-                AgentResponseMessage::question("Need integration tests?"),
+                AgentResponseMessage::question_with_options(
+                    "Need a target branch?",
+                    vec!["main".to_string(), "develop".to_string()],
+                ),
+                AgentResponseMessage::question_with_options(
+                    "Need integration tests?",
+                    vec!["Yes".to_string(), "No".to_string()],
+                ),
             ],
         };
         let expected_questions = response.question_items();
@@ -3794,7 +3800,7 @@ mod tests {
                 ref responses,
                 current_index: 0,
                 ref input,
-                selected_option_index: None,
+                selected_option_index: Some(0),
             } if session_id == "session-1"
                 && questions == &expected_questions
                 && responses.is_empty()

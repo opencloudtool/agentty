@@ -42,10 +42,11 @@ pub struct AgentResponseMessage {
     /// Message kind selector.
     #[serde(rename = "type")]
     pub kind: AgentResponseMessageKind,
-    /// Optional predefined answer choices for `question` messages.
+    /// Predefined answer choices for `question` messages.
     ///
-    /// When present, the UI renders a selectable option list before the
-    /// free-text input. Users can pick one option or type a custom answer.
+    /// Required for questions — the UI always renders a selectable option
+    /// list with a virtual "Type custom answer" entry appended. Users
+    /// navigate options with arrow keys and select with `Enter`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
     /// Human-readable markdown text for this message.

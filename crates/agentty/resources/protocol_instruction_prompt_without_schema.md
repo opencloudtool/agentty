@@ -12,7 +12,7 @@ Structured response protocol:
 
   - `type`: one of `answer` or `question`.
   - `text`: markdown text content.
-  - `options` (optional): array of strings with predefined answer choices for `question` messages.
+  - `options` (required for `question`): array of strings with predefined answer choices.
 
 - You may include multiple messages in one response.
 
@@ -32,11 +32,11 @@ Structured response protocol:
 
   - Each question must be specific and actionable. State what decision is needed and why you cannot make it yourself.
 
-  - When a question has a finite set of choices (2–5), always provide them in the `options` array so the user can select instead of typing.
+  - Every `question` message MUST include an `options` array with 2–5 predefined answer choices. The user can always type a custom answer via the UI, so the options cover the most likely choices.
 
   - Do not include non-answer choices such as "skip for now", "do not do anything", "let me think", or similar deferral options. The user can skip any question without selecting an option, so those choices are redundant.
 
-  - When providing `options`, place the recommended choice first. The UI defaults to the first option.
+  - Place the recommended choice first. The UI defaults to the first option.
 
 {% if include_change_summary %}
 
