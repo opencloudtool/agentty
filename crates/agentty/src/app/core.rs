@@ -49,7 +49,7 @@ use crate::{app, ui};
 pub const AGENTTY_WT_DIR: &str = "wt";
 
 /// Maximum directory depth to scan under the user home for git repositories.
-const HOME_PROJECT_SCAN_MAX_DEPTH: usize = 4;
+const HOME_PROJECT_SCAN_MAX_DEPTH: usize = 5;
 
 /// Maximum number of repositories discovered from one home-directory scan.
 const HOME_PROJECT_SCAN_MAX_RESULTS: usize = 200;
@@ -2562,7 +2562,8 @@ fn detected_forge_kind_from_git_push_error(detail_message: &str) -> Option<forge
     None
 }
 
-/// Returns one forge family from the remote host shown in a credential prompt error.
+/// Returns one forge family from the remote host shown in a credential prompt
+/// error.
 fn detected_forge_kind_from_push_auth_url(detail_message: &str) -> Option<forge::ForgeKind> {
     let host = extract_push_auth_prompt_host(detail_message)?;
     if host.is_empty() {
@@ -2606,7 +2607,10 @@ fn extract_push_auth_prompt_host(detail_message: &str) -> Option<&str> {
 }
 
 /// Extracts the host payload from one quoted credential-prompt URL.
-fn extract_host_from_prompt<'detail>(detail_message: &'detail str, marker: &str) -> Option<&'detail str> {
+fn extract_host_from_prompt<'detail>(
+    detail_message: &'detail str,
+    marker: &str,
+) -> Option<&'detail str> {
     let marker_start = detail_message.find(marker)?;
     let quoted_host = &detail_message[marker_start + marker.len()..];
     let host = quoted_host.split('\'').next()?;
@@ -3679,7 +3683,8 @@ mod tests {
     #[test]
     fn sync_push_auth_error_prefers_github_when_fallback_markers_are_ambiguous() {
         // Arrange
-        let detail = "Git push failed: authentication failed. Configure remotes:\n  github.com\n  gitlab.com";
+        let detail = "Git push failed: authentication failed. Configure remotes:\n  github.com\n  \
+                      gitlab.com";
 
         // Act
         let forge_kind = detected_forge_kind_from_git_push_error(detail);
