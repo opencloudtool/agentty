@@ -2,37 +2,7 @@
 
 Second-pass coverage uplift plan for the remaining runtime, UI, settings, and workflow hotspots after the March 7, 2026 `cargo llvm-cov` refresh and ratchet landing.
 
-## Cross-Plan Notes
-
-- `docs/plan/continue_in_progress_sessions_after_exit.md` owns detached-session behavior in overlapping runner files; this plan should stay limited to tests or narrow testability refactors there.
-- `docs/plan/forge_review_request_support.md` owns active review-request behavior in `crates/agentty/src/app/task.rs` and `crates/agentty/src/runtime/mode/session_view.rs`; coverage work here should follow that behavior rather than redefine it.
-- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
-
-## Status Maintenance Rule
-
-- After implementing any step in this plan, immediately update its checklist status, refresh any affected snapshot rows, and record whether the coverage ratchet threshold should move.
-- When a step changes contributor guidance or enforced thresholds, update the corresponding documentation in that same step before marking it complete.
-
-## Current State Snapshot
-
-Baseline captured on March 7, 2026 from `cargo llvm-cov --workspace --json --summary-only`.
-
-| Area | Current state in codebase | Status |
-|------|---------------------------|--------|
-| Workspace baseline | Workspace coverage is 87.57% lines (`36614/41813`) and 85.30% functions (`4137/4850`). | Baseline captured |
-| Runtime/editor boundaries | `runtime/terminal`, `app/task`, and `runtime/event` already have the first-pass deterministic branch coverage this plan depends on. | Complete |
-| UI overlay and page helpers | `ui/overlay.rs`, `ui/page/project_list.rs`, and `ui/page/setting.rs` remain well below the workspace baseline. | Not started |
-| Workflow hot spots after first pass | `workflow/merge.rs`, `infra/codex_app_server.rs`, `runtime/mode/prompt.rs`, and `runtime/mode/session_view.rs` still hold the largest remaining uncovered branch totals. | Partial |
-| Settings and git orchestration | Settings persistence plus git sync, repo, and merge flows still sit below the workspace baseline. | Partial |
-| Coverage ratchet | `.pre-commit-config.yaml` already enforces the current 87/85 coverage floor, with no threshold change after the March 8, 2026 update. | Healthy |
-
-## Implementation Approach
-
-- Start with one deterministic runtime/task slice that raises coverage in the weakest non-UI modules and establishes any reusable test helpers needed later.
-- Run UI-helper and settings/git unhappy-path work as independent follow-up slices because they touch separate validation paths and can land without waiting on workflow-heavy modules.
-- Tackle the larger workflow and transport hotspots only after the smaller slices land so the remaining uncovered branches are narrower and the final ratchet update is based on a stable merged baseline.
-
-## Updated Priorities
+## Priorities
 
 ## 1) Lock in a deterministic runtime/task coverage slice
 
@@ -135,6 +105,36 @@ Primary files:
 - `.pre-commit-config.yaml`
 - `CONTRIBUTING.md`
 - `docs/plan/coverage_follow_up.md`
+
+## Cross-Plan Notes
+
+- `docs/plan/continue_in_progress_sessions_after_exit.md` owns detached-session behavior in overlapping runner files; this plan should stay limited to tests or narrow testability refactors there.
+- `docs/plan/forge_review_request_support.md` owns active review-request behavior in `crates/agentty/src/app/task.rs` and `crates/agentty/src/runtime/mode/session_view.rs`; coverage work here should follow that behavior rather than redefine it.
+- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
+
+## Status Maintenance Rule
+
+- After implementing any step in this plan, immediately update its checklist status, refresh any affected snapshot rows, and record whether the coverage ratchet threshold should move.
+- When a step changes contributor guidance or enforced thresholds, update the corresponding documentation in that same step before marking it complete.
+
+## Current State Snapshot
+
+Baseline captured on March 7, 2026 from `cargo llvm-cov --workspace --json --summary-only`.
+
+| Area | Current state in codebase | Status |
+|------|---------------------------|--------|
+| Workspace baseline | Workspace coverage is 87.57% lines (`36614/41813`) and 85.30% functions (`4137/4850`). | Baseline captured |
+| Runtime/editor boundaries | `runtime/terminal`, `app/task`, and `runtime/event` already have the first-pass deterministic branch coverage this plan depends on. | Complete |
+| UI overlay and page helpers | `ui/overlay.rs`, `ui/page/project_list.rs`, and `ui/page/setting.rs` remain well below the workspace baseline. | Not started |
+| Workflow hot spots after first pass | `workflow/merge.rs`, `infra/codex_app_server.rs`, `runtime/mode/prompt.rs`, and `runtime/mode/session_view.rs` still hold the largest remaining uncovered branch totals. | Partial |
+| Settings and git orchestration | Settings persistence plus git sync, repo, and merge flows still sit below the workspace baseline. | Partial |
+| Coverage ratchet | `.pre-commit-config.yaml` already enforces the current 87/85 coverage floor, with no threshold change after the March 8, 2026 update. | Healthy |
+
+## Implementation Approach
+
+- Start with one deterministic runtime/task slice that raises coverage in the weakest non-UI modules and establishes any reusable test helpers needed later.
+- Run UI-helper and settings/git unhappy-path work as independent follow-up slices because they touch separate validation paths and can land without waiting on workflow-heavy modules.
+- Tackle the larger workflow and transport hotspots only after the smaller slices land so the remaining uncovered branches are narrower and the final ratchet update is based on a stable merged baseline.
 
 ## Suggested Execution Order
 

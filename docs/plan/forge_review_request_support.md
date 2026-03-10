@@ -2,35 +2,7 @@
 
 Plan for extending `crates/agentty/src/app`, `crates/agentty/src/infra`, and `crates/agentty/src/ui` so review-ready sessions can publish and track forge review requests across GitHub pull requests and GitLab merge requests.
 
-## Cross-Plan Notes
-
-- `docs/plan/coverage_follow_up.md` only adds coverage work and does not change review-request behavior.
-- `docs/plan/continue_in_progress_sessions_after_exit.md` also touches `crates/agentty/src/app/core.rs`; detached-session rules own turn lifetime, while this plan owns review-request reconciliation.
-- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
-
-## Status Maintenance Rule
-
-- After implementing any step in this plan, immediately update its checklist status in this document and refresh any current-state snapshot rows that changed.
-- When a step changes user-visible behavior or contributor guidance, update the corresponding documentation in that same step before marking it complete.
-
-## Current State Snapshot
-
-| Area | Current state in codebase | Status |
-|------|---------------------------|--------|
-| Manual session review-request workflow | Publish, open, and refresh already persist normalized PR/MR links and can recover archived-session metadata from stored forge URLs. | Healthy |
-| Forge adapters and persistence | GitHub and GitLab adapters plus `session_review_request` persistence already cover normalized create, find, refresh, and reload flows. | Healthy |
-| Background reconciliation | No app event or background task currently polls linked review requests or reconciles merged or closed remote outcomes back into session status. | Not started |
-| Session view UI | Session view already exposes create, open, and refresh actions with popup feedback and inline PR/MR metadata. | Healthy |
-| Documentation coverage | Manual session-view review-request docs are landed, but automatic reconciliation docs are still pending. | Partial |
-
-## Implementation Approach
-
-- Keep the already-landed manual review-request workflow as the working baseline: a review-ready session can publish its branch, link or create a review request, refresh stored metadata, and open the linked URL.
-- Surface session-view actions and rendered metadata next so users can drive the manual workflow from the primary TUI without leaving session context.
-- Keep the first UI slice compatible with explicit refresh; automatic reconciliation can land afterward as an extension of the visible workflow rather than a prerequisite for it.
-- Update usage docs in the same iteration as the session-view action, then update architecture docs when the background reconciliation boundary and reducer flow are stable.
-
-## Updated Priorities
+## Priorities
 
 The manual review-request workflow in `crates/agentty/src/app/session/workflow` and `crates/agentty/src/infra/forge` is already landed and remains the prerequisite baseline for the priorities below.
 
@@ -89,6 +61,34 @@ Primary files:
 - `docs/site/content/docs/architecture/runtime-flow.md`
 - `docs/site/content/docs/architecture/testability-boundaries.md`
 - `docs/site/content/docs/architecture/module-map.md`
+
+## Cross-Plan Notes
+
+- `docs/plan/coverage_follow_up.md` only adds coverage work and does not change review-request behavior.
+- `docs/plan/continue_in_progress_sessions_after_exit.md` also touches `crates/agentty/src/app/core.rs`; detached-session rules own turn lifetime, while this plan owns review-request reconciliation.
+- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
+
+## Status Maintenance Rule
+
+- After implementing any step in this plan, immediately update its checklist status in this document and refresh any current-state snapshot rows that changed.
+- When a step changes user-visible behavior or contributor guidance, update the corresponding documentation in that same step before marking it complete.
+
+## Current State Snapshot
+
+| Area | Current state in codebase | Status |
+|------|---------------------------|--------|
+| Manual session review-request workflow | Publish, open, and refresh already persist normalized PR/MR links and can recover archived-session metadata from stored forge URLs. | Healthy |
+| Forge adapters and persistence | GitHub and GitLab adapters plus `session_review_request` persistence already cover normalized create, find, refresh, and reload flows. | Healthy |
+| Background reconciliation | No app event or background task currently polls linked review requests or reconciles merged or closed remote outcomes back into session status. | Not started |
+| Session view UI | Session view already exposes create, open, and refresh actions with popup feedback and inline PR/MR metadata. | Healthy |
+| Documentation coverage | Manual session-view review-request docs are landed, but automatic reconciliation docs are still pending. | Partial |
+
+## Implementation Approach
+
+- Keep the already-landed manual review-request workflow as the working baseline: a review-ready session can publish its branch, link or create a review request, refresh stored metadata, and open the linked URL.
+- Surface session-view actions and rendered metadata next so users can drive the manual workflow from the primary TUI without leaving session context.
+- Keep the first UI slice compatible with explicit refresh; automatic reconciliation can land afterward as an extension of the visible workflow rather than a prerequisite for it.
+- Update usage docs in the same iteration as the session-view action, then update architecture docs when the background reconciliation boundary and reducer flow are stable.
 
 ## Suggested Execution Order
 

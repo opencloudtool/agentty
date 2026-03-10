@@ -2,35 +2,7 @@
 
 Plan for organizing `crates/agentty/tests/`, selected source-level tests, and contributor guidance so Agentty keeps a small, trustworthy end-to-end smoke layer around git, forge, and live agent workflows.
 
-## Cross-Plan Notes
-
-- `docs/plan/coverage_follow_up.md` may add tests in some of the same modules, but it does not own the suite layout, harness shape, or execution tiers for end-to-end coverage.
-- `docs/plan/forge_review_request_support.md` owns review-request product behavior; this plan only owns how PR/MR workflows are exercised and categorized in tests.
-- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
-
-## Status Maintenance Rule
-
-- After implementing any step in this plan, immediately update its checklist status in this document and refresh any snapshot rows that changed.
-- When a step changes contributor workflow, test commands, or documentation, update the corresponding docs in that same step before marking it complete.
-
-## Current State Snapshot
-
-| Area | Current state in codebase | Status |
-|------|---------------------------|--------|
-| Live provider smoke coverage | `crates/agentty/tests/protocol_compliance_e2e.rs` runs real ignored Codex, Gemini, and Claude protocol checks through `create_agent_channel()`. | Partial |
-| Real local git coverage | `crates/agentty/src/infra/git/client.rs` already exercises temp-repo and linked-worktree behavior with real `git` commands. | Healthy |
-| Workflow orchestration coverage | `crates/agentty/src/app/session/workflow/lifecycle.rs`, `refresh.rs`, and `merge.rs` cover multi-step session flows mainly through `mockall` boundaries. | Healthy |
-| Forge and agent scenario harness | No shared crate-level harness currently composes temp repos, fake CLIs, scripted outputs, and app-level assertions into reusable user-journey tests. | Not started |
-| Contributor guidance | Repository docs describe quality gates and trait boundaries, but they do not yet define a clear tiered strategy for deterministic local end-to-end tests versus live smoke suites. | Not started |
-
-## Implementation Approach
-
-- Keep the default suite deterministic: real local git plus fake agent and forge CLIs should cover the main user journeys without requiring credentials or network access.
-- Preserve a thin live smoke layer for real provider and forge integrations, but isolate it clearly so failures are easy to attribute and the default `cargo test` path stays stable.
-- Start with one reusable harness slice that can already validate a full session journey in a disposable repo, then extend it to review-request and live-smoke organization instead of building harness-only groundwork with no user-visible payoff.
-- Update contributor guidance in the same iteration as any new suite layout or execution command so the structure is usable immediately after landing.
-
-## Updated Priorities
+## Priorities
 
 ## 1) Establish a shared deterministic scenario harness
 
@@ -112,6 +84,34 @@ Primary files:
 - `crates/agentty/tests/live_forge_review_request.rs`
 - `CONTRIBUTING.md`
 - `docs/site/content/docs/architecture/testability-boundaries.md`
+
+## Cross-Plan Notes
+
+- `docs/plan/coverage_follow_up.md` may add tests in some of the same modules, but it does not own the suite layout, harness shape, or execution tiers for end-to-end coverage.
+- `docs/plan/forge_review_request_support.md` owns review-request product behavior; this plan only owns how PR/MR workflows are exercised and categorized in tests.
+- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
+
+## Status Maintenance Rule
+
+- After implementing any step in this plan, immediately update its checklist status in this document and refresh any snapshot rows that changed.
+- When a step changes contributor workflow, test commands, or documentation, update the corresponding docs in that same step before marking it complete.
+
+## Current State Snapshot
+
+| Area | Current state in codebase | Status |
+|------|---------------------------|--------|
+| Live provider smoke coverage | `crates/agentty/tests/protocol_compliance_e2e.rs` runs real ignored Codex, Gemini, and Claude protocol checks through `create_agent_channel()`. | Partial |
+| Real local git coverage | `crates/agentty/src/infra/git/client.rs` already exercises temp-repo and linked-worktree behavior with real `git` commands. | Healthy |
+| Workflow orchestration coverage | `crates/agentty/src/app/session/workflow/lifecycle.rs`, `refresh.rs`, and `merge.rs` cover multi-step session flows mainly through `mockall` boundaries. | Healthy |
+| Forge and agent scenario harness | No shared crate-level harness currently composes temp repos, fake CLIs, scripted outputs, and app-level assertions into reusable user-journey tests. | Not started |
+| Contributor guidance | Repository docs describe quality gates and trait boundaries, but they do not yet define a clear tiered strategy for deterministic local end-to-end tests versus live smoke suites. | Not started |
+
+## Implementation Approach
+
+- Keep the default suite deterministic: real local git plus fake agent and forge CLIs should cover the main user journeys without requiring credentials or network access.
+- Preserve a thin live smoke layer for real provider and forge integrations, but isolate it clearly so failures are easy to attribute and the default `cargo test` path stays stable.
+- Start with one reusable harness slice that can already validate a full session journey in a disposable repo, then extend it to review-request and live-smoke organization instead of building harness-only groundwork with no user-visible payoff.
+- Update contributor guidance in the same iteration as any new suite layout or execution command so the structure is usable immediately after landing.
 
 ## Suggested Execution Order
 

@@ -2,60 +2,7 @@
 
 Plan for changing `crates/agentty/src/app`, `crates/agentty/src/infra`, and `crates/agentty/src/main.rs` so active session turns keep running after the TUI exits and reconnect cleanly when Agentty starts again.
 
-## Cross-Plan Notes
-
-- `docs/plan/coverage_follow_up.md` may add tests around overlapping files, but detached-session behavior changes stay here.
-- `docs/plan/forge_review_request_support.md` also touches `crates/agentty/src/app/core.rs`; this plan owns `App::new_with_clients` startup recovery and detached-runner lifetime, while the forge plan owns `handle_review_request` and review-request reconciliation.
-- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
-
-## Status Maintenance Rule
-
-- After implementing any step in this plan, immediately update its checklist status, refresh the current-state snapshot rows that changed, and note any new migration or docs dependency before moving to the next step.
-- When a step changes user-visible behavior or contributor guidance, update the corresponding documentation in that same step before marking it complete.
-
-## Current State Snapshot
-
-| Area | Current state in codebase | Status |
-|------|---------------------------|--------|
-| Startup recovery | Restart still fails every queued or running `session_operation` and forces affected sessions back to `Review`. | Not Started |
-| Session worker lifetime | Session workers live only in an in-memory map and execute inside `tokio::spawn`, so quitting the app drops the only worker orchestration path. | Not Started |
-| Provider runtime lifetime | App-server, CLI, and Gemini transports still live under the Agentty process that owns the worker task. | Not Started |
-| Persistence available for recovery | The database already persists unfinished operations and heartbeat fields, but it does not yet track detached-runner ownership or liveness. | In Progress |
-| Session reload behavior | Reload logic can already render persisted `InProgress` sessions when the worktree still exists. | In Progress |
-| Live output bridging | No cross-process output streaming path exists; `SessionHandles.output` is an in-process `Arc<Mutex<String>>`. | Not Started |
-
-## Design Decisions
-
-### Runner form factor
-
-Use an `agentty run-turn` subcommand on the existing binary. This avoids distributing a separate binary, keeps version parity automatic, and aligns with the existing `clap` infrastructure in `main.rs`.
-
-### Liveness protocol
-
-Use a hybrid PID + heartbeat approach. The detached runner writes its PID and a periodic heartbeat timestamp (every 10 seconds) to `session_operation`. On restart the TUI checks both: if the PID is no longer alive **or** the heartbeat is stale (>60 seconds), the operation is reclaimed and marked failed. This handles normal exit, crash, SIGKILL, and zombie scenarios.
-
-Migration columns: `runner_pid INTEGER`, `runner_heartbeat_at INTEGER`.
-
-### Live output bridging
-
-The detached runner writes incremental output to a log file at `<worktree>/.agentty-output.log`. The TUI tails this file when it detects an active detached runner for the session, feeding content into `SessionHandles.output`. This avoids high-frequency DB writes and keeps latency under one second. The DB `output` column is still updated on turn completion as a durable fallback.
-
-### Cross-process event delivery
-
-DB polling at the existing 10-second refresh interval is sufficient for status transitions (queued → running → review). The log-file tail provides sub-second output updates. No cross-process event channel (Unix socket, named pipe) is needed for the initial implementation.
-
-### Rollback path
-
-A `AGENTTY_DETACH=0` environment variable disables detached execution and falls back to the current in-process worker model. This allows safe rollout and quick rollback without code changes.
-
-## Implementation Approach
-
-- Start with one detached execution path plus restart-safe reconciliation so a user can close Agentty mid-turn, reopen it later, and still observe the same turn progressing or finishing without manual repair.
-- Keep SQLite plus the session worktree as the source of truth; the TUI should enqueue and observe work, while the long-running runner process owns turn execution, output persistence, and final status transitions.
-- Fold usage and concept docs into the same iterations that change session-lifetime behavior; keep deeper architecture-boundary docs with the step that finalizes those boundaries.
-- Add stronger cancel, duplicate-runner protection, and provider-resume hardening only after the detached happy path works end to end so the first shipped slice is already usable.
-
-## Updated Priorities
+## Priorities
 
 ## 1) Ship detached execution with restart-safe reconciliation
 
@@ -143,6 +90,59 @@ Primary files:
 - `crates/agentty/src/app/core.rs`
 - `crates/agentty/src/app/session/core.rs`
 - `crates/agentty/src/app/session/workflow/worker.rs`
+
+## Cross-Plan Notes
+
+- `docs/plan/coverage_follow_up.md` may add tests around overlapping files, but detached-session behavior changes stay here.
+- `docs/plan/forge_review_request_support.md` also touches `crates/agentty/src/app/core.rs`; this plan owns `App::new_with_clients` startup recovery and detached-runner lifetime, while the forge plan owns `handle_review_request` and review-request reconciliation.
+- If another active plan conflicts with this plan and the correct resolution is not explicit, stop and ask the user which plan should control the work.
+
+## Status Maintenance Rule
+
+- After implementing any step in this plan, immediately update its checklist status, refresh the current-state snapshot rows that changed, and note any new migration or docs dependency before moving to the next step.
+- When a step changes user-visible behavior or contributor guidance, update the corresponding documentation in that same step before marking it complete.
+
+## Current State Snapshot
+
+| Area | Current state in codebase | Status |
+|------|---------------------------|--------|
+| Startup recovery | Restart still fails every queued or running `session_operation` and forces affected sessions back to `Review`. | Not Started |
+| Session worker lifetime | Session workers live only in an in-memory map and execute inside `tokio::spawn`, so quitting the app drops the only worker orchestration path. | Not Started |
+| Provider runtime lifetime | App-server, CLI, and Gemini transports still live under the Agentty process that owns the worker task. | Not Started |
+| Persistence available for recovery | The database already persists unfinished operations and heartbeat fields, but it does not yet track detached-runner ownership or liveness. | In Progress |
+| Session reload behavior | Reload logic can already render persisted `InProgress` sessions when the worktree still exists. | In Progress |
+| Live output bridging | No cross-process output streaming path exists; `SessionHandles.output` is an in-process `Arc<Mutex<String>>`. | Not Started |
+
+## Design Decisions
+
+### Runner form factor
+
+Use an `agentty run-turn` subcommand on the existing binary. This avoids distributing a separate binary, keeps version parity automatic, and aligns with the existing `clap` infrastructure in `main.rs`.
+
+### Liveness protocol
+
+Use a hybrid PID + heartbeat approach. The detached runner writes its PID and a periodic heartbeat timestamp (every 10 seconds) to `session_operation`. On restart the TUI checks both: if the PID is no longer alive **or** the heartbeat is stale (>60 seconds), the operation is reclaimed and marked failed. This handles normal exit, crash, SIGKILL, and zombie scenarios.
+
+Migration columns: `runner_pid INTEGER`, `runner_heartbeat_at INTEGER`.
+
+### Live output bridging
+
+The detached runner writes incremental output to a log file at `<worktree>/.agentty-output.log`. The TUI tails this file when it detects an active detached runner for the session, feeding content into `SessionHandles.output`. This avoids high-frequency DB writes and keeps latency under one second. The DB `output` column is still updated on turn completion as a durable fallback.
+
+### Cross-process event delivery
+
+DB polling at the existing 10-second refresh interval is sufficient for status transitions (queued → running → review). The log-file tail provides sub-second output updates. No cross-process event channel (Unix socket, named pipe) is needed for the initial implementation.
+
+### Rollback path
+
+A `AGENTTY_DETACH=0` environment variable disables detached execution and falls back to the current in-process worker model. This allows safe rollout and quick rollback without code changes.
+
+## Implementation Approach
+
+- Start with one detached execution path plus restart-safe reconciliation so a user can close Agentty mid-turn, reopen it later, and still observe the same turn progressing or finishing without manual repair.
+- Keep SQLite plus the session worktree as the source of truth; the TUI should enqueue and observe work, while the long-running runner process owns turn execution, output persistence, and final status transitions.
+- Fold usage and concept docs into the same iterations that change session-lifetime behavior; keep deeper architecture-boundary docs with the step that finalizes those boundaries.
+- Add stronger cancel, duplicate-runner protection, and provider-resume hardening only after the detached happy path works end to end so the first shipped slice is already usable.
 
 ## Suggested Execution Order
 

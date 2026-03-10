@@ -26,6 +26,7 @@ This skill is the source of truth for plan structure and execution-planning requ
    - Use the plan skeleton below and keep each section focused on repository-observable facts.
    - Keep cross-plan notes short and include only active overlaps, ownership decisions, or unresolved conflicts.
    - Keep snapshot rows scannable: one short current-state sentence plus a status, without long file lists in the table cells.
+   - Keep the `## Priorities` section near the top of the plan, immediately after the title and scope/context line.
    - In each priority, render `Why now` and `Usable outcome` as their own subtopics on separate lines instead of inline bold labels.
 
 1. **Define execution sequence and guardrails**
@@ -50,6 +51,26 @@ Use this skeleton when creating a new file in `docs/plan/`:
 
 <One-sentence scope/context line tied to the relevant code area.>
 
+## Priorities
+
+## 1) <Priority Title>
+
+### Why now
+
+<rationale>
+
+### Usable outcome
+
+<what the user can do after this iteration lands>
+
+- [ ] <implementation task within this priority>
+- [ ] <implementation task within this priority>
+
+Primary files:
+
+- `<path>`
+- `<path>`
+
 ## Cross-Plan Notes
 
 - List only active overlaps, ownership decisions, or unresolved conflicts with other files in `docs/plan/`.
@@ -72,26 +93,6 @@ Use this skeleton when creating a new file in `docs/plan/`:
 - Make the first iteration intentionally basic if needed, but it must still be usable and demonstrable.
 - Add later iterations only as extensions of the working slice so feedback can arrive before the full feature set is built.
 - Document each iteration as it lands; do not reserve documentation for a separate large-scale cleanup iteration.
-
-## Updated Priorities
-
-## 1) <Priority Title>
-
-### Why now
-
-<rationale>
-
-### Usable outcome
-
-<what the user can do after this iteration lands>
-
-- [ ] <implementation task within this priority>
-- [ ] <implementation task within this priority>
-
-Primary files:
-
-- `<path>`
-- `<path>`
 
 ## Suggested Execution Order
 
