@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.6] - 2026-03-09
+
+### Added
+
+- **Agent:** Add predefined answer options for agent questions.
+- **Agent:** Add mandatory per-turn change summaries to agent protocol.
+- **Infra:** Implement forge CLI review-request adapters (GitHub/GitLab PR/MR workflows).
+- **UI:** Add session view review request workflows (create, open, refresh).
+- **UI:** Show project scope in list tabs.
+- **Settings:** Scope settings per project.
+- **Review:** Auto-start focused review generation on session Review transition and cache results.
+
+### Changed
+
+- **UI:** Change focused review navigation to open/regenerate with exit key.
+- **UI:** Remove external editor shortcut (`e`).
+- **Git:** Remove session worktrees when review sessions are canceled.
+
+### Contributors
+
+- @andagaev
+- @dependabot[bot]
+- @minev-dev
+
 ## [v0.5.5] - 2026-03-07
 
 ### Added
