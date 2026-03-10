@@ -34,9 +34,11 @@ The biggest UI gaps are in pure helper logic and small page render branches, whi
 
 The overlay, project-list, and settings pages have deterministic branch coverage for their helper logic and footer/render edge cases without introducing brittle frame snapshots.
 
-- [ ] Add helper-focused tests for popup sizing, content width, and help-background fallback branches in `crates/agentty/src/ui/overlay.rs`.
-- [ ] Expand row/value/formatting coverage in `crates/agentty/src/ui/page/project_list.rs`, especially active-project markers, session count rendering, and footer/help text assembly.
-- [ ] Add page-local tests in `crates/agentty/src/ui/page/setting.rs` for footer mode switching and multiline row rendering; extract reusable helper logic first if assertions would otherwise stay too broad.
+- [x] Add helper-focused tests for popup sizing, content width, and help-background fallback branches in `crates/agentty/src/ui/overlay.rs`.
+- [x] Expand row/value/formatting coverage in `crates/agentty/src/ui/page/project_list.rs`, especially active-project markers, session count rendering, and footer/help text assembly.
+- [x] Add page-local tests in `crates/agentty/src/ui/page/setting.rs` for footer mode switching and multiline row rendering; extract reusable helper logic first if assertions would otherwise stay too broad.
+
+Ratchet note: No threshold change after priority 2 alone on March 10, 2026. Priority 5 still owns the next `.pre-commit-config.yaml` ratchet update after a refreshed workspace baseline.
 
 Primary files:
 
@@ -125,7 +127,7 @@ Baseline captured on March 7, 2026 from `cargo llvm-cov --workspace --json --sum
 |------|---------------------------|--------|
 | Workspace baseline | Workspace coverage is 87.57% lines (`36614/41813`) and 85.30% functions (`4137/4850`). | Baseline captured |
 | Runtime/editor boundaries | `runtime/terminal`, `app/task`, and `runtime/event` already have the first-pass deterministic branch coverage this plan depends on. | Complete |
-| UI overlay and page helpers | `ui/overlay.rs`, `ui/page/project_list.rs`, and `ui/page/setting.rs` remain well below the workspace baseline. | Not started |
+| UI overlay and page helpers | `ui/overlay.rs`, `ui/page/project_list.rs`, and `ui/page/setting.rs` now have focused helper and render-branch coverage for popup sizing, footer assembly, and multiline row behavior; full baseline impact still rolls into the next `cargo llvm-cov` refresh. | Complete |
 | Workflow hot spots after first pass | `workflow/merge.rs`, `infra/codex_app_server.rs`, `runtime/mode/prompt.rs`, and `runtime/mode/session_view.rs` still hold the largest remaining uncovered branch totals. | Partial |
 | Settings and git orchestration | Settings persistence plus git sync, repo, and merge flows still sit below the workspace baseline. | Partial |
 | Coverage ratchet | `.pre-commit-config.yaml` already enforces the current 87/85 coverage floor, with no threshold change after the March 8, 2026 update. | Healthy |

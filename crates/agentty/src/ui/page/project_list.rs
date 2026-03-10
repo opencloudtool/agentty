@@ -136,9 +136,7 @@ impl Page for ProjectListPage<'_> {
         f.render_widget(logo_panel, centered_logo_area);
         f.render_widget(details_panel, details_area);
 
-        let help_message = Paragraph::new(help_action::footer_line(
-            &help_action::project_list_footer_actions(),
-        ));
+        let help_message = Paragraph::new(project_list_footer_line());
         f.render_widget(help_message, footer_area);
     }
 }
@@ -165,6 +163,11 @@ fn agentty_info_details_text() -> String {
     format!(
         "Version: {AGENTTY_VERSION}\n\n{AGENTTY_SHORT_DESCRIPTION}\n\nDocs: https://agentty.xyz/docs"
     )
+}
+
+/// Returns the footer help content rendered below the projects table.
+fn project_list_footer_line() -> Line<'static> {
+    help_action::footer_line(&help_action::project_list_footer_actions())
 }
 
 /// Returns project row display values for reuse and testing.
@@ -276,6 +279,30 @@ mod tests {
     }
 
     #[test]
+    fn test_format_last_opened_returns_never_without_timestamp() {
+        // Arrange
+        let last_opened_at = None;
+
+        // Act
+        let formatted = format_last_opened(last_opened_at);
+
+        // Assert
+        assert_eq!(formatted, "Never");
+    }
+
+    #[test]
+    fn test_format_last_opened_returns_unknown_for_invalid_timestamp() {
+        // Arrange
+        let last_opened_at = Some(i64::MAX);
+
+        // Act
+        let formatted = format_last_opened(last_opened_at);
+
+        // Assert
+        assert_eq!(formatted, "Unknown");
+    }
+
+    #[test]
     fn test_project_row_values_show_metadata() {
         // Arrange
         let project_item = ProjectListItem {
@@ -299,7 +326,37 @@ mod tests {
 
         // Assert
         assert_eq!(values.0, "agentty");
+        assert_eq!(values.1, "main");
         assert_eq!(values.2, "2023-11-14");
+        assert_eq!(values.3, "/tmp/agentty");
+    }
+
+    #[test]
+    fn test_project_row_values_use_fallbacks_for_missing_branch_and_timestamp() {
+        // Arrange
+        let project_item = ProjectListItem {
+            active_session_count: 0,
+            last_session_updated_at: None,
+            project: Project {
+                created_at: 1,
+                display_name: None,
+                git_branch: None,
+                id: 1,
+                is_favorite: false,
+                last_opened_at: None,
+                path: PathBuf::from("/tmp/agentty"),
+                updated_at: 2,
+            },
+            session_count: 0,
+        };
+
+        // Act
+        let values = project_row_values(&project_item, 99);
+
+        // Assert
+        assert_eq!(values.0, "agentty");
+        assert_eq!(values.1, "-");
+        assert_eq!(values.2, "Never");
     }
 
     #[test]
@@ -348,6 +405,70 @@ mod tests {
 
         // Assert
         assert_eq!(values.0, "* agentty");
+    }
+
+    #[test]
+    fn test_project_row_style_uses_accent_for_active_project() {
+        // Arrange
+        let project_item = ProjectListItem {
+            active_session_count: 0,
+            last_session_updated_at: None,
+            project: Project {
+                created_at: 1,
+                display_name: Some("agentty".to_string()),
+                git_branch: Some("main".to_string()),
+                id: 42,
+                is_favorite: false,
+                last_opened_at: None,
+                path: PathBuf::from("/tmp/agentty"),
+                updated_at: 2,
+            },
+            session_count: 0,
+        };
+
+        // Act
+        let style = project_row_style(&project_item, 42);
+
+        // Assert
+        assert_eq!(style.fg, Some(style::palette::ACCENT_SOFT));
+    }
+
+    #[test]
+    fn test_project_row_style_uses_default_style_for_inactive_project() {
+        // Arrange
+        let project_item = ProjectListItem {
+            active_session_count: 0,
+            last_session_updated_at: None,
+            project: Project {
+                created_at: 1,
+                display_name: Some("agentty".to_string()),
+                git_branch: Some("main".to_string()),
+                id: 42,
+                is_favorite: false,
+                last_opened_at: None,
+                path: PathBuf::from("/tmp/agentty"),
+                updated_at: 2,
+            },
+            session_count: 0,
+        };
+
+        // Act
+        let style = project_row_style(&project_item, 7);
+
+        // Assert
+        assert_eq!(style, Style::default());
+    }
+
+    #[test]
+    fn test_project_list_footer_line_matches_project_shortcuts() {
+        // Arrange
+        let expected_line = help_action::footer_line(&help_action::project_list_footer_actions());
+
+        // Act
+        let footer_line = project_list_footer_line();
+
+        // Assert
+        assert_eq!(footer_line, expected_line);
     }
 
     #[test]

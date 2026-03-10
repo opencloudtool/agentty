@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Padding};
 
 use crate::domain::session::Session;
 use crate::ui::router::{ListBackgroundRenderContext, render_list_background};
-use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
+use crate::ui::state::app_mode::{
+    AppMode, ConfirmationViewMode, DoneSessionOutputMode, HelpContext,
+};
 use crate::ui::style::palette;
 use crate::ui::{Component, Page, component, page};
 
@@ -248,6 +250,67 @@ fn overlay_title_style(border_color: Color) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// Describes which background page should be restored behind the help overlay.
+enum ResolvedHelpBackground<'a> {
+    List,
+    View {
+        done_session_output_mode: DoneSessionOutputMode,
+        focused_review_status_message: &'a Option<String>,
+        focused_review_text: &'a Option<String>,
+        scroll_offset: Option<u16>,
+        session_id: &'a str,
+        session_index: usize,
+    },
+    Diff {
+        diff: &'a str,
+        file_explorer_selected_index: usize,
+        scroll_offset: u16,
+        session: &'a Session,
+    },
+}
+
+/// Resolves the page state that should be rendered behind the help overlay.
+fn resolve_help_background<'a>(
+    help_context: &'a HelpContext,
+    sessions: &'a [Session],
+) -> Option<ResolvedHelpBackground<'a>> {
+    match help_context {
+        HelpContext::List { .. } => Some(ResolvedHelpBackground::List),
+        HelpContext::View {
+            done_session_output_mode,
+            focused_review_status_message,
+            focused_review_text,
+            session_id,
+            scroll_offset,
+            ..
+        } => sessions
+            .iter()
+            .position(|session| session.id == *session_id)
+            .map(|session_index| ResolvedHelpBackground::View {
+                done_session_output_mode: *done_session_output_mode,
+                focused_review_status_message,
+                focused_review_text,
+                scroll_offset: *scroll_offset,
+                session_id,
+                session_index,
+            }),
+        HelpContext::Diff {
+            diff,
+            file_explorer_selected_index,
+            scroll_offset,
+            session_id,
+        } => sessions
+            .iter()
+            .find(|session| session.id == *session_id)
+            .map(|session| ResolvedHelpBackground::Diff {
+                diff,
+                file_explorer_selected_index: *file_explorer_selected_index,
+                scroll_offset: *scroll_offset,
+                session,
+            }),
+    }
+}
+
 /// Renders background content behind help based on the source `HelpContext`.
 fn render_help_background(
     f: &mut Frame,
@@ -258,58 +321,50 @@ fn render_help_background(
 ) {
     let sessions = list_background.sessions;
 
-    match help_context {
-        HelpContext::List { .. } => {
+    match resolve_help_background(help_context, sessions) {
+        Some(ResolvedHelpBackground::List) => {
             render_list_background(f, area, list_background);
         }
-        HelpContext::View {
+        Some(ResolvedHelpBackground::View {
             done_session_output_mode,
             focused_review_status_message,
             focused_review_text,
             session_id,
-            scroll_offset: view_scroll,
-            ..
-        } => {
-            if let Some(session_index) = sessions
-                .iter()
-                .position(|session| session.id == *session_id)
-            {
-                let bg_mode = AppMode::View {
-                    done_session_output_mode: *done_session_output_mode,
-                    focused_review_status_message: focused_review_status_message.clone(),
-                    focused_review_text: focused_review_text.clone(),
-                    session_id: session_id.clone(),
-                    scroll_offset: *view_scroll,
-                };
-                let active_progress = session_progress_messages
-                    .get(session_id)
-                    .map(std::string::String::as_str);
-                page::session_chat::SessionChatPage::new(
-                    sessions,
-                    session_index,
-                    *view_scroll,
-                    &bg_mode,
-                    active_progress,
-                )
-                .render(f, area);
-            }
+            session_index,
+            scroll_offset,
+        }) => {
+            let bg_mode = AppMode::View {
+                done_session_output_mode,
+                focused_review_status_message: focused_review_status_message.clone(),
+                focused_review_text: focused_review_text.clone(),
+                session_id: session_id.to_string(),
+                scroll_offset,
+            };
+            let active_progress = session_progress_messages
+                .get(session_id)
+                .map(std::string::String::as_str);
+            page::session_chat::SessionChatPage::new(
+                sessions,
+                session_index,
+                scroll_offset,
+                &bg_mode,
+                active_progress,
+            )
+            .render(f, area);
         }
-        HelpContext::Diff {
+        Some(ResolvedHelpBackground::Diff {
             diff,
             file_explorer_selected_index,
-            scroll_offset: diff_scroll,
-            session_id,
-        } => {
-            if let Some(session) = sessions.iter().find(|session| session.id == *session_id) {
-                page::diff::DiffPage::new(
-                    session,
-                    diff.clone(),
-                    *diff_scroll,
-                    *file_explorer_selected_index,
-                )
-                .render(f, area);
-            }
-        }
+            session,
+            scroll_offset,
+        }) => page::diff::DiffPage::new(
+            session,
+            diff.to_string(),
+            scroll_offset,
+            file_explorer_selected_index,
+        )
+        .render(f, area),
+        None => {}
     }
 }
 
@@ -411,6 +466,21 @@ mod tests {
     }
 
     #[test]
+    fn test_centered_popup_area_respects_minimum_size_before_centering() {
+        // Arrange
+        let area = Rect::new(10, 5, 80, 40);
+
+        // Act
+        let popup_area = centered_popup_area(area, 10, 10, 30, 12);
+
+        // Assert
+        assert_eq!(popup_area.width, 30);
+        assert_eq!(popup_area.height, 12);
+        assert_eq!(popup_area.x, 35);
+        assert_eq!(popup_area.y, 19);
+    }
+
+    #[test]
     fn test_overlay_content_width_subtracts_shared_frame_chrome() {
         // Arrange
         let popup_width = 40;
@@ -423,6 +493,18 @@ mod tests {
     }
 
     #[test]
+    fn test_overlay_content_width_keeps_minimum_width_for_tiny_popup() {
+        // Arrange
+        let popup_width = 1;
+
+        // Act
+        let content_width = overlay_content_width(popup_width);
+
+        // Assert
+        assert_eq!(content_width, 1);
+    }
+
+    #[test]
     fn test_overlay_required_height_adds_shared_frame_chrome() {
         // Arrange
         let inner_line_count = 8;
@@ -432,6 +514,69 @@ mod tests {
 
         // Assert
         assert_eq!(total_height, 12);
+    }
+
+    #[test]
+    fn test_overlay_required_height_saturates_at_u16_max() {
+        // Arrange
+        let inner_line_count = usize::MAX;
+
+        // Act
+        let total_height = overlay_required_height(inner_line_count);
+
+        // Assert
+        assert_eq!(total_height, u16::MAX);
+    }
+
+    #[test]
+    fn test_resolve_help_background_returns_list_variant_for_list_context() {
+        // Arrange
+        let help_context = HelpContext::List {
+            keybindings: vec![],
+        };
+
+        // Act
+        let resolved = resolve_help_background(&help_context, &[]);
+
+        // Assert
+        assert!(matches!(resolved, Some(ResolvedHelpBackground::List)));
+    }
+
+    #[test]
+    fn test_resolve_help_background_returns_none_for_missing_view_session() {
+        // Arrange
+        let help_context = HelpContext::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            review_request_action: None,
+            session_id: "missing-session".to_string(),
+            session_state: crate::ui::state::help_action::ViewSessionState::Done,
+            scroll_offset: Some(0),
+        };
+
+        // Act
+        let resolved = resolve_help_background(&help_context, &[]);
+
+        // Assert
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_resolve_help_background_returns_none_for_missing_diff_session() {
+        // Arrange
+        let help_context = HelpContext::Diff {
+            session_id: "missing-session".to_string(),
+            diff: "diff --git a/file b/file".to_string(),
+            scroll_offset: 0,
+            file_explorer_selected_index: 0,
+        };
+
+        // Act
+        let resolved = resolve_help_background(&help_context, &[]);
+
+        // Assert
+        assert!(resolved.is_none());
     }
 
     #[test]
