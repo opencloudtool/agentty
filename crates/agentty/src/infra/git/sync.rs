@@ -738,3 +738,191 @@ pub(super) fn is_no_upstream_error(detail: &str) -> bool {
         || normalized_detail.contains("no upstream branch")
         || normalized_detail.contains("set-upstream")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    /// Runs `git` in `repo_path` and asserts the command succeeds.
+    fn run_git_command(repo_path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to run git command");
+
+        assert!(
+            output.status.success(),
+            "git command {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Creates a committed repository rooted at `repo_path`.
+    fn setup_test_git_repo(repo_path: &Path) {
+        run_git_command(repo_path, &["init", "-b", "main"]);
+        run_git_command(repo_path, &["config", "user.name", "Test User"]);
+        run_git_command(repo_path, &["config", "user.email", "test@example.com"]);
+        fs::write(repo_path.join("README.md"), "base\n").expect("failed to write base file");
+        run_git_command(repo_path, &["add", "README.md"]);
+        run_git_command(repo_path, &["commit", "-m", "Initial commit"]);
+    }
+
+    #[test]
+    fn current_branch_name_returns_error_for_detached_head() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(temp_dir.path(), &["checkout", "--detach"]);
+
+        // Act
+        let result = current_branch_name(temp_dir.path());
+
+        // Assert
+        let error = result.expect_err("detached HEAD should fail");
+        assert!(error.contains("detached HEAD"));
+    }
+
+    #[test]
+    fn primary_upstream_reference_uses_first_non_empty_line() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(remote_dir.path(), &["init", "--bare"]);
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        run_git_command(temp_dir.path(), &["remote", "add", "origin", &remote_path]);
+        run_git_command(temp_dir.path(), &["push", "-u", "origin", "main"]);
+        run_git_command(
+            temp_dir.path(),
+            &[
+                "config",
+                "--replace-all",
+                "branch.main.merge",
+                "refs/heads/main",
+            ],
+        );
+        run_git_command(
+            temp_dir.path(),
+            &["config", "--add", "branch.main.merge", "refs/heads/feature"],
+        );
+
+        // Act
+        let upstream_reference =
+            primary_upstream_reference(temp_dir.path()).expect("failed to resolve upstream");
+
+        // Assert
+        assert_eq!(upstream_reference, "origin/main");
+    }
+
+    #[tokio::test]
+    async fn pull_rebase_returns_conflict_detail_for_conflicting_remote_change() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        let contributor_dir = tempdir().expect("failed to create contributor temp dir");
+        let contributor_clone_path = contributor_dir.path().join("clone");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(remote_dir.path(), &["init", "--bare"]);
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        let contributor_clone_path_text = contributor_clone_path.to_string_lossy().to_string();
+        run_git_command(temp_dir.path(), &["remote", "add", "origin", &remote_path]);
+        run_git_command(temp_dir.path(), &["push", "-u", "origin", "main"]);
+        fs::write(temp_dir.path().join("README.md"), "local change\n")
+            .expect("failed to write local change");
+        run_git_command(temp_dir.path(), &["add", "README.md"]);
+        run_git_command(temp_dir.path(), &["commit", "-m", "Local change"]);
+        run_git_command(
+            contributor_dir.path(),
+            &["clone", &remote_path, &contributor_clone_path_text],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["config", "user.name", "Contributor User"],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["config", "user.email", "contributor@example.com"],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["checkout", "-B", "main", "origin/main"],
+        );
+        fs::write(contributor_clone_path.join("README.md"), "remote change\n")
+            .expect("failed to write remote change");
+        run_git_command(&contributor_clone_path, &["add", "README.md"]);
+        run_git_command(&contributor_clone_path, &["commit", "-m", "Remote change"]);
+        run_git_command(&contributor_clone_path, &["push", "origin", "main"]);
+
+        // Act
+        let result = pull_rebase(temp_dir.path().to_path_buf()).await;
+
+        // Assert
+        match result {
+            Ok(PullRebaseResult::Conflict { detail }) => {
+                let normalized_detail = detail.to_ascii_lowercase();
+                assert!(
+                    normalized_detail.contains("conflict")
+                        || normalized_detail.contains("could not apply")
+                );
+                assert!(!detail.is_empty());
+            }
+            other_result => panic!("expected conflict result, got {other_result:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn push_current_branch_returns_rejected_error_for_non_fast_forward_push() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        let contributor_dir = tempdir().expect("failed to create contributor temp dir");
+        let contributor_clone_path = contributor_dir.path().join("clone");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(remote_dir.path(), &["init", "--bare"]);
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        let contributor_clone_path_text = contributor_clone_path.to_string_lossy().to_string();
+        run_git_command(temp_dir.path(), &["remote", "add", "origin", &remote_path]);
+        run_git_command(temp_dir.path(), &["push", "-u", "origin", "main"]);
+        run_git_command(
+            contributor_dir.path(),
+            &["clone", &remote_path, &contributor_clone_path_text],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["config", "user.name", "Contributor User"],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["config", "user.email", "contributor@example.com"],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["checkout", "-B", "main", "origin/main"],
+        );
+        fs::write(contributor_clone_path.join("remote.txt"), "remote change")
+            .expect("failed to write remote file");
+        run_git_command(&contributor_clone_path, &["add", "remote.txt"]);
+        run_git_command(&contributor_clone_path, &["commit", "-m", "Remote change"]);
+        run_git_command(&contributor_clone_path, &["push", "origin", "main"]);
+        fs::write(temp_dir.path().join("local.txt"), "local change")
+            .expect("failed to write local file");
+        run_git_command(temp_dir.path(), &["add", "local.txt"]);
+        run_git_command(temp_dir.path(), &["commit", "-m", "Local change"]);
+
+        // Act
+        let result = push_current_branch(temp_dir.path().to_path_buf()).await;
+
+        // Assert
+        let error = result.expect_err("non-fast-forward push should fail");
+        assert!(error.contains("Git push failed:"));
+        assert!(error.contains("rejected") || error.contains("fetch first"));
+    }
+}

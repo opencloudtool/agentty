@@ -303,6 +303,8 @@ fn git_command_suffix(args: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -335,5 +337,107 @@ mod tests {
                 .iter()
                 .any(|(key, value)| key == "GCM_INTERACTIVE" && value == "never")
         );
+    }
+
+    #[test]
+    fn test_command_output_detail_prefers_stderr_then_stdout_then_unknown() {
+        // Arrange
+
+        // Act
+        let stderr_detail = command_output_detail(b"stdout detail", b"stderr detail");
+        let stdout_detail = command_output_detail(b"stdout detail", b"");
+        let unknown_detail = command_output_detail(b"", b"");
+
+        // Assert
+        assert_eq!(stderr_detail, "stderr detail");
+        assert_eq!(stdout_detail, "stdout detail");
+        assert_eq!(unknown_detail, "Unknown git error");
+    }
+
+    #[test]
+    fn test_normalize_repo_url_converts_supported_github_formats() {
+        // Arrange
+
+        // Act
+        let ssh_short = normalize_repo_url("git@github.com:agentty-xyz/agentty.git");
+        let ssh_long = normalize_repo_url("ssh://git@github.com/agentty-xyz/agentty.git");
+        let passthrough = normalize_repo_url("https://gitlab.com/agentty-xyz/agentty.git");
+
+        // Assert
+        assert_eq!(ssh_short, "https://github.com/agentty-xyz/agentty");
+        assert_eq!(ssh_long, "https://github.com/agentty-xyz/agentty");
+        assert_eq!(passthrough, "https://gitlab.com/agentty-xyz/agentty");
+    }
+
+    #[test]
+    fn test_resolve_git_dir_supports_directories_and_gitdir_files() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let repo_with_directory = temp_dir.path().join("repo-directory");
+        let repo_with_absolute_file = temp_dir.path().join("repo-absolute");
+        let repo_with_relative_file = temp_dir.path().join("repo-relative");
+        let relative_git_dir = repo_with_relative_file.join(".actual-git");
+        let malformed_repo = temp_dir.path().join("repo-malformed");
+        fs::create_dir_all(repo_with_directory.join(".git"))
+            .expect("failed to create .git directory repo");
+        fs::create_dir_all(&repo_with_absolute_file).expect("failed to create absolute repo");
+        fs::create_dir_all(&repo_with_relative_file).expect("failed to create relative repo");
+        fs::create_dir_all(&relative_git_dir).expect("failed to create relative git dir");
+        fs::create_dir_all(&malformed_repo).expect("failed to create malformed repo");
+        fs::write(
+            repo_with_absolute_file.join(".git"),
+            format!("gitdir: {}", temp_dir.path().join("absolute-git").display()),
+        )
+        .expect("failed to write absolute gitdir file");
+        fs::write(
+            repo_with_relative_file.join(".git"),
+            "gitdir: .actual-git\n",
+        )
+        .expect("failed to write relative gitdir file");
+        fs::write(malformed_repo.join(".git"), "not-a-gitdir-file")
+            .expect("failed to write malformed gitdir file");
+
+        // Act
+        let directory_git_dir = resolve_git_dir(&repo_with_directory);
+        let absolute_git_dir = resolve_git_dir(&repo_with_absolute_file);
+        let relative_git_dir_resolved = resolve_git_dir(&repo_with_relative_file);
+        let malformed_git_dir = resolve_git_dir(&malformed_repo);
+
+        // Assert
+        assert_eq!(directory_git_dir, Some(repo_with_directory.join(".git")));
+        assert_eq!(absolute_git_dir, Some(temp_dir.path().join("absolute-git")));
+        assert_eq!(relative_git_dir_resolved, Some(relative_git_dir));
+        assert_eq!(malformed_git_dir, None);
+    }
+
+    #[test]
+    fn test_run_git_command_sync_includes_context_and_command_detail_on_failure() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+
+        // Act
+        let result = run_git_command_sync(
+            temp_dir.path(),
+            &["definitely-not-a-git-subcommand"],
+            "Git command failed",
+        );
+
+        // Assert
+        let error = result.expect_err("invalid git command should fail");
+        assert!(error.contains("Git command failed"));
+        assert!(error.contains("definitely-not-a-git-subcommand"));
+    }
+
+    #[test]
+    fn test_main_repo_root_sync_returns_error_outside_git_repository() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+
+        // Act
+        let result = main_repo_root_sync(temp_dir.path());
+
+        // Assert
+        let error = result.expect_err("non-repo should fail");
+        assert!(error.contains("Git rev-parse failed"));
     }
 }

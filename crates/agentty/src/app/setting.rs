@@ -727,9 +727,43 @@ async fn load_legacy_default_smart_model_setting(services: &AppServices) -> Opti
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use ratatui::widgets::TableState;
+    use tokio::sync::mpsc;
 
     use super::*;
+    use crate::db::Database;
+    use crate::infra::{app_server, forge, fs, git};
+
+    /// Builds app services backed by an in-memory database for settings tests.
+    async fn test_services() -> (AppServices, i64) {
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to create project");
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let services = AppServices::new(
+            PathBuf::from("/tmp/agentty-settings-tests"),
+            database,
+            event_tx,
+            Arc::new(fs::MockFsClient::new()),
+            Arc::new(git::MockGitClient::new()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+            Arc::new(app_server::MockAppServerClient::new()),
+        );
+
+        (services, project_id)
+    }
+
+    /// Selects one settings row by its table index.
+    fn select_row(manager: &mut SettingsManager, row_index: usize) {
+        manager.table_state.select(Some(row_index));
+    }
 
     fn new_settings_manager() -> SettingsManager {
         let mut table_state = TableState::default();
@@ -813,6 +847,219 @@ mod tests {
 
         // Assert
         assert_eq!(setting_name, "LastUsedModelAsDefault");
+    }
+
+    #[tokio::test]
+    async fn load_default_smart_model_setting_prefers_project_override() {
+        // Arrange
+        let (services, project_id) = test_services().await;
+        services
+            .db()
+            .upsert_project_setting(
+                project_id,
+                SettingName::DefaultSmartModel.as_str(),
+                AgentModel::Gpt53Codex.as_str(),
+            )
+            .await
+            .expect("failed to persist smart model");
+        services
+            .db()
+            .upsert_setting("DefaultModel", AgentModel::ClaudeOpus46.as_str())
+            .await
+            .expect("failed to persist legacy model");
+
+        // Act
+        let loaded_model = load_default_smart_model_setting(
+            &services,
+            Some(project_id),
+            AgentModel::ClaudeHaiku4520251001,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(loaded_model, AgentModel::Gpt53Codex);
+    }
+
+    #[tokio::test]
+    async fn load_default_smart_model_setting_falls_back_to_legacy_and_default() {
+        // Arrange
+        let (services, project_id) = test_services().await;
+        services
+            .db()
+            .upsert_project_setting(
+                project_id,
+                SettingName::DefaultSmartModel.as_str(),
+                "not-a-valid-model",
+            )
+            .await
+            .expect("failed to persist invalid smart model");
+        services
+            .db()
+            .upsert_setting("DefaultModel", AgentModel::ClaudeOpus46.as_str())
+            .await
+            .expect("failed to persist legacy model");
+
+        // Act
+        let legacy_loaded_model = load_default_smart_model_setting(
+            &services,
+            Some(project_id),
+            AgentModel::ClaudeHaiku4520251001,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(legacy_loaded_model, AgentModel::ClaudeOpus46);
+
+        // Arrange
+        services
+            .db()
+            .upsert_setting("DefaultModel", "still-not-a-model")
+            .await
+            .expect("failed to overwrite legacy model");
+
+        // Act
+        let fallback_loaded_model = load_default_smart_model_setting(
+            &services,
+            Some(project_id),
+            AgentModel::ClaudeHaiku4520251001,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(fallback_loaded_model, AgentModel::ClaudeHaiku4520251001);
+    }
+
+    #[tokio::test]
+    async fn load_default_fast_model_setting_falls_back_through_smart_model_resolution() {
+        // Arrange
+        let (services, project_id) = test_services().await;
+        services
+            .db()
+            .upsert_setting("DefaultModel", AgentModel::ClaudeOpus46.as_str())
+            .await
+            .expect("failed to persist legacy smart model");
+
+        // Act
+        let fallback_fast_model = load_default_fast_model_setting(
+            &services,
+            Some(project_id),
+            AgentModel::Gpt53CodexSpark,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(fallback_fast_model, AgentModel::ClaudeOpus46);
+
+        // Arrange
+        services
+            .db()
+            .upsert_project_setting(
+                project_id,
+                SettingName::DefaultFastModel.as_str(),
+                AgentModel::Gpt53Codex.as_str(),
+            )
+            .await
+            .expect("failed to persist fast model");
+
+        // Act
+        let explicit_fast_model = load_default_fast_model_setting(
+            &services,
+            Some(project_id),
+            AgentModel::Gpt53CodexSpark,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(explicit_fast_model, AgentModel::Gpt53Codex);
+    }
+
+    #[tokio::test]
+    async fn settings_manager_new_loads_project_scoped_values() {
+        // Arrange
+        let (services, project_id) = test_services().await;
+        services
+            .db()
+            .upsert_setting("DefaultModel", AgentModel::ClaudeHaiku4520251001.as_str())
+            .await
+            .expect("failed to persist legacy smart model");
+        services
+            .db()
+            .upsert_project_setting(
+                project_id,
+                SettingName::DefaultSmartModel.as_str(),
+                AgentModel::Gpt53Codex.as_str(),
+            )
+            .await
+            .expect("failed to persist project smart model");
+        services
+            .db()
+            .upsert_project_setting(
+                project_id,
+                SettingName::DefaultFastModel.as_str(),
+                AgentModel::Gpt53CodexSpark.as_str(),
+            )
+            .await
+            .expect("failed to persist project fast model");
+        services
+            .db()
+            .upsert_project_setting(
+                project_id,
+                SettingName::DefaultReviewModel.as_str(),
+                AgentModel::ClaudeOpus46.as_str(),
+            )
+            .await
+            .expect("failed to persist review model");
+        services
+            .db()
+            .upsert_project_setting(project_id, SettingName::OpenCommand.as_str(), "nvim .")
+            .await
+            .expect("failed to persist open command");
+        services
+            .db()
+            .set_project_reasoning_level(project_id, ReasoningLevel::Low)
+            .await
+            .expect("failed to persist reasoning level");
+        services
+            .db()
+            .upsert_project_setting(
+                project_id,
+                SettingName::LastUsedModelAsDefault.as_str(),
+                "true",
+            )
+            .await
+            .expect("failed to persist last-used-model flag");
+
+        // Act
+        let manager = SettingsManager::new(&services, project_id).await;
+
+        // Assert
+        assert_eq!(manager.default_smart_model, AgentModel::Gpt53Codex);
+        assert_eq!(manager.default_fast_model, AgentModel::Gpt53CodexSpark);
+        assert_eq!(manager.default_review_model, AgentModel::ClaudeOpus46);
+        assert_eq!(manager.open_command, "nvim .");
+        assert_eq!(manager.reasoning_level, ReasoningLevel::Low);
+        assert!(manager.use_last_used_model_as_default);
+    }
+
+    #[tokio::test]
+    async fn settings_manager_new_defaults_invalid_last_used_model_flag_to_false() {
+        // Arrange
+        let (services, project_id) = test_services().await;
+        services
+            .db()
+            .upsert_project_setting(
+                project_id,
+                SettingName::LastUsedModelAsDefault.as_str(),
+                "invalid-bool",
+            )
+            .await
+            .expect("failed to persist invalid flag");
+
+        // Act
+        let manager = SettingsManager::new(&services, project_id).await;
+
+        // Assert
+        assert!(!manager.use_last_used_model_as_default);
     }
 
     #[test]
@@ -1019,5 +1266,160 @@ mod tests {
 
         // Assert
         assert_eq!(rows[0].1, "xhigh");
+    }
+
+    #[tokio::test]
+    async fn handle_enter_toggles_open_command_editing_state() {
+        // Arrange
+        let (services, _) = test_services().await;
+        let mut manager = new_settings_manager();
+        manager.open_command = "nvim .".to_string();
+        select_row(&mut manager, 4);
+
+        // Act
+        manager.handle_enter(&services).await;
+
+        // Assert
+        assert!(manager.is_editing_open_commands());
+        assert!(manager.open_command_input.is_some());
+
+        // Act
+        manager.handle_enter(&services).await;
+
+        // Assert
+        assert!(!manager.is_editing_open_commands());
+        assert!(manager.open_command_input.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_and_previous_do_not_move_selection_while_editing_open_commands() {
+        // Arrange
+        let (services, _) = test_services().await;
+        let mut manager = new_settings_manager();
+        select_row(&mut manager, 4);
+        manager.handle_enter(&services).await;
+
+        // Act
+        manager.next();
+        manager.previous();
+
+        // Assert
+        assert_eq!(manager.table_state.selected(), Some(4));
+    }
+
+    #[tokio::test]
+    async fn stop_text_input_editing_syncs_cached_open_command_text() {
+        // Arrange
+        let mut manager = new_settings_manager();
+        manager.open_command = "old command".to_string();
+        manager.editing_text_row = Some(SettingRow::OpenCommand);
+        manager.open_command_input = Some(InputState::with_text("new command".to_string()));
+
+        // Act
+        manager.stop_text_input_editing();
+
+        // Assert
+        assert_eq!(manager.open_command, "new command");
+        assert!(manager.editing_text_row.is_none());
+        assert!(manager.open_command_input.is_none());
+    }
+
+    #[tokio::test]
+    async fn append_and_remove_selected_text_character_persist_open_command() {
+        // Arrange
+        let (services, project_id) = test_services().await;
+        let mut manager = SettingsManager::new(&services, project_id).await;
+        select_row(&mut manager, 4);
+        manager.handle_enter(&services).await;
+
+        // Act
+        manager.append_selected_text_character(&services, 'n').await;
+        manager.append_selected_text_character(&services, 'v').await;
+        manager.remove_selected_text_character(&services).await;
+
+        // Assert
+        assert_eq!(manager.open_command, "n");
+        assert_eq!(
+            services
+                .db()
+                .get_project_setting(project_id, SettingName::OpenCommand.as_str())
+                .await
+                .expect("failed to load open command"),
+            Some("n".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn text_editing_apis_are_noops_without_active_text_row() {
+        // Arrange
+        let (services, project_id) = test_services().await;
+        let mut manager = SettingsManager::new(&services, project_id).await;
+
+        // Act
+        manager.append_selected_text_character(&services, 'n').await;
+        manager.remove_selected_text_character(&services).await;
+        manager.move_selected_text_cursor_left();
+        manager.move_selected_text_cursor_right();
+        manager.move_selected_text_cursor_up();
+        manager.move_selected_text_cursor_down();
+
+        // Assert
+        assert!(manager.open_command.is_empty());
+        assert_eq!(
+            services
+                .db()
+                .get_project_setting(project_id, SettingName::OpenCommand.as_str())
+                .await
+                .expect("failed to load open command"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn cycling_default_smart_model_persists_last_used_flag_and_wraps_back() {
+        // Arrange
+        let (services, project_id) = test_services().await;
+        let mut manager = SettingsManager::new(&services, project_id).await;
+        let models = all_models();
+        manager.default_smart_model = *models.last().expect("models should not be empty");
+        manager.use_last_used_model_as_default = false;
+        select_row(&mut manager, 1);
+
+        // Act
+        manager.handle_enter(&services).await;
+
+        // Assert
+        assert!(manager.use_last_used_model_as_default);
+        assert_eq!(
+            services
+                .db()
+                .get_project_setting(project_id, SettingName::LastUsedModelAsDefault.as_str())
+                .await
+                .expect("failed to load last-used flag"),
+            Some("true".to_string())
+        );
+
+        // Act
+        manager.handle_enter(&services).await;
+
+        // Assert
+        assert!(!manager.use_last_used_model_as_default);
+        assert_eq!(manager.default_smart_model, models[0]);
+        assert_eq!(
+            services
+                .db()
+                .get_project_setting(project_id, SettingName::DefaultSmartModel.as_str())
+                .await
+                .expect("failed to load smart model"),
+            Some(models[0].as_str().to_string())
+        );
+        assert_eq!(
+            services
+                .db()
+                .get_project_setting(project_id, SettingName::LastUsedModelAsDefault.as_str())
+                .await
+                .expect("failed to load last-used flag"),
+            Some("false".to_string())
+        );
     }
 }

@@ -56,9 +56,11 @@ Default-model persistence and git sync flows remain below the workspace baseline
 
 Settings persistence and git sync/merge edge cases are covered behind deterministic boundaries, reducing regressions in user-visible configuration and repository-state flows.
 
-- [ ] Add persistence fallback and row-edit lifecycle tests in `crates/agentty/src/app/setting.rs` for project overrides, legacy fallbacks, and open-command editing transitions.
-- [ ] Add deterministic unhappy-path tests in `crates/agentty/src/infra/git/sync.rs`, `crates/agentty/src/infra/git/repo.rs`, and `crates/agentty/src/infra/git/merge.rs` for branch-state validation, already-present results, and command-detail error reporting.
-- [ ] Keep multi-command git flows behind existing mockable boundaries and only introduce new boundaries when one test still requires multiple real subprocess calls.
+- [x] Add persistence fallback and row-edit lifecycle tests in `crates/agentty/src/app/setting.rs` for project overrides, legacy fallbacks, and open-command editing transitions.
+- [x] Add deterministic unhappy-path tests in `crates/agentty/src/infra/git/sync.rs`, `crates/agentty/src/infra/git/repo.rs`, and `crates/agentty/src/infra/git/merge.rs` for branch-state validation, already-present results, and command-detail error reporting.
+- [x] Keep multi-command git flows behind existing mockable boundaries and only introduce new boundaries when one test still requires multiple real subprocess calls.
+
+Ratchet note: No threshold change after priority 3 alone on March 10, 2026. Priority 5 still owns the next `.pre-commit-config.yaml` ratchet update after a refreshed workspace baseline.
 
 Primary files:
 
@@ -129,7 +131,7 @@ Baseline captured on March 7, 2026 from `cargo llvm-cov --workspace --json --sum
 | Runtime/editor boundaries | `runtime/terminal`, `app/task`, and `runtime/event` already have the first-pass deterministic branch coverage this plan depends on. | Complete |
 | UI overlay and page helpers | `ui/overlay.rs`, `ui/page/project_list.rs`, and `ui/page/setting.rs` now have focused helper and render-branch coverage for popup sizing, footer assembly, and multiline row behavior; full baseline impact still rolls into the next `cargo llvm-cov` refresh. | Complete |
 | Workflow hot spots after first pass | `workflow/merge.rs`, `infra/codex_app_server.rs`, `runtime/mode/prompt.rs`, and `runtime/mode/session_view.rs` still hold the largest remaining uncovered branch totals. | Partial |
-| Settings and git orchestration | Settings persistence plus git sync, repo, and merge flows still sit below the workspace baseline. | Partial |
+| Settings and git orchestration | `app/setting.rs`, `infra/git/sync.rs`, `infra/git/repo.rs`, and `infra/git/merge.rs` now have deterministic fallback and unhappy-path coverage for persisted defaults, edit lifecycles, branch validation, and git command detail reporting; full baseline impact still rolls into the next `cargo llvm-cov` refresh. | Complete |
 | Coverage ratchet | `.pre-commit-config.yaml` already enforces the current 87/85 coverage floor, with no threshold change after the March 8, 2026 update. | Healthy |
 
 ## Implementation Approach

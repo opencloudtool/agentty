@@ -122,3 +122,83 @@ pub async fn squash_merge(
     .await
     .map_err(|error| format!("Join error: {error}"))?
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    /// Runs `git` in `repo_path` and asserts the command succeeds.
+    fn run_git_command(repo_path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to run git command");
+
+        assert!(
+            output.status.success(),
+            "git command {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Creates a committed repository rooted at `repo_path`.
+    fn setup_test_git_repo(repo_path: &Path) {
+        run_git_command(repo_path, &["init", "-b", "main"]);
+        run_git_command(repo_path, &["config", "user.name", "Test User"]);
+        run_git_command(repo_path, &["config", "user.email", "test@example.com"]);
+        fs::write(repo_path.join("README.md"), "base\n").expect("failed to write base file");
+        run_git_command(repo_path, &["add", "README.md"]);
+        run_git_command(repo_path, &["commit", "-m", "Initial commit"]);
+    }
+
+    #[tokio::test]
+    async fn squash_merge_returns_branch_mismatch_error_when_target_is_not_checked_out() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(temp_dir.path(), &["checkout", "-b", "feature-branch"]);
+
+        // Act
+        let result = squash_merge(
+            temp_dir.path().to_path_buf(),
+            "feature-branch".to_string(),
+            "main".to_string(),
+            "Merge feature".to_string(),
+        )
+        .await;
+
+        // Assert
+        let error = result.expect_err("branch mismatch should fail");
+        assert!(error.contains("repository is on 'feature-branch'"));
+        assert!(error.contains("Switch to 'main' first."));
+    }
+
+    #[tokio::test]
+    async fn squash_merge_returns_command_detail_for_missing_source_branch() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(temp_dir.path());
+
+        // Act
+        let result = squash_merge(
+            temp_dir.path().to_path_buf(),
+            "missing-branch".to_string(),
+            "main".to_string(),
+            "Merge feature".to_string(),
+        )
+        .await;
+
+        // Assert
+        let error = result.expect_err("missing branch should fail");
+        assert!(error.contains("Failed to squash merge missing-branch"));
+        assert!(error.contains("missing-branch"));
+    }
+}

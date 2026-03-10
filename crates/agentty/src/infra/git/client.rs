@@ -974,6 +974,10 @@ mod tests {
             &contributor_clone_path,
             &["config", "user.email", "contributor@example.com"],
         );
+        run_git_command(
+            &contributor_clone_path,
+            &["checkout", "-B", "main", "origin/main"],
+        );
         fs::write(contributor_clone_path.join("remote.txt"), "remote change")
             .expect("failed to write remote change");
         run_git_command(&contributor_clone_path, &["add", "remote.txt"]);
