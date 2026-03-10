@@ -289,8 +289,9 @@ mod tests {
             output: String::new(),
             project_name: "project".to_string(),
             prompt: String::new(),
-            review_request: None,
+            published_upstream_ref: None,
             questions: Vec::new(),
+            review_request: None,
             size: SessionSize::Xs,
             stats: SessionStats {
                 input_tokens,

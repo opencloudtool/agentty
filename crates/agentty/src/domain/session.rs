@@ -256,10 +256,13 @@ pub struct Session {
     pub project_name: String,
     /// Initial user prompt used to create the session.
     pub prompt: String,
-    /// Persisted forge review-request link for this session, when available.
-    pub review_request: Option<ReviewRequest>,
+    /// Upstream reference recorded after the latest successful branch publish,
+    /// for example `origin/agentty/session-id`.
+    pub published_upstream_ref: Option<String>,
     /// Model clarification questions emitted by the agent.
     pub questions: Vec<QuestionItem>,
+    /// Persisted forge review-request link for this session, when available.
+    pub review_request: Option<ReviewRequest>,
     /// Derived size bucket computed from diff size.
     pub size: SessionSize,
     /// Token usage statistics associated with this session.
@@ -418,8 +421,9 @@ mod tests {
             output: String::new(),
             project_name: "project".to_string(),
             prompt: String::new(),
-            review_request: None,
+            published_upstream_ref: None,
             questions: Vec::new(),
+            review_request: None,
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::Review,
@@ -447,6 +451,8 @@ mod tests {
             output: String::new(),
             project_name: "project".to_string(),
             prompt: String::new(),
+            published_upstream_ref: Some("origin/agentty/session-id".to_string()),
+            questions: Vec::new(),
             review_request: Some(ReviewRequest {
                 last_refreshed_at: 0,
                 summary: ReviewRequestSummary {
@@ -460,7 +466,6 @@ mod tests {
                     web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
                 },
             }),
-            questions: Vec::new(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::InProgress,
@@ -488,6 +493,8 @@ mod tests {
             output: String::new(),
             project_name: "project".to_string(),
             prompt: String::new(),
+            published_upstream_ref: Some("origin/agentty/session-id".to_string()),
+            questions: Vec::new(),
             review_request: Some(ReviewRequest {
                 last_refreshed_at: 0,
                 summary: ReviewRequestSummary {
@@ -501,7 +508,6 @@ mod tests {
                     web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
                 },
             }),
-            questions: Vec::new(),
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::Done,

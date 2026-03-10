@@ -367,22 +367,24 @@ fn current_branch_name(repo_path: &Path) -> Result<String, String> {
 /// Pushes the current branch to its upstream remote.
 ///
 /// Falls back to `git push --set-upstream origin HEAD` when no upstream branch
-/// is configured.
+/// is configured, then returns the resolved upstream reference.
 ///
 /// # Arguments
 /// * `repo_path` - Path to the git repository or worktree
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure.
+/// The upstream reference on success, Err(msg) with detailed error message on
+/// failure.
 ///
 /// # Errors
-/// Returns an error if `git push` fails.
-pub async fn push_current_branch(repo_path: PathBuf) -> Result<(), String> {
+/// Returns an error if `git push` fails or upstream tracking cannot be
+/// resolved afterwards.
+pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, String> {
     spawn_blocking(move || {
         let push_output = run_git_command_output_sync(&repo_path, &["push"])?;
 
         if push_output.status.success() {
-            return Ok(());
+            return primary_upstream_reference(&repo_path);
         }
 
         let push_detail = command_output_detail(&push_output.stdout, &push_output.stderr);
@@ -396,10 +398,26 @@ pub async fn push_current_branch(repo_path: PathBuf) -> Result<(), String> {
             "Git push failed",
         )?;
 
-        Ok(())
+        primary_upstream_reference(&repo_path)
     })
     .await
     .map_err(|error| format!("Join error: {error}"))?
+}
+
+/// Returns the current upstream reference for `HEAD`.
+///
+/// # Arguments
+/// * `repo_path` - Path to the git repository or worktree
+///
+/// # Returns
+/// The configured upstream reference, for example `origin/main`.
+///
+/// # Errors
+/// Returns an error when upstream tracking information cannot be resolved.
+pub async fn current_upstream_reference(repo_path: PathBuf) -> Result<String, String> {
+    spawn_blocking(move || primary_upstream_reference(&repo_path))
+        .await
+        .map_err(|error| format!("Join error: {error}"))?
 }
 
 /// Fetches from the configured remote.
@@ -924,5 +942,25 @@ mod tests {
         let error = result.expect_err("non-fast-forward push should fail");
         assert!(error.contains("Git push failed:"));
         assert!(error.contains("rejected") || error.contains("fetch first"));
+    }
+
+    #[tokio::test]
+    async fn current_upstream_reference_returns_origin_main() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(remote_dir.path(), &["init", "--bare"]);
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        run_git_command(temp_dir.path(), &["remote", "add", "origin", &remote_path]);
+        run_git_command(temp_dir.path(), &["push", "-u", "origin", "main"]);
+
+        // Act
+        let upstream_reference = current_upstream_reference(temp_dir.path().to_path_buf())
+            .await
+            .expect("failed to resolve upstream reference");
+
+        // Assert
+        assert_eq!(upstream_reference, "origin/main");
     }
 }

@@ -10,12 +10,13 @@ use super::rebase::RebaseStepResult;
 use super::sync;
 use super::sync::PullRebaseResult;
 use super::{
-    abort_rebase, commit_all, commit_all_preserving_single_commit, create_worktree, delete_branch,
-    detect_git_info, diff, fetch_remote, find_git_repo_root, get_ahead_behind, has_unmerged_paths,
-    head_short_hash, is_rebase_in_progress, is_worktree_clean, list_conflicted_files,
-    list_local_commit_titles, list_staged_conflict_marker_files, list_upstream_commit_titles,
-    main_repo_root, pull_rebase, push_current_branch, rebase, rebase_continue, rebase_start,
-    remove_worktree, repo_url, squash_merge, squash_merge_diff, stage_all,
+    abort_rebase, commit_all, commit_all_preserving_single_commit, create_worktree,
+    current_upstream_reference, delete_branch, detect_git_info, diff, fetch_remote,
+    find_git_repo_root, get_ahead_behind, has_unmerged_paths, head_short_hash,
+    is_rebase_in_progress, is_worktree_clean, list_conflicted_files, list_local_commit_titles,
+    list_staged_conflict_marker_files, list_upstream_commit_titles, main_repo_root, pull_rebase,
+    push_current_branch, rebase, rebase_continue, rebase_start, remove_worktree, repo_url,
+    squash_merge, squash_merge_diff, stage_all,
 };
 
 /// Boxed async result used by [`GitClient`] trait methods.
@@ -212,11 +213,18 @@ pub trait GitClient: Send + Sync {
     /// Returns an error when pull/rebase setup fails.
     fn pull_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<PullRebaseResult, String>>;
 
-    /// Pushes the currently checked out branch for `repo_path`.
+    /// Pushes the currently checked out branch for `repo_path` and returns the
+    /// configured upstream reference after the successful push.
     ///
     /// # Errors
     /// Returns an error when remote push fails.
-    fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>>;
+    fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
+
+    /// Resolves the current upstream reference for `repo_path`.
+    ///
+    /// # Errors
+    /// Returns an error when upstream tracking information is unavailable.
+    fn current_upstream_reference(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
 
     /// Fetches remote refs for `repo_path`.
     ///
@@ -401,8 +409,12 @@ impl GitClient for RealGitClient {
         Box::pin(async move { pull_rebase(repo_path).await })
     }
 
-    fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>> {
+    fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
         Box::pin(async move { push_current_branch(repo_path).await })
+    }
+
+    fn current_upstream_reference(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
+        Box::pin(async move { current_upstream_reference(repo_path).await })
     }
 
     fn fetch_remote(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>> {
@@ -1058,6 +1070,25 @@ mod tests {
 
         // Assert
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_push_current_branch_returns_upstream_reference() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        setup_test_git_repo(dir.path());
+        run_git_command(remote_dir.path(), &["init", "--bare"]);
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        run_git_command(dir.path(), &["remote", "add", "origin", &remote_path]);
+
+        // Act
+        let upstream_reference = push_current_branch(dir.path().to_path_buf())
+            .await
+            .expect("push should set upstream");
+
+        // Assert
+        assert_eq!(upstream_reference, "origin/main");
     }
 
     #[test]

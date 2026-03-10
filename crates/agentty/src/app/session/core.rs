@@ -162,6 +162,23 @@ impl SessionManager {
             session.model = session_model;
         }
     }
+
+    /// Applies one persisted published-upstream reference to the matching
+    /// in-memory session snapshot.
+    pub(crate) fn apply_published_upstream_ref(
+        &mut self,
+        session_id: &str,
+        published_upstream_ref: String,
+    ) {
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.published_upstream_ref = Some(published_upstream_ref);
+        }
+    }
 }
 
 /// Backward-compatible state-field access shim while call sites migrate to
@@ -388,7 +405,7 @@ mod tests {
         });
         mock.expect_push_current_branch()
             .times(0..)
-            .returning(|_| Box::pin(async { Ok(()) }));
+            .returning(|_| Box::pin(async { Ok("origin/main".to_string()) }));
         mock.expect_fetch_remote()
             .times(0..)
             .returning(|_| Box::pin(async { Ok(()) }));
@@ -620,8 +637,9 @@ mod tests {
             output: String::new(),
             project_name: String::new(),
             prompt: prompt.to_string(),
-            review_request: None,
+            published_upstream_ref: None,
             questions: Vec::new(),
+            review_request: None,
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status,
@@ -3357,7 +3375,7 @@ mod tests {
         mock_git_client
             .expect_push_current_branch()
             .times(1)
-            .returning(|_| Box::pin(async { Ok(()) }));
+            .returning(|_| Box::pin(async { Ok("origin/main".to_string()) }));
 
         // Act
         let result = SessionManager::sync_main_for_project(

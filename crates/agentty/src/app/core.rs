@@ -227,8 +227,12 @@ impl BranchPublishTaskFailure {
 /// Successful outcome returned by a branch-publish background action.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BranchPublishTaskSuccess {
-    /// Carries the pushed branch name for popup copy.
-    Pushed { branch_name: String },
+    /// Carries the pushed branch name and persisted upstream reference for
+    /// popup copy and session state updates.
+    Pushed {
+        branch_name: String,
+        upstream_reference: String,
+    },
 }
 
 /// Reducer-friendly result for a completed branch-publish background action.
@@ -868,6 +872,7 @@ impl App {
         let loading_title = Self::branch_publish_loading_title(publish_branch_action);
         let loading_message = Self::branch_publish_loading_message(publish_branch_action);
         let loading_label = Self::branch_publish_loading_label(publish_branch_action);
+        let db = self.services.db().clone();
         let event_sender = self.services.event_sender();
         let git_client = self.services.git_client();
         let background_restore_view = restore_view.clone();
@@ -885,6 +890,7 @@ impl App {
             let result = run_branch_publish_action(
                 publish_branch_action,
                 branch_publish_session,
+                db,
                 git_client,
             )
             .await;
@@ -1431,13 +1437,21 @@ impl App {
         } = branch_publish_action_update;
 
         let popup_mode = match result {
-            Ok(BranchPublishTaskSuccess::Pushed { branch_name }) => Self::view_info_popup_mode(
-                Self::branch_publish_success_title(PublishBranchAction::Push),
-                Self::branch_publish_success_message(&branch_name),
-                false,
-                String::new(),
-                restore_view,
-            ),
+            Ok(BranchPublishTaskSuccess::Pushed {
+                branch_name,
+                upstream_reference,
+            }) => {
+                self.sessions
+                    .apply_published_upstream_ref(&session_id, upstream_reference);
+
+                Self::view_info_popup_mode(
+                    Self::branch_publish_success_title(PublishBranchAction::Push),
+                    Self::branch_publish_success_message(&branch_name),
+                    false,
+                    String::new(),
+                    restore_view,
+                )
+            }
             Err(failure) => Self::view_info_popup_mode(
                 failure.title,
                 failure.message,
@@ -2172,16 +2186,20 @@ impl App {
 async fn run_branch_publish_action(
     publish_branch_action: PublishBranchAction,
     branch_publish_session: BranchPublishTaskSession,
+    db: db::Database,
     git_client: Arc<dyn GitClient>,
 ) -> BranchPublishTaskResult {
     match publish_branch_action {
-        PublishBranchAction::Push => push_session_branch(&branch_publish_session, git_client).await,
+        PublishBranchAction::Push => {
+            push_session_branch(&branch_publish_session, db, git_client).await
+        }
     }
 }
 
 /// Pushes one session branch to the configured Git remote.
 async fn push_session_branch(
     branch_publish_session: &BranchPublishTaskSession,
+    db: db::Database,
     git_client: Arc<dyn GitClient>,
 ) -> BranchPublishTaskResult {
     if branch_publish_session.status != Status::Review {
@@ -2192,13 +2210,24 @@ async fn push_session_branch(
 
     let folder = branch_publish_session.folder.clone();
     let branch_name = session::session_branch(&branch_publish_session.id);
-
-    git_client
+    let upstream_reference = git_client
         .push_current_branch(folder)
         .await
         .map_err(|error| branch_push_failure(&error))?;
 
-    Ok(BranchPublishTaskSuccess::Pushed { branch_name })
+    db.update_session_published_upstream_ref(&branch_publish_session.id, Some(&upstream_reference))
+        .await
+        .map_err(|error| {
+            BranchPublishTaskFailure::failed(format!(
+                "Branch push succeeded, but Agentty could not persist the upstream reference: \
+                 {error}"
+            ))
+        })?;
+
+    Ok(BranchPublishTaskSuccess::Pushed {
+        branch_name,
+        upstream_reference,
+    })
 }
 
 /// Maps one branch-publish failure into blocked or failed popup copy.
@@ -2469,8 +2498,9 @@ mod tests {
             output: String::new(),
             project_name: "test-project".to_string(),
             prompt: "test prompt".to_string(),
-            review_request: None,
+            published_upstream_ref: None,
             questions: Vec::new(),
+            review_request: None,
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::Review,
@@ -2777,9 +2807,12 @@ mod tests {
                 })
             });
         let git_client: Arc<dyn crate::infra::git::GitClient> = Arc::new(mock_git_client);
+        let database = crate::infra::db::Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
 
         // Act
-        let result = push_session_branch(&branch_session, git_client).await;
+        let result = push_session_branch(&branch_session, database, git_client).await;
 
         // Assert
         assert!(matches!(
@@ -2804,10 +2837,16 @@ mod tests {
         let push_result = run_branch_publish_action(
             PublishBranchAction::Push,
             done_snapshot.clone(),
+            app.services.db().clone(),
             app.services.git_client(),
         )
         .await;
-        let helper_result = push_session_branch(&done_snapshot, app.services.git_client()).await;
+        let helper_result = push_session_branch(
+            &done_snapshot,
+            app.services.db().clone(),
+            app.services.git_client(),
+        )
+        .await;
 
         // Assert
         assert_eq!(
@@ -2847,6 +2886,7 @@ mod tests {
             restore_view: expected_restore_view.clone(),
             result: Ok(BranchPublishTaskSuccess::Pushed {
                 branch_name: "agentty/session-1".to_string(),
+                upstream_reference: "origin/agentty/session-1".to_string(),
             }),
             session_id: "session-1".to_string(),
         })
@@ -2865,6 +2905,14 @@ mod tests {
                 && message.contains("Pushed session branch `agentty/session-1`.")
                 && restore_view == &expected_restore_view
         ));
+        assert_eq!(
+            app.sessions
+                .state()
+                .sessions
+                .first()
+                .and_then(|session| session.published_upstream_ref.as_deref()),
+            Some("origin/agentty/session-1")
+        );
     }
 
     #[tokio::test]

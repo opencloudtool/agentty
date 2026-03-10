@@ -478,10 +478,12 @@ impl SessionManager {
         let source_branch = session_branch(session_id);
         let create_input = Self::review_request_create_input(session, source_branch.clone());
         let git_client = services.git_client();
-        git_client
+        let published_upstream_ref = git_client
             .push_current_branch(folder.clone())
             .await
             .map_err(|error| format!("Failed to publish session branch: {error}"))?;
+        self.store_published_upstream_ref(services, session_id, published_upstream_ref)
+            .await?;
 
         let repo_url = git_client.repo_url(folder).await.map_err(|error| {
             format!("Failed to resolve repository remote for review request: {error}")
@@ -721,6 +723,30 @@ impl SessionManager {
         session.review_request = Some(review_request.clone());
 
         Ok(review_request)
+    }
+
+    /// Persists one published upstream reference in memory and the database.
+    ///
+    /// # Errors
+    /// Returns an error if the session disappears or persistence fails.
+    pub(super) async fn store_published_upstream_ref(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+        published_upstream_ref: String,
+    ) -> Result<(), String> {
+        services
+            .db()
+            .update_session_published_upstream_ref(session_id, Some(&published_upstream_ref))
+            .await?;
+
+        let session_index = self.session_index_or_err(session_id)?;
+        let Some(session) = self.state.sessions.get_mut(session_index) else {
+            return Err(SESSION_NOT_FOUND_ERROR.to_string());
+        };
+        session.published_upstream_ref = Some(published_upstream_ref);
+
+        Ok(())
     }
 
     /// Validates and queues a follow-up prompt for an existing session.
@@ -1356,8 +1382,9 @@ mod tests {
             output: output.to_string(),
             project_name: "project".to_string(),
             prompt: prompt.to_string(),
-            review_request: None,
+            published_upstream_ref: None,
             questions: Vec::new(),
+            review_request: None,
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status,
@@ -1498,7 +1525,7 @@ mod tests {
         mock_git_client
             .expect_push_current_branch()
             .times(1)
-            .returning(|_| Box::pin(async { Ok(()) }));
+            .returning(|_| Box::pin(async { Ok("origin/agentty/session-id".to_string()) }));
         mock_git_client.expect_repo_url().times(1).returning(|_| {
             Box::pin(async { Ok("https://github.com/agentty-xyz/agentty.git".to_string()) })
         });
@@ -1598,6 +1625,16 @@ mod tests {
                 .as_ref()
                 .map(|row| row.last_refreshed_at),
             Some(review_request.last_refreshed_at)
+        );
+        assert_eq!(
+            persisted_row.published_upstream_ref.as_deref(),
+            Some("origin/agentty/session-id")
+        );
+        assert_eq!(
+            session_manager.state.sessions[0]
+                .published_upstream_ref
+                .as_deref(),
+            Some("origin/agentty/session-id")
         );
     }
 

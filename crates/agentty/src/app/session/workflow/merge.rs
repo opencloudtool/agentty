@@ -2286,7 +2286,7 @@ mod tests {
         mock_git_client
             .expect_push_current_branch()
             .times(1)
-            .returning(|_| Box::pin(async { Ok(()) }));
+            .returning(|_| Box::pin(async { Ok("origin/main".to_string()) }));
         mock_git_client.expect_abort_rebase().times(0);
 
         let mut mock_sync_assist_client = MockSyncAssistClient::new();

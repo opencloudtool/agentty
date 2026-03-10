@@ -84,6 +84,7 @@ pub struct SessionRow {
     pub output_tokens: i64,
     pub project_id: Option<i64>,
     pub prompt: String,
+    pub published_upstream_ref: Option<String>,
     pub questions: Option<String>,
     pub review_request: Option<SessionReviewRequestRow>,
     pub size: String,
@@ -130,6 +131,7 @@ fn parse_session_row(row: &SqliteRow) -> SessionRow {
         output_tokens: row.get("output_tokens"),
         project_id: row.get("project_id"),
         prompt: row.get("prompt"),
+        published_upstream_ref: row.get("published_upstream_ref"),
         questions: row.get("questions"),
         review_request: parse_session_review_request_row(row),
         size: row.get("size"),
@@ -482,7 +484,7 @@ ON CONFLICT(session_id) DO NOTHING
 SELECT session.id, session.model, session.base_branch, session.status, session.title,
        session.project_id, session.prompt, session.output, session.created_at,
        session.updated_at, session.input_tokens, session.output_tokens, session.size,
-       session.summary, session.questions,
+       session.summary, session.questions, session.published_upstream_ref,
        session_review_request.display_id AS review_request_display_id,
        session_review_request.forge_kind AS review_request_forge_kind,
        session_review_request.last_refreshed_at AS review_request_last_refreshed_at,
@@ -517,7 +519,7 @@ ORDER BY session.updated_at DESC, session.id
 SELECT session.id, session.model, session.base_branch, session.status, session.title,
        session.project_id, session.prompt, session.output, session.created_at,
        session.updated_at, session.input_tokens, session.output_tokens, session.size,
-       session.summary, session.questions,
+       session.summary, session.questions, session.published_upstream_ref,
        session_review_request.display_id AS review_request_display_id,
        session_review_request.forge_kind AS review_request_forge_kind,
        session_review_request.last_refreshed_at AS review_request_last_refreshed_at,
@@ -893,6 +895,32 @@ WHERE id = ?
         .execute(&self.pool)
         .await
         .map_err(|err| format!("Failed to update session provider conversation id: {err}"))?;
+
+        Ok(())
+    }
+
+    /// Updates the persisted upstream reference for a published session
+    /// branch.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be updated.
+    pub async fn update_session_published_upstream_ref(
+        &self,
+        id: &str,
+        published_upstream_ref: Option<&str>,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r"
+UPDATE session
+SET published_upstream_ref = ?
+WHERE id = ?
+",
+        )
+        .bind(published_upstream_ref)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| format!("Failed to update session published upstream ref: {err}"))?;
 
         Ok(())
     }
@@ -2026,6 +2054,53 @@ mod tests {
         // Assert
         assert_eq!(stored_id, Some("thread-123".to_string()));
         assert_eq!(cleared_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_session_published_upstream_ref_round_trip_and_clear() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Review", project_id)
+            .await
+            .expect("failed to insert session");
+
+        // Act
+        database
+            .update_session_published_upstream_ref("session-a", Some("origin/agentty/session-a"))
+            .await
+            .expect("failed to persist session published upstream ref");
+        let persisted_row = database
+            .load_sessions()
+            .await
+            .expect("failed to load sessions")
+            .into_iter()
+            .find(|row| row.id == "session-a")
+            .expect("missing persisted session row");
+        database
+            .update_session_published_upstream_ref("session-a", None)
+            .await
+            .expect("failed to clear session published upstream ref");
+        let cleared_row = database
+            .load_sessions()
+            .await
+            .expect("failed to load sessions after clearing")
+            .into_iter()
+            .find(|row| row.id == "session-a")
+            .expect("missing cleared session row");
+
+        // Assert
+        assert_eq!(
+            persisted_row.published_upstream_ref.as_deref(),
+            Some("origin/agentty/session-a")
+        );
+        assert_eq!(cleared_row.published_upstream_ref, None);
     }
 
     #[tokio::test]

@@ -156,8 +156,9 @@ impl SessionManager {
                 output: session_output,
                 project_name: project_name.clone(),
                 prompt: row.prompt,
-                review_request,
+                published_upstream_ref: row.published_upstream_ref,
                 questions,
+                review_request,
                 size: persisted_size,
                 stats: SessionStats {
                     input_tokens: row.input_tokens.cast_unsigned(),
@@ -570,6 +571,7 @@ mod tests {
             output_tokens: 0,
             project_id: Some(1),
             prompt: String::new(),
+            published_upstream_ref: None,
             questions: None,
             review_request: Some(SessionReviewRequestRow {
                 display_id: "#42".to_string(),
