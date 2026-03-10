@@ -77,7 +77,8 @@ Use this skeleton when creating a new file in `docs/plan/`:
 ## 1) <Priority Title>
 
 **Why now:** <rationale>
-**Usable outcome:** <what the user can do after this iteration lands>
+**Usable outcome:**
+<what the user can do after this iteration lands>
 
 - [ ] <implementation task within this priority>
 - [ ] <implementation task within this priority>

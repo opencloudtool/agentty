@@ -37,7 +37,8 @@ The manual review-request workflow in `crates/agentty/src/app/session/workflow` 
 ## 1) Ship Session-View PR/MR Actions and Manual Usage Docs
 
 **Why now:** The baseline workflow already supports publish/create/open/refresh, so the next smallest user-visible iteration is surfacing that behavior in the main session view.
-**Usable outcome:** A user can create a PR/MR when missing, open an existing PR/MR, and refresh linked metadata directly from session view with clear help/footer guidance and updated usage docs.
+**Usable outcome:**
+A user can create a PR/MR when missing, open an existing PR/MR, and refresh linked metadata directly from session view with clear help/footer guidance and updated usage docs.
 
 - [x] Add a session-view review-request action that creates a PR/MR when no link exists and otherwise opens or refreshes the linked review request based on state.
 - [x] Extend `AppMode`, help/footer projections, and view-mode key handling to show loading, success, and blocked states without leaving session context.
@@ -58,7 +59,8 @@ Primary files:
 ## 2) Add Background Review-Request Status Reconciliation and Final Architecture Docs
 
 **Why now:** Automatic status gathering should extend a workflow users can already trigger and inspect in session view, not precede it.
-**Usable outcome:** Linked sessions automatically reconcile to `Done` or `Canceled` after the remote review request is observed as merged or closed, and architecture docs describe the final poller and reducer boundaries.
+**Usable outcome:**
+Linked sessions automatically reconcile to `Done` or `Canceled` after the remote review request is observed as merged or closed, and architecture docs describe the final poller and reducer boundaries.
 
 - [ ] Add an app-scoped background job that periodically checks linked review-request state for active sessions with forge metadata.
 - [ ] Route poller results through `AppEvent` or an equivalent reducer-driven path instead of mutating session state directly inside the task.

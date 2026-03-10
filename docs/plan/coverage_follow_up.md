@@ -37,7 +37,8 @@ Baseline captured on March 7, 2026 from `cargo llvm-cov --workspace --json --sum
 ## 1) Lock in a deterministic runtime/task coverage slice
 
 **Why now:** These files still have some of the lowest line coverage in the workspace, but they are already structured around deterministic helpers and event boundaries that can land as one reviewable slice.
-**Usable outcome:** `runtime/terminal`, `app/task`, and `runtime/event` gain the missing unhappy-path and branch coverage needed to validate the current harness approach before the plan expands into heavier modules.
+**Usable outcome:**
+`runtime/terminal`, `app/task`, and `runtime/event` gain the missing unhappy-path and branch coverage needed to validate the current harness approach before the plan expands into heavier modules.
 
 - [x] Add failure-path tests around terminal setup/restore behavior in `crates/agentty/src/runtime/terminal.rs`, including raw-mode setup failure, alternate-screen setup failure, and cleanup-attempt restoration.
 - [x] Expand `crates/agentty/src/app/task.rs` tests for version-check event emission, review-assist command failures, and output-detail formatting branches without relying on live network or subprocess behavior.
@@ -52,7 +53,8 @@ Primary files:
 ## 2) Land page-helper UI coverage without snapshot-heavy tests
 
 **Why now:** The biggest UI gaps are in pure helper logic and small page render branches, which can move coverage quickly without waiting on broader session-view or forge-flow work.
-**Usable outcome:** The overlay, project-list, and settings pages have deterministic branch coverage for their helper logic and footer/render edge cases without introducing brittle frame snapshots.
+**Usable outcome:**
+The overlay, project-list, and settings pages have deterministic branch coverage for their helper logic and footer/render edge cases without introducing brittle frame snapshots.
 
 - [ ] Add helper-focused tests for popup sizing, content width, and help-background fallback branches in `crates/agentty/src/ui/overlay.rs`.
 - [ ] Expand row/value/formatting coverage in `crates/agentty/src/ui/page/project_list.rs`, especially active-project markers, session count rendering, and footer/help text assembly.
@@ -67,7 +69,8 @@ Primary files:
 ## 3) Tighten settings and git-orchestration unhappy paths
 
 **Why now:** Default-model persistence and git sync flows remain below the workspace baseline, yet they sit behind existing mockable boundaries and can land independently of the larger workflow-heavy follow-up.
-**Usable outcome:** Settings persistence and git sync/merge edge cases are covered behind deterministic boundaries, reducing regressions in user-visible configuration and repository-state flows.
+**Usable outcome:**
+Settings persistence and git sync/merge edge cases are covered behind deterministic boundaries, reducing regressions in user-visible configuration and repository-state flows.
 
 - [ ] Add persistence fallback and row-edit lifecycle tests in `crates/agentty/src/app/setting.rs` for project overrides, legacy fallbacks, and open-command editing transitions.
 - [ ] Add deterministic unhappy-path tests in `crates/agentty/src/infra/git/sync.rs`, `crates/agentty/src/infra/git/repo.rs`, and `crates/agentty/src/infra/git/merge.rs` for branch-state validation, already-present results, and command-detail error reporting.
@@ -83,7 +86,8 @@ Primary files:
 ## 4) Finish the remaining workflow and transport hot spots
 
 **Why now:** After the smaller slices land, the highest uncovered totals concentrate in workflow-heavy modules that should be reviewed after the shared runtime and git test seams are already proven.
-**Usable outcome:** The remaining merge, app-server, prompt, and session-view hotspots only retain genuinely hard-to-reach branches, making the next baseline and ratchet increase credible.
+**Usable outcome:**
+The remaining merge, app-server, prompt, and session-view hotspots only retain genuinely hard-to-reach branches, making the next baseline and ratchet increase credible.
 
 - [ ] Add remaining no-progress, cleanup-failure, and retry-exhaustion tests in `crates/agentty/src/app/session/workflow/merge.rs`.
 - [ ] Expand `crates/agentty/src/infra/codex_app_server.rs` coverage for restart, resume, timeout, and compaction branches using transport fixtures instead of live subprocesses.
@@ -99,7 +103,8 @@ Primary files:
 ## 5) Refresh the baseline and ratchet again
 
 **Why now:** The current ratchet only protects the first improved baseline; a second pass should convert the landed follow-up slices into a stronger enforced floor.
-**Usable outcome:** The plan snapshot, ratchet thresholds, and any contributor guidance all reflect the new post-follow-up baseline instead of the first-pass numbers.
+**Usable outcome:**
+The plan snapshot, ratchet thresholds, and any contributor guidance all reflect the new post-follow-up baseline instead of the first-pass numbers.
 
 - [ ] Re-run `cargo llvm-cov --workspace --json --summary-only` after priorities 1 through 4 land and refresh this snapshot table with the new metrics.
 - [ ] Raise `--fail-under-lines` and `--fail-under-functions` in `.pre-commit-config.yaml` only after the refreshed baseline remains stable across the full suite.
