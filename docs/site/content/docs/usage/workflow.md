@@ -20,7 +20,7 @@ Agentty organizes its interface into four tabs, accessible with `Tab`:
 | Tab | Purpose |
 |-----|---------|
 | **Sessions** | List, create, and manage agent sessions. When a project is active, this tab appears as `Sessions (<project-name>)`. |
-| **Projects** | Select between projects (git repositories) in a split view: Agentty info (ASCII art, version, short description) on top, project table below. |
+| **Projects** | Select between projects (git repositories) in a split view: Agentty info (ASCII art, version, short description) on top, project table below. Agentty skips stale entries whose project directories no longer exist. |
 | **Stats** | View usage statistics. |
 | **Settings** | Configure reasoning level, default models, and `Open Commands` for the active project. |
 

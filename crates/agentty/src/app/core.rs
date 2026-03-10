@@ -466,6 +466,7 @@ impl App {
             active_project_name,
         ) = Self::load_startup_project_context(
             &db,
+            clients.fs_client.as_ref(),
             &clients.git_client,
             working_dir.as_path(),
             git_branch,
@@ -1147,7 +1148,8 @@ impl App {
 
     /// Reloads project list snapshots from persistence.
     async fn reload_projects(&mut self) {
-        let project_items = Self::load_project_items(self.services.db()).await;
+        let project_items =
+            Self::load_project_items(self.services.db(), self.services.fs_client().as_ref()).await;
         self.projects.replace_project_items(project_items);
     }
 
@@ -2078,15 +2080,20 @@ impl App {
     }
 
     /// Resolves startup project state and persists the active project metadata.
+    ///
+    /// Persisted projects whose directories no longer exist are ignored so
+    /// startup falls back to the current working directory instead of reviving
+    /// stale project entries.
     async fn load_startup_project_context(
         db: &Database,
+        fs_client: &dyn FsClient,
         git_client: &Arc<dyn GitClient>,
         working_dir: &Path,
         git_branch: Option<String>,
         current_project_id: i64,
     ) -> (i64, PathBuf, Option<String>, Vec<ProjectListItem>, String) {
         let startup_active_project_id =
-            Self::resolve_startup_active_project_id(db, current_project_id).await;
+            Self::resolve_startup_active_project_id(db, fs_client, current_project_id).await;
         let startup_active_project = Self::load_project(
             db,
             startup_active_project_id,
@@ -2111,7 +2118,7 @@ impl App {
             .unwrap_or(startup_active_project.id);
         let _ = db.set_active_project_id(active_project_id).await;
         let _ = db.touch_project_last_opened(active_project_id).await;
-        let project_items = Self::load_project_items(db).await;
+        let project_items = Self::load_project_items(db, fs_client).await;
         let active_project_name =
             Self::project_title_for_id(&project_items, active_project_id, &startup_working_dir);
 
@@ -2124,18 +2131,20 @@ impl App {
         )
     }
 
-    /// Resolves startup active project id from settings fallbacking to current.
-    async fn resolve_startup_active_project_id(db: &Database, current_project_id: i64) -> i64 {
+    /// Resolves startup active project id from settings, falling back to the
+    /// current working directory when the stored project row is stale.
+    async fn resolve_startup_active_project_id(
+        db: &Database,
+        fs_client: &dyn FsClient,
+        current_project_id: i64,
+    ) -> i64 {
         let Some(stored_project_id) = db.load_active_project_id().await.ok().flatten() else {
             return current_project_id;
         };
-        let project_exists = db
-            .get_project(stored_project_id)
-            .await
-            .ok()
-            .flatten()
-            .is_some();
-        if !project_exists {
+        let Some(project_row) = db.get_project(stored_project_id).await.ok().flatten() else {
+            return current_project_id;
+        };
+        if !Self::is_existing_project_path(fs_client, project_row.path.as_str()) {
             return current_project_id;
         }
 
@@ -2170,24 +2179,21 @@ impl App {
     /// Repositories discovered in the user home directory are upserted first
     /// so the list can include projects even before they have sessions.
     ///
-    /// Agentty-managed session worktrees are excluded so the list keeps only
-    /// user-facing repository roots.
-    async fn load_project_items(db: &Database) -> Vec<ProjectListItem> {
+    /// Agentty-managed session worktrees and missing project directories are
+    /// excluded so the list keeps only user-facing repository roots that still
+    /// exist on disk.
+    async fn load_project_items(db: &Database, fs_client: &dyn FsClient) -> Vec<ProjectListItem> {
         let session_worktree_root = agentty_home().join(AGENTTY_WT_DIR);
         Self::load_projects_from_home_directory(db, session_worktree_root.as_path()).await;
 
-        db.load_projects_with_stats()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|project_row| {
-                !Self::is_session_worktree_project_path(
-                    project_row.path.as_str(),
-                    &session_worktree_root,
-                )
-            })
-            .map(Self::project_list_item_from_row)
-            .collect()
+        Self::visible_project_rows(
+            db.load_projects_with_stats().await.unwrap_or_default(),
+            fs_client,
+            &session_worktree_root,
+        )
+        .into_iter()
+        .map(Self::project_list_item_from_row)
+        .collect()
     }
 
     /// Discovers git repositories under the user home directory and persists
@@ -2277,6 +2283,30 @@ impl App {
     /// worktree under `~/.agentty/wt`.
     fn is_session_worktree_project_path(project_path: &str, session_worktree_root: &Path) -> bool {
         Path::new(project_path).starts_with(session_worktree_root)
+    }
+
+    /// Filters persisted project rows down to entries that should remain
+    /// visible in the Projects tab.
+    fn visible_project_rows(
+        project_rows: Vec<db::ProjectListRow>,
+        fs_client: &dyn FsClient,
+        session_worktree_root: &Path,
+    ) -> Vec<db::ProjectListRow> {
+        project_rows
+            .into_iter()
+            .filter(|project_row| {
+                !Self::is_session_worktree_project_path(
+                    project_row.path.as_str(),
+                    session_worktree_root,
+                ) && Self::is_existing_project_path(fs_client, project_row.path.as_str())
+            })
+            .collect()
+    }
+
+    /// Returns whether one persisted project path still resolves to a
+    /// directory on disk.
+    fn is_existing_project_path(fs_client: &dyn FsClient, project_path: &str) -> bool {
+        fs_client.is_dir(PathBuf::from(project_path))
     }
 
     /// Converts a project row into domain project model.
@@ -2807,6 +2837,23 @@ mod tests {
     /// boundary.
     async fn new_test_app() -> App {
         new_test_app_with_tmux_client(Arc::new(MockTmuxClient::new())).await
+    }
+
+    /// Creates one aggregated project-row fixture with a caller-provided path.
+    fn project_list_row_fixture(id: i64, path: String) -> db::ProjectListRow {
+        db::ProjectListRow {
+            active_session_count: 0,
+            created_at: 1,
+            display_name: None,
+            git_branch: Some("main".to_string()),
+            id,
+            is_favorite: false,
+            last_opened_at: None,
+            last_session_updated_at: None,
+            path,
+            session_count: 0,
+            updated_at: 1,
+        }
     }
 
     /// Replaces the services git client in a test app with a mock while
@@ -3950,6 +3997,97 @@ mod tests {
 
         // Assert
         assert!(!is_session_worktree);
+    }
+
+    #[test]
+    fn is_existing_project_path_returns_true_when_fs_client_reports_directory() {
+        // Arrange
+        let project_path = "/home/test/src/agentty";
+        let expected_path = PathBuf::from(project_path);
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client
+            .expect_is_dir()
+            .once()
+            .withf(move |path| path == &expected_path)
+            .return_const(true);
+
+        // Act
+        let project_exists = App::is_existing_project_path(&fs_client, project_path);
+
+        // Assert
+        assert!(project_exists);
+    }
+
+    #[test]
+    fn visible_project_rows_excludes_missing_and_session_worktree_projects() {
+        // Arrange
+        let existing_project_path = "/home/test/src/agentty".to_string();
+        let session_worktree_project_path = "/home/test/.agentty/wt/a1b2c3d4".to_string();
+        let missing_project_path = "/home/test/src/removed".to_string();
+        let session_worktree_root = Path::new("/home/test/.agentty/wt");
+        let project_rows = vec![
+            project_list_row_fixture(1, existing_project_path.clone()),
+            project_list_row_fixture(2, session_worktree_project_path.clone()),
+            project_list_row_fixture(3, missing_project_path.clone()),
+        ];
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        let existing_project_path_for_match = PathBuf::from(existing_project_path.clone());
+        let missing_project_path_for_match = PathBuf::from(missing_project_path.clone());
+        fs_client
+            .expect_is_dir()
+            .once()
+            .withf(move |path| path == &existing_project_path_for_match)
+            .return_const(true);
+        fs_client
+            .expect_is_dir()
+            .once()
+            .withf(move |path| path == &missing_project_path_for_match)
+            .return_const(false);
+
+        // Act
+        let visible_rows =
+            App::visible_project_rows(project_rows, &fs_client, session_worktree_root);
+
+        // Assert
+        assert_eq!(visible_rows.len(), 1);
+        assert_eq!(visible_rows[0].path, existing_project_path);
+    }
+
+    #[tokio::test]
+    async fn resolve_startup_active_project_id_falls_back_when_stored_project_path_is_missing() {
+        // Arrange
+        let current_project_dir = tempdir().expect("failed to create current project dir");
+        let current_project_path = current_project_dir.path().to_path_buf();
+        let missing_project_path = current_project_path.join("removed-project");
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let current_project_id = database
+            .upsert_project(&current_project_path.to_string_lossy(), Some("main"))
+            .await
+            .expect("failed to insert current project");
+        let missing_project_id = database
+            .upsert_project(&missing_project_path.to_string_lossy(), Some("main"))
+            .await
+            .expect("failed to insert missing project");
+        database
+            .set_active_project_id(missing_project_id)
+            .await
+            .expect("failed to persist active project");
+        let missing_project_path = missing_project_path.clone();
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client
+            .expect_is_dir()
+            .once()
+            .withf(move |path| path == &missing_project_path)
+            .return_const(false);
+
+        // Act
+        let resolved_project_id =
+            App::resolve_startup_active_project_id(&database, &fs_client, current_project_id).await;
+
+        // Assert
+        assert_eq!(resolved_project_id, current_project_id);
     }
 
     #[tokio::test]

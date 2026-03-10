@@ -730,12 +730,13 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use ag_forge as forge;
     use ratatui::widgets::TableState;
     use tokio::sync::mpsc;
 
     use super::*;
     use crate::db::Database;
-    use crate::infra::{app_server, forge, fs, git};
+    use crate::infra::{app_server, fs, git};
 
     /// Builds app services backed by an in-memory database for settings tests.
     async fn test_services() -> (AppServices, i64) {
