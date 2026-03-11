@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.9] - 2026-03-10
+
+### Changed
+
+- Align implementation plans with updated skill rules.
+- Scope prompt image paste plan to session chat composer.
+- Generate session commit messages from cumulative diffs.
+- Prefer shallower file index matches.
+
+### Contributors
+
+- @minev-dev
+
 ## [v0.5.8] - 2026-03-10
 
 ### Fixed
