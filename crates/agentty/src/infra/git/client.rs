@@ -8,15 +8,16 @@ use super::merge::SquashMergeOutcome;
 use super::rebase::RebaseStepResult;
 #[cfg(test)]
 use super::sync;
-use super::sync::PullRebaseResult;
+use super::sync::{PullRebaseResult, SingleCommitMessageStrategy};
 use super::{
     abort_rebase, commit_all, commit_all_preserving_single_commit, create_worktree,
     current_upstream_reference, delete_branch, detect_git_info, diff, fetch_remote,
-    find_git_repo_root, get_ahead_behind, has_unmerged_paths, head_short_hash,
-    is_rebase_in_progress, is_worktree_clean, list_conflicted_files, list_local_commit_titles,
-    list_staged_conflict_marker_files, list_upstream_commit_titles, main_repo_root, pull_rebase,
-    push_current_branch, push_current_branch_to_remote_branch, rebase, rebase_continue,
-    rebase_start, remove_worktree, repo_url, squash_merge, squash_merge_diff, stage_all,
+    find_git_repo_root, get_ahead_behind, has_commits_since, has_unmerged_paths,
+    head_commit_message, head_short_hash, is_rebase_in_progress, is_worktree_clean,
+    list_conflicted_files, list_local_commit_titles, list_staged_conflict_marker_files,
+    list_upstream_commit_titles, main_repo_root, pull_rebase, push_current_branch,
+    push_current_branch_to_remote_branch, rebase, rebase_continue, rebase_start, remove_worktree,
+    repo_url, squash_merge, squash_merge_diff, stage_all,
 };
 
 /// Boxed async result used by [`GitClient`] trait methods.
@@ -167,7 +168,9 @@ pub trait GitClient: Send + Sync {
     fn commit_all_preserving_single_commit(
         &self,
         repo_path: PathBuf,
+        base_branch: String,
         commit_message: String,
+        message_strategy: SingleCommitMessageStrategy,
         no_verify: bool,
     ) -> GitFuture<Result<(), String>>;
 
@@ -182,6 +185,13 @@ pub trait GitClient: Send + Sync {
     /// # Errors
     /// Returns an error when `HEAD` cannot be resolved.
     fn head_short_hash(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
+
+    /// Returns the full `HEAD` commit message for `repo_path`, or `None` when
+    /// no commits exist.
+    ///
+    /// # Errors
+    /// Returns an error when `HEAD` cannot be inspected.
+    fn head_commit_message(&self, repo_path: PathBuf) -> GitFuture<Result<Option<String>, String>>;
 
     /// Deletes `branch_name` in `repo_path`.
     ///
@@ -206,6 +216,17 @@ pub trait GitClient: Send + Sync {
     /// # Errors
     /// Returns an error when status inspection fails.
     fn is_worktree_clean(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>>;
+
+    /// Returns whether `HEAD` contains commits not reachable from
+    /// `base_branch`.
+    ///
+    /// # Errors
+    /// Returns an error when commit ancestry cannot be queried.
+    fn has_commits_since(
+        &self,
+        repo_path: PathBuf,
+        base_branch: String,
+    ) -> GitFuture<Result<bool, String>>;
 
     /// Performs a `pull --rebase` in `repo_path`.
     ///
@@ -384,11 +405,20 @@ impl GitClient for RealGitClient {
     fn commit_all_preserving_single_commit(
         &self,
         repo_path: PathBuf,
+        base_branch: String,
         commit_message: String,
+        message_strategy: SingleCommitMessageStrategy,
         no_verify: bool,
     ) -> GitFuture<Result<(), String>> {
         Box::pin(async move {
-            commit_all_preserving_single_commit(repo_path, commit_message, no_verify).await
+            commit_all_preserving_single_commit(
+                repo_path,
+                base_branch,
+                commit_message,
+                message_strategy,
+                no_verify,
+            )
+            .await
         })
     }
 
@@ -398,6 +428,10 @@ impl GitClient for RealGitClient {
 
     fn head_short_hash(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
         Box::pin(async move { head_short_hash(repo_path).await })
+    }
+
+    fn head_commit_message(&self, repo_path: PathBuf) -> GitFuture<Result<Option<String>, String>> {
+        Box::pin(async move { head_commit_message(repo_path).await })
     }
 
     fn delete_branch(
@@ -414,6 +448,14 @@ impl GitClient for RealGitClient {
 
     fn is_worktree_clean(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>> {
         Box::pin(async move { is_worktree_clean(repo_path).await })
+    }
+
+    fn has_commits_since(
+        &self,
+        repo_path: PathBuf,
+        base_branch: String,
+    ) -> GitFuture<Result<bool, String>> {
+        Box::pin(async move { has_commits_since(repo_path, base_branch).await })
     }
 
     fn pull_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<PullRebaseResult, String>> {
@@ -584,13 +626,16 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         setup_test_git_repo(dir.path());
+        run_git_command(dir.path(), &["checkout", "-b", "session-branch"]);
         let commit_message = "Session commit".to_string();
         fs::write(dir.path().join("work.txt"), "first change").expect("failed to write file");
 
         // Act
         let result = commit_all_preserving_single_commit(
             dir.path().to_path_buf(),
+            "main".to_string(),
             commit_message.clone(),
+            SingleCommitMessageStrategy::Replace,
             false,
         )
         .await;
@@ -608,11 +653,14 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         setup_test_git_repo(dir.path());
+        run_git_command(dir.path(), &["checkout", "-b", "session-branch"]);
         let commit_message = "Session commit".to_string();
         fs::write(dir.path().join("work.txt"), "first change").expect("failed to write file");
         commit_all_preserving_single_commit(
             dir.path().to_path_buf(),
+            "main".to_string(),
             commit_message.clone(),
+            SingleCommitMessageStrategy::Replace,
             false,
         )
         .await
@@ -624,7 +672,9 @@ mod tests {
         fs::write(dir.path().join("work.txt"), "second change").expect("failed to write file");
         let result = commit_all_preserving_single_commit(
             dir.path().to_path_buf(),
+            "main".to_string(),
             commit_message.clone(),
+            SingleCommitMessageStrategy::Replace,
             false,
         )
         .await;
@@ -638,10 +688,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_commit_all_preserving_single_commit_replaces_amended_message() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        run_git_command(dir.path(), &["checkout", "-b", "session-branch"]);
+        fs::write(dir.path().join("work.txt"), "first change").expect("failed to write file");
+        commit_all_preserving_single_commit(
+            dir.path().to_path_buf(),
+            "main".to_string(),
+            "First session message".to_string(),
+            SingleCommitMessageStrategy::Replace,
+            false,
+        )
+        .await
+        .expect("failed to create first session commit");
+
+        // Act
+        fs::write(dir.path().join("work.txt"), "second change").expect("failed to write file");
+        let result = commit_all_preserving_single_commit(
+            dir.path().to_path_buf(),
+            "main".to_string(),
+            "Refined session message".to_string(),
+            SingleCommitMessageStrategy::Replace,
+            false,
+        )
+        .await;
+        let head_message = run_git_command_stdout(dir.path(), &["log", "-1", "--pretty=%B"]);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        assert_eq!(head_message, "Refined session message");
+    }
+
+    #[tokio::test]
     async fn test_commit_all_preserving_single_commit_retries_index_lock_and_succeeds() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         setup_test_git_repo(dir.path());
+        run_git_command(dir.path(), &["checkout", "-b", "session-branch"]);
         let commit_message = "Session commit".to_string();
         fs::write(dir.path().join("work.txt"), "locked change").expect("failed to write file");
         let index_lock_path = dir.path().join(".git").join("index.lock");
@@ -654,7 +739,9 @@ mod tests {
         // Act
         let result = commit_all_preserving_single_commit(
             dir.path().to_path_buf(),
+            "main".to_string(),
             commit_message.clone(),
+            SingleCommitMessageStrategy::Replace,
             false,
         )
         .await;

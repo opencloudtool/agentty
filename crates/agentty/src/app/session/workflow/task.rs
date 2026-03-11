@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use askama::Template;
 use tokio::sync::mpsc;
 
-use super::COMMIT_MESSAGE;
 use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, format_detail_lines,
     run_agent_assist,
@@ -17,12 +16,13 @@ use crate::domain::agent::AgentModel;
 use crate::domain::session::Status;
 use crate::infra::agent;
 use crate::infra::db::Database;
-use crate::infra::git::GitClient;
+use crate::infra::git::{self as git, GitClient};
 
 const AUTO_COMMIT_ASSIST_POLICY: AssistPolicy = AssistPolicy {
     max_attempts: 10,
     max_identical_failure_streak: 3,
 };
+const FALLBACK_SESSION_COMMIT_MESSAGE: &str = "Apply session updates";
 
 /// Askama view model for rendering auto-commit recovery prompts.
 #[derive(Template)]
@@ -31,8 +31,24 @@ struct AutoCommitAssistPromptTemplate<'a> {
     commit_error: &'a str,
 }
 
+/// Askama view model for rendering session commit-message generation prompts.
+#[derive(Template)]
+#[template(path = "session_commit_message_prompt.md", escape = "none")]
+struct SessionCommitMessagePromptTemplate<'a> {
+    current_commit_message: &'a str,
+    diff: &'a str,
+}
+
 /// Stateless helpers for session process execution and output handling.
 pub(crate) struct SessionTaskService;
+
+/// Generated session commit details for one successful auto-commit run.
+pub(crate) struct SessionCommitOutcome {
+    /// Short hash of the rewritten or created `HEAD` commit.
+    pub(crate) commit_hash: String,
+    /// Canonical commit title/body stored on the session branch `HEAD`.
+    pub(crate) commit_message: String,
+}
 
 /// Inputs needed to execute an agent-assisted edit task.
 pub(crate) struct RunAgentAssistTaskInput {
@@ -79,8 +95,16 @@ impl SessionTaskService {
     /// emitted into session output for user visibility.
     pub(in crate::app) async fn handle_auto_commit(context: AssistContext) {
         match Self::commit_changes_with_assist(&context).await {
-            Ok(Some(hash)) => {
-                let message = format!("\n[Commit] committed with hash `{hash}`\n");
+            Ok(Some(outcome)) => {
+                SessionManager::update_session_title_and_summary_from_commit_message(
+                    &context.db,
+                    &context.id,
+                    &outcome.commit_message,
+                    &context.app_event_tx,
+                )
+                .await;
+
+                let message = format!("\n[Commit] committed with hash `{}`\n", outcome.commit_hash);
                 Self::append_session_output(
                     &context.output,
                     &context.db,
@@ -115,7 +139,9 @@ impl SessionTaskService {
         }
     }
 
-    async fn commit_changes_with_assist(context: &AssistContext) -> Result<Option<String>, String> {
+    async fn commit_changes_with_assist(
+        context: &AssistContext,
+    ) -> Result<Option<SessionCommitOutcome>, String> {
         let mut failure_tracker =
             FailureTracker::new(AUTO_COMMIT_ASSIST_POLICY.max_identical_failure_streak);
         // Test repos do not install hooks deterministically; skip hook
@@ -124,8 +150,8 @@ impl SessionTaskService {
 
         for assist_attempt in 1..=AUTO_COMMIT_ASSIST_POLICY.max_attempts + 1 {
             match Self::commit_changes_with_git_client(context, skip_verify_hooks).await {
-                Ok(commit_hash) => {
-                    return Ok(Some(commit_hash));
+                Ok(commit_outcome) => {
+                    return Ok(Some(commit_outcome));
                 }
                 Err(commit_error) if commit_error.contains("Nothing to commit") => {
                     return Ok(None);
@@ -163,22 +189,26 @@ impl SessionTaskService {
     /// execution without pre-commit setup).
     ///
     /// # Errors
-    /// Returns an error if staging/commit fails or `HEAD` cannot be resolved.
+    /// Returns an error if commit-message generation, staging/commit, or
+    /// `HEAD` resolution fails.
     async fn commit_changes_with_git_client(
         context: &AssistContext,
         no_verify: bool,
-    ) -> Result<String, String> {
-        let folder = context.folder.clone();
-        context
-            .git_client
-            .commit_all_preserving_single_commit(
-                folder.clone(),
-                COMMIT_MESSAGE.to_string(),
-                no_verify,
-            )
-            .await?;
+    ) -> Result<SessionCommitOutcome, String> {
+        let base_branch = context
+            .db
+            .get_session_base_branch(&context.id)
+            .await?
+            .ok_or_else(|| "Missing session base branch for auto-commit".to_string())?;
 
-        context.git_client.head_short_hash(folder).await
+        Self::commit_session_changes(
+            context.git_client.as_ref(),
+            &context.folder,
+            &base_branch,
+            context.session_model,
+            no_verify,
+        )
+        .await
     }
 
     async fn append_commit_assist_header(
@@ -234,6 +264,193 @@ impl SessionTaskService {
 
     fn format_commit_error_for_display(commit_error: &str) -> String {
         format_detail_lines(commit_error)
+    }
+
+    /// Renders the commit-message generation prompt from the markdown
+    /// template.
+    ///
+    /// # Errors
+    /// Returns an error if Askama template rendering fails.
+    fn session_commit_message_prompt(
+        diff: &str,
+        current_commit_message: Option<&str>,
+    ) -> Result<String, String> {
+        let template = SessionCommitMessagePromptTemplate {
+            current_commit_message: current_commit_message.unwrap_or("").trim(),
+            diff,
+        };
+
+        template.render().map_err(|error| {
+            format!("Failed to render `session_commit_message_prompt.md`: {error}")
+        })
+    }
+
+    /// Generates the canonical session commit message, commits the current
+    /// worktree state, and returns the rewritten `HEAD` details.
+    ///
+    /// # Errors
+    /// Returns an error if the worktree is clean, the cumulative session diff
+    /// cannot be generated, commit-message generation fails, or the git commit
+    /// cannot be created/amended.
+    pub(crate) async fn commit_session_changes(
+        git_client: &dyn GitClient,
+        folder: &Path,
+        base_branch: &str,
+        session_model: AgentModel,
+        no_verify: bool,
+    ) -> Result<SessionCommitOutcome, String> {
+        if cfg!(test) {
+            let folder = folder.to_path_buf();
+            if git_client.is_worktree_clean(folder.clone()).await? {
+                return Err("Nothing to commit: no changes detected".to_string());
+            }
+
+            let has_session_commit = git_client
+                .has_commits_since(folder.clone(), base_branch.to_string())
+                .await?;
+            let current_commit_message = if has_session_commit {
+                git_client.head_commit_message(folder.clone()).await?
+            } else {
+                None
+            };
+            let commit_message =
+                Self::fallback_session_commit_message(current_commit_message.as_deref());
+            git_client
+                .commit_all_preserving_single_commit(
+                    folder.clone(),
+                    base_branch.to_string(),
+                    commit_message.clone(),
+                    git::SingleCommitMessageStrategy::Replace,
+                    no_verify,
+                )
+                .await?;
+            let commit_hash = git_client.head_short_hash(folder).await?;
+
+            return Ok(SessionCommitOutcome {
+                commit_hash,
+                commit_message,
+            });
+        }
+
+        let backend = agent::create_backend(session_model.kind());
+
+        Self::commit_session_changes_with_backend(
+            git_client,
+            folder,
+            base_branch,
+            session_model,
+            backend.as_ref(),
+            no_verify,
+        )
+        .await
+    }
+
+    /// Testable variant of [`SessionTaskService::commit_session_changes`] that
+    /// accepts an injected backend for deterministic prompt generation.
+    ///
+    /// # Errors
+    /// Returns an error if the worktree is clean, the cumulative session diff
+    /// cannot be generated, commit-message generation fails, or the git commit
+    /// cannot be created/amended.
+    async fn commit_session_changes_with_backend(
+        git_client: &dyn GitClient,
+        folder: &Path,
+        base_branch: &str,
+        session_model: AgentModel,
+        backend: &dyn agent::AgentBackend,
+        no_verify: bool,
+    ) -> Result<SessionCommitOutcome, String> {
+        let folder = folder.to_path_buf();
+        if git_client.is_worktree_clean(folder.clone()).await? {
+            return Err("Nothing to commit: no changes detected".to_string());
+        }
+
+        let diff = git_client
+            .diff(folder.clone(), base_branch.to_string())
+            .await?;
+        let has_session_commit = git_client
+            .has_commits_since(folder.clone(), base_branch.to_string())
+            .await?;
+        let current_commit_message = if has_session_commit {
+            git_client.head_commit_message(folder.clone()).await?
+        } else {
+            None
+        };
+        let generated_commit_message = Self::generate_session_commit_message_with_backend(
+            folder.as_path(),
+            session_model,
+            diff.as_str(),
+            current_commit_message.as_deref(),
+            backend,
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Self::fallback_session_commit_message(current_commit_message.as_deref())
+        });
+
+        git_client
+            .commit_all_preserving_single_commit(
+                folder.clone(),
+                base_branch.to_string(),
+                generated_commit_message.clone(),
+                git::SingleCommitMessageStrategy::Replace,
+                no_verify,
+            )
+            .await?;
+
+        let commit_hash = git_client.head_short_hash(folder).await?;
+
+        Ok(SessionCommitOutcome {
+            commit_hash,
+            commit_message: generated_commit_message,
+        })
+    }
+
+    /// Renders the session commit-message prompt, submits it to the injected
+    /// backend, and returns the normalized commit message text.
+    ///
+    /// # Errors
+    /// Returns an error when prompt rendering fails, the one-shot agent call
+    /// fails, or the returned `answer` text is blank.
+    async fn generate_session_commit_message_with_backend(
+        folder: &Path,
+        session_model: AgentModel,
+        diff: &str,
+        current_commit_message: Option<&str>,
+        backend: &dyn agent::AgentBackend,
+    ) -> Result<String, String> {
+        let prompt = Self::session_commit_message_prompt(diff, current_commit_message)?;
+        let submission = agent::submit_one_shot_with_backend(
+            backend,
+            agent::OneShotRequest {
+                child_pid: None,
+                folder,
+                model: session_model,
+                prompt: &prompt,
+                reasoning_level: crate::domain::agent::ReasoningLevel::default(),
+            },
+        )
+        .await?;
+        let answer_text = submission.response.to_answer_display_text();
+        let trimmed_answer_text = answer_text.trim();
+        if trimmed_answer_text.is_empty() {
+            return Err("Session commit message model returned blank answer text".to_string());
+        }
+
+        Ok(trimmed_answer_text.to_string())
+    }
+
+    /// Returns the last good session commit message or a stable fallback when
+    /// generation fails.
+    fn fallback_session_commit_message(current_commit_message: Option<&str>) -> String {
+        let Some(current_commit_message) = current_commit_message.map(str::trim) else {
+            return FALLBACK_SESSION_COMMIT_MESSAGE.to_string();
+        };
+        if current_commit_message.is_empty() {
+            return FALLBACK_SESSION_COMMIT_MESSAGE.to_string();
+        }
+
+        current_commit_message.to_string()
     }
 
     /// Executes one isolated assist prompt and appends the normalized answer
@@ -464,45 +681,22 @@ mod tests {
         assert_eq!(formatted, "- line one\n- line two");
     }
 
-    #[tokio::test]
-    /// Verifies commit helper success uses the injected git trait boundary and
-    /// returns the generated commit hash.
-    async fn test_commit_changes_with_assist_returns_commit_hash_from_mock_git_client() {
+    #[test]
+    /// Verifies session commit-message prompts include both the continuity
+    /// input and the cumulative diff.
+    fn test_session_commit_message_prompt_includes_continuity_and_diff() {
         // Arrange
-        let mut mock_git_client = MockGitClient::new();
-        mock_git_client
-            .expect_commit_all_preserving_single_commit()
-            .times(1)
-            .returning(|_, _, _| Box::pin(async { Ok(()) }));
-        mock_git_client
-            .expect_head_short_hash()
-            .times(1)
-            .returning(|_| Box::pin(async { Ok("abc1234".to_string()) }));
-        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
-        let output = Arc::new(Mutex::new(String::new()));
-        let context = AssistContext {
-            app_event_tx,
-            child_pid: Arc::new(Mutex::new(None)),
-            db: Database::open_in_memory()
-                .await
-                .expect("failed to open in-memory db"),
-            folder: PathBuf::from("/tmp/project"),
-            git_client: Arc::new(mock_git_client),
-            id: "session-id".to_string(),
-            output: Arc::clone(&output),
-            session_model: AgentModel::Gpt53Codex,
-        };
+        let diff = "diff --git a/a.rs b/a.rs";
+        let current_commit_message = Some("Keep session commit accurate");
 
         // Act
-        let result = SessionTaskService::commit_changes_with_assist(&context).await;
+        let prompt =
+            SessionTaskService::session_commit_message_prompt(diff, current_commit_message)
+                .expect("prompt should render");
 
         // Assert
-        assert_eq!(result, Ok(Some("abc1234".to_string())));
-        let output_text = output
-            .lock()
-            .map(|buffer| buffer.clone())
-            .unwrap_or_default();
-        assert!(output_text.is_empty());
+        assert!(prompt.contains("Keep session commit accurate"));
+        assert!(prompt.contains(diff));
     }
 
     #[tokio::test]
@@ -512,17 +706,19 @@ mod tests {
         // Arrange
         let mut mock_git_client = MockGitClient::new();
         mock_git_client
-            .expect_commit_all_preserving_single_commit()
+            .expect_is_worktree_clean()
             .times(1)
-            .returning(|_, _, _| Box::pin(async { Err("commit failed".to_string()) }));
+            .returning(|_| Box::pin(async { Err("commit failed".to_string()) }));
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        insert_review_session(&database, AgentModel::Gpt53Codex.as_str()).await;
         let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
         let output = Arc::new(Mutex::new(String::new()));
         let context = AssistContext {
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
-            db: Database::open_in_memory()
-                .await
-                .expect("failed to open in-memory db"),
+            db: database,
             folder: PathBuf::from("/tmp/project"),
             git_client: Arc::new(mock_git_client),
             id: "session-id".to_string(),
@@ -548,17 +744,19 @@ mod tests {
         // Arrange
         let mut mock_git_client = MockGitClient::new();
         mock_git_client
-            .expect_commit_all_preserving_single_commit()
+            .expect_is_worktree_clean()
             .times(1)
-            .returning(|_, _, _| Box::pin(async { Err("Nothing to commit".to_string()) }));
+            .returning(|_| Box::pin(async { Ok(true) }));
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        insert_review_session(&database, AgentModel::Gpt53Codex.as_str()).await;
         let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
         let output = Arc::new(Mutex::new(String::new()));
         let context = AssistContext {
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
-            db: Database::open_in_memory()
-                .await
-                .expect("failed to open in-memory db"),
+            db: database,
             folder: PathBuf::from("/tmp/project"),
             git_client: Arc::new(mock_git_client),
             id: "session-id".to_string(),

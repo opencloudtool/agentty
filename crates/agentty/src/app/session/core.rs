@@ -23,8 +23,6 @@ type SessionRenderParts<'a> = (&'a [Session], &'a [DailyActivity], &'a mut Table
 
 /// Low-frequency fallback interval for metadata-based session refresh.
 pub(crate) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-/// Default commit message used for automatic worktree commits.
-pub(crate) const COMMIT_MESSAGE: &str = "Beautiful commit (made by Agentty)";
 
 /// Defaults used when creating new sessions from the UI.
 #[derive(Clone, Copy)]
@@ -311,11 +309,9 @@ mod tests {
                 let repo_root = repo_root.clone();
                 Box::pin(async move { Some(repo_root) })
             });
-        mock.expect_commit_all_preserving_single_commit()
+        mock.expect_is_worktree_clean()
             .times(expected_merge_count)
-            .returning(|_, _, _| {
-                Box::pin(async { Err("Nothing to commit: no changes detected".to_string()) })
-            });
+            .returning(|_| Box::pin(async { Ok(true) }));
         mock.expect_is_rebase_in_progress()
             .times(expected_merge_count)
             .returning(|_| Box::pin(async { Ok(false) }));
@@ -509,7 +505,7 @@ mod tests {
             .returning(|_, _, _| Box::pin(async { Ok(()) }));
         mock.expect_commit_all_preserving_single_commit()
             .times(0..)
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _, _| {
                 Box::pin(async { Err("Nothing to commit: no changes detected".to_string()) })
             });
         mock.expect_stage_all()
@@ -527,6 +523,12 @@ mod tests {
         mock.expect_is_worktree_clean()
             .times(0..)
             .returning(|_| Box::pin(async { Ok(true) }));
+        mock.expect_has_commits_since()
+            .times(0..)
+            .returning(|_, _| Box::pin(async { Ok(false) }));
+        mock.expect_head_commit_message()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(None) }));
     }
 
     /// Replaces app-level git dependencies with the provided mock client.
@@ -2528,13 +2530,17 @@ mod tests {
             .times(1)
             .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
         mock_git_client
-            .expect_diff()
-            .times(1..)
-            .returning(|_, _| Box::pin(async { Ok(String::new()) }));
+            .expect_is_worktree_clean()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock_git_client
+            .expect_has_commits_since()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(false) }));
         mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
-            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+            .returning(|_, _, _, _, _| Box::pin(async { Ok(()) }));
         mock_git_client
             .expect_head_short_hash()
             .times(1)
@@ -2584,28 +2590,61 @@ mod tests {
     #[tokio::test]
     async fn test_commit_changes_amends_existing_session_commit() {
         // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let session_folder = dir.path().join("session-worktree");
-        std::fs::create_dir_all(&session_folder).expect("failed to create session worktree");
+        let session_folder = PathBuf::from("/tmp/session-worktree");
         let mut mock_git_client = git::MockGitClient::new();
         let mut sequence = mockall::Sequence::new();
         mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock_git_client
+            .expect_has_commits_since()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Box::pin(async { Ok(false) }));
+        mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
-            .withf(|_, commit_message, no_verify| commit_message == COMMIT_MESSAGE && !*no_verify)
+            .withf(|_, base_branch, commit_message, strategy, no_verify| {
+                base_branch == "main"
+                    && commit_message == "Apply session updates"
+                    && *strategy == git::SingleCommitMessageStrategy::Replace
+                    && !*no_verify
+            })
             .in_sequence(&mut sequence)
-            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+            .returning(|_, _, _, _, _| Box::pin(async { Ok(()) }));
         mock_git_client
             .expect_head_short_hash()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Box::pin(async { Ok("abc1234".to_string()) }));
         mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock_git_client
+            .expect_has_commits_since()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Box::pin(async { Ok(true) }));
+        mock_git_client
+            .expect_head_commit_message()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok(Some("Refine session work".to_string())) }));
+        mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
-            .withf(|_, commit_message, no_verify| commit_message == COMMIT_MESSAGE && !*no_verify)
+            .withf(|_, base_branch, commit_message, strategy, no_verify| {
+                base_branch == "main"
+                    && commit_message == "Refine session work"
+                    && *strategy == git::SingleCommitMessageStrategy::Replace
+                    && !*no_verify
+            })
             .in_sequence(&mut sequence)
-            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+            .returning(|_, _, _, _, _| Box::pin(async { Ok(()) }));
         mock_git_client
             .expect_head_short_hash()
             .times(1)
@@ -2613,20 +2652,20 @@ mod tests {
             .returning(|_| Box::pin(async { Ok("def5678".to_string()) }));
 
         // Act
-        std::fs::write(session_folder.join("session-amend.txt"), "first change")
-            .expect("failed to write first change");
-        let first_hash = SessionManager::commit_changes_with_client_for_test(
+        let first_outcome = SessionTaskService::commit_session_changes(
             &mock_git_client,
             &session_folder,
+            "main",
+            AgentModel::ClaudeSonnet46,
             false,
         )
         .await
         .expect("failed to create first session commit");
-        std::fs::write(session_folder.join("session-amend.txt"), "second change")
-            .expect("failed to write second change");
-        let second_hash = SessionManager::commit_changes_with_client_for_test(
+        let second_outcome = SessionTaskService::commit_session_changes(
             &mock_git_client,
             &session_folder,
+            "main",
+            AgentModel::ClaudeSonnet46,
             false,
         )
         .await
@@ -2634,9 +2673,11 @@ mod tests {
 
         // Assert
         assert_ne!(
-            first_hash, second_hash,
+            first_outcome.commit_hash, second_outcome.commit_hash,
             "amending should rewrite the session commit hash"
         );
+        assert_eq!(first_outcome.commit_message, "Apply session updates");
+        assert_eq!(second_outcome.commit_message, "Refine session work");
     }
 
     #[tokio::test]
@@ -2674,15 +2715,9 @@ mod tests {
                 })
             });
         mock_git_client
-            .expect_commit_all_preserving_single_commit()
+            .expect_is_worktree_clean()
             .times(1)
-            .returning(|_, _, _| {
-                Box::pin(async { Err("Nothing to commit: no changes detected".to_string()) })
-            });
-        mock_git_client
-            .expect_diff()
-            .times(0..)
-            .returning(|_, _| Box::pin(async { Ok(String::new()) }));
+            .returning(|_| Box::pin(async { Ok(true) }));
         install_mock_git_client(&mut app, mock_git_client);
 
         // Agent that produces no file changes
@@ -3114,11 +3149,9 @@ mod tests {
                 })
             });
         mock_git_client
-            .expect_commit_all_preserving_single_commit()
+            .expect_is_worktree_clean()
             .times(1)
-            .returning(|_, _, _| {
-                Box::pin(async { Err("Nothing to commit: no changes detected".to_string()) })
-            });
+            .returning(|_| Box::pin(async { Ok(true) }));
         mock_git_client
             .expect_is_rebase_in_progress()
             .times(1)
@@ -3183,10 +3216,18 @@ mod tests {
                 })
             });
         mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock_git_client
+            .expect_has_commits_since()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(false) }));
+        mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
-            .withf(|_, _, no_verify| *no_verify)
-            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+            .withf(|_, _, _, _, no_verify| *no_verify)
+            .returning(|_, _, _, _, _| Box::pin(async { Ok(()) }));
         mock_git_client
             .expect_head_short_hash()
             .times(1)

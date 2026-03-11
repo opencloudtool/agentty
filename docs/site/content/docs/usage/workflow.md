@@ -51,6 +51,11 @@ When a session enters **Review**, Agentty starts generating the focused review
 in the background. Pressing `f` opens the cached review immediately when it is
 ready, or shows a loading message while generation is still running.
 
+After each successful turn with file changes, Agentty keeps the session branch
+at one evolving commit. It regenerates that commit message from the cumulative
+session diff, amends `HEAD`, and refreshes the session title and summary from
+the same commit text before merge begins.
+
 When a session enters **Merging**, Agentty generates the squash commit message
 through the configured agent model. If that message cannot be produced, the
 merge stops, the session returns to **Review**, and the output panel shows the

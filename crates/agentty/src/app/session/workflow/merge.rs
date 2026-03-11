@@ -12,7 +12,7 @@ use askama::Template;
 use tokio::sync::mpsc;
 
 use super::access::{SESSION_HANDLES_NOT_FOUND_ERROR, SESSION_NOT_FOUND_ERROR};
-use super::{COMMIT_MESSAGE, SessionTaskService, session_branch};
+use super::{SessionTaskService, session_branch};
 use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, format_detail_lines,
     run_agent_assist,
@@ -1109,11 +1109,26 @@ impl SessionManager {
     async fn execute_rebase_workflow(input: RebaseAssistInput) -> Result<String, String> {
         // Auto-commit any pending changes before rebasing to avoid
         // "cannot rebase: You have unstaged changes".
-        match Self::commit_changes_with_git_client(input.git_client.as_ref(), &input.folder, true)
-            .await
+        match SessionTaskService::commit_session_changes(
+            input.git_client.as_ref(),
+            &input.folder,
+            &input.base_branch,
+            input.session_model,
+            true,
+        )
+        .await
         {
-            Ok(hash) => {
-                let commit_message = format!("\n[Commit] committed with hash `{hash}`\n");
+            Ok(outcome) => {
+                Self::update_session_title_and_summary_from_commit_message(
+                    &input.db,
+                    &input.id,
+                    &outcome.commit_message,
+                    &input.app_event_tx,
+                )
+                .await;
+
+                let commit_message =
+                    format!("\n[Commit] committed with hash `{}`\n", outcome.commit_hash);
                 SessionTaskService::append_session_output(
                     &input.output,
                     &input.db,
@@ -1192,8 +1207,8 @@ impl SessionManager {
             SessionTaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
     }
 
-    /// Updates persisted session title and summary from the final squash commit
-    /// message.
+    /// Updates persisted session title and summary from the canonical session
+    /// commit message.
     pub(crate) async fn update_session_title_and_summary_from_commit_message(
         db: &Database,
         session_id: &str,
@@ -1741,40 +1756,6 @@ impl SessionManager {
             .render()
             .map_err(|error| format!("Failed to render `merge_commit_message_prompt.md`: {error}"))
     }
-
-    /// Commits all changes using a caller-provided git client.
-    ///
-    /// This test-only helper keeps high-level session tests isolated from
-    /// shelling out to real git commands.
-    #[cfg(test)]
-    pub(crate) async fn commit_changes_with_client_for_test(
-        git_client: &dyn GitClient,
-        folder: &Path,
-        no_verify: bool,
-    ) -> Result<String, String> {
-        Self::commit_changes_with_git_client(git_client, folder, no_verify).await
-    }
-
-    /// Commits all changes in a session worktree using the provided git client.
-    ///
-    /// This helper exists so high-level merge/rebase tests can mock external
-    /// git command behavior while preserving production commit semantics.
-    async fn commit_changes_with_git_client(
-        git_client: &dyn GitClient,
-        folder: &Path,
-        no_verify: bool,
-    ) -> Result<String, String> {
-        let folder = folder.to_path_buf();
-        git_client
-            .commit_all_preserving_single_commit(
-                folder.clone(),
-                COMMIT_MESSAGE.to_string(),
-                no_verify,
-            )
-            .await?;
-
-        git_client.head_short_hash(folder).await
-    }
 }
 
 #[cfg(test)]
@@ -1939,6 +1920,54 @@ mod tests {
         assert_eq!(summary, "Apply session updates");
     }
 
+    #[tokio::test]
+    async fn test_update_session_title_and_summary_from_commit_message_persists_commit_message() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session(
+                "session-id",
+                AgentModel::ClaudeSonnet46.as_str(),
+                "main",
+                "Review",
+                project_id,
+            )
+            .await
+            .expect("failed to insert session");
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let commit_message = "Refine session commit message\n\n- Keep title in sync";
+
+        // Act
+        SessionManager::update_session_title_and_summary_from_commit_message(
+            &database,
+            "session-id",
+            commit_message,
+            &app_event_tx,
+        )
+        .await;
+        let sessions = database
+            .load_sessions()
+            .await
+            .expect("failed to load sessions");
+
+        // Assert
+        assert_eq!(
+            sessions[0].title.as_deref(),
+            Some("Refine session commit message")
+        );
+        assert_eq!(sessions[0].summary.as_deref(), Some(commit_message));
+        assert_eq!(
+            app_event_rx.try_recv().ok(),
+            Some(AppEvent::RefreshSessions)
+        );
+    }
+
     #[test]
     fn test_merge_commit_message_from_answer_text_accepts_plain_answer_text() {
         // Arrange
@@ -2060,10 +2089,20 @@ mod tests {
         let mut mock_git_client = git::MockGitClient::new();
         let mut sequence = Sequence::new();
         mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock_git_client
+            .expect_has_commits_since()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| Box::pin(async { Ok(false) }));
+        mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+            .returning(|_, _, _, _, _| Box::pin(async { Ok(()) }));
         mock_git_client
             .expect_head_short_hash()
             .times(1)

@@ -14,12 +14,12 @@ The current placeholder session commit hides useful history inside the worktree 
 
 After each turn finishes auto-commit, the session branch still has exactly one commit, but that commit now carries a readable title/body that reflects the current branch state instead of the `Beautiful commit (made by Agentty)` placeholder.
 
-- [ ] Replace the fixed `COMMIT_MESSAGE` placeholder path in `crates/agentty/src/app/session/core.rs`, `crates/agentty/src/app/session/workflow/task.rs`, and `crates/agentty/src/app/session/workflow/merge.rs` with a session commit-message flow that can evolve as the branch changes.
-- [ ] Add a dedicated prompt resource for session commit-message generation or rename/generalize `crates/agentty/resources/merge_commit_message_prompt.md` so the prompt is explicitly session-scoped instead of merge-scoped.
-- [ ] Generate the session commit title/body from the session diff after each successful turn, using the current `HEAD` commit message as continuity input when amending so the model can refine the same message instead of starting from scratch every time.
-- [ ] Extend `crates/agentty/src/infra/git/client.rs` and `crates/agentty/src/infra/git/sync.rs` so the single-commit path can amend `HEAD` with an updated message (`git commit --amend -m ...`) instead of only using `--no-edit` when the existing commit should stay in place.
-- [ ] Persist the generated commit title/body into session metadata during the turn so `session.title` and `session.summary` stay aligned with the branch commit before merge begins.
-- [ ] Add focused tests that cover first commit creation, later message-changing amend behavior, and session title/summary synchronization from the generated commit message.
+- [x] Replace the fixed `COMMIT_MESSAGE` placeholder path in `crates/agentty/src/app/session/core.rs`, `crates/agentty/src/app/session/workflow/task.rs`, and `crates/agentty/src/app/session/workflow/merge.rs` with a session commit-message flow that can evolve as the branch changes.
+- [x] Add a dedicated prompt resource for session commit-message generation or rename/generalize `crates/agentty/resources/merge_commit_message_prompt.md` so the prompt is explicitly session-scoped instead of merge-scoped.
+- [x] Generate the session commit title/body from the session diff after each successful turn, using the current `HEAD` commit message as continuity input when amending so the model can refine the same message instead of starting from scratch every time.
+- [x] Extend `crates/agentty/src/infra/git/client.rs` and `crates/agentty/src/infra/git/sync.rs` so the single-commit path can amend `HEAD` with an updated message (`git commit --amend -m ...`) instead of only using `--no-edit` when the existing commit should stay in place.
+- [x] Persist the generated commit title/body into session metadata during the turn so `session.title` and `session.summary` stay aligned with the branch commit before merge begins.
+- [x] Add focused tests that cover first commit creation, later message-changing amend behavior, and session title/summary synchronization from the generated commit message.
 
 Primary files:
 
@@ -93,8 +93,8 @@ Primary files:
 
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
-| Session worktree commits | Auto-commit uses the fixed `Beautiful commit (made by Agentty)` message and only preserves a single commit by amending when that exact message already exists. | Not Started |
-| Session metadata | Session `title` is seeded from the first prompt and later overwritten from the final merge commit message; `summary` is also populated from merge-time commit text instead of in-session commit state. | Not Started |
+| Session worktree commits | Auto-commit now derives one evolving session commit message from the cumulative session diff and rewrites `HEAD` with that title/body while keeping the branch to one session commit. | Completed |
+| Session metadata | Session `title` and `summary` now refresh from the current session commit message after turn auto-commit and pre-merge rebase auto-commit work. | Completed |
 | Merge message source | `SessionMergeService` renders `merge_commit_message_prompt.md` and asks the model for a squash-merge commit message right before `git merge --squash`. | Not Started |
 | Merge strategy | The current merge path already does rebase-first, squash-merge second, then worktree cleanup, and it has tests around empty-diff and already-present cases. | In Progress |
 | Documentation | User and architecture docs still describe merge-time commit-message generation as part of the `Merging` state. | Not Started |

@@ -112,7 +112,7 @@ From prompt submit to persisted result:
 1. Persist session questions and emit `AppEvent::AgentResponseReceived`.
 1. Persist stats and per-model usage.
 1. Persist provider conversation id (app-server providers).
-1. Run auto-commit assistance path.
+1. Run auto-commit assistance path, which regenerates the single session-branch commit message from the cumulative diff and syncs session `title`/`summary` from that commit after successful commit creation.
 1. Refresh persisted session size.
 1. Update final status (`Review` or `Question`; on failure -> `Review`).
 

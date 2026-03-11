@@ -4,8 +4,8 @@
 //! modules and exposes workflow submodules for orchestration wiring.
 
 pub(super) use super::core::{
-    COMMIT_MESSAGE, SESSION_REFRESH_INTERVAL, SessionManager, SessionTaskService, session_branch,
-    session_folder, unix_timestamp_from_system_time,
+    SESSION_REFRESH_INTERVAL, SessionManager, SessionTaskService, session_branch, session_folder,
+    unix_timestamp_from_system_time,
 };
 
 pub(super) mod access;

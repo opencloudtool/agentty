@@ -11,6 +11,7 @@ Static resources embedded into the binary at compile time.
 - [`protocol_instruction_prompt_without_schema.md`](protocol_instruction_prompt_without_schema.md) - Prompt template that prepends structured response protocol instructions without embedding the JSON schema text.
 - [`repo_root_path_prompt.md`](repo_root_path_prompt.md) - Prompt template that prepends repository-root-relative file path output requirements.
 - [`merge_commit_message_prompt.md`](merge_commit_message_prompt.md) - Prompt template for model-generated squash commit messages.
+- [`session_commit_message_prompt.md`](session_commit_message_prompt.md) - Prompt template for model-generated session branch commit messages.
 - [`resume_with_session_output_prompt.md`](resume_with_session_output_prompt.md) - Prompt template for replies that replay persisted session transcript after switching agent.
 - [`session_title_generation_prompt.md`](session_title_generation_prompt.md) - Prompt template for one-shot first-message session title generation.
 - [`session_terminal_summary_prompt.md`](session_terminal_summary_prompt.md) - Prompt template for terminal session summaries (`Done`/`Canceled`).

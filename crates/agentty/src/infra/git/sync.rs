@@ -10,6 +10,16 @@ use super::repo::{
 
 const COMMIT_ALL_HOOK_RETRY_ATTEMPTS: usize = 5;
 
+/// Controls how single-commit session branches treat the commit message when
+/// amending `HEAD`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SingleCommitMessageStrategy {
+    /// Replaces the existing `HEAD` message with the newly generated message.
+    Replace,
+    /// Keeps the current `HEAD` message while amending file content only.
+    Reuse,
+}
+
 /// Result of attempting `git pull --rebase`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PullRebaseResult {
@@ -37,18 +47,28 @@ pub async fn commit_all(
     commit_message: String,
     no_verify: bool,
 ) -> Result<(), String> {
-    commit_all_with_retry(repo_path, commit_message, no_verify, false).await
+    commit_all_with_retry(
+        repo_path,
+        commit_message,
+        SingleCommitMessageStrategy::Replace,
+        no_verify,
+        false,
+    )
+    .await
 }
 
 /// Stages all changes and keeps a single commit for the provided message.
 ///
-/// Creates a new commit when `HEAD` does not already use `commit_message`.
-/// Otherwise, amends `HEAD` with `--amend --no-edit` so the branch keeps one
-/// evolving session commit.
+/// Creates a new commit when `HEAD` has no commits beyond `base_branch`.
+/// Otherwise, amends `HEAD` so the branch keeps one evolving session commit.
 ///
 /// # Arguments
 /// * `repo_path` - Path to the git repository or worktree
+/// * `base_branch` - Branch used to detect whether a session commit already
+///   exists on `HEAD`
 /// * `commit_message` - Message that identifies the session commit
+/// * `message_strategy` - Whether amends replace or reuse the existing `HEAD`
+///   message
 /// * `no_verify` - When `true`, skips pre-commit and commit-msg hooks
 ///   (`--no-verify`)
 ///
@@ -59,13 +79,21 @@ pub async fn commit_all(
 /// Returns an error if staging, commit lookup, or committing changes fails.
 pub async fn commit_all_preserving_single_commit(
     repo_path: PathBuf,
+    base_branch: String,
     commit_message: String,
+    message_strategy: SingleCommitMessageStrategy,
     no_verify: bool,
 ) -> Result<(), String> {
-    let amend_existing_commit =
-        should_amend_existing_commit(repo_path.clone(), commit_message.clone()).await?;
+    let amend_existing_commit = has_commits_since(repo_path.clone(), base_branch).await?;
 
-    commit_all_with_retry(repo_path, commit_message, no_verify, amend_existing_commit).await
+    commit_all_with_retry(
+        repo_path,
+        commit_message,
+        message_strategy,
+        no_verify,
+        amend_existing_commit,
+    )
+    .await
 }
 
 /// Stages all changes in the repository or worktree.
@@ -111,6 +139,16 @@ pub async fn head_short_hash(repo_path: PathBuf) -> Result<String, String> {
     }
 
     Ok(hash)
+}
+
+/// Returns the full `HEAD` commit message, or `None` when no commits exist.
+///
+/// # Errors
+/// Returns an error if `HEAD` cannot be inspected.
+pub async fn head_commit_message(repo_path: PathBuf) -> Result<Option<String>, String> {
+    spawn_blocking(move || head_commit_message_sync(&repo_path))
+        .await
+        .map_err(|error| format!("Join error: {error}"))?
 }
 
 /// Deletes a git branch.
@@ -563,6 +601,28 @@ pub async fn list_local_commit_titles(repo_path: PathBuf) -> Result<Vec<String>,
     Ok(parse_commit_titles(&git_output))
 }
 
+/// Returns whether `HEAD` contains commits that are not reachable from
+/// `base_branch`.
+///
+/// # Errors
+/// Returns an error if commit ancestry cannot be queried.
+pub async fn has_commits_since(repo_path: PathBuf, base_branch: String) -> Result<bool, String> {
+    spawn_blocking(move || {
+        let rev_list_output = run_git_command_sync(
+            &repo_path,
+            &["rev-list", "--count", &format!("{base_branch}..HEAD")],
+            "Failed to count commits since base branch",
+        )?;
+        let commit_count = rev_list_output.trim().parse::<u32>().map_err(|error| {
+            format!("Failed to parse commit count since base branch `{base_branch}`: {error}")
+        })?;
+
+        Ok(commit_count > 0)
+    })
+    .await
+    .map_err(|error| format!("Join error: {error}"))?
+}
+
 /// Parses newline-delimited commit subjects from `git log` output.
 fn parse_commit_titles(output: &str) -> Vec<String> {
     output
@@ -636,6 +696,7 @@ fn last_leading_applied_commit(cherry_output: &str) -> Option<&str> {
 async fn commit_all_with_retry(
     repo_path: PathBuf,
     commit_message: String,
+    message_strategy: SingleCommitMessageStrategy,
     no_verify: bool,
     amend_existing_commit: bool,
 ) -> Result<(), String> {
@@ -646,6 +707,7 @@ async fn commit_all_with_retry(
             let output = run_commit_command(
                 &repo_path,
                 &commit_message,
+                message_strategy,
                 no_verify,
                 amend_existing_commit,
             )?;
@@ -675,25 +737,6 @@ async fn commit_all_with_retry(
             "Failed to commit: commit hooks kept modifying files after
              {COMMIT_ALL_HOOK_RETRY_ATTEMPTS} attempts"
         ))
-    })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
-}
-
-/// Returns whether `HEAD` should be amended for the incoming commit message.
-///
-/// When `HEAD` already has `commit_message`, new staged changes should be
-/// folded into the same commit.
-async fn should_amend_existing_commit(
-    repo_path: PathBuf,
-    commit_message: String,
-) -> Result<bool, String> {
-    spawn_blocking(move || {
-        let Some(head_commit_message) = head_commit_message_sync(&repo_path)? else {
-            return Ok(false);
-        };
-
-        Ok(head_commit_message.trim() == commit_message)
     })
     .await
     .map_err(|error| format!("Join error: {error}"))?
@@ -755,13 +798,22 @@ fn has_head_commit_sync(repo_path: &Path) -> Result<bool, String> {
 fn run_commit_command(
     repo_path: &Path,
     commit_message: &str,
+    message_strategy: SingleCommitMessageStrategy,
     no_verify: bool,
     amend_existing_commit: bool,
 ) -> Result<Output, String> {
     let mut args = vec!["commit"];
     if amend_existing_commit {
         args.push("--amend");
-        args.push("--no-edit");
+        match message_strategy {
+            SingleCommitMessageStrategy::Replace => {
+                args.push("-m");
+                args.push(commit_message);
+            }
+            SingleCommitMessageStrategy::Reuse => {
+                args.push("--no-edit");
+            }
+        }
     } else {
         args.push("-m");
         args.push(commit_message);
