@@ -4,69 +4,76 @@ Plan for organizing `crates/agentty/tests/`, selected source-level tests, and co
 
 ## Priorities
 
-## 1) Establish a shared deterministic scenario harness
+## 1) Ship one deterministic local session workflow slice
 
 ### Why now
 
-The current suite has strong low-level coverage but no reusable integration harness for app-level user journeys, so each higher-level test would otherwise reinvent temp repo and fake CLI setup.
+The first slice needs to prove end-to-end value, not just infrastructure, because the repository currently lacks any app-level scenario that exercises a full local session journey through the user-facing workflow boundary.
 
 ### Usable outcome
 
-One shared harness can create disposable repos, install scripted fake agent and forge binaries on `PATH`, boot the app-facing workflow entrypoints, and assert transcript, status, and persisted side effects.
+A deterministic scenario test can create a disposable repo, run a scripted local agent turn through the app-facing workflow, and assert the resulting worktree, commit, transcript output, and terminal session state.
 
 ### Substeps
 
-- [ ] Add a `crates/agentty/tests/support/` harness module centered on `crates/agentty/tests/support/harness.rs` that creates isolated repo fixtures, temp `AGENTTY_ROOT` state, and reusable session setup helpers.
-- [ ] Add fake CLI support in `crates/agentty/tests/support/fake_cli.rs` for agent and forge commands so integration tests can script stdout, stderr, exit status, and captured arguments without network or real credentials.
-- [ ] Add shared assertions in `crates/agentty/tests/support/assert.rs` for user-visible outcomes such as session status, saved review-request metadata, commit creation, diff visibility, and worktree cleanup.
+- [ ] Add the minimal `crates/agentty/tests/support/` harness needed for one full local session journey, centered on `crates/agentty/tests/support/harness.rs`, `crates/agentty/tests/support/fake_cli.rs`, and `crates/agentty/tests/support/assert.rs`.
+- [ ] Add `crates/agentty/tests/local_session_workflow.rs` to drive one session workflow through the app-facing boundary using a temp git repo and a scripted fake agent CLI.
+- [ ] Fold any small boundary refactors needed in `crates/agentty/src/app/session/workflow/task.rs` and `crates/agentty/src/app/session/workflow/worker.rs` into this slice, keeping multi-command flows behind explicit traits instead of shell-heavy test-only helpers.
 
-## 2) Land one local end-to-end session workflow slice
+### Tests
+
+- [ ] Run the new `crates/agentty/tests/local_session_workflow.rs` scenario and the touched workflow-module tests to confirm the harness covers the full local session path without live credentials.
+
+### Docs
+
+- [ ] Update `CONTRIBUTING.md` with the deterministic local-session scenario command and the expectation that fake CLIs, not live services, cover the default app-level workflow path.
+
+## 2) Expand the harness for deterministic PR/MR workflow scenarios
 
 ### Why now
 
-The first working slice should prove the harness by covering a real user journey end to end rather than stopping at test infrastructure.
+Once one local session journey is stable, the next high-value extension is review-request behavior, which reuses the same disposable repo and scripted CLI foundations.
 
 ### Usable outcome
 
-A deterministic test verifies that starting a session inside a git repo creates the worktree, runs a scripted agent turn, persists transcript output, auto-commits changes, and moves the session into `Review`.
+Deterministic local scenarios cover publish, existing-link reuse, create-on-miss, refresh-after-cleanup, and actionable forge CLI failures without relying on live `gh` or `glab` authentication.
 
 ### Substeps
 
-- [ ] Add a local scenario test in `crates/agentty/tests/local_session_workflow.rs` that drives one session workflow through the app-facing boundary using a temp git repo and a scripted fake agent CLI.
-- [ ] Assert the resulting branch, worktree, commit, session status, and transcript output from a user-observable perspective instead of internal call counts.
-- [ ] Fold any small boundary refactors needed in `crates/agentty/src/app/session/workflow/task.rs` and `crates/agentty/src/app/session/workflow/worker.rs` into this slice, keeping multi-command flows behind explicit traits rather than adding shell-heavy test-only helpers.
+- [ ] Extend `crates/agentty/tests/support/fake_cli.rs` and `crates/agentty/tests/support/assert.rs` so review-request scenarios can script forge responses and assert persisted PR/MR metadata from the session workflow boundary.
+- [ ] Add local GitHub and GitLab scenario coverage in `crates/agentty/tests/local_review_request_workflow.rs` for create, reuse, refresh-after-cleanup, and actionable CLI failure paths.
+- [ ] Keep source-level mock-based tests for edge sequencing in `crates/agentty/src/app/session/workflow/lifecycle.rs`, but move the highest-value review-request journeys into the crate-level deterministic scenarios.
 
-## 3) Add deterministic PR/MR workflow scenarios on top of the harness
+### Tests
 
-### Why now
+- [ ] Run the new review-request scenario coverage plus the touched workflow tests so the deterministic PR/MR layer stays stable on the default local test path.
 
-Review-request flows are one of the main user journeys the harness needs to prove, and they can extend the same temp-repo and fake-CLI setup established in priorities 1 and 2.
+### Docs
 
-### Usable outcome
+- [ ] Update `CONTRIBUTING.md` and `docs/site/content/docs/architecture/testability-boundaries.md` if the expanded harness adds or changes trait boundaries needed to keep multi-command flows mockable.
 
-Deterministic tests cover publish, existing-link reuse, create-on-miss, refresh-after-cleanup, and actionable forge CLI failures without depending on live `gh` or `glab` authentication.
-
-### Substeps
-
-- [ ] Add local GitHub and GitLab scenario tests in `crates/agentty/tests/local_review_request_workflow.rs` that script fake forge CLIs and assert persisted PR/MR metadata from the session workflow boundary.
-- [ ] Cover both create and reuse paths, plus refresh behavior for terminal sessions after worktree cleanup in `crates/agentty/src/app/session/workflow/refresh.rs`, using scenario assertions rather than duplicating lower-level adapter expectations.
-- [ ] Keep source-level mock-based tests for edge sequencing in `crates/agentty/src/app/session/workflow/lifecycle.rs`, but move the highest-value user journeys into crate-level local scenarios so regressions show up at the behavior layer.
-
-## 4) Isolate and document live smoke suites
+## 3) Isolate live smoke suites and finalize suite guidance
 
 ### Why now
 
-Once deterministic coverage exists for the main journeys, the live tests can shrink to a clear smoke layer instead of carrying broad behavioral responsibility.
+After deterministic local coverage owns the main user journeys, the remaining work is to reduce live tests to a clearly scoped smoke layer with accurate contributor guidance.
 
 ### Usable outcome
 
-Real provider and forge smoke tests are clearly named, ignored by default, and documented with their prerequisites and intended failure domain.
+Real provider and forge smoke suites are clearly named, ignored by default, and documented with their prerequisites and intended failure domain.
 
 ### Substeps
 
 - [ ] Rename or reorganize `crates/agentty/tests/protocol_compliance_e2e.rs` into an explicit live-smoke naming pattern at `crates/agentty/tests/live_provider_protocol.rs` and add a matching live forge smoke file at `crates/agentty/tests/live_forge_review_request.rs` if needed.
-- [ ] Document the suite tiers and recommended commands in `CONTRIBUTING.md`, clarifying which tests run by default and which require credentials or network access.
-- [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` only if new harness-facing trait boundaries are introduced while landing the deterministic scenarios.
+- [ ] Keep the live smoke files thin and purpose-specific so failures point at provider or forge integration health rather than deterministic workflow ownership.
+
+### Tests
+
+- [ ] Run the default `cargo test` path plus compile-only or appropriately ignored coverage for the renamed live smoke files so the suite layout change does not break contributor workflows.
+
+### Docs
+
+- [ ] Document the deterministic-versus-live suite tiers and recommended commands in `CONTRIBUTING.md`, clarifying which tests run by default and which require credentials or network access.
 
 ## Cross-Plan Notes
 
@@ -77,7 +84,7 @@ Real provider and forge smoke tests are clearly named, ignored by default, and d
 ## Status Maintenance Rule
 
 - After implementing any step in this plan, immediately update its checklist status in this document and refresh any snapshot rows that changed.
-- When a step changes contributor workflow, test commands, or documentation, update the corresponding docs in that same step before marking it complete.
+- When a step changes contributor workflow, test commands, or documentation, complete its `### Tests` and `### Docs` work in that same priority before marking it complete.
 
 ## Current State Snapshot
 
@@ -93,23 +100,21 @@ Real provider and forge smoke tests are clearly named, ignored by default, and d
 
 - Keep the default suite deterministic: real local git plus fake agent and forge CLIs should cover the main user journeys without requiring credentials or network access.
 - Preserve a thin live smoke layer for real provider and forge integrations, but isolate it clearly so failures are easy to attribute and the default `cargo test` path stays stable.
-- Start with one reusable harness slice that can already validate a full session journey in a disposable repo, then extend it to review-request and live-smoke organization instead of building harness-only groundwork with no user-visible payoff.
+- Start with the smallest usable slice: one deterministic local session journey that lands only the harness pieces needed for that user-visible path.
+- Extend the harness to review-request scenarios only after the first local session flow is stable so later slices build on a working baseline instead of a harness-only checkpoint.
 - Update contributor guidance in the same iteration as any new suite layout or execution command so the structure is usable immediately after landing.
 
 ## Suggested Execution Order
 
 ```mermaid
 graph TD
-    P1[1. Shared deterministic scenario harness] --> P2[2. Local session workflow slice]
-    P1 --> P3[3. Deterministic PR/MR workflow scenarios]
-    P2 --> P4[4. Isolate and document live smoke suites]
-    P3 --> P4
+    P1[1. Local session workflow slice] --> P2[2. Deterministic PR/MR workflow scenarios]
+    P2 --> P3[3. Live smoke isolation and docs]
 ```
 
-1. Start with `Establish a shared deterministic scenario harness`; it is the minimum reusable base for all higher-level user-journey tests.
-1. Start `Land one local end-to-end session workflow slice` immediately after the harness skeleton is usable so the first iteration proves end-to-end value instead of staying infrastructure-only.
-1. Run `Add deterministic PR/MR workflow scenarios on top of the harness` after priority 1 and in parallel with the tail of priority 2 once the shared fixtures and fake CLI support are stable.
-1. Start `Isolate and document live smoke suites` only after priorities 2 and 3 land so the live layer reflects the final deterministic baseline and documented commands stay accurate.
+1. Start with `1) Ship one deterministic local session workflow slice` so the first iteration already proves an end-to-end user journey instead of stopping at harness scaffolding.
+1. Start `2) Expand the harness for deterministic PR/MR workflow scenarios` only after priority 1 lands, because the review-request slice should reuse the already-working local session baseline.
+1. Start `3) Isolate live smoke suites and finalize suite guidance` only after priority 2 lands so the live layer and contributor docs reflect the final deterministic suite ownership.
 
 ## Out of Scope for This Pass
 

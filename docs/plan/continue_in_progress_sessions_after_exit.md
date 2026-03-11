@@ -18,7 +18,7 @@ A user can start a session turn, close Agentty, reopen it later, and still find 
 
 - [ ] Add a new migration in `crates/agentty/migrations/` extending `session_operation` with the immutable turn payload a detached runner needs (`prompt`, `model`, `turn_mode`, `resume_output`) plus `runner_pid INTEGER` ownership tracking. Reuse the existing `heartbeat_at` column instead of adding `runner_heartbeat_at`. Do not edit `012_create_session_operation.sql`.
 - [ ] Add a typed detached-operation model plus DB methods in `crates/agentty/src/infra/db.rs` for insert, load, claim, heartbeat refresh, finalization, stale-failure, and owner-clear flows so `agentty run-turn` can execute from persistence without TUI memory.
-- [ ] Add a `ProcessInspector` trait in `crates/agentty/src/infra/process.rs` with `fn is_alive(&self, pid: u32) -> bool`, a production implementation using OS-level process checks, and `#[cfg_attr(test, mockall::automock)]`. Register it in `docs/site/content/docs/architecture/testability-boundaries.md`.
+- [ ] Add a `ProcessInspector` trait in `crates/agentty/src/infra/process.rs` with `fn is_alive(&self, pid: u32) -> bool`, a production implementation using OS-level process checks, and `#[cfg_attr(test, mockall::automock)]`.
 - [ ] Add a `RunnerSpawner` trait boundary in `crates/agentty/src/infra/runner.rs` that launches `agentty run-turn <operation-id>` after operation persistence succeeds.
 - [ ] Add the `agentty run-turn` subcommand in `crates/agentty/src/main.rs` that opens the DB, loads one persisted operation by ID, claims ownership, and executes the shared turn-runner flow without starting the Ratatui runtime.
 - [ ] Split `crates/agentty/src/app/session/workflow/worker.rs` into focused modules so queueing stays in `worker.rs`, detached execution moves to `turn_runner.rs`, startup/reopen recovery moves to `reconcile.rs`, and log mirroring plus tail attachment moves to `output_replica.rs`.
@@ -28,8 +28,15 @@ A user can start a session turn, close Agentty, reopen it later, and still find 
 - [ ] Replace `SessionManager::fail_unfinished_operations_from_previous_run()` in `crates/agentty/src/app/core.rs` with reconciliation that uses `ProcessInspector`, `runner_pid`, and the 60-second heartbeat staleness threshold to decide whether to keep each unfinished operation active, reclaim it, or mark it failed.
 - [ ] Support `AGENTTY_DETACH=0` to disable detached execution and fall back to the current in-process worker model for rollback safety.
 - [ ] Update `crates/agentty/src/app/session/workflow/load.rs` and `crates/agentty/src/app/session/workflow/refresh.rs` to attach and detach output tail tasks through `output_replica.rs`, feeding `<worktree>/.agentty-output.log` into `SessionHandles.output` while a detached runner is live and falling back to DB `output` when no live runner remains.
+
+### Tests
+
 - [ ] Add a smoke test that validates the `run-turn` subcommand can start, execute a mock turn via an injected `AgentChannel`, write terminal state to the DB, and produce output in the log file — without the TUI.
+
+### Docs
+
 - [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/getting-started/overview.md` with minimal prose explaining that active sessions continue after the TUI exits and refresh from persisted state on reopen.
+- [ ] Register the new `ProcessInspector` and `RunnerSpawner` boundaries in `docs/site/content/docs/architecture/testability-boundaries.md` as part of the initial detached-runner slice.
 
 ## 2) Preserve stop, cancel, and provider-resume safety across detached execution
 
@@ -47,8 +54,15 @@ A user can explicitly stop detached work, reopen Agentty without stale-output dr
 - [ ] Keep review-session cancel and in-progress stop as separate workflows: review cancel still cleans worktrees, while in-progress stop terminates the detached runner and preserves transcript/output for review-state recovery.
 - [ ] Harden crash recovery in `crates/agentty/src/app/session/workflow/reconcile.rs`, `crates/agentty/src/app/session/workflow/output_replica.rs`, and `crates/agentty/src/infra/db.rs` after the basic reconciliation path lands: cover interrupted auto-commit, mid-stream log flushing, partial provider shutdown, and orphaned operations so stale work is reclaimed without losing already-streamed transcript content.
 - [ ] Keep provider conversation identifiers and transcript replay rules correct in `crates/agentty/src/infra/channel/app_server.rs`, `crates/agentty/src/infra/channel/cli.rs`, `crates/agentty/src/infra/codex_app_server.rs`, and `crates/agentty/src/infra/gemini_acp.rs` when a detached runner restarts an app-server runtime or a resumed reply happens after the user reopens Agentty.
-- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/module-map.md`, and `docs/site/content/docs/architecture/testability-boundaries.md` to describe detached session runners, `ProcessInspector` and `RunnerSpawner` boundaries, ownership of provider subprocesses, and the liveness protocol.
+- [ ] Define guardrails for persisted `cancel_requested` handling, detached-runner signal delivery, and transcript replay ownership so restart-safe stop behavior stays deterministic across transports.
+
+### Tests
+
 - [ ] Add mock-driven tests around detached execution for CLI and app-server transports, including stop-before-execution, stop-during-execution, review cancel cleanup, crash recovery, output-log import, and reply-after-restart scenarios.
+
+### Docs
+
+- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/module-map.md`, and `docs/site/content/docs/architecture/testability-boundaries.md` to describe detached session runners, `ProcessInspector` and `RunnerSpawner` boundaries, ownership of provider subprocesses, and the liveness protocol.
 
 ## 3) Validate detached session lifetime end to end
 
@@ -58,13 +72,20 @@ The detached-runner model changes failure recovery, restart semantics, and user-
 
 ### Usable outcome
 
-The repository has regression coverage for close-and-reopen behavior and the full validation gates confirm the final detached-session flow is ready to ship.
+The repository has close-and-reopen regression coverage that exercises detached lifetime from persisted state, and the final validation gates confirm the shipped behavior is stable.
 
 ### Substeps
 
 - [ ] Add an integration-style regression test in `crates/agentty/src/app/core.rs`, `crates/agentty/src/app/session/core.rs`, `crates/agentty/src/app/session/workflow/reconcile.rs`, and `crates/agentty/src/app/session/workflow/turn_runner.rs` that starts a turn, simulates TUI shutdown while the runner continues, and verifies that a fresh `App` instance observes either continued `InProgress` output or the final `Review` or `Question` state from persistence.
 - [ ] Add a regression test in `crates/agentty/src/app/core.rs`, `crates/agentty/src/app/session/core.rs`, and `crates/agentty/src/app/session/workflow/output_replica.rs` that completes a turn entirely while Agentty is closed and verifies the next app launch loads the final transcript, terminal operation state, and session status without replaying the turn.
+
+### Tests
+
 - [ ] Run the repository validation gates after the implementation lands, including the full pre-commit checks and full test suite.
+
+### Docs
+
+- [ ] Update the detached-session plan snapshot and any affected detached-session docs only if the end-to-end coverage changes user-visible terminology or narrows the supported close-and-reopen behavior.
 
 ## Cross-Plan Notes
 
@@ -75,7 +96,7 @@ The repository has regression coverage for close-and-reopen behavior and the ful
 ## Status Maintenance Rule
 
 - After implementing any step in this plan, immediately update its checklist status, refresh the current-state snapshot rows that changed, and note any new migration or docs dependency before moving to the next step.
-- When a step changes user-visible behavior or contributor guidance, update the corresponding documentation in that same step before marking it complete.
+- When a step changes behavior, complete its `### Tests` and `### Docs` work in that same priority before marking the step complete.
 
 ## Current State Snapshot
 
@@ -133,7 +154,7 @@ An `AGENTTY_DETACH=0` environment variable disables detached execution and falls
 - Start with one detached execution path plus restart-safe reconciliation so a user can close Agentty mid-turn, reopen it later, and still observe the same turn progressing or finishing without manual repair.
 - Keep SQLite plus the session worktree as the source of truth; the TUI should enqueue and observe work, while the long-running runner process owns turn execution, output persistence, and final status transitions.
 - Introduce modularity where it lowers cross-process complexity: queueing in `worker.rs`, execution in `turn_runner.rs`, recovery in `reconcile.rs`, and log mirroring in `output_replica.rs`.
-- Fold usage and concept docs into the same iterations that change session-lifetime behavior; keep deeper architecture-boundary docs with the step that finalizes those boundaries.
+- Fold usage docs, architecture docs, and regression coverage into the same priorities that change session-lifetime behavior instead of deferring them to a final cleanup pass.
 - Add stronger stop and provider-resume hardening only after the detached happy path works end to end so the first shipped slice is already usable.
 
 ## Detached Turn Workflow

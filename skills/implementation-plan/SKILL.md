@@ -21,6 +21,11 @@ This skill is the source of truth for plan structure and execution-planning requ
    - Read `docs/plan/AGENTS.md`, related source files, and any overlapping plan documents before writing.
    - Capture only the constraints that materially affect scope, sequencing, validation, or exclusions.
 
+1. **Sync existing plans when the skill changes**
+
+   - When updating this `SKILL.md`, review the active files in `docs/plan/` in the same turn and sync any plan that no longer matches the updated rules.
+   - Respect explicit user exclusions when deciding which existing plan files to leave untouched.
+
 1. **Draft a concise, current-state plan**
 
    - Use the plan skeleton below and keep each section focused on repository-observable facts.
@@ -45,6 +50,7 @@ This skill is the source of truth for plan structure and execution-planning requ
    - Verify every priority can be executed, validated, and merged independently.
    - Verify every priority has explicit `### Tests` and `### Docs` sections when they are required by that slice.
    - Reject plans that save most tests/docs for the last priority instead of keeping them attached to the relevant behavior changes.
+   - When this skill changed, verify the active plan files in `docs/plan/` were reviewed and updated to match the new rules unless the user explicitly excluded them.
    - Verify overlapping plans are aligned or clearly marked for user resolution.
    - Verify the final plan reflects the clarified requirements the user provided.
 
