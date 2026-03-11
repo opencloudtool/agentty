@@ -13,9 +13,13 @@ pub(crate) struct ParsedRemote {
     /// SSH transport ports are stripped so review-request commands target the
     /// authenticated HTTPS host instead of the SSH daemon port.
     pub(crate) host: String,
+    /// Repository namespace or owner path.
     pub(crate) namespace: String,
+    /// Repository name without a trailing `.git` suffix.
     pub(crate) project: String,
+    /// Original remote URL returned by git.
     pub(crate) repo_url: String,
+    /// Browser-openable repository URL derived from the remote.
     pub(crate) web_url: String,
 }
 
@@ -56,6 +60,9 @@ pub(crate) fn detect_remote(repo_url: &str) -> Result<ForgeRemote, ReviewRequest
 }
 
 /// Parses a git remote URL into normalized hostname and repository components.
+///
+/// HTTPS remotes may include `username[:password]@` userinfo, which is ignored
+/// when deriving the forge host and browser-openable repository URL.
 pub(crate) fn parse_remote_url(repo_url: &str) -> Option<ParsedRemote> {
     let trimmed_url = repo_url.trim().trim_end_matches('/');
     if trimmed_url.is_empty() {
@@ -70,7 +77,8 @@ pub(crate) fn parse_remote_url(repo_url: &str) -> Option<ParsedRemote> {
 
     let (scheme, scheme_rest) = trimmed_url.split_once("://")?;
     let scheme_rest = scheme_rest.strip_prefix("git@").unwrap_or(scheme_rest);
-    let (host, path) = scheme_rest.split_once('/')?;
+    let (authority, path) = scheme_rest.split_once('/')?;
+    let host = strip_userinfo(authority);
     let strip_transport_port = scheme.eq_ignore_ascii_case("ssh");
 
     parsed_remote_from_parts(trimmed_url, host, path, strip_transport_port)
@@ -79,6 +87,13 @@ pub(crate) fn parse_remote_url(repo_url: &str) -> Option<ParsedRemote> {
 /// Removes any `:port` suffix from `host`.
 pub(crate) fn strip_port(host: &str) -> &str {
     host.split(':').next().unwrap_or(host)
+}
+
+/// Removes any `username[:password]@` prefix from one URL authority segment.
+fn strip_userinfo(authority: &str) -> &str {
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
 }
 
 /// Builds one parsed remote from extracted host and path components.
@@ -143,6 +158,24 @@ mod tests {
     }
 
     #[test]
+    fn detect_remote_ignores_https_userinfo_for_github_origin() {
+        // Arrange
+        let repo_url = "https://build-bot:token123@github.com/agentty-xyz/agentty.git";
+
+        // Act
+        let remote =
+            detect_remote(repo_url).expect("github remote with https credentials should work");
+
+        // Assert
+        assert_eq!(remote.forge_kind, ForgeKind::GitHub);
+        assert_eq!(remote.host, "github.com");
+        assert_eq!(remote.namespace, "agentty-xyz");
+        assert_eq!(remote.project, "agentty");
+        assert_eq!(remote.repo_url, repo_url);
+        assert_eq!(remote.web_url, "https://github.com/agentty-xyz/agentty");
+    }
+
+    #[test]
     fn detect_remote_returns_github_remote_for_ssh_origin() {
         // Arrange
         let repo_url = "git@github.com:agentty-xyz/agentty.git";
@@ -154,6 +187,24 @@ mod tests {
         assert_eq!(remote.forge_kind, ForgeKind::GitHub);
         assert_eq!(remote.web_url, "https://github.com/agentty-xyz/agentty");
         assert_eq!(remote.project_path(), "agentty-xyz/agentty");
+    }
+
+    #[test]
+    fn detect_remote_ignores_https_userinfo_for_gitlab_origin() {
+        // Arrange
+        let repo_url = "https://reviewer:token123@gitlab.com/group/subgroup/project.git";
+
+        // Act
+        let remote =
+            detect_remote(repo_url).expect("gitlab remote with https credentials should work");
+
+        // Assert
+        assert_eq!(remote.forge_kind, ForgeKind::GitLab);
+        assert_eq!(remote.host, "gitlab.com");
+        assert_eq!(remote.namespace, "group/subgroup");
+        assert_eq!(remote.project, "project");
+        assert_eq!(remote.repo_url, repo_url);
+        assert_eq!(remote.web_url, "https://gitlab.com/group/subgroup/project");
     }
 
     #[test]
