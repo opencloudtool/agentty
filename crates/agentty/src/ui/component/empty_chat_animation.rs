@@ -1,8 +1,9 @@
 //! Animated empty-state decoration for the session chat panel.
 //!
-//! Two robots carry boxes on their heads, walking toward each other and
-//! then apart in a ping-pong cycle. A subtle hint appears below the
-//! scene.
+//! Two humanoid robots carry boxes on their heads, walking toward each
+//! other and then apart in a ping-pong cycle. Each robot has a head,
+//! body with arms, and alternating legs. A subtle hint appears below
+//! the scene.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,11 +31,14 @@ const LEGS_OPEN: &str = "/ \\";
 /// Closed leg pose for alternating walk frames.
 const LEGS_CLOSED: &str = "\\ /";
 
+/// Body with arms for the humanoid robot torso.
+const BODY: &str = "/|\\";
+
 /// Hint text shown below the animation.
 const HINT_TEXT: &str = "Send a message to start";
 
-/// Number of scene content rows (box line + face line + legs line).
-const SCENE_ROWS: usize = 3;
+/// Number of scene content rows (box + face + body + legs).
+const SCENE_ROWS: usize = 4;
 
 /// Total content height (scene rows + blank separator + hint line).
 const CONTENT_HEIGHT: usize = SCENE_ROWS + 2;
@@ -73,6 +77,7 @@ pub fn animation_lines(panel_width: u16, panel_height: u16) -> Vec<Line<'static>
 
     let box_line = build_box_line(left_pos, right_pos);
     let face_line = build_face_line(left_pos, right_pos);
+    let body_line = build_body_line(left_pos, right_pos);
     let legs_line = build_legs_line(left_pos, right_pos, legs_open);
 
     let width = usize::from(panel_width);
@@ -87,6 +92,7 @@ pub fn animation_lines(panel_width: u16, panel_height: u16) -> Vec<Line<'static>
 
     lines.push(center_line(box_line, width));
     lines.push(center_line(face_line, width));
+    lines.push(center_line(body_line, width));
     lines.push(center_line(legs_line, width));
     lines.push(Line::from(""));
     lines.push(center_hint_line(width));
@@ -125,6 +131,16 @@ fn build_face_line(left_pos: usize, right_pos: usize) -> Line<'static> {
     build_styled_scene_line(&[
         (left_pos, ROBOT_FACE.to_string(), robot_style),
         (right_pos, ROBOT_FACE.to_string(), robot_style),
+    ])
+}
+
+/// Builds the body row with arms for the humanoid robot torso.
+fn build_body_line(left_pos: usize, right_pos: usize) -> Line<'static> {
+    let body_style = Style::default().fg(palette::ACCENT);
+
+    build_styled_scene_line(&[
+        (left_pos + 1, BODY.to_string(), body_style),
+        (right_pos + 1, BODY.to_string(), body_style),
     ])
 }
 
@@ -330,6 +346,16 @@ mod tests {
 
         // Assert
         assert_eq!(text.matches(BOX_SYMBOL).count(), 2);
+    }
+
+    #[test]
+    fn test_build_body_line_contains_two_bodies() {
+        // Arrange & Act
+        let line = build_body_line(0, 23);
+        let text = line.to_string();
+
+        // Assert
+        assert_eq!(text.matches(BODY).count(), 2);
     }
 
     #[test]
