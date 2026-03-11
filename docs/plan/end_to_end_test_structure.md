@@ -14,15 +14,11 @@ The current suite has strong low-level coverage but no reusable integration harn
 
 One shared harness can create disposable repos, install scripted fake agent and forge binaries on `PATH`, boot the app-facing workflow entrypoints, and assert transcript, status, and persisted side effects.
 
-- [ ] Add a `crates/agentty/tests/support/` harness module that creates isolated repo fixtures, temp `AGENTTY_ROOT` state, and reusable session setup helpers.
-- [ ] Add fake CLI support for agent and forge commands so integration tests can script stdout, stderr, exit status, and captured arguments without network or real credentials.
-- [ ] Add shared assertions for user-visible outcomes such as session status, saved review-request metadata, commit creation, diff visibility, and worktree cleanup.
+### Substeps
 
-Primary files:
-
-- `crates/agentty/tests/support/harness.rs`
-- `crates/agentty/tests/support/fake_cli.rs`
-- `crates/agentty/tests/support/assert.rs`
+- [ ] Add a `crates/agentty/tests/support/` harness module centered on `crates/agentty/tests/support/harness.rs` that creates isolated repo fixtures, temp `AGENTTY_ROOT` state, and reusable session setup helpers.
+- [ ] Add fake CLI support in `crates/agentty/tests/support/fake_cli.rs` for agent and forge commands so integration tests can script stdout, stderr, exit status, and captured arguments without network or real credentials.
+- [ ] Add shared assertions in `crates/agentty/tests/support/assert.rs` for user-visible outcomes such as session status, saved review-request metadata, commit creation, diff visibility, and worktree cleanup.
 
 ## 2) Land one local end-to-end session workflow slice
 
@@ -34,15 +30,11 @@ The first working slice should prove the harness by covering a real user journey
 
 A deterministic test verifies that starting a session inside a git repo creates the worktree, runs a scripted agent turn, persists transcript output, auto-commits changes, and moves the session into `Review`.
 
-- [ ] Add a local scenario test that drives one session workflow through the app-facing boundary using a temp git repo and a scripted fake agent CLI.
+### Substeps
+
+- [ ] Add a local scenario test in `crates/agentty/tests/local_session_workflow.rs` that drives one session workflow through the app-facing boundary using a temp git repo and a scripted fake agent CLI.
 - [ ] Assert the resulting branch, worktree, commit, session status, and transcript output from a user-observable perspective instead of internal call counts.
-- [ ] Fold any small boundary refactors needed for testability into this slice, keeping multi-command flows behind explicit traits rather than adding shell-heavy test-only helpers.
-
-Primary files:
-
-- `crates/agentty/tests/local_session_workflow.rs`
-- `crates/agentty/src/app/session/workflow/task.rs`
-- `crates/agentty/src/app/session/workflow/worker.rs`
+- [ ] Fold any small boundary refactors needed in `crates/agentty/src/app/session/workflow/task.rs` and `crates/agentty/src/app/session/workflow/worker.rs` into this slice, keeping multi-command flows behind explicit traits rather than adding shell-heavy test-only helpers.
 
 ## 3) Add deterministic PR/MR workflow scenarios on top of the harness
 
@@ -54,15 +46,11 @@ Review-request flows are one of the main user journeys the harness needs to prov
 
 Deterministic tests cover publish, existing-link reuse, create-on-miss, refresh-after-cleanup, and actionable forge CLI failures without depending on live `gh` or `glab` authentication.
 
-- [ ] Add local GitHub and GitLab scenario tests that script fake forge CLIs and assert persisted PR/MR metadata from the session workflow boundary.
-- [ ] Cover both create and reuse paths, plus refresh behavior for terminal sessions after worktree cleanup, using scenario assertions rather than duplicating lower-level adapter expectations.
-- [ ] Keep source-level mock-based tests for edge sequencing, but move the highest-value user journeys into crate-level local scenarios so regressions show up at the behavior layer.
+### Substeps
 
-Primary files:
-
-- `crates/agentty/tests/local_review_request_workflow.rs`
-- `crates/agentty/src/app/session/workflow/lifecycle.rs`
-- `crates/agentty/src/app/session/workflow/refresh.rs`
+- [ ] Add local GitHub and GitLab scenario tests in `crates/agentty/tests/local_review_request_workflow.rs` that script fake forge CLIs and assert persisted PR/MR metadata from the session workflow boundary.
+- [ ] Cover both create and reuse paths, plus refresh behavior for terminal sessions after worktree cleanup in `crates/agentty/src/app/session/workflow/refresh.rs`, using scenario assertions rather than duplicating lower-level adapter expectations.
+- [ ] Keep source-level mock-based tests for edge sequencing in `crates/agentty/src/app/session/workflow/lifecycle.rs`, but move the highest-value user journeys into crate-level local scenarios so regressions show up at the behavior layer.
 
 ## 4) Isolate and document live smoke suites
 
@@ -74,16 +62,11 @@ Once deterministic coverage exists for the main journeys, the live tests can shr
 
 Real provider and forge smoke tests are clearly named, ignored by default, and documented with their prerequisites and intended failure domain.
 
-- [ ] Rename or reorganize `crates/agentty/tests/protocol_compliance_e2e.rs` into an explicit live-smoke naming pattern and add a matching live forge smoke file if needed.
+### Substeps
+
+- [ ] Rename or reorganize `crates/agentty/tests/protocol_compliance_e2e.rs` into an explicit live-smoke naming pattern at `crates/agentty/tests/live_provider_protocol.rs` and add a matching live forge smoke file at `crates/agentty/tests/live_forge_review_request.rs` if needed.
 - [ ] Document the suite tiers and recommended commands in `CONTRIBUTING.md`, clarifying which tests run by default and which require credentials or network access.
 - [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` only if new harness-facing trait boundaries are introduced while landing the deterministic scenarios.
-
-Primary files:
-
-- `crates/agentty/tests/live_provider_protocol.rs`
-- `crates/agentty/tests/live_forge_review_request.rs`
-- `CONTRIBUTING.md`
-- `docs/site/content/docs/architecture/testability-boundaries.md`
 
 ## Cross-Plan Notes
 

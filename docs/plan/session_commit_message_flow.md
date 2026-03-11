@@ -14,21 +14,14 @@ The current placeholder session commit hides useful history inside the worktree 
 
 After each turn finishes auto-commit, the session branch still has exactly one commit, but that commit now carries a readable title/body that reflects the current branch state instead of the `Beautiful commit (made by Agentty)` placeholder.
 
+### Substeps
+
 - [x] Replace the fixed `COMMIT_MESSAGE` placeholder path in `crates/agentty/src/app/session/core.rs`, `crates/agentty/src/app/session/workflow/task.rs`, and `crates/agentty/src/app/session/workflow/merge.rs` with a session commit-message flow that can evolve as the branch changes.
 - [x] Add a dedicated prompt resource for session commit-message generation or rename/generalize `crates/agentty/resources/merge_commit_message_prompt.md` so the prompt is explicitly session-scoped instead of merge-scoped.
 - [x] Generate the session commit title/body from the session diff after each successful turn, using the current `HEAD` commit message as continuity input when amending so the model can refine the same message instead of starting from scratch every time.
 - [x] Extend `crates/agentty/src/infra/git/client.rs` and `crates/agentty/src/infra/git/sync.rs` so the single-commit path can amend `HEAD` with an updated message (`git commit --amend -m ...`) instead of only using `--no-edit` when the existing commit should stay in place.
 - [x] Persist the generated commit title/body into session metadata during the turn so `session.title` and `session.summary` stay aligned with the branch commit before merge begins.
 - [x] Add focused tests that cover first commit creation, later message-changing amend behavior, and session title/summary synchronization from the generated commit message.
-
-Primary files:
-
-- `crates/agentty/src/app/session/core.rs`
-- `crates/agentty/src/app/session/workflow/task.rs`
-- `crates/agentty/src/app/session/workflow/merge.rs`
-- `crates/agentty/src/infra/git/client.rs`
-- `crates/agentty/src/infra/git/sync.rs`
-- `crates/agentty/resources/`
 
 ## 2) Reuse the session commit message during merge and keep squash merge
 
@@ -40,18 +33,13 @@ Once the session branch commit message is authoritative, merge should stop gener
 
 Merging still rebases the session branch and lands one commit on the base branch, but Agentty now reuses the session branch `HEAD` commit message for that final commit instead of asking the model to generate a new merge-only message.
 
+### Substeps
+
 - [ ] Remove the merge-time one-shot commit-message generation path from `crates/agentty/src/app/session/workflow/merge.rs` and replace it with loading the session branch `HEAD` commit message after the pre-merge auto-commit/rebase step.
 - [ ] Add the minimal git-client support needed to read the authoritative session commit message from the worktree and pass it through to `squash_merge`.
-- [ ] Keep `git merge --squash` as the merge mechanism unless implementation work reveals a concrete blocker; do not switch to rebase/fast-forward merge in this pass.
-- [ ] Delete any now-obsolete merge-message prompt/template code and parsing-only tests once merge no longer calls that utility path.
+- [ ] Keep `git merge --squash` in `crates/agentty/src/infra/git/merge.rs` as the merge mechanism unless implementation work reveals a concrete blocker; do not switch to rebase/fast-forward merge in this pass.
+- [ ] Delete any now-obsolete merge-message prompt/template code and parsing-only tests under `crates/agentty/resources/`, including `crates/agentty/resources/merge_commit_message_prompt.md`, once merge no longer calls that utility path.
 - [ ] Add merge-focused tests that verify the base-branch squash commit reuses the session commit title/body and that the empty-diff/already-present branch still skips commit creation cleanly.
-
-Primary files:
-
-- `crates/agentty/src/app/session/workflow/merge.rs`
-- `crates/agentty/src/infra/git/client.rs`
-- `crates/agentty/src/infra/git/merge.rs`
-- `crates/agentty/resources/`
 
 ## 3) Sync docs and validation with the new single-message flow
 
@@ -63,21 +51,12 @@ The repository docs currently describe merge-time commit-message generation and 
 
 Contributor and user docs describe the session commit message as the canonical source, merge no longer claims to generate a fresh message, and validation covers the new behavior end to end.
 
+### Substeps
+
 - [ ] Update `docs/site/content/docs/usage/workflow.md` so review/merge behavior explains that session turns keep one evolving commit message and merge reuses it.
 - [ ] Update `docs/site/content/docs/architecture/runtime-flow.md` and `docs/site/content/docs/architecture/module-map.md` so the one-shot utility list and merge-task description no longer claim merge-time commit-message generation.
 - [ ] Update `docs/site/content/docs/agents/backends.md` to remove merge-message generation from the examples of one-shot internal prompts if that utility path is removed.
-- [ ] Run focused tests while iterating, then finish with the repository validation gates once implementation lands.
-
-Primary files:
-
-- `docs/site/content/docs/usage/workflow.md`
-- `docs/site/content/docs/architecture/runtime-flow.md`
-- `docs/site/content/docs/architecture/module-map.md`
-- `docs/site/content/docs/agents/backends.md`
-- `crates/agentty/src/app/session/core.rs`
-- `crates/agentty/src/app/session/workflow/merge.rs`
-- `crates/agentty/src/infra/git/client.rs`
-- `crates/agentty/src/infra/git/sync.rs`
+- [ ] Run focused tests while iterating, then finish with the repository validation gates once implementation lands across `crates/agentty/src/app/session/core.rs`, `crates/agentty/src/app/session/workflow/merge.rs`, `crates/agentty/src/infra/git/client.rs`, and `crates/agentty/src/infra/git/sync.rs`.
 
 ## Cross-Plan Notes
 

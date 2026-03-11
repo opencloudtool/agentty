@@ -1,6 +1,6 @@
 ---
 name: implementation-plan
-description: Create and maintain actionable implementation plans for this repository. Use when asked to draft a new plan in docs/plan, revise an existing plan document, or convert a request into an iterative execution checklist with clear scope, status tracking, usable delivery increments, file targets, and clarified requirements.
+description: Create and maintain actionable implementation plans for this repository. Use when asked to draft a new plan in docs/plan, revise an existing plan document, or convert a request into an iterative execution checklist with clear scope, status tracking, usable delivery increments, inline file references, and clarified requirements.
 ---
 
 # Implementation Plan Workflow
@@ -27,7 +27,8 @@ This skill is the source of truth for plan structure and execution-planning requ
    - Keep cross-plan notes short and include only active overlaps, ownership decisions, or unresolved conflicts.
    - Keep snapshot rows scannable: one short current-state sentence plus a status, without long file lists in the table cells.
    - Keep the `## Priorities` section near the top of the plan, immediately after the title and scope/context line.
-   - In each priority, render `Why now` and `Usable outcome` as their own subtopics on separate lines instead of inline bold labels.
+   - In each priority, render `Why now`, `Usable outcome`, and `Substeps` as their own subtopics on separate lines instead of inline bold labels.
+   - Mention every required file directly in the checklist text for the relevant substep instead of adding a trailing `Primary files` block.
 
 1. **Define execution sequence and guardrails**
 
@@ -63,13 +64,10 @@ Use this skeleton when creating a new file in `docs/plan/`:
 
 <what the user can do after this iteration lands>
 
+### Substeps
+
 - [ ] <implementation task within this priority>
 - [ ] <implementation task within this priority>
-
-Primary files:
-
-- `<path>`
-- `<path>`
 
 ## Cross-Plan Notes
 

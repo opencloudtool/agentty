@@ -14,15 +14,11 @@ These files still have some of the lowest line coverage in the workspace, but th
 
 `runtime/terminal`, `app/task`, and `runtime/event` gain the missing unhappy-path and branch coverage needed to validate the current harness approach before the plan expands into heavier modules.
 
+### Substeps
+
 - [x] Add failure-path tests around terminal setup/restore behavior in `crates/agentty/src/runtime/terminal.rs`, including raw-mode setup failure, alternate-screen setup failure, and cleanup-attempt restoration.
 - [x] Expand `crates/agentty/src/app/task.rs` tests for version-check event emission, review-assist command failures, and output-detail formatting branches without relying on live network or subprocess behavior.
 - [x] Add remaining branch tests in `crates/agentty/src/runtime/event.rs` for ignored events, paused-reader handling, and event-loop error exits.
-
-Primary files:
-
-- `crates/agentty/src/runtime/terminal.rs`
-- `crates/agentty/src/app/task.rs`
-- `crates/agentty/src/runtime/event.rs`
 
 ## 2) Land page-helper UI coverage without snapshot-heavy tests
 
@@ -34,17 +30,13 @@ The biggest UI gaps are in pure helper logic and small page render branches, whi
 
 The overlay, project-list, and settings pages have deterministic branch coverage for their helper logic and footer/render edge cases without introducing brittle frame snapshots.
 
+### Substeps
+
 - [x] Add helper-focused tests for popup sizing, content width, and help-background fallback branches in `crates/agentty/src/ui/overlay.rs`.
 - [x] Expand row/value/formatting coverage in `crates/agentty/src/ui/page/project_list.rs`, especially active-project markers, session count rendering, and footer/help text assembly.
 - [x] Add page-local tests in `crates/agentty/src/ui/page/setting.rs` for footer mode switching and multiline row rendering; extract reusable helper logic first if assertions would otherwise stay too broad.
 
 Ratchet note: No threshold change after priority 2 alone on March 10, 2026. Priority 5 still owns the next `.pre-commit-config.yaml` ratchet update after a refreshed workspace baseline.
-
-Primary files:
-
-- `crates/agentty/src/ui/overlay.rs`
-- `crates/agentty/src/ui/page/project_list.rs`
-- `crates/agentty/src/ui/page/setting.rs`
 
 ## 3) Tighten settings and git-orchestration unhappy paths
 
@@ -56,18 +48,13 @@ Default-model persistence and git sync flows remain below the workspace baseline
 
 Settings persistence and git sync/merge edge cases are covered behind deterministic boundaries, reducing regressions in user-visible configuration and repository-state flows.
 
+### Substeps
+
 - [x] Add persistence fallback and row-edit lifecycle tests in `crates/agentty/src/app/setting.rs` for project overrides, legacy fallbacks, and open-command editing transitions.
 - [x] Add deterministic unhappy-path tests in `crates/agentty/src/infra/git/sync.rs`, `crates/agentty/src/infra/git/repo.rs`, and `crates/agentty/src/infra/git/merge.rs` for branch-state validation, already-present results, and command-detail error reporting.
 - [x] Keep multi-command git flows behind existing mockable boundaries and only introduce new boundaries when one test still requires multiple real subprocess calls.
 
 Ratchet note: No threshold change after priority 3 alone on March 10, 2026. Priority 5 still owns the next `.pre-commit-config.yaml` ratchet update after a refreshed workspace baseline.
-
-Primary files:
-
-- `crates/agentty/src/app/setting.rs`
-- `crates/agentty/src/infra/git/sync.rs`
-- `crates/agentty/src/infra/git/repo.rs`
-- `crates/agentty/src/infra/git/merge.rs`
 
 ## 4) Finish the remaining workflow and transport hot spots
 
@@ -79,18 +66,13 @@ After the smaller slices land, the highest uncovered totals concentrate in workf
 
 The remaining merge, app-server, prompt, and session-view hotspots only retain genuinely hard-to-reach branches, making the next baseline and ratchet increase credible.
 
+### Substeps
+
 - [x] Add remaining no-progress, cleanup-failure, and retry-exhaustion tests in `crates/agentty/src/app/session/workflow/merge.rs`.
 - [x] Expand `crates/agentty/src/infra/codex_app_server.rs` coverage for restart, resume, timeout, and compaction branches using transport fixtures instead of live subprocesses.
 - [x] Add residual branch tests in `crates/agentty/src/runtime/mode/prompt.rs` and `crates/agentty/src/runtime/mode/session_view.rs` for stale selections, empty states, and status-gated actions still left uncovered.
 
 Ratchet note: No threshold change after priority 4 alone on March 10, 2026. Priority 5 still owns the next `.pre-commit-config.yaml` ratchet update after a refreshed workspace baseline.
-
-Primary files:
-
-- `crates/agentty/src/app/session/workflow/merge.rs`
-- `crates/agentty/src/infra/codex_app_server.rs`
-- `crates/agentty/src/runtime/mode/prompt.rs`
-- `crates/agentty/src/runtime/mode/session_view.rs`
 
 ## 5) Refresh the baseline and ratchet again
 
@@ -102,15 +84,11 @@ The current ratchet only protects the first improved baseline; a second pass sho
 
 The plan snapshot, ratchet thresholds, and any contributor guidance all reflect the new post-follow-up baseline instead of the first-pass numbers.
 
+### Substeps
+
 - [ ] Re-run `cargo llvm-cov --workspace --json --summary-only` after priorities 1 through 4 land and refresh this snapshot table with the new metrics.
 - [ ] Raise `--fail-under-lines` and `--fail-under-functions` in `.pre-commit-config.yaml` only after the refreshed baseline remains stable across the full suite.
-- [ ] Update `CONTRIBUTING.md` only if the contributor workflow changes again while raising the ratchet.
-
-Primary files:
-
-- `.pre-commit-config.yaml`
-- `CONTRIBUTING.md`
-- `docs/plan/coverage_follow_up.md`
+- [ ] Update `CONTRIBUTING.md` and this plan file at `docs/plan/coverage_follow_up.md` only if the contributor workflow changes again while raising the ratchet.
 
 ## Cross-Plan Notes
 

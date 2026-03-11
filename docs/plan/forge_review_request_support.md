@@ -16,21 +16,14 @@ The baseline workflow already supports publish/create/open/refresh, so the next 
 
 A user can create a PR/MR when missing, open an existing PR/MR, and refresh linked metadata directly from session view with clear help/footer guidance and updated usage docs.
 
-- [x] Add a session-view review-request action that creates a PR/MR when no link exists and otherwise opens or refreshes the linked review request based on state.
-- [x] Extend `AppMode`, help/footer projections, and view-mode key handling to show loading, success, and blocked states without leaving session context.
-- [x] Render normalized review-request metadata in session UI without displacing existing diff and focused-review behavior.
+### Substeps
+
+- [x] Add a session-view review-request action in `crates/agentty/src/runtime/mode/session_view.rs` that creates a PR/MR when no link exists and otherwise opens or refreshes the linked review request based on state.
+- [x] Extend `AppMode` in `crates/agentty/src/ui/state/app_mode.rs`, help/footer projections in `crates/agentty/src/ui/state/help_action.rs`, and view-mode key handling to show loading, success, and blocked states without leaving session context.
+- [x] Render normalized review-request metadata in `crates/agentty/src/ui/page/session_chat.rs` without displacing existing diff and focused-review behavior.
 - [x] Show actionable blocked states when `gh` or `glab` is missing or unauthenticated so users can fix local CLI setup from the same review flow.
 - [x] Add UI-focused tests that keep the new action availability, footer/help text, and session rendering aligned with session status and linked review-request state.
 - [x] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` to document the manual session-view review-request flow and its local CLI prerequisites.
-
-Primary files:
-
-- `crates/agentty/src/runtime/mode/session_view.rs`
-- `crates/agentty/src/ui/state/app_mode.rs`
-- `crates/agentty/src/ui/state/help_action.rs`
-- `crates/agentty/src/ui/page/session_chat.rs`
-- `docs/site/content/docs/usage/workflow.md`
-- `docs/site/content/docs/usage/keybindings.md`
 
 ## 2) Add Background Review-Request Status Reconciliation and Final Architecture Docs
 
@@ -42,25 +35,15 @@ Automatic status gathering should extend a workflow users can already trigger an
 
 Linked sessions automatically reconcile to `Done` or `Canceled` after the remote review request is observed as merged or closed, and architecture docs describe the final poller and reducer boundaries.
 
-- [ ] Add an app-scoped background job that periodically checks linked review-request state for active sessions with forge metadata.
-- [ ] Route poller results through `AppEvent` or an equivalent reducer-driven path instead of mutating session state directly inside the task.
-- [ ] Reuse the `gh` and `glab` adapter refresh commands inside the poller instead of introducing a second direct network client for background reconciliation.
-- [ ] Move a session to `Done` when the linked review request is merged and to `Canceled` when it is closed without merge, while preserving explicit local terminal states when no transition is needed.
+### Substeps
+
+- [ ] Add an app-scoped background job in `crates/agentty/src/app/task.rs` and `crates/agentty/src/app/core.rs` that periodically checks linked review-request state for active sessions with forge metadata.
+- [ ] Route poller results through `AppEvent` or an equivalent reducer-driven path instead of mutating session state directly inside the task, keeping the reducer wiring in `crates/agentty/src/app/core.rs`.
+- [ ] Reuse the `gh` and `glab` adapter refresh commands inside the poller from `crates/agentty/src/app/session/workflow/refresh.rs` and `crates/agentty/src/app/session/workflow/task.rs` instead of introducing a second direct network client for background reconciliation.
+- [ ] Move a session to `Done` when the linked review request is merged and to `Canceled` when it is closed without merge in `crates/agentty/src/domain/session.rs`, while preserving explicit local terminal states when no transition is needed.
 - [ ] Define guardrails for polling cadence, unsupported or unauthenticated forge failures, and stale-session behavior so the poller stays low-noise and cheap.
 - [ ] Add deterministic tests for poll scheduling, event reduction, and status-transition rules for merged, closed, reopened, and unavailable review-request states.
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/testability-boundaries.md`, and `docs/site/content/docs/architecture/module-map.md` to describe the automatic reconciliation behavior and its new runtime boundary.
-
-Primary files:
-
-- `crates/agentty/src/app/task.rs`
-- `crates/agentty/src/app/core.rs`
-- `crates/agentty/src/app/session/workflow/refresh.rs`
-- `crates/agentty/src/app/session/workflow/task.rs`
-- `crates/agentty/src/domain/session.rs`
-- `docs/site/content/docs/usage/workflow.md`
-- `docs/site/content/docs/architecture/runtime-flow.md`
-- `docs/site/content/docs/architecture/testability-boundaries.md`
-- `docs/site/content/docs/architecture/module-map.md`
 
 ## Cross-Plan Notes
 
