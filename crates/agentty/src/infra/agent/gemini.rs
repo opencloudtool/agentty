@@ -29,25 +29,8 @@ impl AgentBackend for GeminiBackend {
         let has_history_replay = mode
             .session_output()
             .is_some_and(|session_output| !session_output.trim().is_empty());
-        let prompt = match mode {
-            AgentCommandMode::Start { prompt } | AgentCommandMode::OneShot { prompt } => {
-                prompt.to_string()
-            }
-            AgentCommandMode::Resume {
-                prompt,
-                session_output,
-            } => build_resume_prompt(prompt, session_output)?,
-        };
-        let prompt = prepend_repo_root_path_instructions(&prompt)?;
-        let prompt = prepend_protocol_instructions(
-            &prompt,
-            ProtocolInstructionMode::WithSchema,
-            mode.protocol_prompt_kind(),
-        )?;
         let mut command = Command::new("gemini");
         command
-            .arg("--prompt")
-            .arg(prompt)
             .arg("--model")
             .arg(model)
             .arg("--approval-mode")
@@ -64,6 +47,32 @@ impl AgentBackend for GeminiBackend {
 
         Ok(command)
     }
+}
+
+/// Renders the full Gemini prompt text that Agentty streams through stdin.
+///
+/// # Errors
+/// Returns an error when resume or protocol prompt rendering fails.
+pub(super) fn build_prompt_stdin_payload(
+    request: BuildCommandRequest<'_>,
+) -> Result<Vec<u8>, AgentBackendError> {
+    let prompt = match request.mode {
+        AgentCommandMode::Start { prompt } | AgentCommandMode::OneShot { prompt } => {
+            prompt.to_string()
+        }
+        AgentCommandMode::Resume {
+            prompt,
+            session_output,
+        } => build_resume_prompt(prompt, session_output)?,
+    };
+    let prompt = prepend_repo_root_path_instructions(&prompt)?;
+    let prompt = prepend_protocol_instructions(
+        &prompt,
+        ProtocolInstructionMode::WithSchema,
+        request.mode.protocol_prompt_kind(),
+    )?;
+
+    Ok(prompt.into_bytes())
 }
 
 #[cfg(test)]
@@ -93,29 +102,27 @@ mod tests {
 
     #[test]
     /// Verifies Gemini prompts include repo-root-relative path guidance.
-    fn test_gemini_command_includes_repo_root_path_instructions() {
+    fn test_gemini_prompt_stdin_payload_includes_repo_root_path_instructions() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
-        let backend = GeminiBackend;
 
         // Act
-        let command = AgentBackend::build_command(
-            &backend,
-            BuildCommandRequest {
+        let prompt = String::from_utf8(
+            build_prompt_stdin_payload(BuildCommandRequest {
                 reasoning_level: ReasoningLevel::default(),
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::Start {
                     prompt: "Plan prompt",
                 },
                 model: "gemini-3-flash-preview",
-            },
+            })
+            .expect("prompt payload should build"),
         )
-        .expect("command should build");
-        let debug_command = format!("{command:?}");
+        .expect("prompt payload should be utf-8");
 
         // Assert
-        assert!(debug_command.contains("repository-root-relative POSIX paths"));
-        assert!(debug_command.contains("Paths must be relative to the repository root."));
+        assert!(prompt.contains("repository-root-relative POSIX paths"));
+        assert!(prompt.contains("Paths must be relative to the repository root."));
     }
 
     #[test]
@@ -140,9 +147,27 @@ mod tests {
         )
         .expect("command should build");
         let debug_command = format!("{command:?}");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let prompt = String::from_utf8(
+            build_prompt_stdin_payload(BuildCommandRequest {
+                reasoning_level: ReasoningLevel::default(),
+                folder: temp_directory.path(),
+                mode: AgentCommandMode::OneShot {
+                    prompt: "Generate title",
+                },
+                model: "gemini-3-flash-preview",
+            })
+            .expect("prompt payload should build"),
+        )
+        .expect("prompt payload should be utf-8");
 
         // Assert
-        assert!(debug_command.contains("Structured response protocol:"));
-        assert!(!debug_command.contains("## Change Summary"));
+        assert!(prompt.contains("Structured response protocol:"));
+        assert!(!prompt.contains("## Change Summary"));
+        assert!(debug_command.contains("--output-format"));
+        assert!(!args.iter().any(String::is_empty));
     }
 }

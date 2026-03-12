@@ -3,9 +3,13 @@
 //! These helpers run isolated utility prompts outside the long-lived session
 //! turn flow while still enforcing the shared structured response protocol.
 
+use std::io;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
 use std::sync::Mutex;
+
+use tokio::io::AsyncWriteExt as _;
+use tokio::task::JoinHandle;
 
 use super::backend::{AgentBackend, AgentCommandMode, BuildCommandRequest};
 use super::protocol::{AgentResponse, build_protocol_repair_prompt, parse_agent_response_strict};
@@ -128,27 +132,37 @@ async fn execute_one_shot_command(
     prompt: &str,
     request: OneShotRequest<'_>,
 ) -> Result<ParsedResponse, String> {
+    let build_request = BuildCommandRequest {
+        reasoning_level: request.reasoning_level,
+        folder: request.folder,
+        mode: AgentCommandMode::OneShot { prompt },
+        model: request.model.as_str(),
+    };
     let command = backend
-        .build_command(BuildCommandRequest {
-            reasoning_level: request.reasoning_level,
-            folder: request.folder,
-            mode: AgentCommandMode::OneShot { prompt },
-            model: request.model.as_str(),
-        })
+        .build_command(build_request)
         .map_err(|error| format!("Failed to build one-shot agent command: {error}"))?;
+    let stdin_payload =
+        super::backend::build_command_stdin_payload(request.model.kind(), build_request)
+            .map_err(|error| format!("Failed to build one-shot agent stdin payload: {error}"))?;
     let mut tokio_command = tokio::process::Command::from(command);
     tokio_command
-        .stdin(std::process::Stdio::null())
+        .stdin(if stdin_payload.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .kill_on_drop(true);
     let mut pid_guard = ChildPidGuard::new(request.child_pid);
-    let child = tokio_command
+    let mut child = tokio_command
         .spawn()
         .map_err(|error| format!("Failed to execute one-shot agent command: {error}"))?;
     pid_guard.update_from_child(&child);
+    let stdin_write_task = spawn_optional_stdin_write(child.stdin.take(), stdin_payload);
     let output = child
         .wait_with_output()
         .await
         .map_err(|error| format!("Failed to execute one-shot agent command: {error}"))?;
+    await_optional_stdin_write(stdin_write_task).await?;
 
     if output.status.signal().is_some() {
         return Err("One-shot agent command was interrupted".to_string());
@@ -168,6 +182,63 @@ async fn execute_one_shot_command(
     let parsed_response = parse_response(request.model.kind(), &stdout_text, &stderr_text);
 
     Ok(parsed_response)
+}
+
+/// Starts one background stdin writer when the child needs prompt input.
+fn spawn_optional_stdin_write(
+    child_stdin: Option<tokio::process::ChildStdin>,
+    stdin_payload: Option<Vec<u8>>,
+) -> Option<JoinHandle<Result<(), String>>> {
+    stdin_payload.map(|stdin_payload| {
+        tokio::spawn(async move { write_optional_stdin(child_stdin, stdin_payload).await })
+    })
+}
+
+/// Waits for one optional background stdin writer to finish.
+///
+/// # Errors
+/// Returns an error when the writer task fails or panics before the full
+/// payload is sent.
+async fn await_optional_stdin_write(
+    stdin_write_task: Option<JoinHandle<Result<(), String>>>,
+) -> Result<(), String> {
+    let Some(stdin_write_task) = stdin_write_task else {
+        return Ok(());
+    };
+
+    stdin_write_task
+        .await
+        .map_err(|error| format!("One-shot stdin write task failed: {error}"))?
+}
+
+/// Writes one optional stdin payload into the spawned one-shot subprocess.
+///
+/// # Errors
+/// Returns an error when stdin was requested but not available or the write
+/// fails before EOF is signaled.
+async fn write_optional_stdin(
+    child_stdin: Option<tokio::process::ChildStdin>,
+    stdin_payload: Vec<u8>,
+) -> Result<(), String> {
+    let mut child_stdin =
+        child_stdin.ok_or_else(|| "one-shot stdin pipe unavailable after spawn".to_string())?;
+    if let Err(error) = child_stdin.write_all(&stdin_payload).await {
+        if !is_broken_pipe_error(&error) {
+            return Err(format!("Failed to write one-shot stdin payload: {error}"));
+        }
+    }
+    if let Err(error) = child_stdin.shutdown().await {
+        if !is_broken_pipe_error(&error) {
+            return Err(format!("Failed to close one-shot stdin payload: {error}"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns whether one stdin write error is the expected closed-pipe case.
+fn is_broken_pipe_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::BrokenPipe
 }
 
 /// Formats one non-zero one-shot command exit into a user-facing error.
@@ -280,12 +351,14 @@ mod tests {
     use std::process::Command;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use tempfile::tempdir;
 
     use super::*;
     use crate::infra::agent::tests::MockAgentBackend;
 
+    /// Builds one shell command that emits controlled stdout/stderr and exits.
     fn mock_shell_command(stdout: &str, stderr: &str, exit_code: i32) -> Command {
         let mut command = Command::new("sh");
         command.arg("-c").arg(
@@ -295,6 +368,20 @@ mod tests {
         command.env("ONE_SHOT_STDOUT", stdout);
         command.env("ONE_SHOT_STDERR", stderr);
         command.env("ONE_SHOT_EXIT", exit_code.to_string());
+        command.stdout(std::process::Stdio::piped());
+        command.stderr(std::process::Stdio::piped());
+
+        command
+    }
+
+    /// Builds one shell command that captures stdin before returning JSON.
+    fn stdin_capture_shell_command(capture_path: &Path) -> Command {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            "cat > \"$ONE_SHOT_CAPTURE_PATH\"; printf '%s' \
+             '{\"messages\":[{\"type\":\"answer\",\"text\":\"captured\"}]}'",
+        );
+        command.env("ONE_SHOT_CAPTURE_PATH", capture_path);
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
 
@@ -481,6 +568,124 @@ mod tests {
         // Assert
         assert_eq!(response.stats.input_tokens, 5);
         assert_eq!(response.stats.output_tokens, 3);
+    }
+
+    #[tokio::test]
+    /// Verifies one-shot execution does not deadlock when the child delays
+    /// reading stdin until after it emits early stderr output.
+    async fn test_submit_one_shot_with_backend_writes_large_stdin_concurrently() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let large_prompt = "x".repeat(512 * 1024);
+        let mut backend = MockAgentBackend::new();
+        backend.expect_build_command().returning(|_| {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(
+                "printf 'warming up\\n' >&2; sleep 0.1; cat >/dev/null; printf '%s' \
+                 '{\"messages\":[{\"type\":\"answer\",\"text\":\"done\"}]}'",
+            );
+            command.stdout(std::process::Stdio::piped());
+            command.stderr(std::process::Stdio::piped());
+
+            Ok(command)
+        });
+
+        // Act
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            submit_one_shot_with_backend(
+                &backend,
+                OneShotRequest {
+                    child_pid: None,
+                    folder: temp_directory.path(),
+                    model: AgentModel::ClaudeSonnet46,
+                    prompt: &large_prompt,
+                    reasoning_level: ReasoningLevel::default(),
+                },
+            ),
+        )
+        .await
+        .expect("one-shot prompt should not deadlock")
+        .expect("one-shot prompt should succeed");
+
+        // Assert
+        assert_eq!(response.response.answers(), vec!["done".to_string()]);
+    }
+
+    #[tokio::test]
+    /// Verifies one-shot execution streams Claude prompts through stdin so
+    /// large review requests avoid argv length limits.
+    async fn test_submit_one_shot_with_backend_writes_prompt_to_stdin() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let capture_path = temp_directory.path().join("stdin.txt");
+        let mut backend = MockAgentBackend::new();
+        backend.expect_build_command().returning({
+            let capture_path = capture_path.clone();
+
+            move |_| Ok(stdin_capture_shell_command(&capture_path))
+        });
+
+        // Act
+        let response = submit_one_shot_with_backend(
+            &backend,
+            OneShotRequest {
+                child_pid: None,
+                folder: temp_directory.path(),
+                model: AgentModel::ClaudeSonnet46,
+                prompt: "Generate title",
+                reasoning_level: ReasoningLevel::default(),
+            },
+        )
+        .await
+        .expect("one-shot prompt should succeed");
+        let captured_prompt =
+            std::fs::read_to_string(&capture_path).expect("captured stdin payload should exist");
+
+        // Assert
+        assert_eq!(response.response.answers(), vec!["captured".to_string()]);
+        assert!(captured_prompt.contains("Structured response protocol:"));
+        assert!(captured_prompt.contains("Generate title"));
+    }
+
+    #[tokio::test]
+    /// Verifies a broken stdin pipe does not hide the child exit status or
+    /// stderr when the backend exits before reading the full prompt.
+    async fn test_submit_one_shot_with_backend_preserves_exit_error_after_broken_pipe() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let large_prompt = "x".repeat(512 * 1024);
+        let mut backend = MockAgentBackend::new();
+        backend.expect_build_command().returning(|_| {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg("printf 'auth failed' >&2; exit 7");
+            command.stdout(std::process::Stdio::piped());
+            command.stderr(std::process::Stdio::piped());
+
+            Ok(command)
+        });
+
+        // Act
+        let error = submit_one_shot_with_backend(
+            &backend,
+            OneShotRequest {
+                child_pid: None,
+                folder: temp_directory.path(),
+                model: AgentModel::ClaudeSonnet46,
+                prompt: &large_prompt,
+                reasoning_level: ReasoningLevel::default(),
+            },
+        )
+        .await
+        .expect_err("one-shot prompt should surface the child exit");
+
+        // Assert
+        assert!(error.contains("exit code 7"), "error was: {error}");
+        assert!(error.contains("auth failed"), "error was: {error}");
+        assert!(
+            !error.contains("stdin payload"),
+            "stdin write error should not mask child failure: {error}"
+        );
     }
 
     #[tokio::test]

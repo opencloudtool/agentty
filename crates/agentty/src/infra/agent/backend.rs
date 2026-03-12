@@ -233,6 +233,22 @@ pub fn transport_mode(kind: AgentKind) -> AgentTransport {
     provider_descriptor(kind).transport
 }
 
+/// Builds one optional stdin payload for providers that stream prompts instead
+/// of sending them through argv.
+///
+/// # Errors
+/// Returns an error when provider-specific prompt rendering fails.
+pub(crate) fn build_command_stdin_payload(
+    kind: AgentKind,
+    request: BuildCommandRequest<'_>,
+) -> Result<Option<Vec<u8>>, AgentBackendError> {
+    match kind {
+        AgentKind::Gemini => super::gemini::build_prompt_stdin_payload(request).map(Some),
+        AgentKind::Claude => super::claude::build_prompt_stdin_payload(request).map(Some),
+        AgentKind::Codex => Ok(None),
+    }
+}
+
 /// Builds a resume prompt that optionally prepends previous session output.
 ///
 /// # Errors

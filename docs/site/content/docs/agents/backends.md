@@ -103,6 +103,9 @@ Agentty validates final agent output against the structured response protocol.
   commit messages, or review text.
 - Claude turns use native schema validation via `claude --json-schema` and
   `--output-format json` (no Claude `stream-json` mode).
+- Claude and Gemini stream the rendered prompt body through stdin for CLI
+  one-shot/repair flows so large diffs and review prompts do not hit OS argv
+  length limits.
 - Claude turns pass `--strict-mcp-config`, so only MCP servers explicitly
   provided by Agentty are allowed (none by default).
 - Claude turns allow file-modifying tools (`Edit`, `MultiEdit`, `Write`) plus

@@ -187,6 +187,9 @@ Provider output is normalized to one structured response protocol:
 Streaming behavior differs by transport/provider:
 
 - CLI channel (`CliAgentChannel`): parses stdout lines into `AssistantDelta` and `Progress`; keeps raw output for final parse.
+- CLI prompt submission can stream the fully rendered prompt through stdin for
+  providers that would otherwise exceed argv limits on large diffs or repair
+  prompts.
 - App-server channel (`AppServerAgentChannel`): bridges `AppServerStreamEvent` to `TurnEvent`.
 - Codex thought phases (`thinking`/`plan`/`reasoning`/`thought`) stream as `ThoughtDelta`.
 - Strict providers suppress streamed assistant chunks when needed so malformed first-pass protocol JSON is not persisted.

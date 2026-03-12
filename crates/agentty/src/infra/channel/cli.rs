@@ -3,11 +3,13 @@
 //! Spawns a provider CLI process per turn, streams stdout line-by-line as
 //! [`TurnEvent`]s, and parses the final process output when the process exits.
 
+use std::io;
 use std::os::unix::process::ExitStatusExt as _;
 use std::sync::{Arc, Mutex};
 
-use tokio::io::AsyncBufReadExt as _;
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::domain::agent::{AgentKind, PROMPT_IMAGE_UNSUPPORTED_MESSAGE, ReasoningLevel};
 use crate::infra::agent::protocol::{
@@ -91,7 +93,7 @@ impl AgentChannel for CliAgentChannel {
         }
 
         let backend = Arc::clone(&self.backend);
-        let build_result = self.backend.build_command(BuildCommandRequest {
+        let build_request = BuildCommandRequest {
             reasoning_level: req.reasoning_level,
             folder: &req.folder,
             mode: match &req.mode {
@@ -104,7 +106,9 @@ impl AgentChannel for CliAgentChannel {
                 },
             },
             model: &req.model,
-        });
+        };
+        let build_result = self.backend.build_command(build_request);
+        let stdin_payload_result = agent::build_command_stdin_payload(self.kind, build_request);
         let kind = self.kind;
         let reasoning_level = req.reasoning_level;
         let folder = req.folder;
@@ -113,9 +117,16 @@ impl AgentChannel for CliAgentChannel {
         Box::pin(async move {
             let command = build_result
                 .map_err(|error| AgentError(format!("Failed to build command: {error}")))?;
+            let stdin_payload = stdin_payload_result.map_err(|error| {
+                AgentError(format!("Failed to build command stdin payload: {error}"))
+            })?;
 
             let mut tokio_cmd = tokio::process::Command::from(command);
-            tokio_cmd.stdin(std::process::Stdio::null());
+            tokio_cmd.stdin(if stdin_payload.is_some() {
+                std::process::Stdio::piped()
+            } else {
+                std::process::Stdio::null()
+            });
             tokio_cmd.stdout(std::process::Stdio::piped());
             tokio_cmd.stderr(std::process::Stdio::piped());
 
@@ -158,11 +169,13 @@ impl AgentChannel for CliAgentChannel {
                     }
                 })
             };
+            let stdin_write_task = spawn_optional_stdin_write(child.stdin.take(), stdin_payload);
 
             let _ = stdout_task.await;
             let _ = stderr_task.await;
 
             let exit_status = child.wait().await.ok();
+            await_optional_stdin_write(stdin_write_task).await?;
 
             // Clear the PID slot now that the child has exited.
             let _ = events.send(TurnEvent::PidUpdate(None));
@@ -213,6 +226,67 @@ impl AgentChannel for CliAgentChannel {
     fn shutdown_session(&self, _session_id: String) -> AgentFuture<Result<(), AgentError>> {
         Box::pin(async { Ok(()) })
     }
+}
+
+/// Starts one background stdin writer when the child needs prompt input.
+fn spawn_optional_stdin_write(
+    child_stdin: Option<tokio::process::ChildStdin>,
+    stdin_payload: Option<Vec<u8>>,
+) -> Option<JoinHandle<Result<(), AgentError>>> {
+    stdin_payload.map(|stdin_payload| {
+        tokio::spawn(async move { write_optional_stdin(child_stdin, stdin_payload).await })
+    })
+}
+
+/// Waits for one optional background stdin writer to finish.
+///
+/// # Errors
+/// Returns an error when the writer task fails or panics before the full
+/// prompt payload is delivered.
+async fn await_optional_stdin_write(
+    stdin_write_task: Option<JoinHandle<Result<(), AgentError>>>,
+) -> Result<(), AgentError> {
+    let Some(stdin_write_task) = stdin_write_task else {
+        return Ok(());
+    };
+
+    stdin_write_task
+        .await
+        .map_err(|error| AgentError(format!("stdin write task failed: {error}")))?
+}
+
+/// Writes one optional stdin payload into the spawned CLI subprocess.
+///
+/// # Errors
+/// Returns an error when stdin was requested but unavailable or writing the
+/// payload fails.
+async fn write_optional_stdin(
+    child_stdin: Option<tokio::process::ChildStdin>,
+    stdin_payload: Vec<u8>,
+) -> Result<(), AgentError> {
+    let mut child_stdin =
+        child_stdin.ok_or_else(|| AgentError("stdin pipe unavailable after spawn".to_string()))?;
+    if let Err(error) = child_stdin.write_all(&stdin_payload).await {
+        if !is_broken_pipe_error(&error) {
+            return Err(AgentError(format!(
+                "Failed to write stdin payload: {error}"
+            )));
+        }
+    }
+    if let Err(error) = child_stdin.shutdown().await {
+        if !is_broken_pipe_error(&error) {
+            return Err(AgentError(format!(
+                "Failed to close stdin payload: {error}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns whether one stdin write error is the expected closed-pipe case.
+fn is_broken_pipe_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::BrokenPipe
 }
 
 /// Reads stdout line-by-line, classifying each line and forwarding events.
@@ -394,26 +468,38 @@ async fn run_structured_output_repair_turn(
     invalid_response: &str,
 ) -> Result<String, AgentError> {
     let repair_prompt = build_protocol_repair_prompt(invalid_response);
+    let build_request = BuildCommandRequest {
+        reasoning_level,
+        folder,
+        mode: AgentCommandMode::Start {
+            prompt: &repair_prompt,
+        },
+        model,
+    };
     let repair_command = backend
-        .build_command(BuildCommandRequest {
-            reasoning_level,
-            folder,
-            mode: AgentCommandMode::Start {
-                prompt: &repair_prompt,
-            },
-            model,
-        })
+        .build_command(build_request)
         .map_err(|error| AgentError(format!("Failed to build repair command: {error}")))?;
+    let stdin_payload = agent::build_command_stdin_payload(kind, build_request)
+        .map_err(|error| AgentError(format!("Failed to build repair stdin payload: {error}")))?;
 
     let mut tokio_command = tokio::process::Command::from(repair_command);
-    tokio_command.stdin(std::process::Stdio::null());
+    tokio_command.stdin(if stdin_payload.is_some() {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    });
     tokio_command.stdout(std::process::Stdio::piped());
     tokio_command.stderr(std::process::Stdio::piped());
 
-    let output = tokio_command
-        .output()
+    let mut child = tokio_command
+        .spawn()
+        .map_err(|error| AgentError(format!("Failed to run repair command: {error}")))?;
+    let stdin_write_task = spawn_optional_stdin_write(child.stdin.take(), stdin_payload);
+    let output = child
+        .wait_with_output()
         .await
         .map_err(|error| AgentError(format!("Failed to run repair command: {error}")))?;
+    await_optional_stdin_write(stdin_write_task).await?;
 
     if output.status.signal().is_some() {
         return Err(AgentError(
@@ -448,6 +534,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use tempfile::tempdir;
     use tokio::sync::mpsc;
@@ -467,6 +554,17 @@ mod tests {
             prompt: "Write a test".into(),
             provider_conversation_id: None,
         }
+    }
+
+    fn stdin_capture_command(capture_path: &std::path::Path) -> std::process::Command {
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg(
+            "cat > \"$CLI_CAPTURE_PATH\"; printf '%s' \
+             '{\"messages\":[{\"type\":\"answer\",\"text\":\"ok\"}]}'",
+        );
+        command.env("CLI_CAPTURE_PATH", capture_path);
+
+        command
     }
 
     #[tokio::test]
@@ -570,6 +668,113 @@ mod tests {
         // Assert
         let turn_result = result.expect("expected Ok for clean exit");
         assert!(!turn_result.context_reset);
+    }
+
+    #[tokio::test]
+    /// Verifies Claude CLI turns avoid deadlock when the child emits stderr
+    /// before it starts reading a large stdin prompt.
+    async fn test_run_turn_writes_large_stdin_concurrently_for_claude() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut mock_backend = MockAgentBackend::new();
+        mock_backend.expect_build_command().returning(|_| {
+            let mut command = std::process::Command::new("sh");
+            command.arg("-c").arg(
+                "printf 'warming up\\n' >&2; sleep 0.1; cat >/dev/null; printf '%s' \
+                 '{\"messages\":[{\"type\":\"answer\",\"text\":\"ok\"}]}'",
+            );
+
+            Ok(command)
+        });
+        let channel = CliAgentChannel {
+            backend: Arc::new(mock_backend),
+            kind: AgentKind::Claude,
+        };
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let mut req = make_turn_request(dir.path().to_path_buf());
+        req.prompt = "x".repeat(512 * 1024);
+
+        // Act
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            channel.run_turn("sess-1".to_string(), req, events_tx),
+        )
+        .await
+        .expect("turn should not deadlock")
+        .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(result.assistant_message.to_display_text(), "ok");
+    }
+
+    #[tokio::test]
+    /// Verifies Claude CLI turns stream the rendered prompt through stdin so
+    /// large session prompts do not rely on argv transport.
+    async fn test_run_turn_writes_prompt_to_stdin_for_claude() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let capture_path = dir.path().join("stdin.txt");
+        let mut mock_backend = MockAgentBackend::new();
+        mock_backend.expect_build_command().returning({
+            let capture_path = capture_path.clone();
+
+            move |_| Ok(stdin_capture_command(&capture_path))
+        });
+        let channel = CliAgentChannel {
+            backend: Arc::new(mock_backend),
+            kind: AgentKind::Claude,
+        };
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let req = make_turn_request(dir.path().to_path_buf());
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), req, events_tx)
+            .await
+            .expect("turn should succeed");
+        let captured_prompt =
+            std::fs::read_to_string(&capture_path).expect("captured stdin payload should exist");
+
+        // Assert
+        assert_eq!(result.assistant_message.to_display_text(), "ok");
+        assert!(captured_prompt.contains("Structured response protocol:"));
+        assert!(captured_prompt.contains("Write a test"));
+    }
+
+    #[tokio::test]
+    /// Verifies a broken stdin pipe does not hide the backend stderr or exit
+    /// status when the CLI exits before consuming the full prompt.
+    async fn test_run_turn_preserves_child_error_after_broken_pipe() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut mock_backend = MockAgentBackend::new();
+        mock_backend.expect_build_command().returning(|_| {
+            let mut command = std::process::Command::new("sh");
+            command.arg("-c").arg("printf 'auth failed' >&2; exit 9");
+
+            Ok(command)
+        });
+        let channel = CliAgentChannel {
+            backend: Arc::new(mock_backend),
+            kind: AgentKind::Claude,
+        };
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let mut req = make_turn_request(dir.path().to_path_buf());
+        req.prompt = "x".repeat(512 * 1024);
+
+        // Act
+        let error = channel
+            .run_turn("sess-1".to_string(), req, events_tx)
+            .await
+            .expect_err("turn should surface the child exit");
+
+        // Assert
+        assert!(error.0.contains("auth failed"), "error was: {}", error.0);
+        assert!(
+            !error.0.contains("stdin payload"),
+            "stdin write error should not mask child failure: {}",
+            error.0
+        );
     }
 
     #[tokio::test]
