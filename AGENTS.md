@@ -187,6 +187,12 @@ default validation command keeps feedback relatively fast, while the
 manual-stage strict hooks keep slower lint and hygiene checks available when
 needed.
 
+### Test Failure Protocol
+
+- **Stuck tests:** If a test produces no output for 5 minutes, kill it and report the test name and last output to the user immediately.
+- **Failing tests:** Attempt to fix the failing test up to 3 times. After 3 failed attempts, stop and report the test name, error output, and what was tried to the user.
+- **Do not skip or ignore:** Never mark a failing test as `#[ignore]`, delete it, or bypass it to unblock progress.
+
 ### Manual Verification
 
 - **Test Style:** Verify *every* test function uses explicit `// Arrange`, `// Act`, and `// Assert` comments.
