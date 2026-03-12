@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::domain::agent::AgentKind;
+use crate::domain::agent::{AgentKind, PROMPT_IMAGE_UNSUPPORTED_MESSAGE};
 use crate::infra::agent;
 use crate::infra::agent::protocol::{
     build_protocol_repair_prompt, normalize_stream_assistant_chunk, parse_agent_response,
@@ -84,11 +84,8 @@ impl AgentChannel for AppServerAgentChannel {
         let should_stream_assistant_messages = !requires_strict_structured_output(kind);
 
         Box::pin(async move {
-            if req.prompt.has_attachments() && kind != AgentKind::Codex {
-                return Err(AgentError(
-                    "Pasted images are currently only supported for Codex session models."
-                        .to_string(),
-                ));
+            if req.prompt.has_attachments() && !kind.supports_prompt_images() {
+                return Err(AgentError(PROMPT_IMAGE_UNSUPPORTED_MESSAGE.to_string()));
             }
 
             let session_output = match req.mode {

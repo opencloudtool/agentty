@@ -54,6 +54,13 @@ impl TurnPrompt {
         !self.attachments.is_empty()
     }
 
+    /// Returns the local image paths referenced by this prompt payload.
+    pub fn local_image_paths(&self) -> impl Iterator<Item = &PathBuf> {
+        self.attachments
+            .iter()
+            .map(|attachment| &attachment.local_image_path)
+    }
+
     /// Returns whether the prompt text contains `needle`.
     #[must_use]
     pub fn contains(&self, needle: &str) -> bool {
@@ -64,6 +71,40 @@ impl TurnPrompt {
     #[must_use]
     pub fn ends_with(&self, suffix: &str) -> bool {
         self.text.ends_with(suffix)
+    }
+
+    /// Returns the prompt text as it should be written into persisted
+    /// transcripts.
+    ///
+    /// Inline `[Image #n]` markers are preserved verbatim. If attachment
+    /// metadata somehow survives without its placeholder still present in the
+    /// text, the missing placeholders are appended in attachment order so the
+    /// transcript does not silently become text-only.
+    #[must_use]
+    pub fn transcript_text(&self) -> String {
+        let mut transcript_text = self.text.clone();
+        let missing_placeholders = self
+            .attachments
+            .iter()
+            .filter(|attachment| !self.text.contains(&attachment.placeholder))
+            .map(|attachment| attachment.placeholder.as_str())
+            .collect::<Vec<_>>();
+
+        if missing_placeholders.is_empty() {
+            return transcript_text;
+        }
+
+        if transcript_text
+            .chars()
+            .last()
+            .is_some_and(|character| !character.is_whitespace())
+        {
+            transcript_text.push(' ');
+        }
+
+        transcript_text.push_str(&missing_placeholders.join(" "));
+
+        transcript_text
     }
 }
 
@@ -256,4 +297,54 @@ pub trait AgentChannel: Send + Sync {
     /// Implementations that do not maintain persistent sessions treat this as
     /// a no-op and always return `Ok(())`.
     fn shutdown_session(&self, session_id: String) -> AgentFuture<Result<(), AgentError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// Ensures transcript text keeps inline image placeholders unchanged.
+    fn test_turn_prompt_transcript_text_keeps_inline_placeholders() {
+        // Arrange
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-1.png"),
+            }],
+            text: "Review [Image #1] carefully".to_string(),
+        };
+
+        // Act
+        let transcript_text = prompt.transcript_text();
+
+        // Assert
+        assert_eq!(transcript_text, "Review [Image #1] carefully");
+    }
+
+    #[test]
+    /// Ensures transcript text appends any attachment markers missing from the
+    /// text payload.
+    fn test_turn_prompt_transcript_text_appends_missing_placeholders() {
+        // Arrange
+        let prompt = TurnPrompt {
+            attachments: vec![
+                TurnPromptAttachment {
+                    placeholder: "[Image #1]".to_string(),
+                    local_image_path: PathBuf::from("/tmp/image-1.png"),
+                },
+                TurnPromptAttachment {
+                    placeholder: "[Image #2]".to_string(),
+                    local_image_path: PathBuf::from("/tmp/image-2.png"),
+                },
+            ],
+            text: "Review".to_string(),
+        };
+
+        // Act
+        let transcript_text = prompt.transcript_text();
+
+        // Assert
+        assert_eq!(transcript_text, "Review [Image #1] [Image #2]");
+    }
 }

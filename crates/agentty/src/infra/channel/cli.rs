@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::mpsc;
 
-use crate::domain::agent::{AgentKind, ReasoningLevel};
+use crate::domain::agent::{AgentKind, PROMPT_IMAGE_UNSUPPORTED_MESSAGE, ReasoningLevel};
 use crate::infra::agent::protocol::{
     build_protocol_repair_prompt, normalize_stream_assistant_chunk, parse_agent_response,
     parse_agent_response_strict,
@@ -86,10 +86,7 @@ impl AgentChannel for CliAgentChannel {
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
         if req.prompt.has_attachments() {
             return Box::pin(async {
-                Err(AgentError(
-                    "Pasted images are currently only supported for Codex session models."
-                        .to_string(),
-                ))
+                Err(AgentError(PROMPT_IMAGE_UNSUPPORTED_MESSAGE.to_string()))
             });
         }
 

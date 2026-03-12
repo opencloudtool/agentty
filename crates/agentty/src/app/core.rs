@@ -943,6 +943,14 @@ impl App {
             .await;
     }
 
+    /// Removes prompt attachment files that still belong to the active
+    /// composer state.
+    pub(crate) async fn cleanup_prompt_attachment_files(&self, prompt: &TurnPrompt) {
+        self.sessions
+            .cleanup_prompt_attachment_files(&self.services, prompt)
+            .await;
+    }
+
     /// Loads slash-command stats data for one session through the app layer.
     pub(crate) async fn stats_for_session(&self, session_id: &str) -> SessionStatsSnapshot {
         let session_duration_seconds =

@@ -31,6 +31,15 @@ pub trait FsClient: Send + Sync {
     /// Returns an error when file read fails.
     fn read_file(&self, path: PathBuf) -> Result<Vec<u8>, String>;
 
+    /// Removes one file from disk.
+    ///
+    /// Missing files are treated as a successful no-op.
+    ///
+    /// # Errors
+    /// Returns an error when filesystem removal fails for any reason other
+    /// than the file already being absent.
+    fn remove_file(&self, path: PathBuf) -> FsFuture<Result<(), String>>;
+
     /// Returns whether `path` currently resolves to an existing directory.
     fn is_dir(&self, path: PathBuf) -> bool;
 }
@@ -57,6 +66,16 @@ impl FsClient for RealFsClient {
 
     fn read_file(&self, path: PathBuf) -> Result<Vec<u8>, String> {
         std::fs::read(path).map_err(|error| error.to_string())
+    }
+
+    fn remove_file(&self, path: PathBuf) -> FsFuture<Result<(), String>> {
+        Box::pin(async move {
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.to_string()),
+            }
+        })
     }
 
     fn is_dir(&self, path: PathBuf) -> bool {

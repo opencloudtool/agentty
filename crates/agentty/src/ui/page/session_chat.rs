@@ -523,8 +523,8 @@ impl<'a> SessionChatPage<'a> {
             footer_segments.push(format!("{attachment_count} image{suffix} ready"));
         }
 
-        if session.model.kind() != AgentKind::Codex {
-            footer_segments.push("send images with Codex".to_string());
+        if let Some(footer_hint) = session.model.prompt_image_footer_hint() {
+            footer_segments.push(footer_hint.to_string());
         }
 
         footer_segments.join("  ·  ")

@@ -56,6 +56,15 @@ pub trait AgentSelectionMetadata {
     fn description(&self) -> &'static str;
 }
 
+/// Footer hint shown when the active session model cannot send pasted images.
+pub const PROMPT_IMAGE_FOOTER_HINT: &str = "send images with Codex";
+
+/// User-facing error returned when pasted images are submitted to an
+/// unsupported session model.
+pub const PROMPT_IMAGE_UNSUPPORTED_MESSAGE: &str = "Pasted images are currently only supported \
+                                                    for Codex session models. Switch to a Codex \
+                                                    model and try again.";
+
 impl AgentModel {
     /// Returns the stable wire/model identifier used in persistence and CLI
     /// invocations.
@@ -81,6 +90,25 @@ impl AgentModel {
                 AgentKind::Claude
             }
         }
+    }
+
+    /// Returns whether this model accepts pasted prompt images.
+    #[must_use]
+    pub fn supports_prompt_images(self) -> bool {
+        self.kind().supports_prompt_images()
+    }
+
+    /// Returns the composer footer hint when pasted prompt images are
+    /// unsupported for this model.
+    #[must_use]
+    pub fn prompt_image_footer_hint(self) -> Option<&'static str> {
+        self.kind().prompt_image_footer_hint()
+    }
+
+    /// Returns the shared unsupported-image message for this model.
+    #[must_use]
+    pub fn prompt_image_unsupported_message(self) -> Option<&'static str> {
+        self.kind().prompt_image_unsupported_message()
     }
 }
 
@@ -206,6 +234,33 @@ impl AgentKind {
 
         Some(model)
     }
+
+    /// Returns whether this provider family accepts pasted prompt images.
+    #[must_use]
+    pub const fn supports_prompt_images(self) -> bool {
+        matches!(self, Self::Codex)
+    }
+
+    /// Returns the composer footer hint when pasted prompt images are
+    /// unsupported for this provider family.
+    #[must_use]
+    pub const fn prompt_image_footer_hint(self) -> Option<&'static str> {
+        if self.supports_prompt_images() {
+            return None;
+        }
+
+        Some(PROMPT_IMAGE_FOOTER_HINT)
+    }
+
+    /// Returns the shared unsupported-image message for this provider family.
+    #[must_use]
+    pub const fn prompt_image_unsupported_message(self) -> Option<&'static str> {
+        if self.supports_prompt_images() {
+            return None;
+        }
+
+        Some(PROMPT_IMAGE_UNSUPPORTED_MESSAGE)
+    }
 }
 
 impl AgentSelectionMetadata for AgentKind {
@@ -317,5 +372,37 @@ mod tests {
 
         // Assert
         assert!(parse_result.is_err());
+    }
+
+    #[test]
+    /// Ensures Codex models report prompt-image support.
+    fn test_supports_prompt_images_returns_true_for_codex_models() {
+        // Arrange
+        let model = AgentModel::Gpt54;
+
+        // Act
+        let supports_prompt_images = model.supports_prompt_images();
+
+        // Assert
+        assert!(supports_prompt_images);
+        assert_eq!(model.prompt_image_footer_hint(), None);
+        assert_eq!(model.prompt_image_unsupported_message(), None);
+    }
+
+    #[test]
+    /// Ensures non-Codex providers share the same unsupported-image guidance.
+    fn test_prompt_image_helpers_return_guidance_for_unsupported_models() {
+        // Arrange
+        let model = AgentModel::ClaudeSonnet46;
+
+        // Act
+        let supports_prompt_images = model.supports_prompt_images();
+        let footer_hint = model.prompt_image_footer_hint();
+        let unsupported_message = model.prompt_image_unsupported_message();
+
+        // Assert
+        assert!(!supports_prompt_images);
+        assert_eq!(footer_hint, Some(PROMPT_IMAGE_FOOTER_HINT));
+        assert_eq!(unsupported_message, Some(PROMPT_IMAGE_UNSUPPORTED_MESSAGE));
     }
 }

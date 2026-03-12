@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::access::SESSION_NOT_FOUND_ERROR;
 use super::worker::SessionCommand;
 use super::{SessionTaskService, session_branch, session_folder, unix_timestamp_from_system_time};
-use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager, setting};
+use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager, agentty_home, setting};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{ReviewRequest, SESSION_DATA_DIR, Session, Status};
 use crate::domain::setting::SettingName;
@@ -41,6 +41,7 @@ struct DeletedSessionCleanup {
     branch_name: String,
     folder: PathBuf,
     has_git_branch: bool,
+    session_id: String,
     working_dir: PathBuf,
 }
 
@@ -266,7 +267,7 @@ impl SessionManager {
         self.persist_first_message_metadata(services, &persisted_session_id, &prompt.text, &title)
             .await;
 
-        let initial_output = Self::formatted_prompt_output(&prompt.text, false);
+        let initial_output = Self::formatted_prompt_output(&prompt, false);
         SessionTaskService::append_session_output(
             &output,
             services.db(),
@@ -292,8 +293,15 @@ impl SessionManager {
             prompt: prompt.clone(),
             session_model,
         };
-        self.enqueue_session_command(services, &persisted_session_id, command)
-            .await?;
+        if let Err(error) = self
+            .enqueue_session_command(services, &persisted_session_id, command)
+            .await
+        {
+            self.cleanup_prompt_attachment_files(services, &prompt)
+                .await;
+
+            return Err(error);
+        }
 
         Ok(())
     }
@@ -610,6 +618,7 @@ impl SessionManager {
             branch_name: session_branch(&session.id),
             folder: session.folder,
             has_git_branch: projects.has_git_branch(),
+            session_id: session.id,
             working_dir: projects.working_dir().to_path_buf(),
         })
     }
@@ -627,7 +636,7 @@ impl SessionManager {
         };
 
         Self::cleanup_session_worktree_resources(
-            fs_client,
+            fs_client.clone(),
             git_client,
             cleanup.folder,
             cleanup.branch_name,
@@ -635,6 +644,7 @@ impl SessionManager {
             cleanup.has_git_branch,
         )
         .await;
+        Self::cleanup_session_temp_directory(fs_client, &cleanup.session_id).await;
     }
 
     /// Builds one normalized create-request payload from session metadata.
@@ -825,7 +835,7 @@ impl SessionManager {
             &output,
             &app_event_tx,
             &persisted_session_id,
-            &effective_prompt.text,
+            &effective_prompt,
         )
         .await;
 
@@ -840,6 +850,7 @@ impl SessionManager {
             &output,
             &app_event_tx,
             &persisted_session_id,
+            &effective_prompt,
             command,
         )
         .await;
@@ -922,7 +933,7 @@ impl SessionManager {
         output: &Arc<Mutex<String>>,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
         session_id: &str,
-        prompt: &str,
+        prompt: &TurnPrompt,
     ) {
         let reply_line = Self::formatted_prompt_output(prompt, true);
         SessionTaskService::append_session_output(
@@ -940,8 +951,9 @@ impl SessionManager {
     /// The first line uses `USER_PROMPT_PREFIX`; continuation lines use
     /// `USER_PROMPT_CONTINUATION_PREFIX` so embedded blank lines remain inside
     /// the prompt block instead of being interpreted as prompt terminators.
-    fn formatted_prompt_output(prompt: &str, prepend_newline: bool) -> String {
-        let prompt_lines = prompt.split('\n').collect::<Vec<_>>();
+    fn formatted_prompt_output(prompt: &TurnPrompt, prepend_newline: bool) -> String {
+        let prompt_text = prompt.transcript_text();
+        let prompt_lines = prompt_text.split('\n').collect::<Vec<_>>();
         let mut formatted_lines = Vec::with_capacity(prompt_lines.len());
 
         for (index, prompt_line) in prompt_lines.into_iter().enumerate() {
@@ -1012,12 +1024,15 @@ impl SessionManager {
         output: &Arc<Mutex<String>>,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
         persisted_session_id: &str,
+        prompt: &TurnPrompt,
         command: SessionCommand,
     ) {
         if let Err(error) = self
             .enqueue_session_command(services, persisted_session_id, command)
             .await
         {
+            self.cleanup_prompt_attachment_files(services, prompt).await;
+
             let error_line = format!("\n[Reply Error] {error}\n");
             SessionTaskService::append_session_output(
                 output,
@@ -1231,6 +1246,7 @@ impl SessionManager {
             .fs_client()
             .remove_dir_all(folder.to_path_buf())
             .await;
+        Self::cleanup_session_temp_directory(services.fs_client(), session_id).await;
     }
 
     /// Appends text to a specific session output stream.
@@ -1251,6 +1267,22 @@ impl SessionManager {
             &app_event_tx,
             &session.id,
             output,
+        )
+        .await;
+    }
+
+    /// Removes prompt attachment files that are no longer owned by the
+    /// composer or worker.
+    ///
+    /// Only Agentty-managed temp files under `AGENTTY_ROOT/tmp/` are removed.
+    pub(crate) async fn cleanup_prompt_attachment_files(
+        &self,
+        services: &AppServices,
+        prompt: &TurnPrompt,
+    ) {
+        Self::cleanup_prompt_attachment_paths(
+            services.fs_client(),
+            prompt.local_image_paths().cloned().collect(),
         )
         .await;
     }
@@ -1295,7 +1327,7 @@ impl SessionManager {
                 .ok();
 
             Self::cleanup_session_worktree_resources(
-                services.fs_client(),
+                services.fs_client().clone(),
                 services.git_client(),
                 folder,
                 branch_name,
@@ -1303,6 +1335,7 @@ impl SessionManager {
                 true,
             )
             .await;
+            Self::cleanup_session_temp_directory(services.fs_client(), session_id).await;
         }
 
         Ok(())
@@ -1332,6 +1365,97 @@ impl SessionManager {
 
         let _ = fs_client.remove_dir_all(folder).await;
     }
+
+    /// Removes Agentty-managed prompt attachment files and prunes their
+    /// now-empty image directory when possible.
+    pub(crate) async fn cleanup_prompt_attachment_paths(
+        fs_client: Arc<dyn FsClient>,
+        attachment_paths: Vec<PathBuf>,
+    ) {
+        Self::cleanup_prompt_attachment_paths_in_root(
+            fs_client,
+            &prompt_attachment_tmp_root(),
+            attachment_paths,
+        )
+        .await;
+    }
+
+    /// Removes Agentty-managed prompt attachment files inside one explicit tmp
+    /// root and prunes their shared image directory when safe.
+    async fn cleanup_prompt_attachment_paths_in_root(
+        fs_client: Arc<dyn FsClient>,
+        managed_tmp_root: &Path,
+        attachment_paths: Vec<PathBuf>,
+    ) {
+        if attachment_paths.is_empty() {
+            return;
+        }
+
+        let image_directory =
+            managed_prompt_attachment_directory(&attachment_paths, managed_tmp_root);
+
+        for attachment_path in attachment_paths {
+            if is_managed_prompt_attachment_path(&attachment_path, managed_tmp_root) {
+                let _ = fs_client.remove_file(attachment_path).await;
+            }
+        }
+
+        if let Some(image_directory) = image_directory {
+            let _ = fs_client.remove_dir_all(image_directory).await;
+        }
+    }
+
+    /// Removes the session-scoped temp directory used for pasted prompt
+    /// images.
+    async fn cleanup_session_temp_directory(fs_client: Arc<dyn FsClient>, session_id: &str) {
+        let _ = fs_client
+            .remove_dir_all(session_prompt_temp_directory(session_id))
+            .await;
+    }
+}
+
+/// Returns the session-scoped temp directory used for pasted prompt images.
+fn session_prompt_temp_directory(session_id: &str) -> PathBuf {
+    agentty_home().join("tmp").join(session_id)
+}
+
+/// Returns the Agentty-owned tmp root used for pasted prompt attachments.
+fn prompt_attachment_tmp_root() -> PathBuf {
+    agentty_home().join("tmp")
+}
+
+/// Returns the shared managed image directory for the given attachment paths
+/// when every path stays within the Agentty temp root.
+fn managed_prompt_attachment_directory(
+    attachment_paths: &[PathBuf],
+    managed_tmp_root: &Path,
+) -> Option<PathBuf> {
+    let image_directory = attachment_paths.first()?.parent()?.to_path_buf();
+    if !is_managed_prompt_attachment_directory(&image_directory, managed_tmp_root) {
+        return None;
+    }
+
+    attachment_paths
+        .iter()
+        .all(|attachment_path| {
+            attachment_path.parent() == Some(image_directory.as_path())
+                && is_managed_prompt_attachment_path(attachment_path, managed_tmp_root)
+        })
+        .then_some(image_directory)
+}
+
+/// Returns whether one attachment path is owned by Agentty under the managed
+/// prompt-image tmp root.
+fn is_managed_prompt_attachment_path(path: &Path, managed_tmp_root: &Path) -> bool {
+    path.parent().is_some_and(|parent| {
+        is_managed_prompt_attachment_directory(parent, managed_tmp_root)
+            && path.starts_with(managed_tmp_root)
+    })
+}
+
+/// Returns whether one directory is an Agentty-managed prompt-image directory.
+fn is_managed_prompt_attachment_directory(path: &Path, managed_tmp_root: &Path) -> bool {
+    path.starts_with(managed_tmp_root) && path.ends_with("images")
 }
 
 #[cfg(test)]
@@ -1349,6 +1473,7 @@ mod tests {
         ForgeKind, ReviewRequestState, ReviewRequestSummary, SessionHandles, SessionSize,
         SessionStats,
     };
+    use crate::infra::channel::TurnPromptAttachment;
     use crate::infra::db::{self, Database};
     use crate::infra::{app_server, fs};
 
@@ -1423,6 +1548,10 @@ mod tests {
             .expect_read_file()
             .times(0..)
             .returning(|path| std::fs::read(path).map_err(|error| error.to_string()));
+        mock_fs_client
+            .expect_remove_file()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
         mock_fs_client
             .expect_is_dir()
             .times(0..)
@@ -1796,10 +1925,10 @@ mod tests {
     #[test]
     fn test_formatted_prompt_output_formats_multiline_prompt_with_continuation_prefix() {
         // Arrange
-        let prompt = "first line\n\n\nafter gap";
+        let prompt = TurnPrompt::from_text("first line\n\n\nafter gap".to_string());
 
         // Act
-        let formatted_prompt = SessionManager::formatted_prompt_output(prompt, false);
+        let formatted_prompt = SessionManager::formatted_prompt_output(&prompt, false);
 
         // Assert
         assert_eq!(
@@ -1811,13 +1940,85 @@ mod tests {
     #[test]
     fn test_formatted_prompt_output_prepends_newline_for_replies() {
         // Arrange
-        let prompt = "reply line";
+        let prompt = TurnPrompt::from_text("reply line".to_string());
 
         // Act
-        let formatted_prompt = SessionManager::formatted_prompt_output(prompt, true);
+        let formatted_prompt = SessionManager::formatted_prompt_output(&prompt, true);
 
         // Assert
         assert_eq!(formatted_prompt, "\n › reply line\n\n");
+    }
+
+    #[test]
+    /// Ensures transcript formatting keeps prompt image markers visible.
+    fn test_formatted_prompt_output_preserves_image_placeholders_in_transcript() {
+        // Arrange
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-1.png"),
+            }],
+            text: "Review [Image #1]".to_string(),
+        };
+
+        // Act
+        let formatted_prompt = SessionManager::formatted_prompt_output(&prompt, false);
+
+        // Assert
+        assert_eq!(formatted_prompt, " › Review [Image #1]\n\n");
+    }
+
+    #[tokio::test]
+    /// Ensures prompt attachment cleanup removes temp files and their image
+    /// directory after handoff.
+    async fn test_cleanup_prompt_attachment_paths_removes_files_and_directory() {
+        // Arrange
+        let temp_dir = tempfile::tempdir().expect("temp dir should exist");
+        let managed_tmp_root = temp_dir.path().join("tmp");
+        let image_directory = managed_tmp_root.join("session-id").join("images");
+        std::fs::create_dir_all(&image_directory).expect("image directory should exist");
+        let first_image = image_directory.join("image-1.png");
+        let second_image = image_directory.join("image-2.png");
+        std::fs::write(&first_image, b"png").expect("first image should exist");
+        std::fs::write(&second_image, b"png").expect("second image should exist");
+
+        // Act
+        SessionManager::cleanup_prompt_attachment_paths_in_root(
+            Arc::new(fs::RealFsClient),
+            &managed_tmp_root,
+            vec![first_image.clone(), second_image.clone()],
+        )
+        .await;
+
+        // Assert
+        assert!(!first_image.exists());
+        assert!(!second_image.exists());
+        assert!(!image_directory.exists());
+    }
+
+    #[tokio::test]
+    /// Ensures cleanup ignores attachment paths outside the managed Agentty
+    /// temp root.
+    async fn test_cleanup_prompt_attachment_paths_leaves_unmanaged_files_untouched() {
+        // Arrange
+        let temp_dir = tempfile::tempdir().expect("temp dir should exist");
+        let managed_tmp_root = temp_dir.path().join("tmp");
+        let image_directory = temp_dir.path().join("user-images");
+        std::fs::create_dir_all(&image_directory).expect("image directory should exist");
+        let image_path = image_directory.join("image-1.png");
+        std::fs::write(&image_path, b"png").expect("image file should exist");
+
+        // Act
+        SessionManager::cleanup_prompt_attachment_paths_in_root(
+            Arc::new(fs::RealFsClient),
+            &managed_tmp_root,
+            vec![image_path.clone()],
+        )
+        .await;
+
+        // Assert
+        assert!(image_path.exists());
+        assert!(image_directory.exists());
     }
 
     #[test]

@@ -67,6 +67,36 @@ pub(crate) async fn persist_clipboard_image(
     .map_err(|error| format!("Clipboard image task failed: {error}"))?
 }
 
+/// Normalizes one clipboard-image failure into short prompt-mode status text.
+#[must_use]
+pub(crate) fn normalize_clipboard_image_error(error: &str) -> String {
+    if error.starts_with("Clipboard is unavailable:") {
+        return "Clipboard is unavailable. Try again after granting clipboard access.".to_string();
+    }
+
+    if error == "Clipboard does not contain an image" {
+        return "Clipboard does not contain an image.".to_string();
+    }
+
+    if error == "Clipboard PNG path does not exist" {
+        return "Clipboard PNG path does not exist.".to_string();
+    }
+
+    if error.contains("Failed to write pasted image PNG")
+        || error.contains("Failed to copy clipboard PNG file")
+        || error.contains("Failed to resolve pasted image path")
+        || error.contains("Failed to create clipboard image directory")
+    {
+        return "Failed to persist pasted image from the clipboard.".to_string();
+    }
+
+    if error.contains("Clipboard image task failed:") {
+        return "Clipboard image capture failed.".to_string();
+    }
+
+    error.to_string()
+}
+
 /// Returns the temp directory used for pasted prompt images for one session
 /// identifier.
 ///
@@ -230,6 +260,48 @@ mod tests {
         assert_eq!(
             canonicalized_path,
             std::fs::canonicalize(&image_path).expect("std canonicalize should succeed")
+        );
+    }
+
+    #[test]
+    fn test_normalize_clipboard_image_error_maps_unavailable_to_actionable_status() {
+        // Arrange
+        let error = "Clipboard is unavailable: permission denied";
+
+        // Act
+        let normalized_error = normalize_clipboard_image_error(error);
+
+        // Assert
+        assert_eq!(
+            normalized_error,
+            "Clipboard is unavailable. Try again after granting clipboard access."
+        );
+    }
+
+    #[test]
+    fn test_normalize_clipboard_image_error_maps_no_image_to_short_status() {
+        // Arrange
+        let error = "Clipboard does not contain an image";
+
+        // Act
+        let normalized_error = normalize_clipboard_image_error(error);
+
+        // Assert
+        assert_eq!(normalized_error, "Clipboard does not contain an image.");
+    }
+
+    #[test]
+    fn test_normalize_clipboard_image_error_maps_encode_failure_to_persist_status() {
+        // Arrange
+        let error = "Failed to write pasted image PNG: encoder failed";
+
+        // Act
+        let normalized_error = normalize_clipboard_image_error(error);
+
+        // Assert
+        assert_eq!(
+            normalized_error,
+            "Failed to persist pasted image from the clipboard."
         );
     }
 }

@@ -54,25 +54,57 @@ Target: `L` (`81..=200` changed lines). Keep this hardening slice focused on cap
 
 ### Substeps
 
-- [ ] **Add shared backend image-capability checks.** Add agent/model capability helpers in `crates/agentty/src/domain/agent.rs` so the UI and runtime can share one source of truth for whether image inputs are supported.
-- [ ] **Define attachment temp-file cleanup ownership.** Decide and implement temp-file ownership in `crates/agentty/src/app/session/workflow/lifecycle.rs` and the relevant runtime/session cleanup path so pasted files under `AGENTTY_ROOT/tmp/<session-id>/images/` survive long enough for backend upload from the session chat composer but do not accumulate indefinitely after handoff or failed submission.
-- [ ] **Preserve attachment markers in stored transcripts.** Update prompt-output formatting in `crates/agentty/src/app/session/workflow/lifecycle.rs` and any related transcript helpers so submitted prompts preserve the inline `[Image #n]` markers or an equivalent attachment summary instead of pretending the turn was text-only.
-- [ ] **Normalize clipboard and unsupported-model errors.** Add focused error handling for clipboard-unavailable, no-image, encode-failure, and unsupported-model cases so users get actionable status text without leaving prompt mode.
-- [ ] **Finalize the paste-image shortcut without regressing text paste.** Validate whether the first shipped shortcut should be `Ctrl+V`, `Alt+V`, or a platform-aware combination; keep text paste on `Event::Paste` intact and avoid stealing the common plain-text paste path.
+- [x] **Add shared backend image-capability checks.** Add agent/model capability helpers in `crates/agentty/src/domain/agent.rs` so the UI and runtime can share one source of truth for whether image inputs are supported.
+- [x] **Define attachment temp-file cleanup ownership.** Decide and implement temp-file ownership in `crates/agentty/src/app/session/workflow/lifecycle.rs` and the relevant runtime/session cleanup path so pasted files under `AGENTTY_ROOT/tmp/<session-id>/images/` survive long enough for backend upload from the session chat composer but do not accumulate indefinitely after handoff or failed submission.
+- [x] **Preserve attachment markers in stored transcripts.** Update prompt-output formatting in `crates/agentty/src/app/session/workflow/lifecycle.rs` and any related transcript helpers so submitted prompts preserve the inline `[Image #n]` markers or an equivalent attachment summary instead of pretending the turn was text-only.
+- [x] **Normalize clipboard and unsupported-model errors.** Add focused error handling for clipboard-unavailable, no-image, encode-failure, and unsupported-model cases so users get actionable status text without leaving prompt mode.
+- [x] **Finalize the paste-image shortcut without regressing text paste.** Validate whether the first shipped shortcut should be `Ctrl+V`, `Alt+V`, or a platform-aware combination; keep text paste on `Event::Paste` intact and avoid stealing the common plain-text paste path.
 
 ### Tests
 
-- [ ] Add focused tests for capability helpers, clipboard error normalization, session chat composer reset after send, transcript attachment summaries, and unsupported-provider gating in `crates/agentty/src/domain/agent.rs`, `crates/agentty/src/runtime/mode/prompt.rs`, `crates/agentty/src/runtime/event.rs`, and `crates/agentty/src/app/session/workflow/lifecycle.rs`.
+- [x] Add focused tests for capability helpers, clipboard error normalization, session chat composer reset after send, transcript attachment summaries, and unsupported-provider gating in `crates/agentty/src/domain/agent.rs`, `crates/agentty/src/runtime/mode/prompt.rs`, `crates/agentty/src/runtime/event.rs`, and `crates/agentty/src/app/session/workflow/lifecycle.rs`.
 - [ ] Run focused tests while iterating and finish with the repository validation gates when this hardening slice lands.
 
 ### Docs
 
-- [ ] Update `docs/site/content/docs/usage/keybindings.md`, `docs/site/content/docs/usage/workflow.md`, and `docs/site/content/docs/architecture/testability-boundaries.md` if the final cleanup and transport boundary work changes contributor guidance or user-visible behavior.
+- [x] Update `docs/site/content/docs/usage/keybindings.md`, `docs/site/content/docs/usage/workflow.md`, and `docs/site/content/docs/architecture/testability-boundaries.md` if the final cleanup and transport boundary work changes contributor guidance or user-visible behavior.
+
+## 3) Add prompt-image transport support for Gemini and Claude session models
+
+### Why now
+
+The prompt composer and lifecycle are now stable enough that broadening provider support no longer needs to change the attachment model itself. What remains is transport parity: Gemini and Claude still fail fast even though the UI/runtime path is ready to hand off structured attachments.
+
+### Usable outcome
+
+Users can paste images into the session composer and submit them successfully for Codex, Gemini, and Claude sessions, with provider-specific transport behavior covered by tests instead of a Codex-only special case.
+
+### Size
+
+Target: `XL` (`201..=500` changed lines). Keep this split focused on provider transport parity and capability verification; if one provider needs substantially more work, split Gemini and Claude into separate follow-up steps before implementation.
+
+### Substeps
+
+- [ ] **Verify real provider image input shapes before wiring parity.** Confirm the current Gemini and Claude runtime/app-server surfaces that Agentty uses in `crates/agentty/src/infra/gemini_acp.rs`, `crates/agentty/src/infra/app_server.rs`, and any Claude transport path can accept local image attachments, and record any provider-specific constraints or model exclusions before relaxing capability checks.
+- [ ] **Extend Gemini transport for structured prompt attachments.** Implement ordered text-plus-image submission for Gemini in the relevant transport layer under `crates/agentty/src/infra/`, keeping placeholder ordering aligned with `TurnPrompt` and preserving the existing session replay/context behavior.
+- [ ] **Extend Claude transport for structured prompt attachments.** Implement equivalent attachment submission for Claude in its active channel/backend path under `crates/agentty/src/infra/channel/` and `crates/agentty/src/infra/agent/`, including any provider-specific file upload or CLI argument handling required for local images.
+- [ ] **Broaden shared capability checks only after transport support lands.** Update `crates/agentty/src/domain/agent.rs`, `crates/agentty/src/runtime/mode/prompt.rs`, and `crates/agentty/src/ui/page/session_chat.rs` so model capability helpers reflect the newly supported providers without ever advertising support before transport parity is real.
+- [ ] **Keep cleanup and transcript behavior provider-agnostic.** Validate that the existing attachment cleanup ownership in `crates/agentty/src/app/session/workflow/lifecycle.rs` and `crates/agentty/src/app/session/workflow/worker.rs` still holds once Gemini and Claude consume submitted image files.
+
+### Tests
+
+- [ ] Add focused transport and serialization tests for Gemini and Claude attachment submission in the affected `crates/agentty/src/infra/` modules, plus capability-gating regression tests in `crates/agentty/src/domain/agent.rs` and `crates/agentty/src/runtime/mode/prompt.rs`.
+- [ ] Run the repository validation gates after provider parity lands, and note any provider-specific live-test gaps separately from deterministic coverage.
+
+### Docs
+
+- [ ] Update `docs/site/content/docs/usage/keybindings.md` and `docs/site/content/docs/usage/workflow.md` so image-paste behavior no longer describes Codex-only support.
+- [ ] Update `docs/site/content/docs/agents/backends.md` if provider/model capability tables need to describe pasted local-image support for Gemini and Claude.
 
 ## Cross-Plan Notes
 
 - No active `docs/plan/` file currently owns prompt attachments, inline image-token composition, or image-capable transport payloads.
-- If a later plan adds generic multimodal provider parity, keep this plan scoped to pasted local images in session prompt mode and treat broader backend parity as follow-up work.
+- Keep this plan scoped to pasted local images in session prompt mode; broader multimodal parity such as remote URLs, screenshots, or drag-and-drop should stay in a separate follow-up plan.
 
 ## Status Maintenance Rule
 
@@ -88,6 +120,8 @@ Target: `L` (`81..=200` changed lines). Keep this hardening slice focused on cap
 | Terminal paste handling | `Event::Paste` still inserts multiline text, while `Ctrl+V` and `Alt+V` run the dedicated clipboard-image path for new-session prompts and replies. | Done |
 | Prompt submission contract | `TurnRequest`, `AppServerTurnRequest`, and the session lifecycle now carry `TurnPrompt` payloads with text plus ordered local image attachments. | Done |
 | Backend support | Codex app-server turns serialize local image inputs, while non-Codex providers fail fast with a visible capability error instead of dropping attachments. | Done |
+| Capability and cleanup hardening | Shared model capability helpers now gate paste/submit behavior, prompt-mode errors stay actionable in the composer, transcript formatting preserves image markers, and attachment temp files are cleaned on cancel, failed enqueue, completed upload, and session cleanup. | Done |
+| Provider parity | Gemini and Claude still need provider-specific attachment transport work before capability helpers can advertise image support beyond Codex. | Pending |
 | Dependencies | Workspace manifests now include the clipboard/image helpers needed to persist prompt images as local PNG files. | Done |
 
 ## Implementation Approach
@@ -104,11 +138,12 @@ Target: `L` (`81..=200` changed lines). Keep this hardening slice focused on cap
 ```mermaid
 graph TD
     P1[1. End-to-end pasted-image prompt flow] --> P2[2. Capability checks, cleanup, transcript behavior]
+    P2 --> P3[3. Gemini and Claude transport parity]
 ```
 
 1. Start with `1) Ship one end-to-end pasted-image flow for prompt mode`; the prompt state shape, keybinding, and transport payload need to exist before follow-up hardening can be finalized.
 1. Continue with `2) Harden capability checks, cleanup, and session transcript behavior` once one backend can already receive pasted images and the first user-visible path is stable.
-1. The clipboard helper and the chat-input rendering work inside `1)` can proceed in parallel, but the transport payload change must land before the feature is usable.
+1. Start `3) Add prompt-image transport support for Gemini and Claude session models` only after `2)` is stable, because it reuses the hardened capability and cleanup rules instead of redefining them per provider.
 
 ## Out of Scope for This Pass
 

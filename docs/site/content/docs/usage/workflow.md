@@ -72,7 +72,9 @@ such as `[Image #1]`, and submits the ordered local attachments with the
 prompt. Text paste remains unchanged on the normal terminal paste event path.
 At this stage, image sending is supported for Codex session models; other
 models keep the placeholder in the composer and surface an explicit capability
-error on submit.
+error on submit without leaving prompt mode. Draft image files are removed when
+you cancel the composer, after a submitted turn finishes using them, and when a
+session is deleted or canceled.
 
 ## Branch Publish Flow
 

@@ -276,6 +276,18 @@ mod tests {
             .times(0..)
             .returning(|path| std::fs::read(path).map_err(|error| error.to_string()));
         mock_fs_client
+            .expect_remove_file()
+            .times(0..)
+            .returning(|path| {
+                Box::pin(async move {
+                    match tokio::fs::remove_file(path).await {
+                        Ok(()) => Ok(()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        Err(error) => Err(error.to_string()),
+                    }
+                })
+            });
+        mock_fs_client
             .expect_is_dir()
             .times(0..)
             .returning(|path| path.is_dir());

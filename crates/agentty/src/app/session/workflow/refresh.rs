@@ -301,6 +301,10 @@ mod tests {
             .times(0..)
             .returning(|path| std::fs::read(path).map_err(|error| error.to_string()));
         mock_fs_client
+            .expect_remove_file()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock_fs_client
             .expect_is_dir()
             .times(0..)
             .returning(|path| path.is_dir());

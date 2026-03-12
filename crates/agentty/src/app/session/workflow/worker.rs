@@ -19,6 +19,7 @@ use crate::infra::channel::{
     create_agent_channel,
 };
 use crate::infra::db::Database;
+use crate::infra::fs::FsClient;
 use crate::infra::git::GitClient;
 
 const RESTART_FAILURE_REASON: &str = "Interrupted by app restart";
@@ -74,6 +75,7 @@ struct SessionWorkerContext {
     child_pid: Arc<Mutex<Option<u32>>>,
     db: Database,
     folder: PathBuf,
+    fs_client: Arc<dyn FsClient>,
     git_client: Arc<dyn GitClient>,
     output: Arc<Mutex<String>>,
     session_id: String,
@@ -199,6 +201,7 @@ impl SessionWorkerService {
             child_pid: Arc::clone(&runtime.child_pid),
             db: services.db().clone(),
             folder: runtime.folder.clone(),
+            fs_client: services.fs_client(),
             git_client: services.git_client(),
             output: Arc::clone(&runtime.output),
             session_id: runtime.session_id.clone(),
@@ -352,6 +355,11 @@ impl SessionWorkerService {
             .channel
             .run_turn(context.session_id.clone(), req, event_tx)
             .await;
+        SessionManager::cleanup_prompt_attachment_paths(
+            context.fs_client.clone(),
+            prompt.local_image_paths().cloned().collect(),
+        )
+        .await;
 
         let streamed_assistant_content = consumer.await.unwrap_or(false);
         SessionTaskService::clear_session_progress(&context.app_event_tx, &context.session_id);
@@ -839,6 +847,7 @@ mod tests {
     use crate::infra::agent::protocol::AgentResponseMessage;
     use crate::infra::channel::MockAgentChannel;
     use crate::infra::db::Database;
+    use crate::infra::fs;
     use crate::infra::git::MockGitClient;
 
     #[test]
@@ -1263,6 +1272,7 @@ mod tests {
             child_pid: Arc::new(Mutex::new(None)),
             db: db.clone(),
             folder: base_dir.path().to_path_buf(),
+            fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
             output: Arc::new(Mutex::new(String::new())),
             session_id: "sess1".to_string(),
@@ -1319,6 +1329,7 @@ mod tests {
             child_pid: Arc::new(Mutex::new(None)),
             db: db.clone(),
             folder: base_dir.path().to_path_buf(),
+            fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
             output: Arc::new(Mutex::new(String::new())),
             session_id: "sess1".to_string(),
