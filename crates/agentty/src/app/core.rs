@@ -79,6 +79,17 @@ fn resolve_agentty_home(agentty_root: Option<PathBuf>, home_dir: Option<PathBuf>
         .unwrap_or_else(|| PathBuf::from(".agentty"))
 }
 
+/// Background auto-update progress state for the status bar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpdateStatus {
+    /// Background `npm i -g agentty@latest` is running.
+    InProgress { version: String },
+    /// Update installed successfully; restart to use the new version.
+    Complete { version: String },
+    /// Update failed; fall back to manual update hint.
+    Failed { version: String },
+}
+
 /// Internal app events emitted by background workers and workflows.
 ///
 /// Producers should emit events only; state mutation is centralized in
@@ -96,6 +107,8 @@ pub(crate) enum AppEvent {
     VersionAvailabilityUpdated {
         latest_available_version: Option<String>,
     },
+    /// Indicates progress of the background auto-update.
+    UpdateStatusChanged { update_status: UpdateStatus },
     /// Indicates a session model selection has been persisted.
     SessionModelUpdated {
         session_id: String,
@@ -161,6 +174,7 @@ struct AppEventBatch {
     session_progress_updates: HashMap<String, Option<String>>,
     should_force_reload: bool,
     sync_main_result: Option<Result<SyncMainOutcome, SyncSessionStartError>>,
+    update_status: Option<UpdateStatus>,
 }
 
 /// Immutable context displayed in sync-main popup content.
@@ -364,6 +378,7 @@ pub struct App {
     pub(crate) focused_review_cache: HashMap<String, FocusedReviewCacheEntry>,
     latest_available_version: Option<String>,
     merge_queue: MergeQueue,
+    update_status: Option<UpdateStatus>,
     session_progress_messages: HashMap<String, String>,
     pub(crate) sync_main_runner: Arc<dyn SyncMainRunner>,
     tmux_client: Arc<dyn TmuxClient>,
@@ -419,7 +434,11 @@ pub(crate) fn diff_content_hash(diff: &str) -> u64 {
 impl App {
     /// Builds the app state from persisted data and starts background
     /// housekeeping tasks.
+    ///
+    /// When `auto_update` is `true`, a background `npm i -g agentty@latest`
+    /// runs automatically after detecting a newer version.
     pub async fn new(
+        auto_update: bool,
         base_path: PathBuf,
         working_dir: PathBuf,
         git_branch: Option<String>,
@@ -428,11 +447,27 @@ impl App {
     ) -> Self {
         let clients = AppClients::new(app_server_client);
 
-        Self::new_with_clients(base_path, working_dir, git_branch, db, clients).await
+        Self::new_with_options(auto_update, base_path, working_dir, git_branch, db, clients).await
     }
 
     /// Builds app state from persisted data with explicit external clients.
+    ///
+    /// Auto-update is disabled by default; use [`App::new`] with an explicit
+    /// `auto_update` flag for production startup.
+    #[cfg(test)]
     pub(crate) async fn new_with_clients(
+        base_path: PathBuf,
+        working_dir: PathBuf,
+        git_branch: Option<String>,
+        db: Database,
+        clients: AppClients,
+    ) -> Self {
+        Self::new_with_options(false, base_path, working_dir, git_branch, db, clients).await
+    }
+
+    /// Core constructor with all options explicit.
+    async fn new_with_options(
+        auto_update: bool,
         base_path: PathBuf,
         working_dir: PathBuf,
         git_branch: Option<String>,
@@ -521,7 +556,7 @@ impl App {
             stats_activity,
         );
 
-        Self::spawn_background_tasks(&event_tx, &projects, &services);
+        Self::spawn_background_tasks(auto_update, &event_tx, &projects, &services);
 
         Self {
             mode: AppMode::List,
@@ -534,6 +569,7 @@ impl App {
             focused_review_cache: HashMap::new(),
             latest_available_version: None,
             merge_queue: MergeQueue::default(),
+            update_status: None,
             session_progress_messages: HashMap::new(),
             sync_main_runner: clients.sync_main_runner,
             tmux_client: clients.tmux_client,
@@ -541,12 +577,16 @@ impl App {
     }
 
     /// Spawns background pollers for git status and version checks.
+    ///
+    /// When `auto_update` is `true`, a background `npm i -g agentty@latest`
+    /// runs automatically after detecting a newer version.
     fn spawn_background_tasks(
+        auto_update: bool,
         event_tx: &mpsc::UnboundedSender<AppEvent>,
         projects: &ProjectManager,
         services: &AppServices,
     ) {
-        task::TaskService::spawn_version_check_task(event_tx);
+        task::TaskService::spawn_version_check_task(event_tx, auto_update);
         if projects.has_git_branch() {
             task::TaskService::spawn_git_status_task(
                 projects.working_dir(),
@@ -582,6 +622,11 @@ impl App {
         self.latest_available_version.as_deref()
     }
 
+    /// Returns the current background auto-update status, if any.
+    pub fn update_status(&self) -> Option<&UpdateStatus> {
+        self.update_status.as_ref()
+    }
+
     /// Renders a complete UI frame by assembling a [`ui::RenderContext`] from
     /// current app state and dispatching to the UI render pipeline.
     pub fn draw(&mut self, frame: &mut Frame) {
@@ -591,6 +636,7 @@ impl App {
         let git_branch = self.projects.git_branch().map(str::to_string);
         let git_status = self.projects.git_status();
         let latest_available_version = self.latest_available_version.as_deref().map(str::to_string);
+        let update_status = self.update_status().cloned();
         let projects = self.projects.project_items().to_vec();
         let session_progress_messages = self.session_progress_messages.clone();
         let mode = &self.mode;
@@ -606,6 +652,7 @@ impl App {
                 git_branch: git_branch.as_deref(),
                 git_status,
                 latest_available_version: latest_available_version.as_deref(),
+                update_status: update_status.as_ref(),
                 mode,
                 project_table_state,
                 projects: &projects,
@@ -1173,6 +1220,10 @@ impl App {
 
         if event_batch.has_latest_available_version_update {
             self.latest_available_version = event_batch.latest_available_version_update;
+        }
+
+        if let Some(update_status) = event_batch.update_status {
+            self.update_status = Some(update_status);
         }
 
         for (session_id, session_model) in event_batch.session_model_updates {
@@ -2519,6 +2570,9 @@ impl AppEventBatch {
                 self.has_latest_available_version_update = true;
                 self.latest_available_version_update = latest_available_version;
             }
+            AppEvent::UpdateStatusChanged { update_status } => {
+                self.update_status = Some(update_status);
+            }
             AppEvent::SessionModelUpdated {
                 session_id,
                 session_model,
@@ -2753,6 +2807,7 @@ mod tests {
             .await
             .expect("failed to persist initial active project");
         let mut app = App::new(
+            true,
             base_path.clone(),
             base_path,
             None,
@@ -2813,6 +2868,7 @@ mod tests {
 
         // Act
         let app = App::new(
+            true,
             base_path.clone(),
             base_path,
             None,
@@ -3588,6 +3644,59 @@ mod tests {
         );
     }
 
+    #[test]
+    /// Verifies that `UpdateStatusChanged` events update the event batch so
+    /// the reducer can apply the latest update progress state.
+    fn app_event_batch_collect_event_stores_update_status() {
+        // Arrange
+        let mut event_batch = AppEventBatch::default();
+
+        // Act
+        event_batch.collect_event(AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::InProgress {
+                version: "v1.0.0".to_string(),
+            },
+        });
+        event_batch.collect_event(AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::Complete {
+                version: "v1.0.0".to_string(),
+            },
+        });
+
+        // Assert — last event wins
+        assert_eq!(
+            event_batch.update_status,
+            Some(UpdateStatus::Complete {
+                version: "v1.0.0".to_string()
+            })
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies that the reducer applies `UpdateStatusChanged` events to
+    /// `App.update_status`.
+    async fn apply_app_events_update_status_changed_updates_app_state() {
+        // Arrange
+        let mut app = new_test_app().await;
+        assert!(app.update_status().is_none());
+
+        // Act
+        app.apply_app_events(AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::InProgress {
+                version: "v2.0.0".to_string(),
+            },
+        })
+        .await;
+
+        // Assert
+        assert_eq!(
+            app.update_status().cloned(),
+            Some(UpdateStatus::InProgress {
+                version: "v2.0.0".to_string()
+            })
+        );
+    }
+
     #[tokio::test]
     async fn apply_app_events_agent_response_switches_view_mode_to_question_mode() {
         // Arrange
@@ -3902,6 +4011,7 @@ mod tests {
         fs::create_dir_all(session_data_dir).expect("failed to create session dir");
 
         let mut app = App::new(
+            true,
             base_path.clone(),
             base_path,
             None,

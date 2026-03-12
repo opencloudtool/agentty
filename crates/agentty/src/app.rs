@@ -14,7 +14,7 @@ pub(crate) mod setting;
 pub(crate) mod tab;
 mod task;
 
-pub use core::{AGENTTY_WT_DIR, App, agentty_home};
+pub use core::{AGENTTY_WT_DIR, App, UpdateStatus, agentty_home};
 #[cfg(test)]
 pub(crate) use core::{AppClients, MockSyncMainRunner};
 pub(crate) use core::{AppEvent, FocusedReviewCacheEntry, SessionStatsUsage, diff_content_hash};

@@ -23,4 +23,4 @@ Implementations of external interfaces (Database, Git, System).
 - [`git/`](git/) - Workflow-focused git operation modules (`merge`, `rebase`, `repo`, `sync`, `worktree`).
 - [`git.rs`](git.rs) - Git module root with public API re-exports and `GitClient` wiring.
 - [`tmux.rs`](tmux.rs) - Tmux process boundary and production subprocess-backed client.
-- [`version.rs`](version.rs) - Version checking infrastructure.
+- [`version.rs`](version.rs) - Version checking and background auto-update infrastructure (`UpdateRunner` trait, `UpdateStatus` enum).

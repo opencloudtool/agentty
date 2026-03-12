@@ -320,6 +320,7 @@ mod tests {
             .await
             .expect("failed to open in-memory db");
         let app = App::new(
+            true,
             base_path.clone(),
             base_path,
             None,
@@ -373,6 +374,7 @@ mod tests {
             .await
             .expect("failed to open in-memory db");
         let app = App::new(
+            true,
             base_path.clone(),
             base_path,
             Some("main".to_string()),

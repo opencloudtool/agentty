@@ -11,7 +11,7 @@ use std::time::Duration;
 use askama::Template;
 use tokio::sync::mpsc;
 
-use crate::app::AppEvent;
+use crate::app::{AppEvent, UpdateStatus};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::infra::agent;
 use crate::infra::git::GitClient;
@@ -88,16 +88,25 @@ impl TaskService {
     }
 
     /// Spawns a one-shot background check for newer `agentty` versions on
-    /// npmjs.
+    /// npmjs, optionally followed by an automatic `npm i -g agentty@latest`
+    /// update.
     ///
     /// The task emits [`AppEvent::VersionAvailabilityUpdated`] with
-    /// `Some("vX.Y.Z")` only when a newer version is detected.
+    /// `Some("vX.Y.Z")` only when a newer version is detected. When
+    /// `auto_update` is `true` and a newer version exists, the task
+    /// subsequently emits [`AppEvent::UpdateStatusChanged`] with
+    /// `InProgress`, then `Complete` or `Failed` depending on the npm
+    /// install outcome.
     ///
     /// In tests, it emits an immediate `None` update instead of spawning the
     /// network check so test runs stay deterministic and offline.
-    pub(super) fn spawn_version_check_task(app_event_tx: &mpsc::UnboundedSender<AppEvent>) {
+    pub(super) fn spawn_version_check_task(
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
+        auto_update: bool,
+    ) {
         #[cfg(test)]
         {
+            let _ = auto_update;
             let _ = app_event_tx.send(Self::version_availability_event(None));
         }
 
@@ -107,9 +116,54 @@ impl TaskService {
         #[cfg(not(test))]
         tokio::spawn(async move {
             let latest_version_tag = version::latest_npm_version_tag().await;
+            let version_event = Self::version_availability_event(latest_version_tag);
 
-            let _ = app_event_tx.send(Self::version_availability_event(latest_version_tag));
+            let newer_version = match &version_event {
+                AppEvent::VersionAvailabilityUpdated {
+                    latest_available_version: Some(version),
+                } => Some(version.clone()),
+                _ => None,
+            };
+
+            let _ = app_event_tx.send(version_event);
+
+            if let Some(newer_version) = newer_version
+                && auto_update
+            {
+                Self::run_background_update(&app_event_tx, &newer_version).await;
+            }
         });
+    }
+
+    /// Runs `npm i -g agentty@latest` in a background blocking task and
+    /// emits update progress events.
+    #[cfg(not(test))]
+    async fn run_background_update(
+        app_event_tx: &mpsc::UnboundedSender<AppEvent>,
+        newer_version: &str,
+    ) {
+        let _ = app_event_tx.send(AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::InProgress {
+                version: newer_version.to_string(),
+            },
+        });
+
+        let update_result = tokio::task::spawn_blocking(move || {
+            let update_runner = version::RealUpdateRunner;
+            version::run_npm_update_sync(&update_runner)
+        })
+        .await;
+
+        let update_status = match update_result {
+            Ok(Ok(_)) => UpdateStatus::Complete {
+                version: newer_version.to_string(),
+            },
+            Ok(Err(_)) | Err(_) => UpdateStatus::Failed {
+                version: newer_version.to_string(),
+            },
+        };
+
+        let _ = app_event_tx.send(AppEvent::UpdateStatusChanged { update_status });
     }
 
     /// Spawns one background review assist generation task and emits
@@ -271,13 +325,36 @@ mod tests {
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
 
         // Act
-        TaskService::spawn_version_check_task(&app_event_tx);
+        TaskService::spawn_version_check_task(&app_event_tx, true);
         let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
             .await
             .expect("timed out waiting for version-check event")
             .expect("version-check task should emit one event");
 
         // Assert
+        assert_eq!(
+            app_event,
+            AppEvent::VersionAvailabilityUpdated {
+                latest_available_version: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    /// Ensures the `--no-update` flag (`auto_update=false`) still emits a
+    /// version availability event without triggering an update.
+    async fn spawn_version_check_task_with_no_update_emits_version_event() {
+        // Arrange
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+
+        // Act
+        TaskService::spawn_version_check_task(&app_event_tx, false);
+        let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
+            .await
+            .expect("timed out waiting for version-check event")
+            .expect("version-check task should emit one event");
+
+        // Assert — still emits version check, no update events
         assert_eq!(
             app_event,
             AppEvent::VersionAvailabilityUpdated {
@@ -458,5 +535,32 @@ mod tests {
 
         // Assert
         assert_eq!(display_text.trim(), "Review looks good.");
+    }
+
+    #[test]
+    /// Verifies that `UpdateStatusChanged` events for in-progress, complete,
+    /// and failed states can be constructed and compared.
+    fn update_status_changed_event_roundtrips_all_variants() {
+        // Arrange / Act
+        let in_progress = AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::InProgress {
+                version: "v1.0.0".to_string(),
+            },
+        };
+        let complete = AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::Complete {
+                version: "v1.0.0".to_string(),
+            },
+        };
+        let failed = AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::Failed {
+                version: "v1.0.0".to_string(),
+            },
+        };
+
+        // Assert
+        assert_ne!(in_progress, complete);
+        assert_ne!(complete, failed);
+        assert_ne!(in_progress, failed);
     }
 }

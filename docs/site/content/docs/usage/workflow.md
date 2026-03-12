@@ -162,6 +162,28 @@ Type these in the prompt input to access special actions:
 | `/model` | Switch the model for the current session. |
 | `/stats` | Show token usage statistics for the session. |
 
+## Auto-Update
+
+<a id="usage-auto-update"></a>
+When Agentty launches, it checks npmjs for a newer version in the background.
+If a newer version is detected, it automatically runs `npm i -g agentty@latest`
+without blocking the UI:
+
+| Status bar text | Meaning |
+|-----------------|---------|
+| **Updating to vX.Y.Z...** | Background npm install is running. |
+| **Updated to vX.Y.Z — restart to use new version** | Install succeeded; relaunch to use the new version. |
+| **vX.Y.Z version available update with npm i -g agentty@latest** | Install failed; manual update hint shown as fallback. |
+
+To disable automatic updates, launch with `--no-update`:
+
+```bash
+agentty --no-update
+```
+
+When `--no-update` is set, Agentty still checks for newer versions and shows the
+manual update hint, but does not run `npm i -g agentty@latest` automatically.
+
 ## Data Location
 
 <a id="usage-data-location"></a>

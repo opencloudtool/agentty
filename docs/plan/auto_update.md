@@ -16,25 +16,25 @@ When `agentty` launches and detects a newer npm version, the status bar shows "U
 
 ### Substeps
 
-- [ ] **Add `UpdateRunner` trait boundary.** Define `#[cfg_attr(test, mockall::automock)] trait UpdateRunner: Send + Sync` in `crates/agentty/src/infra/version.rs` with `fn run_update(&self, command: &str, args: Vec<String>) -> Result<String, String>`. The production implementation shells out via `std::process::Command` inside `spawn_blocking`.
-- [ ] **Add update status to `AppEvent`.** Extend the version/update event model in `crates/agentty/src/app/core.rs` so the reducer can track three states: `UpdateInProgress { version }`, `UpdateComplete { version }`, and `UpdateFailed { version }`. These drive the status bar text.
-- [ ] **Run background update in version check task.** Extend `TaskService::spawn_version_check_task()` in `crates/agentty/src/app/task.rs`: after detecting a newer version, emit `UpdateInProgress`, then run `npm i -g agentty@latest` via `UpdateRunner` in the same background task, then emit `UpdateComplete` or `UpdateFailed`.
-- [ ] **Update status bar to show update progress.** Modify `StatusBar` in `crates/agentty/src/ui/component/status_bar.rs` to render three states: "Updating to vX.Y.Z..." (in progress), "Updated to vX.Y.Z — restart to use new version" (success), or the existing manual update hint (failure).
-- [ ] **Add `--no-update` CLI flag.** Add the flag to the CLI args in `crates/agentty/src/main.rs`. When set, skip the update step (still check version, but do not auto-run npm install).
+- [x] **Add `UpdateRunner` trait boundary.** Define `#[cfg_attr(test, mockall::automock)] trait UpdateRunner: Send + Sync` in `crates/agentty/src/infra/version.rs` with `fn run_update(&self, command: &str, args: Vec<String>) -> Result<String, String>`. The production implementation shells out via `std::process::Command` inside `spawn_blocking`.
+- [x] **Add update status to `AppEvent`.** Extend the version/update event model in `crates/agentty/src/app/core.rs` so the reducer can track three states: `UpdateInProgress { version }`, `UpdateComplete { version }`, and `UpdateFailed { version }`. These drive the status bar text.
+- [x] **Run background update in version check task.** Extend `TaskService::spawn_version_check_task()` in `crates/agentty/src/app/task.rs`: after detecting a newer version, emit `UpdateInProgress`, then run `npm i -g agentty@latest` via `UpdateRunner` in the same background task, then emit `UpdateComplete` or `UpdateFailed`.
+- [x] **Update status bar to show update progress.** Modify `StatusBar` in `crates/agentty/src/ui/component/status_bar.rs` to render three states: "Updating to vX.Y.Z..." (in progress), "Updated to vX.Y.Z — restart to use new version" (success), or the existing manual update hint (failure).
+- [x] **Add `--no-update` CLI flag.** Add the flag to the CLI args in `crates/agentty/src/main.rs`. When set, skip the update step (still check version, but do not auto-run npm install).
 
 ### Tests
 
-- [ ] Unit tests for `UpdateRunner` production implementation with a mock command.
-- [ ] Unit tests for the version check task emitting the correct sequence of events (in-progress → complete/failed) using `MockUpdateRunner` and `MockVersionCommandRunner`.
-- [ ] Update existing status bar render tests to verify all three update states render correctly.
-- [ ] Unit test verifying `--no-update` flag prevents the update command from running while still showing the manual hint.
+- [x] Unit tests for `UpdateRunner` production implementation with a mock command.
+- [x] Unit tests for the version check task emitting the correct sequence of events (in-progress → complete/failed) using `MockUpdateRunner` and `MockVersionCommandRunner`.
+- [x] Update existing status bar render tests to verify all three update states render correctly.
+- [x] Unit test verifying `--no-update` flag prevents the update command from running while still showing the manual hint.
 
 ### Docs
 
-- [ ] Update `docs/site/content/docs/usage/workflow.md` with auto-update behavior: background check, status bar progress, restart to use new version.
-- [ ] Update `docs/site/content/docs/getting-started/overview.md` mentioning auto-update capability.
-- [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` with the `UpdateRunner` trait boundary.
-- [ ] Update `README.md` with `--no-update` flag documentation.
+- [x] Update `docs/site/content/docs/usage/workflow.md` with auto-update behavior: background check, status bar progress, restart to use new version.
+- [x] Update `docs/site/content/docs/getting-started/overview.md` mentioning auto-update capability.
+- [x] Update `docs/site/content/docs/architecture/testability-boundaries.md` with the `UpdateRunner` trait boundary.
+- [x] Update `README.md` with `--no-update` flag documentation.
 
 ## Cross-Plan Notes
 

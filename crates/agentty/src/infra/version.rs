@@ -1,4 +1,4 @@
-//! Version discovery helpers for update notifications.
+//! Version discovery and auto-update helpers.
 
 use std::process::Command;
 
@@ -41,6 +41,56 @@ impl VersionCommandRunner for RealVersionCommandRunner {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         })
     }
+}
+
+/// External command boundary for running `npm i -g agentty@latest`.
+///
+/// The production implementation shells out via [`std::process::Command`]
+/// inside `spawn_blocking`. Tests inject a [`MockUpdateRunner`] to verify
+/// the update flow without subprocess execution.
+#[cfg_attr(test, mockall::automock)]
+pub(crate) trait UpdateRunner: Send + Sync {
+    /// Runs the update command and returns combined stdout on success or an
+    /// error description on failure.
+    fn run_update(&self, command: &str, args: Vec<String>) -> Result<String, String>;
+}
+
+/// Production update runner backed by [`std::process::Command`].
+#[cfg(not(test))]
+pub(crate) struct RealUpdateRunner;
+
+#[cfg(not(test))]
+impl UpdateRunner for RealUpdateRunner {
+    fn run_update(&self, command: &str, args: Vec<String>) -> Result<String, String> {
+        let output = Command::new(command)
+            .args(&args)
+            .output()
+            .map_err(|error| format!("Failed to run `{command}`: {error}"))?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            Err(format!(
+                "`{command}` exited with status {}: {stderr}",
+                output.status
+            ))
+        }
+    }
+}
+
+/// Runs `npm i -g agentty@latest` synchronously via the provided
+/// [`UpdateRunner`].
+pub(crate) fn run_npm_update_sync(update_runner: &dyn UpdateRunner) -> Result<String, String> {
+    update_runner.run_update(
+        "npm",
+        vec![
+            "i".to_string(),
+            "-g".to_string(),
+            "agentty@latest".to_string(),
+        ],
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,5 +360,49 @@ mod tests {
 
         // Assert
         assert!(!is_newer);
+    }
+
+    #[test]
+    fn test_run_npm_update_sync_calls_npm_install_global() {
+        // Arrange
+        let mut update_runner = MockUpdateRunner::new();
+        update_runner
+            .expect_run_update()
+            .times(1)
+            .returning(|command, args| {
+                assert_eq!(command, "npm");
+                assert_eq!(
+                    args,
+                    vec![
+                        "i".to_string(),
+                        "-g".to_string(),
+                        "agentty@latest".to_string(),
+                    ]
+                );
+
+                Ok("added 1 package".to_string())
+            });
+
+        // Act
+        let result = run_npm_update_sync(&update_runner);
+
+        // Assert
+        assert_eq!(result, Ok("added 1 package".to_string()));
+    }
+
+    #[test]
+    fn test_run_npm_update_sync_propagates_runner_error() {
+        // Arrange
+        let mut update_runner = MockUpdateRunner::new();
+        update_runner
+            .expect_run_update()
+            .times(1)
+            .returning(|_, _| Err("permission denied".to_string()));
+
+        // Act
+        let result = run_npm_update_sync(&update_runner);
+
+        // Assert
+        assert_eq!(result, Err("permission denied".to_string()));
     }
 }

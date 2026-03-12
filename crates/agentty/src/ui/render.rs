@@ -6,7 +6,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
 use crate::app::session::session_branch;
-use crate::app::{SettingsManager, Tab};
+use crate::app::{SettingsManager, Tab, UpdateStatus};
 use crate::domain::project::ProjectListItem;
 use crate::domain::session::{DailyActivity, Session};
 use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
@@ -40,6 +40,8 @@ pub struct RenderContext<'a> {
     pub stats_activity: &'a [DailyActivity],
     pub sessions: &'a [Session],
     pub table_state: &'a mut TableState,
+    /// Background auto-update progress state for the status bar.
+    pub update_status: Option<&'a UpdateStatus>,
     pub working_dir: &'a Path,
 }
 
@@ -64,6 +66,7 @@ pub fn render(f: &mut Frame, context: RenderContext<'_>) {
                 .latest_available_version
                 .map(std::string::ToString::to_string),
         )
+        .update_status(context.update_status.cloned())
         .render(f, status_bar_area);
     render_footer_bar(
         f,

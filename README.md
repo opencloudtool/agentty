@@ -41,6 +41,13 @@ Run without installing:
 npx agentty
 ```
 
+## Usage
+
+```sh
+agentty              # Launch with auto-update enabled (default)
+agentty --no-update  # Launch without automatic updates
+```
+
 ## Documentation
 
 Documentation for installation and workflows is available at [agentty.xyz/docs](https://agentty.xyz/docs/).

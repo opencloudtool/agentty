@@ -241,6 +241,7 @@ mod tests {
             .expect("failed to open in-memory db");
 
         App::new(
+            true,
             base_path.clone(),
             base_path,
             None,

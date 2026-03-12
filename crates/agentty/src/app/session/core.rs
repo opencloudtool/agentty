@@ -574,7 +574,15 @@ mod tests {
         db: Database,
         app_server_client: Arc<dyn app_server::AppServerClient>,
     ) -> App {
-        let mut app = App::new(path, working_dir.clone(), git_branch, db, app_server_client).await;
+        let mut app = App::new(
+            true,
+            path,
+            working_dir.clone(),
+            git_branch,
+            db,
+            app_server_client,
+        )
+        .await;
         let mock_git_client = create_default_mock_git_client(working_dir);
         install_mock_git_client(&mut app, mock_git_client);
 

@@ -47,6 +47,13 @@ created automatically when the session starts:
 Worktrees are stored under `~/.agentty/wt/` and are cleaned up automatically
 when a session reaches `Done` or `Canceled`, or when you delete a session.
 
+## Auto-Update
+
+<a id="overview-auto-update"></a>
+Agentty checks npmjs for newer versions at startup and automatically installs
+updates in the background. Progress is shown in the status bar. The new version
+takes effect on next launch. Use `--no-update` to disable automatic updates.
+
 ## Key Concepts
 
 | Concept | Description |

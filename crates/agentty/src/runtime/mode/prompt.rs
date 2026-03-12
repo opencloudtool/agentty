@@ -1347,6 +1347,7 @@ mod tests {
         let mock_app_server: std::sync::Arc<dyn app_server::AppServerClient> =
             std::sync::Arc::new(app_server::MockAppServerClient::new());
         let mut app = App::new(
+            true,
             base_path.clone(),
             base_path,
             Some("main".to_string()),

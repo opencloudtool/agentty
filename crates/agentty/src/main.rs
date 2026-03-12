@@ -9,6 +9,8 @@ use agentty::infra::git::{GitClient, RealGitClient};
 /// database.
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    let auto_update = !std::env::args().any(|arg| arg == "--no-update");
+
     let home = agentty_home();
     let base_path = home.join(AGENTTY_WT_DIR);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -19,6 +21,7 @@ async fn main() -> io::Result<()> {
     let db = Database::open(&db_path).await.map_err(io::Error::other)?;
 
     let mut app = App::new(
+        auto_update,
         base_path,
         working_dir,
         git_branch,

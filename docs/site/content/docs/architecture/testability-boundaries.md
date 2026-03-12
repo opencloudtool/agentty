@@ -32,6 +32,7 @@ The traits below are mocked with `mockall`. Most use
 | `EventSource` | `runtime/event.rs` | Terminal event polling for deterministic event-loop tests. |
 | `TerminalOperation` | `runtime/terminal.rs` | Terminal raw-mode and alternate-screen transitions for deterministic setup and restore failure-path tests. |
 | `Sleeper` | `lib.rs` | Wall-clock sleep boundary used by retry/polling flows such as git rebase assistance. |
+| `UpdateRunner` | `infra/version.rs` | npm install command execution for background auto-updates. |
 | `VersionCommandRunner` | `infra/version.rs` | npm/curl command execution for update checks. |
 | `GitCommandRunner` | `infra/git/rebase.rs` | Rebase command invocation boundary for conflict/retry tests. |
 | `SyncAssistClient` | `app/session/workflow/merge.rs` | Sync-rebase assistance execution boundary. |

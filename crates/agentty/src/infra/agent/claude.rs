@@ -109,7 +109,7 @@ fn append_attachment_access_directories(
     let mut attachment_directories = attachments
         .iter()
         .filter_map(|attachment| attachment.local_image_path.parent())
-        .map(|directory| directory.to_path_buf())
+        .map(std::path::Path::to_path_buf)
         .collect::<Vec<_>>();
 
     attachment_directories.sort();
