@@ -9,6 +9,7 @@ Reusable UI widgets implementing the `Component` trait.
 - [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
 - [`chat_input.rs`](chat_input.rs) - Chat input component.
 - [`confirmation_overlay.rs`](confirmation_overlay.rs) - Confirmation dialog overlay component.
+- [`empty_chat_animation.rs`](empty_chat_animation.rs) - Animated idle robots shown in empty new session chat.
 - [`file_explorer.rs`](file_explorer.rs) - Diff file explorer component.
 - [`footer_bar.rs`](footer_bar.rs) - Footer bar component.
 - [`help_overlay.rs`](help_overlay.rs) - Help overlay popup component.

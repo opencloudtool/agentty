@@ -2,6 +2,7 @@
 
 pub mod chat_input;
 pub mod confirmation_overlay;
+pub mod empty_chat_animation;
 pub mod file_explorer;
 pub mod footer_bar;
 pub mod help_overlay;

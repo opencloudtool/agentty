@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::domain::session::{Session, Status};
 use crate::icon::Icon;
+use crate::ui::component::empty_chat_animation;
 use crate::ui::markdown::render_markdown;
 use crate::ui::state::app_mode::DoneSessionOutputMode;
 use crate::ui::{Component, style};
@@ -427,10 +428,25 @@ impl<'a> SessionOutput<'a> {
 impl Component for SessionOutput<'_> {
     /// Renders bordered output content for the active session.
     ///
-    /// Session status/title headers are rendered by the page layer so this
-    /// component keeps the output border title-free.
+    /// When the session is new and has no output, an idle robot animation is
+    /// shown instead. Session status/title headers are rendered by the page
+    /// layer so this component keeps the output border title-free.
     fn render(&self, f: &mut Frame, output_area: Rect) {
         let status = self.session.status;
+
+        if empty_chat_animation::should_show(&self.session.output, status) {
+            let inner_height = output_area.height.saturating_sub(2);
+            let anim_lines = empty_chat_animation::animation_lines(output_area.width, inner_height);
+            let paragraph = Paragraph::new(anim_lines).block(
+                Block::default()
+                    .borders(Self::output_panel_borders())
+                    .border_style(Self::output_panel_border_style(status)),
+            );
+            f.render_widget(paragraph, output_area);
+
+            return;
+        }
+
         let lines = Self::output_lines(
             self.session,
             output_area,
@@ -1001,6 +1017,51 @@ mod tests {
         );
         assert_eq!(output.focused_review_text, Some(focused_review_text));
         assert_eq!(output.scroll_offset, Some(10));
+    }
+
+    #[test]
+    fn test_render_shows_animation_for_empty_new_session() {
+        // Arrange
+        let session = session_fixture();
+        let output = SessionOutput::new(&session);
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                output.render(frame, area);
+            })
+            .expect("failed to draw session output");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("[•_•]"));
+        assert!(text.contains("Send a message to start"));
+    }
+
+    #[test]
+    fn test_render_does_not_show_animation_for_non_empty_session() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = "hello world".to_string();
+        let output = SessionOutput::new(&session);
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                output.render(frame, area);
+            })
+            .expect("failed to draw session output");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(!text.contains("[•_•]"));
+        assert!(text.contains("hello world"));
     }
 
     #[test]
