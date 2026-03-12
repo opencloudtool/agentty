@@ -179,6 +179,15 @@ impl AgentChannel for CliAgentChannel {
 
             let stdout_text = raw_stdout.lock().map(|buf| buf.clone()).unwrap_or_default();
             let stderr_text = raw_stderr.lock().map(|buf| buf.clone()).unwrap_or_default();
+            if exit_status.as_ref().is_some_and(|status| !status.success()) {
+                return Err(format_cli_turn_exit_error(
+                    kind,
+                    exit_status.and_then(|status| status.code()),
+                    &stdout_text,
+                    &stderr_text,
+                ));
+            }
+
             let parsed = agent::parse_response(kind, &stdout_text, &stderr_text);
             let assistant_message = parse_or_repair_structured_response(
                 backend,
@@ -316,6 +325,64 @@ async fn parse_or_repair_structured_response(
     )))
 }
 
+/// Formats one failed CLI turn into a user-facing error.
+fn format_cli_turn_exit_error(
+    kind: AgentKind,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> AgentError {
+    if let Some(guidance) = known_cli_turn_exit_guidance(kind, stdout, stderr) {
+        return AgentError(guidance);
+    }
+
+    let exit_code = exit_code.map_or_else(|| "unknown".to_string(), |code| code.to_string());
+    let output_detail = cli_turn_output_detail(stdout, stderr);
+
+    AgentError(format!(
+        "Agent command failed with exit code {exit_code}: {output_detail}"
+    ))
+}
+
+/// Returns provider-specific guidance for known CLI turn failures.
+fn known_cli_turn_exit_guidance(kind: AgentKind, stdout: &str, stderr: &str) -> Option<String> {
+    match kind {
+        AgentKind::Claude if is_claude_authentication_error(stdout, stderr) => {
+            Some(claude_authentication_error_message())
+        }
+        AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini => None,
+    }
+}
+
+/// Builds the actionable Claude authentication refresh guidance message.
+fn claude_authentication_error_message() -> String {
+    "Claude command failed because authentication expired or is missing.\nRun `claude auth login` \
+     to refresh your Anthropic session, verify with `claude auth status`, then retry."
+        .to_string()
+}
+
+/// Detects Claude CLI authentication failures surfaced through stdout/stderr.
+fn is_claude_authentication_error(stdout: &str, stderr: &str) -> bool {
+    let combined_output = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+
+    combined_output.contains("oauth token has expired")
+        || combined_output.contains("failed to authenticate")
+        || combined_output.contains("authentication_error")
+}
+
+/// Formats captured stdout/stderr into one compact CLI turn error detail.
+fn cli_turn_output_detail(stdout: &str, stderr: &str) -> String {
+    let trimmed_stdout = stdout.trim();
+    let trimmed_stderr = stderr.trim();
+
+    match (trimmed_stdout.is_empty(), trimmed_stderr.is_empty()) {
+        (false, false) => format!("stdout: {trimmed_stdout}; stderr: {trimmed_stderr}"),
+        (false, true) => format!("stdout: {trimmed_stdout}"),
+        (true, false) => format!("stderr: {trimmed_stderr}"),
+        (true, true) => "no output".to_string(),
+    }
+}
+
 /// Runs one best-effort repair turn that asks the model to re-emit valid
 /// protocol JSON only.
 async fn run_structured_output_repair_turn(
@@ -356,6 +423,15 @@ async fn run_structured_output_repair_turn(
 
     let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+    if !output.status.success() {
+        return Err(format_cli_turn_exit_error(
+            kind,
+            output.status.code(),
+            &stdout_text,
+            &stderr_text,
+        ));
+    }
+
     let parsed = agent::parse_response(kind, &stdout_text, &stderr_text);
 
     Ok(parsed.content)
@@ -552,6 +628,78 @@ mod tests {
             "Recovered output"
         );
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    /// Verifies non-zero CLI turn exits surface actionable Claude
+    /// re-authentication guidance instead of protocol repair errors.
+    async fn test_run_turn_returns_claude_auth_guidance_for_expired_token() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut mock_backend = MockAgentBackend::new();
+        mock_backend.expect_build_command().times(1).returning(|_| {
+            let mut command = std::process::Command::new("sh");
+            command.arg("-c").arg(
+                "printf '%s' \
+                 '{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"\
+                 OAuth token has expired. Please obtain a new token or refresh your existing \
+                 token.\"}}'; exit 1",
+            );
+
+            Ok(command)
+        });
+        let channel = CliAgentChannel {
+            backend: Arc::new(mock_backend),
+            kind: AgentKind::Claude,
+        };
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let req = make_turn_request(dir.path().to_path_buf());
+
+        // Act
+        let error = channel
+            .run_turn("sess-1".to_string(), req, events_tx)
+            .await
+            .expect_err("expired Claude auth should fail")
+            .0;
+
+        // Assert
+        assert!(error.contains("Claude command failed because authentication expired"));
+        assert!(error.contains("`claude auth login`"));
+        assert!(error.contains("`claude auth status`"));
+    }
+
+    #[tokio::test]
+    /// Verifies non-zero CLI turn exits preserve generic stderr details for
+    /// non-authentication failures.
+    async fn test_run_turn_returns_exit_error_for_non_zero_status() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut mock_backend = MockAgentBackend::new();
+        mock_backend.expect_build_command().times(1).returning(|_| {
+            let mut command = std::process::Command::new("sh");
+            command
+                .arg("-c")
+                .arg("printf '%s' 'assist failed' >&2; exit 7");
+
+            Ok(command)
+        });
+        let channel = CliAgentChannel {
+            backend: Arc::new(mock_backend),
+            kind: AgentKind::Claude,
+        };
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let req = make_turn_request(dir.path().to_path_buf());
+
+        // Act
+        let error = channel
+            .run_turn("sess-1".to_string(), req, events_tx)
+            .await
+            .expect_err("non-zero exit should fail")
+            .0;
+
+        // Assert
+        assert!(error.contains("Agent command failed with exit code 7"));
+        assert!(error.contains("assist failed"));
     }
 
     #[tokio::test]

@@ -23,6 +23,20 @@ installed and available on your `PATH`.
 | Claude | `claude` | Anthropic Claude Code agent. |
 | Codex | `codex` | OpenAI Codex CLI agent. |
 
+## Claude Authentication
+
+<a id="backends-claude-authentication"></a>
+If Claude session turns or utility prompts fail with `authentication_error`,
+`Failed to authenticate`, or `OAuth token has expired`, refresh the Claude CLI
+session and retry:
+
+```bash
+claude auth login
+claude auth status
+```
+
+For SSO-backed accounts, use `claude auth login --sso`.
+
 ## File Path Output Format
 
 <a id="backends-path-output-format"></a>

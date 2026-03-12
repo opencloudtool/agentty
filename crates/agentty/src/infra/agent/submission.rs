@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use super::backend::{AgentBackend, AgentCommandMode, BuildCommandRequest};
 use super::protocol::{AgentResponse, build_protocol_repair_prompt, parse_agent_response_strict};
 use super::{ParsedResponse, create_backend, parse_response};
-use crate::domain::agent::{AgentModel, ReasoningLevel};
+use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::domain::session::SessionStats;
 
 /// Maximum number of repair attempts for one-shot protocol responses.
@@ -158,6 +158,7 @@ async fn execute_one_shot_command(
     let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
     if !output.status.success() {
         return Err(format_one_shot_exit_error(
+            request.model.kind(),
             output.status.code(),
             &stdout_text,
             &stderr_text,
@@ -170,11 +171,50 @@ async fn execute_one_shot_command(
 }
 
 /// Formats one non-zero one-shot command exit into a user-facing error.
-fn format_one_shot_exit_error(exit_code: Option<i32>, stdout: &str, stderr: &str) -> String {
+fn format_one_shot_exit_error(
+    agent_kind: AgentKind,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> String {
+    if let Some(guidance) = known_one_shot_exit_guidance(agent_kind, stdout, stderr) {
+        return guidance;
+    }
+
     let exit_code = exit_code.map_or_else(|| "unknown".to_string(), |code| code.to_string());
     let output_detail = one_shot_output_detail(stdout, stderr);
 
     format!("One-shot agent command failed with exit code {exit_code}: {output_detail}")
+}
+
+/// Returns provider-specific guidance for known one-shot command failures.
+fn known_one_shot_exit_guidance(
+    agent_kind: AgentKind,
+    stdout: &str,
+    stderr: &str,
+) -> Option<String> {
+    match agent_kind {
+        AgentKind::Claude if is_claude_authentication_error(stdout, stderr) => {
+            Some(claude_authentication_error_message())
+        }
+        AgentKind::Claude | AgentKind::Codex | AgentKind::Gemini => None,
+    }
+}
+
+/// Builds the actionable Claude authentication refresh guidance message.
+fn claude_authentication_error_message() -> String {
+    "One-shot Claude command failed because authentication expired or is missing.\nRun `claude \
+     auth login` to refresh your Anthropic session, verify with `claude auth status`, then retry."
+        .to_string()
+}
+
+/// Detects Claude CLI authentication failures surfaced through stdout/stderr.
+fn is_claude_authentication_error(stdout: &str, stderr: &str) -> bool {
+    let combined_output = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+
+    combined_output.contains("oauth token has expired")
+        || combined_output.contains("failed to authenticate")
+        || combined_output.contains("authentication_error")
 }
 
 /// Formats captured stdout/stderr into one compact error detail string.
@@ -441,5 +481,40 @@ mod tests {
         // Assert
         assert_eq!(response.stats.input_tokens, 5);
         assert_eq!(response.stats.output_tokens, 3);
+    }
+
+    #[tokio::test]
+    /// Verifies Claude authentication failures return actionable re-login
+    /// guidance instead of raw transport output.
+    async fn test_submit_one_shot_with_backend_surfaces_claude_auth_guidance() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let mut backend = MockAgentBackend::new();
+        backend.expect_build_command().returning(|_| {
+            Ok(mock_shell_command(
+                r#"{"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired. Please obtain a new token or refresh your existing token."}}"#,
+                "",
+                1,
+            ))
+        });
+
+        // Act
+        let error = submit_one_shot_with_backend(
+            &backend,
+            OneShotRequest {
+                child_pid: None,
+                folder: temp_directory.path(),
+                model: AgentModel::ClaudeSonnet46,
+                prompt: "Generate title",
+                reasoning_level: ReasoningLevel::default(),
+            },
+        )
+        .await
+        .expect_err("expired Claude auth should fail");
+
+        // Assert
+        assert!(error.contains("One-shot Claude command failed because authentication expired"));
+        assert!(error.contains("`claude auth login`"));
+        assert!(error.contains("`claude auth status`"));
     }
 }
