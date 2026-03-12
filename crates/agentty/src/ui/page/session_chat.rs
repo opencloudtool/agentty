@@ -433,10 +433,7 @@ impl<'a> SessionChatPage<'a> {
 
             chat_input.render(f, sections[0]);
             f.render_widget(
-                Paragraph::new(Self::prompt_footer_line(
-                    session,
-                    attachment_state.attachments.len(),
-                )),
+                Paragraph::new(Self::prompt_footer_line(attachment_state.attachments.len())),
                 sections[1],
             );
 
@@ -517,8 +514,9 @@ impl<'a> SessionChatPage<'a> {
     }
 
     /// Returns the prompt-mode footer line shown under the composer using the
-    /// same highlighted key styling used by other Agentty help text.
-    fn prompt_footer_line(session: &Session, attachment_count: usize) -> Line<'static> {
+    /// same highlighted key styling used by other Agentty help text while
+    /// appending attachment readiness as muted status text.
+    fn prompt_footer_line(attachment_count: usize) -> Line<'static> {
         let mut footer_line = help_action::footer_line(Self::prompt_footer_actions());
 
         if attachment_count > 0 {
@@ -527,10 +525,6 @@ impl<'a> SessionChatPage<'a> {
                 &mut footer_line,
                 format!("{attachment_count} image{suffix} ready"),
             );
-        }
-
-        if let Some(footer_hint) = session.model.prompt_image_footer_hint() {
-            Self::append_prompt_footer_note(&mut footer_line, footer_hint.to_string());
         }
 
         footer_line
@@ -1286,13 +1280,12 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_footer_line_shows_highlighted_actions_and_attachment_count_for_codex_sessions() {
+    /// Ensures the prompt footer keeps shared help styling while showing image
+    /// attachment readiness.
+    fn test_prompt_footer_line_shows_highlighted_actions_and_attachment_count() {
         // Arrange
-        let mut session = session_fixture();
-        session.model = AgentModel::Gpt54;
-
         // Act
-        let footer_line = SessionChatPage::prompt_footer_line(&session, 2);
+        let footer_line = SessionChatPage::prompt_footer_line(2);
 
         // Assert
         assert_eq!(
@@ -1319,16 +1312,18 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_footer_line_warns_when_current_model_cannot_send_images() {
+    /// Ensures the prompt footer no longer shows the legacy Codex-only image
+    /// warning.
+    fn test_prompt_footer_line_omits_legacy_backend_warning() {
         // Arrange
-        let session = session_fixture();
+        let attachment_count = 1;
 
         // Act
-        let footer_line = SessionChatPage::prompt_footer_line(&session, 1);
+        let footer_line = SessionChatPage::prompt_footer_line(attachment_count);
 
         // Assert
         assert!(footer_line.to_string().contains("1 image ready"));
-        assert!(footer_line.to_string().contains("send images with Codex"));
+        assert!(!footer_line.to_string().contains("send images with Codex"));
     }
 
     #[test]

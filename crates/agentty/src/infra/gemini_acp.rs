@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use agent_client_protocol::{
-    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, InitializeRequest, InitializeResponse,
-    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, TextContent,
+    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, ImageContent, InitializeRequest,
+    InitializeResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, TextContent,
 };
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
@@ -22,7 +24,7 @@ use crate::infra::app_server::{
 use crate::infra::app_server_transport::{
     self, extract_json_error_message, response_id_matches, write_json_line,
 };
-use crate::infra::channel::TurnPrompt;
+use crate::infra::channel::{TurnPrompt, TurnPromptAttachment, TurnPromptContentPart};
 
 /// Boxed async result used by [`GeminiRuntimeTransport`] methods.
 type GeminiTransportFuture<'scope, T> = Pin<Box<dyn Future<Output = T> + Send + 'scope>>;
@@ -359,14 +361,12 @@ impl RealGeminiAcpClient {
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
     ) -> Result<(String, u64, u64), String> {
         let prompt = prompt.into();
+        let content_blocks = build_prompt_content_blocks(&prompt).await?;
         let prompt_id = format!("session-prompt-{}", uuid::Uuid::new_v4());
         let session_prompt_payload = Self::build_json_rpc_request_payload(
             &prompt_id,
             AGENT_METHOD_NAMES.session_prompt,
-            PromptRequest::new(
-                session_id.to_string(),
-                vec![ContentBlock::Text(TextContent::new(prompt.text.clone()))],
-            ),
+            PromptRequest::new(session_id.to_string(), content_blocks),
         )?;
         transport.write_json_line(session_prompt_payload).await?;
 
@@ -456,6 +456,91 @@ impl RealGeminiAcpClient {
     async fn shutdown_runtime(session: &mut GeminiSessionRuntime) {
         drop(session.transport.stdin.take());
         app_server_transport::shutdown_child(&mut session.child).await;
+    }
+}
+
+/// Builds Gemini ACP content blocks for one structured prompt payload.
+///
+/// Text spans are interleaved with inline image attachments in placeholder
+/// order so Gemini receives the same multimodal sequence the composer shows.
+async fn build_prompt_content_blocks(prompt: &TurnPrompt) -> Result<Vec<ContentBlock>, String> {
+    let prompt = prompt.clone();
+
+    tokio::task::spawn_blocking(move || build_prompt_content_blocks_blocking(&prompt))
+        .await
+        .map_err(|error| format!("Gemini prompt-image task failed: {error}"))?
+}
+
+/// Builds Gemini ACP content blocks for one prompt on a blocking worker
+/// thread.
+fn build_prompt_content_blocks_blocking(prompt: &TurnPrompt) -> Result<Vec<ContentBlock>, String> {
+    if !prompt.has_attachments() {
+        return Ok(vec![ContentBlock::Text(TextContent::new(
+            prompt.text.clone(),
+        ))]);
+    }
+
+    let mut content_blocks = Vec::new();
+    for content_part in prompt.content_parts() {
+        match content_part {
+            TurnPromptContentPart::Text(text) => {
+                push_text_content_block(&mut content_blocks, text);
+            }
+            TurnPromptContentPart::Attachment(attachment)
+            | TurnPromptContentPart::OrphanAttachment(attachment) => {
+                content_blocks.push(build_image_content_block(attachment)?);
+            }
+        }
+    }
+
+    Ok(content_blocks)
+}
+
+/// Appends one non-empty Gemini text content block.
+fn push_text_content_block(content_blocks: &mut Vec<ContentBlock>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+
+    content_blocks.push(ContentBlock::Text(TextContent::new(text.to_string())));
+}
+
+/// Builds one Gemini ACP image content block from a persisted local prompt
+/// attachment.
+///
+/// This helper performs blocking filesystem I/O with `std::fs::read`, so it
+/// must only be called from the blocking worker used by
+/// `build_prompt_content_blocks()`.
+fn build_image_content_block(attachment: &TurnPromptAttachment) -> Result<ContentBlock, String> {
+    let image_bytes = std::fs::read(&attachment.local_image_path).map_err(|error| {
+        format!(
+            "Failed to read Gemini prompt image `{}`: {error}",
+            attachment.local_image_path.display()
+        )
+    })?;
+    let mime_type = prompt_image_mime_type(&attachment.local_image_path);
+
+    Ok(ContentBlock::Image(ImageContent::new(
+        BASE64_STANDARD.encode(image_bytes),
+        mime_type,
+    )))
+}
+
+/// Returns the MIME type Gemini should use for one persisted prompt image.
+#[must_use]
+fn prompt_image_mime_type(local_image_path: &Path) -> &'static str {
+    let Some(extension) = local_image_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+    else {
+        return "image/png";
+    };
+
+    match extension.to_ascii_lowercase().as_str() {
+        "gif" => "image/gif",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
     }
 }
 
@@ -860,6 +945,7 @@ fn extract_session_update_kind<'value>(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use mockall::Sequence;
@@ -2071,5 +2157,109 @@ mod tests {
                 }
             }))
         );
+    }
+
+    #[tokio::test]
+    /// Verifies Gemini prompt content blocks interleave text spans and local
+    /// images in placeholder order.
+    async fn build_prompt_content_blocks_interleaves_text_and_local_images() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let first_image_path = temp_directory.path().join("first.png");
+        let second_image_path = temp_directory.path().join("second.png");
+        std::fs::write(&first_image_path, b"first-image-bytes")
+            .expect("first image should be written");
+        std::fs::write(&second_image_path, b"second-image-bytes")
+            .expect("second image should be written");
+        let prompt = TurnPrompt {
+            attachments: vec![
+                TurnPromptAttachment {
+                    placeholder: "[Image #1]".to_string(),
+                    local_image_path: first_image_path,
+                },
+                TurnPromptAttachment {
+                    placeholder: "[Image #2]".to_string(),
+                    local_image_path: second_image_path,
+                },
+            ],
+            text: "Compare [Image #2] against [Image #1] now".to_string(),
+        };
+
+        // Act
+        let content_blocks = build_prompt_content_blocks(&prompt)
+            .await
+            .expect("content blocks should build");
+
+        // Assert
+        assert_eq!(
+            content_blocks,
+            vec![
+                ContentBlock::Text(TextContent::new("Compare ".to_string())),
+                ContentBlock::Image(ImageContent::new(
+                    BASE64_STANDARD.encode("second-image-bytes"),
+                    "image/png"
+                )),
+                ContentBlock::Text(TextContent::new(" against ".to_string())),
+                ContentBlock::Image(ImageContent::new(
+                    BASE64_STANDARD.encode("first-image-bytes"),
+                    "image/png"
+                )),
+                ContentBlock::Text(TextContent::new(" now".to_string())),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies Gemini prompt content blocks preserve orphaned attachments by
+    /// appending them after the text content.
+    async fn build_prompt_content_blocks_appends_orphaned_attachments() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let image_path = temp_directory.path().join("orphan.png");
+        std::fs::write(&image_path, b"orphan-image-bytes").expect("image should be written");
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: image_path,
+            }],
+            text: "Review this change".to_string(),
+        };
+
+        // Act
+        let content_blocks = build_prompt_content_blocks(&prompt)
+            .await
+            .expect("content blocks should build");
+
+        // Assert
+        assert_eq!(
+            content_blocks,
+            vec![
+                ContentBlock::Text(TextContent::new("Review this change".to_string())),
+                ContentBlock::Image(ImageContent::new(
+                    BASE64_STANDARD.encode("orphan-image-bytes"),
+                    "image/png"
+                )),
+            ]
+        );
+    }
+
+    #[test]
+    /// Verifies Gemini prompt image MIME detection tracks common image
+    /// extensions.
+    fn prompt_image_mime_type_supports_common_extensions() {
+        // Arrange
+        let png_path = PathBuf::from("/tmp/image.png");
+        let jpeg_path = PathBuf::from("/tmp/image.jpeg");
+        let webp_path = PathBuf::from("/tmp/image.webp");
+
+        // Act
+        let png_mime_type = prompt_image_mime_type(&png_path);
+        let jpeg_mime_type = prompt_image_mime_type(&jpeg_path);
+        let webp_mime_type = prompt_image_mime_type(&webp_path);
+
+        // Assert
+        assert_eq!(png_mime_type, "image/png");
+        assert_eq!(jpeg_mime_type, "image/jpeg");
+        assert_eq!(webp_mime_type, "image/webp");
     }
 }

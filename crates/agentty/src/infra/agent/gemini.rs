@@ -21,10 +21,11 @@ impl AgentBackend for GeminiBackend {
         request: BuildCommandRequest<'request>,
     ) -> Result<Command, AgentBackendError> {
         let BuildCommandRequest {
-            reasoning_level: _reasoning_level,
+            attachments: _attachments,
             folder,
             mode,
             model,
+            reasoning_level: _reasoning_level,
         } = request;
         let has_history_replay = mode
             .session_output()
@@ -109,12 +110,13 @@ mod tests {
         // Act
         let prompt = String::from_utf8(
             build_prompt_stdin_payload(BuildCommandRequest {
-                reasoning_level: ReasoningLevel::default(),
+                attachments: &[],
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::Start {
                     prompt: "Plan prompt",
                 },
                 model: "gemini-3-flash-preview",
+                reasoning_level: ReasoningLevel::default(),
             })
             .expect("prompt payload should build"),
         )
@@ -137,12 +139,13 @@ mod tests {
         let command = AgentBackend::build_command(
             &backend,
             BuildCommandRequest {
-                reasoning_level: ReasoningLevel::default(),
+                attachments: &[],
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::OneShot {
                     prompt: "Generate title",
                 },
                 model: "gemini-3-flash-preview",
+                reasoning_level: ReasoningLevel::default(),
             },
         )
         .expect("command should build");
@@ -153,12 +156,13 @@ mod tests {
             .collect::<Vec<_>>();
         let prompt = String::from_utf8(
             build_prompt_stdin_payload(BuildCommandRequest {
-                reasoning_level: ReasoningLevel::default(),
+                attachments: &[],
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::OneShot {
                     prompt: "Generate title",
                 },
                 model: "gemini-3-flash-preview",
+                reasoning_level: ReasoningLevel::default(),
             })
             .expect("prompt payload should build"),
         )

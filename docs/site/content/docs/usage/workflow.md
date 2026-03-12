@@ -70,11 +70,12 @@ current new-session prompt or reply. Agentty stores the image under
 `AGENTTY_ROOT/tmp/<session-id>/images/`, inserts a highlighted inline token
 such as `[Image #1]`, and submits the ordered local attachments with the
 prompt. Text paste remains unchanged on the normal terminal paste event path.
-At this stage, image sending is supported for Codex session models; other
-models keep the placeholder in the composer and surface an explicit capability
-error on submit without leaving prompt mode. Draft image files are removed when
-you cancel the composer, after a submitted turn finishes using them, and when a
-session is deleted or canceled.
+Codex turns serialize the local image items directly through the app-server,
+Gemini turns send ordered ACP text-plus-image content blocks, and Claude turns
+rewrite the inline placeholders to local image paths before the prompt is
+streamed to `claude`. Draft image files are removed when you cancel the
+composer, after a submitted turn finishes using them, and when a session is
+deleted or canceled.
 
 ## Branch Publish Flow
 

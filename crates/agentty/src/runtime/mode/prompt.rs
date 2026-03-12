@@ -413,18 +413,6 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
         return;
     }
 
-    if let Some(error_message) = prompt_image_submit_error(app, prompt_context) {
-        append_prompt_status_line(
-            app,
-            &prompt_context.session_id,
-            "Prompt Error",
-            error_message,
-        )
-        .await;
-
-        return;
-    }
-
     let prompt = take_submitted_turn_prompt(app);
     if prompt.is_empty() {
         return;
@@ -453,20 +441,8 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
 }
 
 /// Pastes one clipboard image into the prompt composer as an inline
-/// placeholder token when the active session model supports image input.
+/// placeholder token.
 async fn handle_prompt_image_paste(app: &mut App, prompt_context: &PromptContext) {
-    if let Some(error_message) = active_prompt_image_unsupported_message(app, prompt_context) {
-        append_prompt_status_line(
-            app,
-            &prompt_context.session_id,
-            "Paste Image Error",
-            error_message,
-        )
-        .await;
-
-        return;
-    }
-
     let attachment_number = match &app.mode {
         AppMode::Prompt {
             attachment_state, ..
@@ -670,33 +646,6 @@ async fn append_output_for_session(app: &App, session_id: &str, output: &str) {
 /// the composer.
 async fn append_prompt_status_line(app: &App, session_id: &str, label: &str, message: &str) {
     append_output_for_session(app, session_id, &format!("\n[{label}] {message}\n")).await;
-}
-
-/// Returns the shared unsupported-image message for the active prompt session.
-fn active_prompt_image_unsupported_message(
-    app: &App,
-    prompt_context: &PromptContext,
-) -> Option<&'static str> {
-    app.sessions
-        .sessions
-        .get(prompt_context.session_index)
-        .and_then(|session| session.model.prompt_image_unsupported_message())
-}
-
-/// Returns the submit-time image capability error for the active prompt, if
-/// any attachments are still present in composer state.
-fn prompt_image_submit_error(app: &App, prompt_context: &PromptContext) -> Option<&'static str> {
-    let attachment_count = match &app.mode {
-        AppMode::Prompt {
-            attachment_state, ..
-        } => attachment_state.attachments.len(),
-        _ => 0,
-    };
-    if attachment_count == 0 {
-        return None;
-    }
-
-    active_prompt_image_unsupported_message(app, prompt_context)
 }
 
 /// Removes any prompt attachment files still owned by the active composer and
@@ -2760,7 +2709,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_prompt_submit_key_blocks_unsupported_image_turn_before_drain() {
+    async fn test_handle_prompt_submit_key_drains_supported_image_turn() {
         // Arrange
         let (mut app, _base_dir) = new_test_prompt_app("Review ", None).await;
         app.sessions.sessions[0].model = crate::domain::agent::AgentModel::ClaudeSonnet46;
@@ -2771,17 +2720,8 @@ mod tests {
         handle_prompt_submit_key(&mut app, &prompt_context).await;
 
         // Assert
-        assert!(matches!(app.mode, AppMode::Prompt { .. }));
-        assert_eq!(app.sessions.sessions[0].prompt, "");
-        if let AppMode::Prompt {
-            attachment_state,
-            input,
-            ..
-        } = &app.mode
-        {
-            assert_eq!(input.text(), "Review [Image #1]");
-            assert_eq!(attachment_state.attachments.len(), 1);
-        }
+        assert!(matches!(app.mode, AppMode::View { .. }));
+        assert_eq!(app.sessions.sessions[0].prompt, "Review [Image #1]");
     }
 
     #[tokio::test]

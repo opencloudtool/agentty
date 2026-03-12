@@ -28,10 +28,11 @@ impl AgentBackend for CodexBackend {
         request: BuildCommandRequest<'request>,
     ) -> Result<Command, AgentBackendError> {
         let BuildCommandRequest {
-            reasoning_level,
+            attachments: _attachments,
             folder,
             mode,
             model,
+            reasoning_level,
         } = request;
         let has_history_replay = mode
             .session_output()
@@ -125,12 +126,13 @@ mod tests {
         let command = AgentBackend::build_command(
             &backend,
             BuildCommandRequest {
-                reasoning_level: ReasoningLevel::High,
+                attachments: &[],
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::Start {
                     prompt: "Run checks",
                 },
                 model: "gpt-5.3-codex",
+                reasoning_level: ReasoningLevel::High,
             },
         )
         .expect("command should build");
@@ -165,13 +167,14 @@ mod tests {
         let command = AgentBackend::build_command(
             &backend,
             BuildCommandRequest {
-                reasoning_level: ReasoningLevel::High,
+                attachments: &[],
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::Resume {
                     prompt: "Continue edits",
                     session_output: Some("previous assistant output"),
                 },
                 model: "gpt-5.3-codex",
+                reasoning_level: ReasoningLevel::High,
             },
         )
         .expect("resume command should build");
@@ -202,13 +205,14 @@ mod tests {
         let command = AgentBackend::build_command(
             &backend,
             BuildCommandRequest {
-                reasoning_level: ReasoningLevel::High,
+                attachments: &[],
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::Resume {
                     prompt: "Continue edits",
                     session_output: None,
                 },
                 model: "gpt-5.3-codex",
+                reasoning_level: ReasoningLevel::High,
             },
         )
         .expect("resume command should build");
@@ -241,12 +245,13 @@ mod tests {
         let command = AgentBackend::build_command(
             &backend,
             BuildCommandRequest {
-                reasoning_level: ReasoningLevel::Low,
+                attachments: &[],
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::Start {
                     prompt: "Run checks",
                 },
                 model: "gpt-5.3-codex",
+                reasoning_level: ReasoningLevel::Low,
             },
         )
         .expect("command should build");
@@ -270,12 +275,13 @@ mod tests {
         let command = AgentBackend::build_command(
             &backend,
             BuildCommandRequest {
-                reasoning_level: ReasoningLevel::Low,
+                attachments: &[],
                 folder: temp_directory.path(),
                 mode: AgentCommandMode::OneShot {
                     prompt: "Generate title",
                 },
                 model: "gpt-5.3-codex",
+                reasoning_level: ReasoningLevel::Low,
             },
         )
         .expect("command should build");

@@ -144,9 +144,10 @@ The diff panel title shows aggregate line-change totals as `+added` and
 
 Prompt input keeps regular text paste on terminal `Event::Paste`. The dedicated
 image paste shortcuts insert highlighted `[Image #n]` tokens directly in the
-composer and send the referenced local image only for Codex session models. If
-the active session model does not support images, Agentty keeps the draft in
-prompt mode and appends an actionable error instead of draining the composer.
+composer and send the referenced local image for Codex, Gemini, and Claude
+session models. Codex and Gemini preserve the multimodal ordering at transport
+level, while Claude rewrites the placeholders to local image paths before
+streaming the prompt.
 
 ## Question Input — Option Selection
 

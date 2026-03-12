@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::domain::agent::{AgentKind, PROMPT_IMAGE_UNSUPPORTED_MESSAGE};
+use crate::domain::agent::AgentKind;
 use crate::infra::agent;
 use crate::infra::agent::protocol::{
     build_protocol_repair_prompt, normalize_stream_assistant_chunk, parse_agent_response,
@@ -84,10 +84,6 @@ impl AgentChannel for AppServerAgentChannel {
         let should_stream_assistant_messages = !requires_strict_structured_output(kind);
 
         Box::pin(async move {
-            if req.prompt.has_attachments() && !kind.supports_prompt_images() {
-                return Err(AgentError(PROMPT_IMAGE_UNSUPPORTED_MESSAGE.to_string()));
-            }
-
             let session_output = match req.mode {
                 TurnMode::Start => None,
                 TurnMode::Resume { session_output } => session_output,
@@ -723,12 +719,23 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies non-Codex providers reject pasted image prompt payloads before
-    /// transport execution starts.
-    async fn test_run_turn_rejects_image_attachments_for_gemini() {
+    /// Verifies Gemini turns pass pasted image prompt payloads through to the
+    /// underlying app-server client.
+    async fn test_run_turn_allows_image_attachments_for_gemini() {
         // Arrange
         let mut mock_client = MockAppServerClient::new();
-        mock_client.expect_run_turn().times(0);
+        mock_client
+            .expect_run_turn()
+            .times(1)
+            .returning(|request, _stream_tx| {
+                assert_eq!(request.prompt.attachments.len(), 1);
+
+                Box::pin(async {
+                    Ok(make_ok_response(
+                        r#"{"messages":[{"type":"answer","text":"gemini ok"}]}"#,
+                    ))
+                })
+            });
         let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Gemini);
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
         let mut request = make_turn_request();
@@ -740,11 +747,11 @@ mod tests {
         // Act
         let result = channel
             .run_turn("sess-1".to_string(), request, events_tx)
-            .await;
+            .await
+            .expect("turn should succeed");
 
         // Assert
-        let error = result.expect_err("turn should fail");
-        assert!(error.0.contains("only supported for Codex"));
+        assert_eq!(result.assistant_message.to_display_text(), "gemini ok");
     }
 
     #[tokio::test]

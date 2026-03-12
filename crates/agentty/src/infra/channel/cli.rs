@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::domain::agent::{AgentKind, PROMPT_IMAGE_UNSUPPORTED_MESSAGE, ReasoningLevel};
+use crate::domain::agent::{AgentKind, ReasoningLevel};
 use crate::infra::agent::protocol::{
     build_protocol_repair_prompt, normalize_stream_assistant_chunk, parse_agent_response,
     parse_agent_response_strict,
@@ -58,6 +58,25 @@ impl CliAgentChannel {
     }
 }
 
+/// Builds the provider backend command request for one CLI turn.
+fn build_command_request(request: &TurnRequest) -> BuildCommandRequest<'_> {
+    BuildCommandRequest {
+        attachments: &request.prompt.attachments,
+        folder: &request.folder,
+        mode: match &request.mode {
+            TurnMode::Start => AgentCommandMode::Start {
+                prompt: &request.prompt.text,
+            },
+            TurnMode::Resume { session_output } => AgentCommandMode::Resume {
+                prompt: &request.prompt.text,
+                session_output: session_output.as_deref(),
+            },
+        },
+        model: &request.model,
+        reasoning_level: request.reasoning_level,
+    }
+}
+
 impl AgentChannel for CliAgentChannel {
     /// Returns a [`SessionRef`] immediately; CLI turns are stateless.
     fn start_session(
@@ -86,27 +105,8 @@ impl AgentChannel for CliAgentChannel {
         req: TurnRequest,
         events: mpsc::UnboundedSender<TurnEvent>,
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
-        if req.prompt.has_attachments() {
-            return Box::pin(async {
-                Err(AgentError(PROMPT_IMAGE_UNSUPPORTED_MESSAGE.to_string()))
-            });
-        }
-
         let backend = Arc::clone(&self.backend);
-        let build_request = BuildCommandRequest {
-            reasoning_level: req.reasoning_level,
-            folder: &req.folder,
-            mode: match &req.mode {
-                TurnMode::Start => AgentCommandMode::Start {
-                    prompt: &req.prompt.text,
-                },
-                TurnMode::Resume { session_output } => AgentCommandMode::Resume {
-                    prompt: &req.prompt.text,
-                    session_output: session_output.as_deref(),
-                },
-            },
-            model: &req.model,
-        };
+        let build_request = build_command_request(&req);
         let build_result = self.backend.build_command(build_request);
         let stdin_payload_result = agent::build_command_stdin_payload(self.kind, build_request);
         let kind = self.kind;
@@ -266,19 +266,19 @@ async fn write_optional_stdin(
 ) -> Result<(), AgentError> {
     let mut child_stdin =
         child_stdin.ok_or_else(|| AgentError("stdin pipe unavailable after spawn".to_string()))?;
-    if let Err(error) = child_stdin.write_all(&stdin_payload).await {
-        if !is_broken_pipe_error(&error) {
-            return Err(AgentError(format!(
-                "Failed to write stdin payload: {error}"
-            )));
-        }
+    if let Err(error) = child_stdin.write_all(&stdin_payload).await
+        && !is_broken_pipe_error(&error)
+    {
+        return Err(AgentError(format!(
+            "Failed to write stdin payload: {error}"
+        )));
     }
-    if let Err(error) = child_stdin.shutdown().await {
-        if !is_broken_pipe_error(&error) {
-            return Err(AgentError(format!(
-                "Failed to close stdin payload: {error}"
-            )));
-        }
+    if let Err(error) = child_stdin.shutdown().await
+        && !is_broken_pipe_error(&error)
+    {
+        return Err(AgentError(format!(
+            "Failed to close stdin payload: {error}"
+        )));
     }
 
     Ok(())
@@ -469,12 +469,13 @@ async fn run_structured_output_repair_turn(
 ) -> Result<String, AgentError> {
     let repair_prompt = build_protocol_repair_prompt(invalid_response);
     let build_request = BuildCommandRequest {
-        reasoning_level,
+        attachments: &[],
         folder,
         mode: AgentCommandMode::Start {
             prompt: &repair_prompt,
         },
         model,
+        reasoning_level,
     };
     let repair_command = backend
         .build_command(build_request)
@@ -542,7 +543,7 @@ mod tests {
     use super::*;
     use crate::domain::agent::{AgentKind, ReasoningLevel};
     use crate::infra::agent::tests::MockAgentBackend;
-    use crate::infra::channel::TurnMode;
+    use crate::infra::channel::{TurnMode, TurnPrompt, TurnPromptAttachment};
 
     fn make_turn_request(folder: PathBuf) -> TurnRequest {
         TurnRequest {
@@ -708,12 +709,14 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies Claude CLI turns stream the rendered prompt through stdin so
-    /// large session prompts do not rely on argv transport.
+    /// Verifies Claude CLI turns stream image-aware prompt text through stdin
+    /// so large multimodal session prompts do not rely on argv transport.
     async fn test_run_turn_writes_prompt_to_stdin_for_claude() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let capture_path = dir.path().join("stdin.txt");
+        let image_path = dir.path().join("pasted-image.png");
+        std::fs::write(&image_path, b"image-bytes").expect("image should be written");
         let mut mock_backend = MockAgentBackend::new();
         mock_backend.expect_build_command().returning({
             let capture_path = capture_path.clone();
@@ -725,7 +728,14 @@ mod tests {
             kind: AgentKind::Claude,
         };
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
-        let req = make_turn_request(dir.path().to_path_buf());
+        let mut req = make_turn_request(dir.path().to_path_buf());
+        req.prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: image_path.clone(),
+            }],
+            text: "Review [Image #1]".to_string(),
+        };
 
         // Act
         let result = channel
@@ -738,7 +748,8 @@ mod tests {
         // Assert
         assert_eq!(result.assistant_message.to_display_text(), "ok");
         assert!(captured_prompt.contains("Structured response protocol:"));
-        assert!(captured_prompt.contains("Write a test"));
+        assert!(captured_prompt.contains(image_path.to_string_lossy().as_ref()));
+        assert!(!captured_prompt.contains("[Image #1]"));
     }
 
     #[tokio::test]

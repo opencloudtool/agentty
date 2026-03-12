@@ -23,6 +23,15 @@ installed and available on your `PATH`.
 | Claude | `claude` | Anthropic Claude Code agent. |
 | Codex | `codex` | OpenAI Codex CLI agent. |
 
+All three session backends accept pasted local prompt images from the Agentty
+composer (`Ctrl+V` or `Alt+V` in prompt mode). Transport details differ by
+backend:
+
+- Codex app-server turns send `localImage` input items in placeholder order.
+- Gemini ACP turns send ordered `text` and `image` ACP content blocks.
+- Claude Code turns receive the prompt over stdin with `[Image #n]`
+  placeholders rewritten to local image paths that Claude can inspect.
+
 ## Claude Authentication
 
 <a id="backends-claude-authentication"></a>

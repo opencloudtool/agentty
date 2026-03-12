@@ -2303,9 +2303,10 @@ async fn push_session_branch(
     }
 
     let folder = branch_publish_session.folder.clone();
-    let branch_name = remote_branch_name
-        .map(str::to_string)
-        .unwrap_or_else(|| session::session_branch(&branch_publish_session.id));
+    let branch_name = remote_branch_name.map_or_else(
+        || session::session_branch(&branch_publish_session.id),
+        str::to_string,
+    );
     let upstream_reference = match remote_branch_name {
         Some(remote_branch_name) => {
             git_client
@@ -3807,12 +3808,12 @@ mod tests {
         let session_worktree_root = Path::new("/home/test/.agentty/wt");
         let project_rows = vec![
             project_list_row_fixture(1, existing_project_path.clone()),
-            project_list_row_fixture(2, session_worktree_project_path.clone()),
+            project_list_row_fixture(2, session_worktree_project_path),
             project_list_row_fixture(3, missing_project_path.clone()),
         ];
         let mut fs_client = crate::infra::fs::MockFsClient::new();
         let existing_project_path_for_match = PathBuf::from(existing_project_path.clone());
-        let missing_project_path_for_match = PathBuf::from(missing_project_path.clone());
+        let missing_project_path_for_match = PathBuf::from(missing_project_path);
         fs_client
             .expect_is_dir()
             .once()

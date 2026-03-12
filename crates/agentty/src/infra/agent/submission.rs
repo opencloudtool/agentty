@@ -132,11 +132,13 @@ async fn execute_one_shot_command(
     prompt: &str,
     request: OneShotRequest<'_>,
 ) -> Result<ParsedResponse, String> {
+    let prompt_payload = crate::infra::channel::TurnPrompt::from_text(prompt.to_string());
     let build_request = BuildCommandRequest {
-        reasoning_level: request.reasoning_level,
+        attachments: &prompt_payload.attachments,
         folder: request.folder,
         mode: AgentCommandMode::OneShot { prompt },
         model: request.model.as_str(),
+        reasoning_level: request.reasoning_level,
     };
     let command = backend
         .build_command(build_request)
@@ -222,15 +224,15 @@ async fn write_optional_stdin(
 ) -> Result<(), String> {
     let mut child_stdin =
         child_stdin.ok_or_else(|| "one-shot stdin pipe unavailable after spawn".to_string())?;
-    if let Err(error) = child_stdin.write_all(&stdin_payload).await {
-        if !is_broken_pipe_error(&error) {
-            return Err(format!("Failed to write one-shot stdin payload: {error}"));
-        }
+    if let Err(error) = child_stdin.write_all(&stdin_payload).await
+        && !is_broken_pipe_error(&error)
+    {
+        return Err(format!("Failed to write one-shot stdin payload: {error}"));
     }
-    if let Err(error) = child_stdin.shutdown().await {
-        if !is_broken_pipe_error(&error) {
-            return Err(format!("Failed to close one-shot stdin payload: {error}"));
-        }
+    if let Err(error) = child_stdin.shutdown().await
+        && !is_broken_pipe_error(&error)
+    {
+        return Err(format!("Failed to close one-shot stdin payload: {error}"));
     }
 
     Ok(())

@@ -13,6 +13,4 @@ Keep size budgeting in the skill workflow only; do not render `### Size` section
 
 - [`forge_review_request_support.md`](forge_review_request_support.md) - Implementation plan for adding forge-generic review request workflows across GitHub and GitLab.
 
-- [`prompt_image_paste.md`](prompt_image_paste.md) - Implementation plan for pasting clipboard images into session prompts and rendering pending attachments in the chat composer.
-
 - [`auto_update.md`](auto_update.md) - Implementation plan for automatic self-update on startup with re-exec restart.

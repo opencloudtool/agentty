@@ -16,7 +16,7 @@ use crate::infra::app_server::{
 use crate::infra::app_server_transport::{
     self, extract_json_error_message, response_id_matches, write_json_line,
 };
-use crate::infra::channel::TurnPrompt;
+use crate::infra::channel::{TurnPrompt, TurnPromptContentPart};
 
 /// Canonical wire-level policy mapping for one [`PermissionMode`].
 ///
@@ -219,12 +219,11 @@ impl RealCodexAppServerClient {
         provider_conversation_id: Option<&str>,
         reasoning_level: ReasoningLevel,
     ) -> Result<(String, bool), String> {
-        if let Some(provider_conversation_id) = provider_conversation_id {
-            if let Ok(thread_id) =
+        if let Some(provider_conversation_id) = provider_conversation_id
+            && let Ok(thread_id) =
                 Self::resume_thread(session, provider_conversation_id, reasoning_level).await
-            {
-                return Ok((thread_id, true));
-            }
+        {
+            return Ok((thread_id, true));
         }
 
         let thread_id = Self::start_thread(session, reasoning_level).await?;
@@ -688,41 +687,24 @@ impl RealCodexAppServerClient {
         }
 
         let mut input_items = Vec::new();
-        let mut remaining_text = prompt.text.as_str();
-
-        for attachment in &prompt.attachments {
-            if let Some(placeholder_index) = remaining_text.find(&attachment.placeholder) {
-                let (before_placeholder, after_placeholder) =
-                    remaining_text.split_at(placeholder_index);
-
-                if !before_placeholder.is_empty() {
-                    input_items.push(serde_json::json!({
-                        "type": "text",
-                        "text": before_placeholder,
-                        "text_elements": []
-                    }));
+        for content_part in prompt.content_parts() {
+            match content_part {
+                TurnPromptContentPart::Text(text) => {
+                    if !text.is_empty() {
+                        input_items.push(serde_json::json!({
+                            "type": "text",
+                            "text": text,
+                            "text_elements": []
+                        }));
+                    }
                 }
-
-                input_items.push(Self::build_local_image_input_item(
-                    &attachment.local_image_path,
-                ));
-
-                remaining_text = &after_placeholder[attachment.placeholder.len()..];
-
-                continue;
+                TurnPromptContentPart::Attachment(attachment)
+                | TurnPromptContentPart::OrphanAttachment(attachment) => {
+                    input_items.push(Self::build_local_image_input_item(
+                        &attachment.local_image_path,
+                    ));
+                }
             }
-
-            input_items.push(Self::build_local_image_input_item(
-                &attachment.local_image_path,
-            ));
-        }
-
-        if !remaining_text.is_empty() || input_items.is_empty() {
-            input_items.push(serde_json::json!({
-                "type": "text",
-                "text": remaining_text,
-                "text_elements": []
-            }));
         }
 
         input_items
@@ -2854,6 +2836,8 @@ sleep 5
     }
 
     #[test]
+    /// Verifies Codex input items interleave prompt text with local-image
+    /// placeholders.
     fn build_turn_input_items_interleaves_text_and_local_images() {
         // Arrange
         let prompt = TurnPrompt {
@@ -2883,6 +2867,54 @@ sleep 5
         assert_eq!(
             input_items[2]["text"],
             Value::String(" before merge".to_string())
+        );
+    }
+
+    #[test]
+    /// Verifies Codex input items follow placeholder order and keep orphaned
+    /// images after the trailing text span.
+    fn build_turn_input_items_orders_placeholder_images_and_appends_orphans() {
+        // Arrange
+        let prompt = TurnPrompt {
+            attachments: vec![
+                TurnPromptAttachment {
+                    placeholder: "[Image #1]".to_string(),
+                    local_image_path: PathBuf::from("/tmp/image-1.png"),
+                },
+                TurnPromptAttachment {
+                    placeholder: "[Image #2]".to_string(),
+                    local_image_path: PathBuf::from("/tmp/image-2.png"),
+                },
+                TurnPromptAttachment {
+                    placeholder: "[Image #3]".to_string(),
+                    local_image_path: PathBuf::from("/tmp/image-3.png"),
+                },
+            ],
+            text: "Compare [Image #2] with [Image #1] now".to_string(),
+        };
+
+        // Act
+        let input_items = RealCodexAppServerClient::build_turn_input_items(&prompt);
+
+        // Assert
+        assert_eq!(input_items.len(), 6);
+        assert_eq!(
+            input_items[0]["text"],
+            Value::String("Compare ".to_string())
+        );
+        assert_eq!(
+            input_items[1]["path"],
+            Value::String("/tmp/image-2.png".to_string())
+        );
+        assert_eq!(input_items[2]["text"], Value::String(" with ".to_string()));
+        assert_eq!(
+            input_items[3]["path"],
+            Value::String("/tmp/image-1.png".to_string())
+        );
+        assert_eq!(input_items[4]["text"], Value::String(" now".to_string()));
+        assert_eq!(
+            input_items[5]["path"],
+            Value::String("/tmp/image-3.png".to_string())
         );
     }
 

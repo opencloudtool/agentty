@@ -70,6 +70,7 @@ dependencies = [
  "agent-client-protocol",
  "arboard",
  "askama",
+ "base64",
  "crossterm",
  "dirs",
  "ignore",

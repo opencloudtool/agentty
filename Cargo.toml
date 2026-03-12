@@ -20,6 +20,7 @@ ag-forge = { path = "crates/ag-forge", version = "0.5.11" }
 agent-client-protocol = "0.10.0"
 arboard = { version = "3", features = ["image-data"] }
 askama = "0.15.4"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.30.0"
 crossterm = "0.29.0"

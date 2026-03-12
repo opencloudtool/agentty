@@ -8,6 +8,7 @@ use askama::Template;
 use super::protocol;
 use super::response_parser::ParsedResponse;
 use crate::domain::agent::{AgentKind, ReasoningLevel};
+use crate::infra::channel::TurnPromptAttachment;
 
 /// Marker used to detect whether protocol instructions are already included
 /// in a prompt.
@@ -56,16 +57,18 @@ impl AgentTransport {
 /// Request payload used to build provider commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuildCommandRequest<'a> {
-    /// Reasoning effort preference for this turn.
-    ///
-    /// Ignored by backends/models that do not support reasoning effort.
-    pub reasoning_level: ReasoningLevel,
+    /// Ordered local image attachments referenced from the prompt body.
+    pub attachments: &'a [TurnPromptAttachment],
     /// Working directory where the command will run.
     pub folder: &'a Path,
     /// Prompt mode and optional replay payload.
     pub mode: AgentCommandMode<'a>,
     /// Provider-specific model identifier.
     pub model: &'a str,
+    /// Reasoning effort preference for this turn.
+    ///
+    /// Ignored by backends/models that do not support reasoning effort.
+    pub reasoning_level: ReasoningLevel,
 }
 
 /// Prompt mode for command construction.

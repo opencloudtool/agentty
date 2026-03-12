@@ -32,6 +32,17 @@ pub struct TurnPrompt {
     pub text: String,
 }
 
+/// Ordered content piece produced when serializing one turn prompt.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum TurnPromptContentPart<'prompt> {
+    /// One local image attachment referenced from the prompt text.
+    Attachment(&'prompt TurnPromptAttachment),
+    /// One attachment whose placeholder no longer appears in the prompt text.
+    OrphanAttachment(&'prompt TurnPromptAttachment),
+    /// One plain-text span from the prompt.
+    Text(&'prompt str),
+}
+
 impl TurnPrompt {
     /// Creates a text-only prompt payload.
     #[must_use]
@@ -73,6 +84,17 @@ impl TurnPrompt {
         self.text.ends_with(suffix)
     }
 
+    /// Returns prompt text spans and image attachments in transport order.
+    ///
+    /// Attachments are ordered by their placeholder position in `text`. Any
+    /// attachment whose placeholder no longer exists in the text is appended
+    /// after the trailing text so transports can still serialize the image
+    /// instead of dropping it silently.
+    #[must_use]
+    pub(crate) fn content_parts(&self) -> Vec<TurnPromptContentPart<'_>> {
+        split_turn_prompt_content(&self.text, &self.attachments)
+    }
+
     /// Returns the prompt text as it should be written into persisted
     /// transcripts.
     ///
@@ -106,6 +128,56 @@ impl TurnPrompt {
 
         transcript_text
     }
+}
+
+/// Splits prompt text into ordered text and attachment parts for transport
+/// serialization.
+#[must_use]
+pub(crate) fn split_turn_prompt_content<'prompt>(
+    text: &'prompt str,
+    attachments: &'prompt [TurnPromptAttachment],
+) -> Vec<TurnPromptContentPart<'prompt>> {
+    if attachments.is_empty() {
+        return vec![TurnPromptContentPart::Text(text)];
+    }
+
+    let mut ordered_attachments = attachments.iter().collect::<Vec<_>>();
+    ordered_attachments
+        .sort_by_key(|attachment| text.find(&attachment.placeholder).unwrap_or(usize::MAX));
+
+    let mut content_parts = Vec::new();
+    let mut orphan_attachments = Vec::new();
+    let mut remaining_text = text;
+
+    for attachment in ordered_attachments {
+        if let Some(placeholder_index) = remaining_text.find(&attachment.placeholder) {
+            let (before_placeholder, after_placeholder) =
+                remaining_text.split_at(placeholder_index);
+
+            if !before_placeholder.is_empty() {
+                content_parts.push(TurnPromptContentPart::Text(before_placeholder));
+            }
+
+            content_parts.push(TurnPromptContentPart::Attachment(attachment));
+            remaining_text = &after_placeholder[attachment.placeholder.len()..];
+
+            continue;
+        }
+
+        orphan_attachments.push(attachment);
+    }
+
+    if !remaining_text.is_empty() {
+        content_parts.push(TurnPromptContentPart::Text(remaining_text));
+    }
+
+    content_parts.extend(
+        orphan_attachments
+            .into_iter()
+            .map(TurnPromptContentPart::OrphanAttachment),
+    );
+
+    content_parts
 }
 
 impl From<String> for TurnPrompt {
@@ -346,5 +418,43 @@ mod tests {
 
         // Assert
         assert_eq!(transcript_text, "Review [Image #1] [Image #2]");
+    }
+
+    #[test]
+    /// Ensures prompt content parts follow placeholder order and keep orphaned
+    /// attachments at the end.
+    fn test_split_turn_prompt_content_orders_placeholders_and_appends_orphans() {
+        // Arrange
+        let attachments = vec![
+            TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-1.png"),
+            },
+            TurnPromptAttachment {
+                placeholder: "[Image #2]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-2.png"),
+            },
+            TurnPromptAttachment {
+                placeholder: "[Image #3]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-3.png"),
+            },
+        ];
+
+        // Act
+        let content_parts =
+            split_turn_prompt_content("Compare [Image #2] with [Image #1] now", &attachments);
+
+        // Assert
+        assert_eq!(
+            content_parts,
+            vec![
+                TurnPromptContentPart::Text("Compare "),
+                TurnPromptContentPart::Attachment(&attachments[1]),
+                TurnPromptContentPart::Text(" with "),
+                TurnPromptContentPart::Attachment(&attachments[0]),
+                TurnPromptContentPart::Text(" now"),
+                TurnPromptContentPart::OrphanAttachment(&attachments[2]),
+            ]
+        );
     }
 }

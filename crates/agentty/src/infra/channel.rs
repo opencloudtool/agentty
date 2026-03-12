@@ -14,4 +14,5 @@ pub use contract::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnMode,
     TurnPrompt, TurnPromptAttachment, TurnRequest, TurnResult,
 };
+pub(crate) use contract::{TurnPromptContentPart, split_turn_prompt_content};
 pub use factory::create_agent_channel;
