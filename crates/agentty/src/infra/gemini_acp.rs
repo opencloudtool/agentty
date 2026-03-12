@@ -22,6 +22,7 @@ use crate::infra::app_server::{
 use crate::infra::app_server_transport::{
     self, extract_json_error_message, response_id_matches, write_json_line,
 };
+use crate::infra::channel::TurnPrompt;
 
 /// Boxed async result used by [`GeminiRuntimeTransport`] methods.
 type GeminiTransportFuture<'scope, T> = Pin<Box<dyn Future<Output = T> + Send + 'scope>>;
@@ -354,16 +355,17 @@ impl RealGeminiAcpClient {
     async fn run_turn_with_runtime<Transport: GeminiRuntimeTransport>(
         transport: &mut Transport,
         session_id: &str,
-        prompt: &str,
+        prompt: impl Into<TurnPrompt>,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
     ) -> Result<(String, u64, u64), String> {
+        let prompt = prompt.into();
         let prompt_id = format!("session-prompt-{}", uuid::Uuid::new_v4());
         let session_prompt_payload = Self::build_json_rpc_request_payload(
             &prompt_id,
             AGENT_METHOD_NAMES.session_prompt,
             PromptRequest::new(
                 session_id.to_string(),
-                vec![ContentBlock::Text(TextContent::new(prompt.to_string()))],
+                vec![ContentBlock::Text(TextContent::new(prompt.text.clone()))],
             ),
         )?;
         transport.write_json_line(session_prompt_payload).await?;

@@ -22,21 +22,21 @@ Target: `XL` (`201..=500` changed lines). If the first end-to-end image path gro
 
 ### Substeps
 
-- [ ] **Add prompt attachment state for inline image tokens.** Add prompt attachment state alongside `InputState` in `crates/agentty/src/ui/state/app_mode.rs` and `crates/agentty/src/ui/state/prompt.rs` so prompt mode can track pasted local images, the ordered inline `[Image #n]` placeholders inserted into the composer, and their mapping separately from plain text and at-mention/slash-menu state.
-- [ ] **Add clipboard image capture and temp-file persistence.** Add a clipboard-image helper module under `crates/agentty/src/runtime/` or `crates/agentty/src/infra/` that mirrors Codex CLI's `clipboard_paste.rs` structure: read clipboard image data or file-backed clipboard entries, encode to PNG, persist each pasted image under `AGENTTY_ROOT/tmp/WT_HASH/images/`, and return metadata suitable for inline token labels and error messages.
-- [ ] **Add a dedicated prompt-mode paste-image event path.** Extend `crates/agentty/src/runtime/event.rs` and `crates/agentty/src/runtime/mode/prompt.rs` so the session chat composer used for initial prompts and replies handles a dedicated paste-image shortcut separately from `Event::Paste`, while preserving the current text-paste behavior.
-- [ ] **Render highlighted inline image placeholders in the composer.** Update `crates/agentty/src/ui/component/chat_input.rs` to render pasted images as highlighted inline placeholders such as `[Image #1]` inside the text input, similar to Gemini CLI, while preserving slash-command dropdown behavior and cursor math for multiline text with mixed text and image-token spans.
-- [ ] **Show the paste-image keybinding and errors in session chat.** Update `crates/agentty/src/ui/page/session_chat.rs` so the session prompt footer exposes the paste-image keybinding and unsupported-model feedback without relying on a separate attachment row above the composer.
-- [ ] **Expand prompt submission to structured multimodal payloads.** Expand the submission path in `crates/agentty/src/runtime/mode/prompt.rs`, `crates/agentty/src/app/core.rs`, `crates/agentty/src/app/session/workflow/lifecycle.rs`, `crates/agentty/src/infra/channel/contract.rs`, and `crates/agentty/src/infra/app_server.rs` from `prompt: String` to a structured prompt payload that can carry text plus ordered local image attachments keyed to inline `[Image #n]` placeholders.
-- [ ] **Send pasted images through the first supported backend.** Implement the first backend transport that can actually forward pasted images, starting with the Codex path in `crates/agentty/src/infra/channel/app_server.rs` and `crates/agentty/src/infra/codex_app_server.rs`, while other providers fail fast with a user-visible capability message instead of silently dropping attachments.
+- [x] **Add prompt attachment state for inline image tokens.** Add prompt attachment state alongside `InputState` in `crates/agentty/src/ui/state/app_mode.rs` and `crates/agentty/src/ui/state/prompt.rs` so prompt mode can track pasted local images, the ordered inline `[Image #n]` placeholders inserted into the composer, and their mapping separately from plain text and at-mention/slash-menu state.
+- [x] **Add clipboard image capture and temp-file persistence.** Add a clipboard-image helper module under `crates/agentty/src/runtime/` or `crates/agentty/src/infra/` that mirrors Codex CLI's `clipboard_paste.rs` structure: read clipboard image data or file-backed clipboard entries, encode to PNG, persist each pasted image under `AGENTTY_ROOT/tmp/<session-id>/images/`, and return metadata suitable for inline token labels and error messages.
+- [x] **Add a dedicated prompt-mode paste-image event path.** Extend `crates/agentty/src/runtime/event.rs` and `crates/agentty/src/runtime/mode/prompt.rs` so the session chat composer used for initial prompts and replies handles a dedicated paste-image shortcut separately from `Event::Paste`, while preserving the current text-paste behavior.
+- [x] **Render highlighted inline image placeholders in the composer.** Update `crates/agentty/src/ui/component/chat_input.rs` to render pasted images as highlighted inline placeholders such as `[Image #1]` inside the text input, similar to Gemini CLI, while preserving slash-command dropdown behavior and cursor math for multiline text with mixed text and image-token spans.
+- [x] **Show the paste-image keybinding and errors in session chat.** Update `crates/agentty/src/ui/page/session_chat.rs` so the session prompt footer exposes the paste-image keybinding and unsupported-model feedback without relying on a separate attachment row above the composer.
+- [x] **Expand prompt submission to structured multimodal payloads.** Expand the submission path in `crates/agentty/src/runtime/mode/prompt.rs`, `crates/agentty/src/app/core.rs`, `crates/agentty/src/app/session/workflow/lifecycle.rs`, `crates/agentty/src/infra/channel/contract.rs`, and `crates/agentty/src/infra/app_server.rs` from `prompt: String` to a structured prompt payload that can carry text plus ordered local image attachments keyed to inline `[Image #n]` placeholders.
+- [x] **Send pasted images through the first supported backend.** Implement the first backend transport that can actually forward pasted images, starting with the Codex path in `crates/agentty/src/infra/channel/app_server.rs` and `crates/agentty/src/infra/codex_app_server.rs`, while other providers fail fast with a user-visible capability message instead of silently dropping attachments.
 
 ### Tests
 
-- [ ] Add focused tests for prompt attachment state, inline `[Image #n]` token rendering/layout math, prompt event routing, temp-path generation under `AGENTTY_ROOT/tmp/WT_HASH/images/`, and Codex payload serialization in `crates/agentty/src/ui/component/chat_input.rs`, `crates/agentty/src/ui/page/session_chat.rs`, `crates/agentty/src/runtime/event.rs`, `crates/agentty/src/runtime/mode/prompt.rs`, and the affected transport tests.
+- [x] Add focused tests for prompt attachment state, inline `[Image #n]` token rendering/layout math, prompt event routing, temp-path generation under `AGENTTY_ROOT/tmp/<session-id>/images/`, and Codex payload serialization in `crates/agentty/src/ui/component/chat_input.rs`, `crates/agentty/src/ui/page/session_chat.rs`, `crates/agentty/src/runtime/event.rs`, `crates/agentty/src/runtime/mode/prompt.rs`, and the affected transport tests.
 
 ### Docs
 
-- [ ] Update `docs/site/content/docs/usage/keybindings.md` and `docs/site/content/docs/usage/workflow.md` with the first shipped paste-image shortcut and prompt-composer behavior as part of the same slice.
+- [x] Update `docs/site/content/docs/usage/keybindings.md` and `docs/site/content/docs/usage/workflow.md` with the first shipped paste-image shortcut and prompt-composer behavior as part of the same slice.
 
 ## 2) Harden capability checks, cleanup, and session transcript behavior for the session chat composer
 
@@ -55,7 +55,7 @@ Target: `L` (`81..=200` changed lines). Keep this hardening slice focused on cap
 ### Substeps
 
 - [ ] **Add shared backend image-capability checks.** Add agent/model capability helpers in `crates/agentty/src/domain/agent.rs` so the UI and runtime can share one source of truth for whether image inputs are supported.
-- [ ] **Define attachment temp-file cleanup ownership.** Decide and implement temp-file ownership in `crates/agentty/src/app/session/workflow/lifecycle.rs` and the relevant runtime/session cleanup path so pasted files under `AGENTTY_ROOT/tmp/WT_HASH/images/` survive long enough for backend upload from the session chat composer but do not accumulate indefinitely after handoff or failed submission.
+- [ ] **Define attachment temp-file cleanup ownership.** Decide and implement temp-file ownership in `crates/agentty/src/app/session/workflow/lifecycle.rs` and the relevant runtime/session cleanup path so pasted files under `AGENTTY_ROOT/tmp/<session-id>/images/` survive long enough for backend upload from the session chat composer but do not accumulate indefinitely after handoff or failed submission.
 - [ ] **Preserve attachment markers in stored transcripts.** Update prompt-output formatting in `crates/agentty/src/app/session/workflow/lifecycle.rs` and any related transcript helpers so submitted prompts preserve the inline `[Image #n]` markers or an equivalent attachment summary instead of pretending the turn was text-only.
 - [ ] **Normalize clipboard and unsupported-model errors.** Add focused error handling for clipboard-unavailable, no-image, encode-failure, and unsupported-model cases so users get actionable status text without leaving prompt mode.
 - [ ] **Finalize the paste-image shortcut without regressing text paste.** Validate whether the first shipped shortcut should be `Ctrl+V`, `Alt+V`, or a platform-aware combination; keep text paste on `Event::Paste` intact and avoid stealing the common plain-text paste path.
@@ -83,18 +83,18 @@ Target: `L` (`81..=200` changed lines). Keep this hardening slice focused on cap
 
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
-| Prompt UI state | `AppMode::Prompt` carries text input, slash-menu state, history, and `@`-mention state, but no attachment list, inline `[Image #n]` token mapping, or image metadata. | Not Started |
-| Composer rendering | `crates/agentty/src/ui/component/chat_input.rs` renders only the bordered text field plus optional dropdown, and `crates/agentty/src/ui/page/session_chat.rs` does not yet support highlighted inline image placeholders inside the composer. | Not Started |
-| Terminal paste handling | `crossterm` bracketed paste is enabled and `Event::Paste` inserts multiline text, but there is no dedicated image-paste shortcut or clipboard-image reader. | Partial |
-| Prompt submission contract | `TurnRequest`, `AppServerTurnRequest`, and the session lifecycle currently carry only `prompt: String`, so attachments cannot reach any backend. | Not Started |
-| Backend support | Agentty has Codex, Gemini, and Claude backends, but no shared capability model or image-attachment serialization path. | Not Started |
-| Dependencies | The workspace already includes `tempfile`, but clipboard/image helpers such as `arboard`, `image`, or URL/path normalization support are not yet defined in the workspace manifest. | Not Started |
+| Prompt UI state | `AppMode::Prompt` now carries dedicated attachment state next to `InputState`, including ordered local-image metadata and `[Image #n]` placeholder mapping, and submission drains that state into structured turn payloads. | Done |
+| Composer rendering | Prompt input highlights inline `[Image #n]` placeholders in the composer, keeps slash/at-mention behavior intact, and shows a footer hint for `Ctrl+V`/`Alt+V` plus unsupported-model guidance. | Done |
+| Terminal paste handling | `Event::Paste` still inserts multiline text, while `Ctrl+V` and `Alt+V` run the dedicated clipboard-image path for new-session prompts and replies. | Done |
+| Prompt submission contract | `TurnRequest`, `AppServerTurnRequest`, and the session lifecycle now carry `TurnPrompt` payloads with text plus ordered local image attachments. | Done |
+| Backend support | Codex app-server turns serialize local image inputs, while non-Codex providers fail fast with a visible capability error instead of dropping attachments. | Done |
+| Dependencies | Workspace manifests now include the clipboard/image helpers needed to persist prompt images as local PNG files. | Done |
 
 ## Implementation Approach
 
 - Follow the Codex CLI split of concerns: one helper for clipboard-image capture and one prompt/composer path that owns attachment state and inline token rendering.
 - Keep `Event::Paste` reserved for text so multiline clipboard paste does not regress; route image paste through an explicit shortcut that is only active in the session chat composer for initial prompts and replies.
-- Persist pasted image temp files under `AGENTTY_ROOT/tmp/WT_HASH/images/`, where `WT_HASH` matches the session worktree hash used for the session folder under `AGENTTY_ROOT/wt/`.
+- Persist pasted image temp files under `AGENTTY_ROOT/tmp/<session-id>/images/` so attachment storage keys off the stable session identifier instead of parsing the worktree folder name.
 - Make the first merged slice usable end to end for one backend instead of landing a UI-only attachment shell.
 - Gate unsupported providers through shared capability checks before transport submission so Agentty never silently drops pasted images.
 - Keep attachment metadata local-path based for this pass; the composer should show highlighted inline `[Image #n]` placeholders rather than a row above the input, while remote URLs, drag-and-drop, screenshots, and inline bitmap previews remain follow-up work once the local clipboard path is stable.

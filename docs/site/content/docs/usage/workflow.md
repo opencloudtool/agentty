@@ -65,6 +65,15 @@ When `Open Commands` in Settings contains multiple entries (one command per
 line), pressing `o` opens a selector popup (`j`/`k` to move, `Enter` to open,
 `Esc` to cancel).
 
+In prompt input, `Ctrl+V` and `Alt+V` paste one clipboard image into the
+current new-session prompt or reply. Agentty stores the image under
+`AGENTTY_ROOT/tmp/<session-id>/images/`, inserts a highlighted inline token
+such as `[Image #1]`, and submits the ordered local attachments with the
+prompt. Text paste remains unchanged on the normal terminal paste event path.
+At this stage, image sending is supported for Codex session models; other
+models keep the placeholder in the composer and surface an explicit capability
+error on submit.
+
 ## Branch Publish Flow
 
 <a id="usage-review-request-flow"></a>

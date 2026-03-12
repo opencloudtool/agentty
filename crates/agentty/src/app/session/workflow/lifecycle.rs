@@ -15,7 +15,7 @@ use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager, setting}
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{ReviewRequest, SESSION_DATA_DIR, Session, Status};
 use crate::domain::setting::SettingName;
-use crate::infra::channel::TurnMode;
+use crate::infra::channel::{TurnMode, TurnPrompt};
 use crate::infra::fs::FsClient;
 use crate::infra::{agent, db, git};
 use crate::ui::page::session_list::grouped_session_indexes;
@@ -28,7 +28,7 @@ const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
 /// Input bag for constructing a queued session command.
 struct BuildSessionCommandInput {
     is_first_message: bool,
-    prompt: String,
+    prompt: TurnPrompt,
     session_model: AgentModel,
     session_output: Option<String>,
 }
@@ -239,8 +239,9 @@ impl SessionManager {
         &mut self,
         services: &AppServices,
         session_id: &str,
-        prompt: String,
+        prompt: impl Into<TurnPrompt>,
     ) -> Result<(), String> {
+        let prompt = prompt.into();
         let session_index = self.session_index_or_err(session_id)?;
         let (persisted_session_id, session_model, title) = {
             let session = self
@@ -248,9 +249,9 @@ impl SessionManager {
                 .get_mut(session_index)
                 .ok_or_else(|| SESSION_NOT_FOUND_ERROR.to_string())?;
 
-            session.prompt.clone_from(&prompt);
+            session.prompt.clone_from(&prompt.text);
 
-            let title = prompt.clone();
+            let title = prompt.text.clone();
             session.title = Some(title.clone());
             let session_model = session.model;
 
@@ -262,10 +263,10 @@ impl SessionManager {
         let status = Arc::clone(&handles.status);
         let app_event_tx = services.event_sender();
 
-        self.persist_first_message_metadata(services, &persisted_session_id, &prompt, &title)
+        self.persist_first_message_metadata(services, &persisted_session_id, &prompt.text, &title)
             .await;
 
-        let initial_output = Self::formatted_prompt_output(&prompt, false);
+        let initial_output = Self::formatted_prompt_output(&prompt.text, false);
         SessionTaskService::append_session_output(
             &output,
             services.db(),
@@ -298,7 +299,13 @@ impl SessionManager {
     }
 
     /// Submits a follow-up prompt to an existing session.
-    pub async fn reply(&mut self, services: &AppServices, session_id: &str, prompt: &str) {
+    pub async fn reply(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+        prompt: impl Into<TurnPrompt>,
+    ) {
+        let prompt = prompt.into();
         let Ok(session) = self.session_or_err(session_id) else {
             return;
         };
@@ -319,10 +326,11 @@ impl SessionManager {
         &mut self,
         services: &AppServices,
         session_id: &str,
-        prompt: &str,
+        prompt: impl Into<TurnPrompt>,
         backend: std::sync::Arc<dyn agent::AgentBackend>,
         session_model: AgentModel,
     ) {
+        let prompt = prompt.into();
         let channel: std::sync::Arc<dyn crate::infra::channel::AgentChannel> =
             std::sync::Arc::new(crate::infra::channel::cli::CliAgentChannel::with_backend(
                 backend,
@@ -758,7 +766,7 @@ impl SessionManager {
         &mut self,
         services: &AppServices,
         session_id: &str,
-        prompt: &str,
+        prompt: TurnPrompt,
         session_model: AgentModel,
     ) {
         let Ok(session_index) = self.session_index_or_err(session_id) else {
@@ -766,7 +774,7 @@ impl SessionManager {
         };
         let should_replay_history = self.should_replay_history(session_id);
         let (session_output, is_first_message, persisted_session_id, title_to_save) = match self
-            .prepare_reply_context(session_index, prompt, session_model, should_replay_history)
+            .prepare_reply_context(session_index, &prompt, session_model, should_replay_history)
         {
             Ok(Some(reply_context)) => reply_context,
             Ok(None) => return,
@@ -797,7 +805,7 @@ impl SessionManager {
             self.persist_first_message_metadata(
                 services,
                 &persisted_session_id,
-                effective_prompt,
+                &effective_prompt.text,
                 &title,
             )
             .await;
@@ -817,13 +825,13 @@ impl SessionManager {
             &output,
             &app_event_tx,
             &persisted_session_id,
-            prompt,
+            &effective_prompt.text,
         )
         .await;
 
         let command = Self::build_session_command(BuildSessionCommandInput {
             is_first_message,
-            prompt: effective_prompt.to_string(),
+            prompt: effective_prompt.clone(),
             session_model,
             session_output,
         });
@@ -846,7 +854,7 @@ impl SessionManager {
     fn prepare_reply_context(
         &mut self,
         session_index: usize,
-        prompt: &str,
+        prompt: &TurnPrompt,
         session_model: AgentModel,
         should_replay_history: bool,
     ) -> Result<Option<ReplyContext>, String> {
@@ -864,8 +872,8 @@ impl SessionManager {
 
         let mut title_to_save = None;
         if is_first_message {
-            session.prompt = prompt.to_string();
-            let title = prompt.to_string();
+            session.prompt.clone_from(&prompt.text);
+            let title = prompt.text.clone();
             session.title = Some(title.clone());
             title_to_save = Some(title);
         }
@@ -1817,12 +1825,13 @@ mod tests {
     fn test_prepare_reply_context_first_message_sets_title_from_prompt() {
         // Arrange
         let prompt = "Implement optimistic retry path";
+        let turn_prompt = TurnPrompt::from_text(prompt.to_string());
         let session = test_session("", Status::New, None, "");
         let mut session_manager = session_manager_with_one_session(session);
 
         // Act
         let context = session_manager
-            .prepare_reply_context(0, prompt, AgentModel::ClaudeSonnet46, false)
+            .prepare_reply_context(0, &turn_prompt, AgentModel::ClaudeSonnet46, false)
             .expect("reply context should be available")
             .expect("session should produce reply context");
 
@@ -1846,10 +1855,11 @@ mod tests {
             "existing output",
         );
         let mut session_manager = session_manager_with_one_session(session);
+        let prompt = TurnPrompt::from_text("Follow-up prompt".to_string());
 
         // Act
         let context = session_manager
-            .prepare_reply_context(0, "Follow-up prompt", AgentModel::ClaudeSonnet46, false)
+            .prepare_reply_context(0, &prompt, AgentModel::ClaudeSonnet46, false)
             .expect("reply context should be available")
             .expect("session should produce reply context");
 

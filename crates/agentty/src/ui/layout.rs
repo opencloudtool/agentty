@@ -17,6 +17,8 @@ const QUESTION_PANEL_SPACER_HEIGHT: u16 = 1;
 const SLASH_MENU_BORDER_HEIGHT: u16 = 2;
 /// Foreground color used for chat input `@` lookup tokens.
 const CHAT_INPUT_AT_MENTION_COLOR: Color = Color::LightBlue;
+/// Foreground color used for inline prompt image placeholders.
+const CHAT_INPUT_IMAGE_TOKEN_COLOR: Color = Color::Yellow;
 
 /// Height allocation for question mode's prompt, answer input, and footer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -289,12 +291,18 @@ fn compute_input_layout_data(input: &str, width: u16) -> InputLayout {
     let mut line_index: usize = 0;
 
     let mut in_mention = false;
+    let mut image_token_end: Option<usize> = None;
     let mut last_ch = None;
 
     let input_chars = input.chars().collect::<Vec<_>>();
     for (character_index, ch) in input_chars.iter().copied().enumerate() {
+        if image_token_end.is_some_and(|end_index| character_index >= end_index) {
+            image_token_end = None;
+        }
+
         if ch == '\n' {
             in_mention = false;
+            image_token_end = None;
             cursor_positions.push((current_width, line_index));
             display_lines.push(Line::from(std::mem::take(&mut current_line_spans)));
             current_line_spans = vec![Span::raw(continuation_padding.clone())];
@@ -330,7 +338,17 @@ fn compute_input_layout_data(input: &str, width: u16) -> InputLayout {
             in_mention = false;
         }
 
-        let style = if in_mention {
+        if image_token_end.is_none() && ch == '[' {
+            image_token_end = image_token_end_index(&input_chars, character_index);
+        }
+
+        let is_image_token = image_token_end.is_some_and(|end_index| character_index < end_index);
+
+        let style = if is_image_token {
+            Style::default()
+                .fg(CHAT_INPUT_IMAGE_TOKEN_COLOR)
+                .add_modifier(Modifier::BOLD)
+        } else if in_mention {
             Style::default().fg(CHAT_INPUT_AT_MENTION_COLOR)
         } else {
             Style::default()
@@ -370,6 +388,41 @@ fn compute_input_layout_data(input: &str, width: u16) -> InputLayout {
         cursor_positions,
         display_lines,
     }
+}
+
+/// Returns the exclusive end index for an `[Image #n]` placeholder token that
+/// starts at `start_index`.
+fn image_token_end_index(input_chars: &[char], start_index: usize) -> Option<usize> {
+    let token_body = input_chars.get(start_index..)?;
+
+    if token_body.len() < "[Image #1]".chars().count() || token_body.first() != Some(&'[') {
+        return None;
+    }
+
+    let image_prefix = ['[', 'I', 'm', 'a', 'g', 'e', ' ', '#'];
+    if token_body.get(..image_prefix.len())? != image_prefix {
+        return None;
+    }
+
+    let mut scan_index = start_index + image_prefix.len();
+    let mut saw_digit = false;
+
+    while let Some(ch) = input_chars.get(scan_index) {
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            scan_index += 1;
+
+            continue;
+        }
+
+        if *ch == ']' && saw_digit {
+            return Some(scan_index + 1);
+        }
+
+        return None;
+    }
+
+    None
 }
 
 fn target_line_index(
@@ -1000,6 +1053,47 @@ mod tests {
         let spans = &line.spans;
 
         for span in spans.iter().skip(1) {
+            assert_eq!(span.style.fg, None);
+        }
+    }
+
+    #[test]
+    fn test_compute_input_layout_highlights_image_placeholder_tokens() {
+        // Arrange
+        let input = "Review [Image #12] before merge";
+        let width = 60;
+
+        // Act
+        let (lines, _, _) = compute_input_layout(input, width, 0);
+
+        // Assert
+        let line = &lines[0];
+        let spans = &line.spans;
+        let image_start = 1 + "Review ".chars().count();
+        let image_end = image_start + "[Image #12]".chars().count();
+
+        for span in spans.iter().take(image_end).skip(image_start) {
+            assert_eq!(span.style.fg, Some(CHAT_INPUT_IMAGE_TOKEN_COLOR));
+            assert!(span.style.add_modifier.contains(Modifier::BOLD));
+        }
+    }
+
+    #[test]
+    fn test_compute_input_layout_does_not_highlight_invalid_image_like_tokens() {
+        // Arrange
+        let input = "Review [Image #] before merge";
+        let width = 60;
+
+        // Act
+        let (lines, _, _) = compute_input_layout(input, width, 0);
+
+        // Assert
+        let line = &lines[0];
+        let spans = &line.spans;
+        let token_start = 1 + "Review ".chars().count();
+        let token_end = token_start + "[Image #]".chars().count();
+
+        for span in spans.iter().take(token_end).skip(token_start) {
             assert_eq!(span.style.fg, None);
         }
     }

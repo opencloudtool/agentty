@@ -3,6 +3,7 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 use crate::app::App;
 use crate::domain::input::InputState;
 use crate::infra::agent::protocol::QuestionItem;
+use crate::infra::channel::TurnPrompt;
 use crate::runtime::EventResult;
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode};
 
@@ -245,7 +246,8 @@ async fn submit_response(app: &mut App, response: String) {
         session_id: session_id.clone(),
         scroll_offset: None,
     };
-    app.reply(&session_id, &question_reply).await;
+    app.reply(&session_id, TurnPrompt::from_text(question_reply))
+        .await;
 }
 
 /// Writes one response into question mode and returns completion payload when

@@ -84,16 +84,25 @@ impl AgentChannel for CliAgentChannel {
         req: TurnRequest,
         events: mpsc::UnboundedSender<TurnEvent>,
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
+        if req.prompt.has_attachments() {
+            return Box::pin(async {
+                Err(AgentError(
+                    "Pasted images are currently only supported for Codex session models."
+                        .to_string(),
+                ))
+            });
+        }
+
         let backend = Arc::clone(&self.backend);
         let build_result = self.backend.build_command(BuildCommandRequest {
             reasoning_level: req.reasoning_level,
             folder: &req.folder,
             mode: match &req.mode {
                 TurnMode::Start => AgentCommandMode::Start {
-                    prompt: &req.prompt,
+                    prompt: &req.prompt.text,
                 },
                 TurnMode::Resume { session_output } => AgentCommandMode::Resume {
-                    prompt: &req.prompt,
+                    prompt: &req.prompt.text,
                     session_output: session_output.as_deref(),
                 },
             },
@@ -382,7 +391,7 @@ mod tests {
             live_session_output: None,
             model: "claude-sonnet-4-6".to_string(),
             mode: TurnMode::Start,
-            prompt: "Write a test".to_string(),
+            prompt: "Write a test".into(),
             provider_conversation_id: None,
         }
     }

@@ -12,7 +12,7 @@ use crate::ui::state::app_mode::{AppMode, ConfirmationIntent, DoneSessionOutputM
 use crate::ui::state::help_action::{
     HelpAction, project_list_actions, session_list_actions, settings_actions, stats_actions,
 };
-use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
+use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState, PromptSlashState};
 
 /// Handles key input while the app is in list mode.
 ///
@@ -279,6 +279,7 @@ async fn open_new_session_prompt(app: &mut App) -> io::Result<()> {
 
     app.mode = AppMode::Prompt {
         at_mention_state: None,
+        attachment_state: PromptAttachmentState::default(),
         history_state: PromptHistoryState::new(Vec::new()),
         slash_state: PromptSlashState::new(),
         session_id,

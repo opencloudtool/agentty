@@ -1,5 +1,7 @@
 use super::help_action::{self, HelpAction, ViewHelpState, ViewSessionState};
-use super::prompt::{PromptAtMentionState, PromptHistoryState, PromptSlashState};
+use super::prompt::{
+    PromptAtMentionState, PromptAttachmentState, PromptHistoryState, PromptSlashState,
+};
 use crate::domain::input::InputState;
 use crate::domain::session::PublishBranchAction;
 use crate::infra::agent::protocol::QuestionItem;
@@ -133,12 +135,23 @@ pub enum AppMode {
         /// View state restored after publish or cancel.
         restore_view: ConfirmationViewMode,
     },
+    /// Session chat composer for the first prompt or a follow-up reply.
     Prompt {
+        /// Active `@`-mention dropdown state for file and directory lookup.
         at_mention_state: Option<PromptAtMentionState>,
+        /// Ordered local image attachments referenced by inline placeholders in
+        /// `input`.
+        attachment_state: PromptAttachmentState,
+        /// Prompt-history navigation state for `Up`/`Down`.
         history_state: PromptHistoryState,
+        /// Slash-command selection state for the current prompt input.
         slash_state: PromptSlashState,
+        /// Session whose prompt composer is currently active.
         session_id: String,
+        /// Editable prompt text, including inline attachment placeholders.
         input: InputState,
+        /// Scroll position applied to the session transcript above the
+        /// composer.
         scroll_offset: Option<u16>,
     },
     View {

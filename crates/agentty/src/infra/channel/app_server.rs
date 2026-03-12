@@ -18,7 +18,7 @@ use crate::infra::app_server::{
 };
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnMode,
-    TurnRequest, TurnResult,
+    TurnPrompt, TurnRequest, TurnResult,
 };
 
 /// Maximum number of repair turns for strict structured-protocol providers.
@@ -84,6 +84,13 @@ impl AgentChannel for AppServerAgentChannel {
         let should_stream_assistant_messages = !requires_strict_structured_output(kind);
 
         Box::pin(async move {
+            if req.prompt.has_attachments() && kind != AgentKind::Codex {
+                return Err(AgentError(
+                    "Pasted images are currently only supported for Codex session models."
+                        .to_string(),
+                ));
+            }
+
             let session_output = match req.mode {
                 TurnMode::Start => None,
                 TurnMode::Resume { session_output } => session_output,
@@ -306,7 +313,7 @@ fn build_repair_request(
         folder: original_request.folder.clone(),
         live_session_output: None,
         model: original_request.model.clone(),
-        prompt: build_protocol_repair_prompt(assistant_message),
+        prompt: TurnPrompt::from_text(build_protocol_repair_prompt(assistant_message)),
         provider_conversation_id: provider_conversation_id
             .map(ToString::to_string)
             .or_else(|| original_request.provider_conversation_id.clone()),
@@ -326,7 +333,7 @@ mod tests {
     use super::*;
     use crate::domain::agent::ReasoningLevel;
     use crate::infra::app_server::{AppServerTurnResponse, MockAppServerClient};
-    use crate::infra::channel::TurnMode;
+    use crate::infra::channel::{TurnMode, TurnPromptAttachment};
 
     fn make_turn_request() -> TurnRequest {
         TurnRequest {
@@ -335,7 +342,7 @@ mod tests {
             live_session_output: None,
             model: "gemini-3-flash-preview".to_string(),
             mode: TurnMode::Start,
-            prompt: "Do something".to_string(),
+            prompt: "Do something".into(),
             provider_conversation_id: None,
         }
     }
@@ -716,6 +723,31 @@ mod tests {
             "Recovered output"
         );
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    /// Verifies non-Codex providers reject pasted image prompt payloads before
+    /// transport execution starts.
+    async fn test_run_turn_rejects_image_attachments_for_gemini() {
+        // Arrange
+        let mut mock_client = MockAppServerClient::new();
+        mock_client.expect_run_turn().times(0);
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Gemini);
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let mut request = make_turn_request();
+        request.prompt.attachments.push(TurnPromptAttachment {
+            placeholder: "[Image #1]".to_string(),
+            local_image_path: PathBuf::from("/tmp/image.png"),
+        });
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), request, events_tx)
+            .await;
+
+        // Assert
+        let error = result.expect_err("turn should fail");
+        assert!(error.0.contains("only supported for Codex"));
     }
 
     #[tokio::test]

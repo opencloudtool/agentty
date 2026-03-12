@@ -15,7 +15,8 @@ use crate::domain::session::{SessionStats, Status};
 use crate::domain::setting::SettingName;
 use crate::infra::agent;
 use crate::infra::channel::{
-    AgentChannel, AgentError, TurnEvent, TurnMode, TurnRequest, TurnResult, create_agent_channel,
+    AgentChannel, AgentError, TurnEvent, TurnMode, TurnPrompt, TurnRequest, TurnResult,
+    create_agent_channel,
 };
 use crate::infra::db::Database;
 use crate::infra::git::GitClient;
@@ -35,8 +36,8 @@ pub(super) enum SessionCommand {
         operation_id: String,
         /// Whether this is a first-message start or a follow-up resume.
         mode: TurnMode,
-        /// User prompt text.
-        prompt: String,
+        /// Structured user prompt payload.
+        prompt: TurnPrompt,
         /// Session model used for stats and post-turn operations.
         session_model: AgentModel,
     },
@@ -283,7 +284,7 @@ impl SessionWorkerService {
     async fn run_channel_turn(
         context: &SessionWorkerContext,
         mode: TurnMode,
-        prompt: String,
+        prompt: TurnPrompt,
         session_model: AgentModel,
     ) -> Result<(), String> {
         if matches!(mode, TurnMode::Resume { .. }) {
@@ -342,7 +343,7 @@ impl SessionWorkerService {
             context,
             session_project_id,
             &mode,
-            &prompt,
+            &prompt.text,
             session_model,
         )
         .await;
@@ -848,7 +849,7 @@ mod tests {
         let start_command = SessionCommand::Run {
             operation_id: "op-start".to_string(),
             mode: TurnMode::Start,
-            prompt: "prompt".to_string(),
+            prompt: "prompt".into(),
             session_model: AgentModel::ClaudeSonnet46,
         };
         let resume_command = SessionCommand::Run {
@@ -856,7 +857,7 @@ mod tests {
             mode: TurnMode::Resume {
                 session_output: None,
             },
-            prompt: "prompt".to_string(),
+            prompt: "prompt".into(),
             session_model: AgentModel::ClaudeSonnet46,
         };
 

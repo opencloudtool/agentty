@@ -135,11 +135,16 @@ The diff panel title shows aggregate line-change totals as `+added` and
 |-----|--------|
 | `Enter` | Submit prompt |
 | `Alt+Enter` or `Shift+Enter` | Insert newline |
+| `Ctrl+V` or `Alt+V` | Paste one clipboard image as an inline `[Image #n]` placeholder |
 | `Option+Backspace` | Delete previous word |
 | `Cmd+Backspace` | Delete current line |
 | `Esc` | Cancel |
 | `@` | Open file picker |
 | `/` | Open slash commands |
+
+Prompt input keeps regular text paste on terminal `Event::Paste`. The dedicated
+image paste shortcuts insert highlighted `[Image #n]` tokens directly in the
+composer and send the referenced local image only for Codex session models.
 
 ## Question Input — Option Selection
 

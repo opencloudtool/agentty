@@ -243,7 +243,7 @@ fn build_turn_request(folder: PathBuf, model: AgentModel) -> TurnRequest {
         live_session_output: None,
         model: model.as_str().to_string(),
         mode: TurnMode::Start,
-        prompt: PROTOCOL_COMPLIANCE_PROMPT.to_string(),
+        prompt: PROTOCOL_COMPLIANCE_PROMPT.to_string().into(),
         provider_conversation_id: None,
     }
 }

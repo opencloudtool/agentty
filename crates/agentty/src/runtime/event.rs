@@ -225,7 +225,7 @@ mod tests {
     use crate::infra::agent::protocol::QuestionItem;
     use crate::infra::app_server;
     use crate::ui::state::app_mode::AppMode;
-    use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
+    use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState, PromptSlashState};
 
     /// Returns a mock app-server client wrapped in `Arc` for runtime tests.
     fn mock_app_server() -> Arc<dyn app_server::AppServerClient> {
@@ -389,6 +389,7 @@ mod tests {
         let session_id = "session-1".to_string();
         app.mode = AppMode::Prompt {
             at_mention_state: None,
+            attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::default(),
             input: InputState::default(),
             scroll_offset: None,

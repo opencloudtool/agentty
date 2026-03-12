@@ -18,7 +18,7 @@ use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::ui::util::{
     calculate_input_height, question_panel_layout, truncate_with_ellipsis, wrap_lines,
 };
-use crate::ui::{Component, Page};
+use crate::ui::{Component, Page, style};
 
 /// Maximum rendered height of the prompt input panel, including borders.
 const CHAT_INPUT_MAX_PANEL_HEIGHT: u16 = 10;
@@ -331,7 +331,8 @@ impl<'a> SessionChatPage<'a> {
             let input_height = calculate_input_height(area.width.saturating_sub(2), input.text())
                 .min(CHAT_INPUT_MAX_PANEL_HEIGHT);
             let desired_bottom_height = input_height
-                .saturating_add(u16::try_from(dropdown_option_count).unwrap_or(u16::MAX));
+                .saturating_add(u16::try_from(dropdown_option_count).unwrap_or(u16::MAX))
+                .saturating_add(1);
             let max_bottom_height = area.height.saturating_sub(1);
 
             return desired_bottom_height.min(max_bottom_height);
@@ -379,6 +380,7 @@ impl<'a> SessionChatPage<'a> {
     fn render_bottom_panel(&self, f: &mut Frame, bottom_area: Rect, session: &Session) {
         if let AppMode::Prompt {
             at_mention_state,
+            attachment_state,
             input,
             slash_state,
             ..
@@ -411,7 +413,25 @@ impl<'a> SessionChatPage<'a> {
                 chat_input = chat_input.slash_menu(menu);
             }
 
-            chat_input.render(f, bottom_area);
+            if bottom_area.height <= 1 {
+                chat_input.render(f, bottom_area);
+
+                return;
+            }
+
+            let sections = Layout::default()
+                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .split(bottom_area);
+
+            chat_input.render(f, sections[0]);
+            f.render_widget(
+                Paragraph::new(Self::prompt_footer_text(
+                    session,
+                    attachment_state.attachments.len(),
+                ))
+                .style(Style::default().fg(style::palette::TEXT_MUTED)),
+                sections[1],
+            );
 
             return;
         }
@@ -487,6 +507,27 @@ impl<'a> SessionChatPage<'a> {
             DoneSessionOutputMode::Summary => "output",
             DoneSessionOutputMode::Output | DoneSessionOutputMode::FocusedReview => "summary",
         }
+    }
+
+    /// Returns the prompt-mode footer line shown under the composer.
+    fn prompt_footer_text(session: &Session, attachment_count: usize) -> String {
+        let mut footer_segments = vec![
+            "Enter submit".to_string(),
+            "Alt+Enter newline".to_string(),
+            "Ctrl+V/Alt+V paste image".to_string(),
+            "Esc cancel".to_string(),
+        ];
+
+        if attachment_count > 0 {
+            let suffix = if attachment_count == 1 { "" } else { "s" };
+            footer_segments.push(format!("{attachment_count} image{suffix} ready"));
+        }
+
+        if session.model.kind() != AgentKind::Codex {
+            footer_segments.push("send images with Codex".to_string());
+        }
+
+        footer_segments.join("  ·  ")
     }
 }
 
@@ -694,7 +735,7 @@ mod tests {
     use crate::domain::session::{SessionSize, SessionStats};
     use crate::infra::agent::protocol::QuestionItem;
     use crate::infra::file_index::FileEntry;
-    use crate::ui::state::prompt::{PromptHistoryState, PromptSlashState};
+    use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState, PromptSlashState};
 
     fn session_fixture() -> Session {
         Session {
@@ -1186,6 +1227,7 @@ mod tests {
         let session = session_fixture();
         let mode = AppMode::Prompt {
             at_mention_state: None,
+            attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::default(),
             slash_state: PromptSlashState::new(),
             session_id: "session-id".to_string(),
@@ -1199,7 +1241,7 @@ mod tests {
         let bottom_height = page.bottom_height(area, &session);
 
         // Assert
-        assert_eq!(bottom_height, CHAT_INPUT_MAX_PANEL_HEIGHT);
+        assert_eq!(bottom_height, CHAT_INPUT_MAX_PANEL_HEIGHT + 1);
     }
 
     #[test]
@@ -1208,6 +1250,7 @@ mod tests {
         let session = session_fixture();
         let mode = AppMode::Prompt {
             at_mention_state: None,
+            attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::default(),
             slash_state: PromptSlashState::new(),
             session_id: "session-id".to_string(),
@@ -1222,6 +1265,34 @@ mod tests {
 
         // Assert
         assert_eq!(bottom_height, 7);
+    }
+
+    #[test]
+    fn test_prompt_footer_text_shows_attachment_count_for_codex_sessions() {
+        // Arrange
+        let mut session = session_fixture();
+        session.model = AgentModel::Gpt54;
+
+        // Act
+        let footer_text = SessionChatPage::prompt_footer_text(&session, 2);
+
+        // Assert
+        assert!(footer_text.contains("Ctrl+V/Alt+V paste image"));
+        assert!(footer_text.contains("2 images ready"));
+        assert!(!footer_text.contains("send images with Codex"));
+    }
+
+    #[test]
+    fn test_prompt_footer_text_warns_when_current_model_cannot_send_images() {
+        // Arrange
+        let session = session_fixture();
+
+        // Act
+        let footer_text = SessionChatPage::prompt_footer_text(&session, 1);
+
+        // Assert
+        assert!(footer_text.contains("1 image ready"));
+        assert!(footer_text.contains("send images with Codex"));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::domain::agent::ReasoningLevel;
 use crate::infra::agent;
+use crate::infra::channel::TurnPrompt;
 
 /// Boxed async result used by [`AppServerClient`] trait methods.
 pub type AppServerFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -59,8 +60,8 @@ pub struct AppServerTurnRequest {
     pub live_session_output: Option<Arc<Mutex<String>>>,
     /// Provider-specific model identifier.
     pub model: String,
-    /// User prompt text for this turn.
-    pub prompt: String,
+    /// Structured user prompt for this turn.
+    pub prompt: TurnPrompt,
     /// Provider-native thread/session id used to resume context in a newly
     /// started runtime.
     pub provider_conversation_id: Option<String>,
@@ -232,7 +233,7 @@ where
     RunTurn:
         for<'scope> FnMut(
             &'scope mut Runtime,
-            &'scope str,
+            &'scope TurnPrompt,
         )
             -> BorrowedAppServerFuture<'scope, Result<(String, u64, u64), String>>,
     ShutdownRuntime: for<'scope> FnMut(&'scope mut Runtime) -> BorrowedAppServerFuture<'scope, ()>,
@@ -365,14 +366,14 @@ async fn build_attempt_prompt<Runtime, ShutdownRuntime>(
     protocol_instruction_mode: agent::ProtocolInstructionMode,
     shutdown_runtime: &mut ShutdownRuntime,
     runtime: &mut Runtime,
-) -> Result<String, String>
+) -> Result<TurnPrompt, String>
 where
     ShutdownRuntime: for<'scope> FnMut(&'scope mut Runtime) -> BorrowedAppServerFuture<'scope, ()>,
 {
     let session_output = read_latest_session_output(request);
 
     match turn_prompt_for_runtime(
-        request.prompt.as_str(),
+        &request.prompt,
         session_output.as_deref(),
         replays_context,
         protocol_instruction_mode,
@@ -414,26 +415,33 @@ fn read_latest_session_output(request: &AppServerTurnRequest) -> Option<String> 
 /// # Errors
 /// Returns an error when Askama prompt rendering fails after a context reset.
 pub fn turn_prompt_for_runtime(
-    prompt: &str,
+    prompt: impl Into<TurnPrompt>,
     session_output: Option<&str>,
     context_reset: bool,
     protocol_instruction_mode: agent::ProtocolInstructionMode,
-) -> Result<String, String> {
+) -> Result<TurnPrompt, String> {
+    let prompt = prompt.into();
     let turn_prompt = if context_reset {
-        agent::build_resume_prompt(prompt, session_output).map_err(|error| error.to_string())?
+        agent::build_resume_prompt(&prompt.text, session_output)
+            .map_err(|error| error.to_string())?
     } else {
-        prompt.to_string()
+        prompt.text.clone()
     };
 
     let turn_prompt = agent::prepend_repo_root_path_instructions(&turn_prompt)
         .map_err(|error| error.to_string())?;
 
-    agent::prepend_protocol_instructions(
+    let turn_prompt = agent::prepend_protocol_instructions(
         &turn_prompt,
         protocol_instruction_mode,
         agent::ProtocolPromptKind::SessionDiscussion,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+
+    Ok(TurnPrompt {
+        attachments: prompt.attachments,
+        text: turn_prompt,
+    })
 }
 
 #[cfg(test)]
@@ -443,6 +451,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::infra::channel::TurnPrompt;
 
     struct TestRuntime {
         model: String,
@@ -522,7 +531,7 @@ mod tests {
             live_session_output: Some(live_output),
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
-            prompt: "Do work".to_string(),
+            prompt: "Do work".into(),
             provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
@@ -544,7 +553,7 @@ mod tests {
             live_session_output: Some(live_output),
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
-            prompt: "Do work".to_string(),
+            prompt: "Do work".into(),
             provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
@@ -565,7 +574,7 @@ mod tests {
             live_session_output: None,
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
-            prompt: "Do work".to_string(),
+            prompt: "Do work".into(),
             provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
@@ -586,7 +595,7 @@ mod tests {
             live_session_output: None,
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
-            prompt: "Do work".to_string(),
+            prompt: "Do work".into(),
             provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: None,
@@ -609,7 +618,7 @@ mod tests {
             live_session_output: Some(live_output),
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
-            prompt: "Do work".to_string(),
+            prompt: "Do work".into(),
             provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
@@ -635,7 +644,7 @@ mod tests {
             {
                 let run_count = Arc::new(AtomicUsize::new(0));
                 let captured_retry_prompt = Arc::clone(&captured_retry_prompt);
-                move |_runtime: &mut TestRuntime, prompt: &str| {
+                move |_runtime: &mut TestRuntime, prompt: &TurnPrompt| {
                     let attempt = run_count.fetch_add(1, Ordering::SeqCst);
                     let prompt = prompt.to_string();
                     let captured_retry_prompt = Arc::clone(&captured_retry_prompt);
@@ -684,7 +693,7 @@ mod tests {
             live_session_output: None,
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
-            prompt: "Do work".to_string(),
+            prompt: "Do work".into(),
             provider_conversation_id: None,
             session_id: "session-1".to_string(),
             session_output: Some("previous output".to_string()),
@@ -767,7 +776,7 @@ mod tests {
             live_session_output: None,
             folder: PathBuf::from("/tmp"),
             model: "model-a".to_string(),
-            prompt: "Do work".to_string(),
+            prompt: "Do work".into(),
             provider_conversation_id: Some("thread-123".to_string()),
             session_id: "session-1".to_string(),
             session_output: Some("previous output".to_string()),
@@ -792,7 +801,7 @@ mod tests {
             },
             {
                 let captured_prompt = Arc::clone(&captured_prompt);
-                move |_runtime: &mut TestRuntime, prompt: &str| {
+                move |_runtime: &mut TestRuntime, prompt: &TurnPrompt| {
                     let prompt = prompt.to_string();
                     let captured_prompt = Arc::clone(&captured_prompt);
 

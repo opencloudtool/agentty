@@ -14,6 +14,95 @@ use crate::infra::agent::AgentResponse;
 /// Boxed async result used by [`AgentChannel`] trait methods.
 pub type AgentFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// One local image attachment referenced from a prompt placeholder.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TurnPromptAttachment {
+    /// Inline placeholder token such as `[Image #1]` used in prompt text.
+    pub placeholder: String,
+    /// Local file path persisted for transport upload.
+    pub local_image_path: PathBuf,
+}
+
+/// Structured prompt payload for one agent turn.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TurnPrompt {
+    /// Ordered local image attachments referenced by `text`.
+    pub attachments: Vec<TurnPromptAttachment>,
+    /// Prompt text submitted by the user, including inline placeholders.
+    pub text: String,
+}
+
+impl TurnPrompt {
+    /// Creates a text-only prompt payload.
+    #[must_use]
+    pub fn from_text(text: String) -> Self {
+        Self {
+            attachments: Vec::new(),
+            text,
+        }
+    }
+
+    /// Returns whether the payload contains no text and no attachments.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.attachments.is_empty()
+    }
+
+    /// Returns whether the payload contains one or more image attachments.
+    #[must_use]
+    pub fn has_attachments(&self) -> bool {
+        !self.attachments.is_empty()
+    }
+
+    /// Returns whether the prompt text contains `needle`.
+    #[must_use]
+    pub fn contains(&self, needle: &str) -> bool {
+        self.text.contains(needle)
+    }
+
+    /// Returns whether the prompt text ends with `suffix`.
+    #[must_use]
+    pub fn ends_with(&self, suffix: &str) -> bool {
+        self.text.ends_with(suffix)
+    }
+}
+
+impl From<String> for TurnPrompt {
+    fn from(text: String) -> Self {
+        Self::from_text(text)
+    }
+}
+
+impl From<&str> for TurnPrompt {
+    fn from(text: &str) -> Self {
+        Self::from_text(text.to_string())
+    }
+}
+
+impl From<&TurnPrompt> for TurnPrompt {
+    fn from(prompt: &TurnPrompt) -> Self {
+        prompt.clone()
+    }
+}
+
+impl fmt::Display for TurnPrompt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.text)
+    }
+}
+
+impl PartialEq<&str> for TurnPrompt {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+impl PartialEq<TurnPrompt> for &str {
+    fn eq(&self, other: &TurnPrompt) -> bool {
+        *self == other.text
+    }
+}
+
 /// Turn initiation mode for [`TurnRequest`].
 #[derive(Debug, Clone)]
 pub enum TurnMode {
@@ -42,8 +131,8 @@ pub struct TurnRequest {
     pub model: String,
     /// Turn initiation mode (start or resume).
     pub mode: TurnMode,
-    /// User prompt to send.
-    pub prompt: String,
+    /// Structured user prompt for the turn.
+    pub prompt: TurnPrompt,
     /// Provider-native conversation identifier loaded from persistence.
     ///
     /// When present, app-server channels forward this to the provider runtime

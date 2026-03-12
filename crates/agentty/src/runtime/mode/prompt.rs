@@ -5,8 +5,9 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 use crate::app::{App, AppEvent, SessionStatsUsage};
 use crate::domain::agent::AgentKind;
 use crate::domain::input::InputState;
+use crate::infra::channel::{TurnPrompt, TurnPromptAttachment};
 use crate::infra::file_index;
-use crate::runtime::{EventResult, TuiTerminal};
+use crate::runtime::{EventResult, TuiTerminal, clipboard_image};
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode};
 use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::ui::util::{format_token_count, move_input_cursor_down, move_input_cursor_up};
@@ -106,6 +107,9 @@ pub(crate) async fn handle(
         }
         KeyCode::Char('u') if is_control_line_delete_key(key) => {
             handle_prompt_line_delete(app);
+        }
+        KeyCode::Char('v') if is_prompt_image_paste_key(key) => {
+            handle_prompt_image_paste(app, &prompt_context).await;
         }
         KeyCode::Char(character) => {
             handle_prompt_char(app, character, &prompt_context);
@@ -241,6 +245,15 @@ fn is_line_delete_backspace(key: KeyEvent) -> bool {
 /// also the standard Unix "kill line" binding.
 fn is_control_line_delete_key(key: KeyEvent) -> bool {
     key.modifiers == event::KeyModifiers::CONTROL
+}
+
+/// Returns true when the key event should paste one clipboard image into the
+/// prompt composer.
+fn is_prompt_image_paste_key(key: KeyEvent) -> bool {
+    key.code == KeyCode::Char('v')
+        && key
+            .modifiers
+            .intersects(event::KeyModifiers::ALT | event::KeyModifiers::CONTROL)
 }
 
 /// Normalizes pasted text line-endings to `\n`.
@@ -399,10 +412,7 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
         return;
     }
 
-    let prompt = match &mut app.mode {
-        AppMode::Prompt { input, .. } => input.take_text(),
-        _ => String::new(),
-    };
+    let prompt = take_submitted_turn_prompt(app);
     if prompt.is_empty() {
         return;
     }
@@ -417,7 +427,7 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
             .await;
         }
     } else {
-        app.reply(&prompt_context.session_id, &prompt).await;
+        app.reply(&prompt_context.session_id, prompt).await;
     }
 
     app.mode = AppMode::View {
@@ -427,6 +437,91 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
         session_id: prompt_context.session_id.clone(),
         scroll_offset: None,
     };
+}
+
+/// Pastes one clipboard image into the prompt composer as an inline
+/// placeholder token.
+async fn handle_prompt_image_paste(app: &mut App, prompt_context: &PromptContext) {
+    let attachment_number = match &app.mode {
+        AppMode::Prompt {
+            attachment_state, ..
+        } => attachment_state.next_attachment_number,
+        _ => return,
+    };
+
+    match clipboard_image::persist_clipboard_image(&prompt_context.session_id, attachment_number)
+        .await
+    {
+        Ok(persisted_image) => {
+            insert_pasted_image_placeholder(app, persisted_image.local_image_path);
+        }
+        Err(error) => {
+            append_output_for_session(
+                app,
+                &prompt_context.session_id,
+                &format!("\n[Paste Image Error] {error}\n"),
+            )
+            .await;
+        }
+    }
+}
+
+/// Inserts one persisted image placeholder into the prompt input and records
+/// the attachment metadata in prompt state.
+fn insert_pasted_image_placeholder(app: &mut App, local_image_path: std::path::PathBuf) {
+    if let AppMode::Prompt {
+        at_mention_state,
+        attachment_state,
+        history_state,
+        input,
+        slash_state,
+        ..
+    } = &mut app.mode
+    {
+        let placeholder = attachment_state.register_local_image(local_image_path);
+        input.insert_text(&placeholder);
+        history_state.reset_navigation();
+        slash_state.reset();
+
+        if at_mention_state.is_some() && input.at_mention_query().is_none() {
+            *at_mention_state = None;
+        } else if let Some(state) = at_mention_state.as_mut() {
+            state.selected_index = 0;
+        }
+    }
+}
+
+/// Drains the prompt composer into the structured turn payload sent to the
+/// session workflow.
+///
+/// Attachments are filtered against the submitted text so manually deleted
+/// `[Image #n]` placeholders do not leave orphaned image inputs in the final
+/// turn payload.
+fn take_submitted_turn_prompt(app: &mut App) -> TurnPrompt {
+    match &mut app.mode {
+        AppMode::Prompt {
+            attachment_state,
+            input,
+            ..
+        } => {
+            let text = input.take_text();
+            let mut attachments = attachment_state
+                .attachments
+                .iter()
+                .filter(|attachment| text.contains(&attachment.placeholder))
+                .map(|attachment| TurnPromptAttachment {
+                    placeholder: attachment.placeholder.clone(),
+                    local_image_path: attachment.local_image_path.clone(),
+                })
+                .collect::<Vec<_>>();
+            attachments
+                .sort_by_key(|attachment| text.find(&attachment.placeholder).unwrap_or(usize::MAX));
+            attachment_state.reset();
+
+            TurnPrompt { attachments, text }
+        }
+        _ => TurnPrompt::from_text(String::new()),
+    }
 }
 
 async fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContext) {
@@ -770,21 +865,10 @@ fn move_prompt_cursor_word_right(input: &mut InputState) {
 /// This is the standard Unix "kill line" binding and also the sequence macOS
 /// terminals send for `Cmd`+`Backspace`.
 fn handle_prompt_line_delete(app: &mut App) {
-    if let AppMode::Prompt {
-        input,
-        history_state,
-        slash_state,
-        at_mention_state,
-        ..
-    } = &mut app.mode
+    if let AppMode::Prompt { input, .. } = &app.mode
+        && let Some((start, end)) = current_line_delete_range(input)
     {
-        input.delete_current_line();
-
-        history_state.reset_navigation();
-        slash_state.reset();
-        if at_mention_state.is_some() && input.at_mention_query().is_none() {
-            *at_mention_state = None;
-        }
+        apply_prompt_delete_range(app, start, end);
     }
 }
 
@@ -793,35 +877,39 @@ fn handle_prompt_line_delete(app: &mut App) {
 ///
 /// `Cmd`+`Backspace` takes precedence and clears the current line content.
 fn handle_prompt_backspace(app: &mut App, key: KeyEvent) {
-    if let AppMode::Prompt {
-        input,
-        history_state,
-        slash_state,
-        at_mention_state,
-        ..
-    } = &mut app.mode
-    {
-        if is_line_delete_backspace(key) {
-            input.delete_current_line();
-        } else if is_word_delete_backspace(key) {
-            delete_prompt_word_backward(input);
-        } else {
-            input.delete_backward();
-        }
+    let Some(delete_range) = prompt_backspace_range(app, key) else {
+        return;
+    };
 
-        history_state.reset_navigation();
-        slash_state.reset();
-        if at_mention_state.is_some() && input.at_mention_query().is_none() {
-            *at_mention_state = None;
-        }
-    }
+    apply_prompt_delete_range(app, delete_range.0, delete_range.1);
 }
 
-/// Deletes backward to the previous word boundary, removing the previous word
-/// and the whitespace separator directly before it.
-fn delete_prompt_word_backward(input: &mut InputState) {
+/// Returns the character range deleted by one prompt backspace key press.
+fn prompt_backspace_range(app: &App, key: KeyEvent) -> Option<(usize, usize)> {
+    let AppMode::Prompt { input, .. } = &app.mode else {
+        return None;
+    };
+
+    if is_line_delete_backspace(key) {
+        return current_line_delete_range(input);
+    }
+
+    if is_word_delete_backspace(key) {
+        return word_delete_range(input);
+    }
+
     if input.cursor == 0 {
-        return;
+        return None;
+    }
+
+    Some((input.cursor - 1, input.cursor))
+}
+
+/// Returns the character range for deleting the previous word plus adjacent
+/// separator whitespace.
+fn word_delete_range(input: &InputState) -> Option<(usize, usize)> {
+    if input.cursor == 0 {
+        return None;
     }
 
     let cursor = input.cursor;
@@ -840,25 +928,164 @@ fn delete_prompt_word_backward(input: &mut InputState) {
         start -= 1;
     }
 
-    input.replace_range(start, cursor, "");
+    Some((start, cursor))
 }
 
 fn handle_prompt_delete(app: &mut App) {
+    let Some(delete_range) = prompt_delete_range(app) else {
+        return;
+    };
+
+    apply_prompt_delete_range(app, delete_range.0, delete_range.1);
+}
+
+/// Returns the character range deleted by one prompt forward-delete key press.
+fn prompt_delete_range(app: &App) -> Option<(usize, usize)> {
+    let AppMode::Prompt { input, .. } = &app.mode else {
+        return None;
+    };
+
+    let char_count = input.text().chars().count();
+    if input.cursor >= char_count {
+        return None;
+    }
+
+    Some((input.cursor, input.cursor + 1))
+}
+
+/// Applies one prompt deletion range, expanding it to cover full image
+/// placeholder tokens and removing orphaned attachments from prompt state.
+fn apply_prompt_delete_range(app: &mut App, start: usize, end: usize) {
     if let AppMode::Prompt {
-        input,
-        history_state,
-        slash_state,
+        attachment_state,
         at_mention_state,
+        history_state,
+        input,
+        slash_state,
         ..
     } = &mut app.mode
     {
-        input.delete_forward();
+        let (delete_start, delete_end) =
+            expand_delete_range_to_image_tokens(input.text(), start, end);
+        if delete_start >= delete_end {
+            return;
+        }
+
+        input.replace_range(delete_start, delete_end, "");
+        attachment_state
+            .attachments
+            .retain(|attachment| input.text().contains(&attachment.placeholder));
+        attachment_state.refresh_next_attachment_number();
+
         history_state.reset_navigation();
         slash_state.reset();
         if at_mention_state.is_some() && input.at_mention_query().is_none() {
             *at_mention_state = None;
         }
     }
+}
+
+/// Returns the character range deleted by one current-line delete action.
+fn current_line_delete_range(input: &InputState) -> Option<(usize, usize)> {
+    let characters: Vec<char> = input.text().chars().collect();
+    if characters.is_empty() {
+        return None;
+    }
+
+    let cursor = input.cursor.min(characters.len());
+    let mut line_start = cursor;
+    while line_start > 0 && characters[line_start - 1] != '\n' {
+        line_start -= 1;
+    }
+
+    let mut line_end = cursor;
+    while line_end < characters.len() && characters[line_end] != '\n' {
+        line_end += 1;
+    }
+
+    let delete_range = if line_start > 0 {
+        (line_start - 1, line_end)
+    } else if line_end < characters.len() {
+        (line_start, line_end + 1)
+    } else {
+        (line_start, line_end)
+    };
+
+    if delete_range.0 == delete_range.1 {
+        None
+    } else {
+        Some(delete_range)
+    }
+}
+
+/// Expands one deletion range to cover any overlapping `[Image #n]`
+/// placeholders so partial token edits remove the whole placeholder.
+fn expand_delete_range_to_image_tokens(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let mut expanded_start = start;
+    let mut expanded_end = end;
+
+    for (token_start, token_end, _) in image_token_ranges(text) {
+        if token_start < expanded_end && expanded_start < token_end {
+            expanded_start = expanded_start.min(token_start);
+            expanded_end = expanded_end.max(token_end);
+        }
+    }
+
+    (expanded_start, expanded_end)
+}
+
+/// Returns all valid `[Image #n]` placeholder token ranges in `text`.
+fn image_token_ranges(text: &str) -> Vec<(usize, usize, String)> {
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut ranges = Vec::new();
+    let mut index = 0;
+
+    while index < characters.len() {
+        if let Some(end_index) = image_token_end_index(&characters, index) {
+            let placeholder = characters[index..end_index].iter().collect::<String>();
+            ranges.push((index, end_index, placeholder));
+            index = end_index;
+
+            continue;
+        }
+
+        index += 1;
+    }
+
+    ranges
+}
+
+/// Returns the exclusive end index for an `[Image #n]` placeholder token that
+/// starts at `start_index`.
+fn image_token_end_index(characters: &[char], start_index: usize) -> Option<usize> {
+    let token_body = characters.get(start_index..)?;
+    if token_body.len() < "[Image #1]".chars().count() || token_body.first() != Some(&'[') {
+        return None;
+    }
+
+    let image_prefix = ['[', 'I', 'm', 'a', 'g', 'e', ' ', '#'];
+    if token_body.get(..image_prefix.len())? != image_prefix {
+        return None;
+    }
+
+    let mut scan_index = start_index + image_prefix.len();
+    let mut saw_digit = false;
+    while let Some(ch) = characters.get(scan_index) {
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            scan_index += 1;
+
+            continue;
+        }
+
+        if *ch == ']' && saw_digit {
+            return Some(scan_index + 1);
+        }
+
+        return None;
+    }
+
+    None
 }
 
 /// Inserts one typed character into prompt input and keeps at-mention state
@@ -1030,7 +1257,9 @@ mod tests {
     use crate::infra::app_server;
     use crate::infra::db::Database;
     use crate::infra::file_index::FileEntry;
-    use crate::ui::state::prompt::{PromptAtMentionState, PromptHistoryState, PromptSlashState};
+    use crate::ui::state::prompt::{
+        PromptAtMentionState, PromptAttachmentState, PromptHistoryState, PromptSlashState,
+    };
 
     fn setup_test_git_repo(path: &Path) {
         Command::new("git")
@@ -1093,6 +1322,7 @@ mod tests {
             .expect("failed to create session");
         app.mode = AppMode::Prompt {
             at_mention_state,
+            attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::new(Vec::new()),
             slash_state: PromptSlashState::new(),
             session_id,
@@ -1418,6 +1648,42 @@ mod tests {
     }
 
     #[test]
+    fn test_is_prompt_image_paste_key_accepts_alt_v() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('v'), event::KeyModifiers::ALT);
+
+        // Act
+        let result = is_prompt_image_paste_key(key);
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_prompt_image_paste_key_accepts_ctrl_v() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('v'), event::KeyModifiers::CONTROL);
+
+        // Act
+        let result = is_prompt_image_paste_key(key);
+
+        // Assert
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_prompt_image_paste_key_rejects_plain_v() {
+        // Arrange
+        let key = KeyEvent::new(KeyCode::Char('v'), event::KeyModifiers::NONE);
+
+        // Act
+        let result = is_prompt_image_paste_key(key);
+
+        // Assert
+        assert!(!result);
+    }
+
+    #[test]
     fn test_normalize_pasted_text_replaces_carriage_returns() {
         // Arrange
         let pasted_text = "line 1\r\nline 2\rline 3\nline 4";
@@ -1445,6 +1711,133 @@ mod tests {
                 "prefix line 1\nline 2\nline 3".chars().count()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_insert_pasted_image_placeholder_records_attachment_and_resets_prompt_state() {
+        // Arrange
+        let mut at_mention_state = PromptAtMentionState::new(vec![FileEntry {
+            is_dir: false,
+            path: "src/main.rs".to_string(),
+        }]);
+        at_mention_state.selected_index = 4;
+        let (mut app, _base_dir) = new_test_prompt_app("Review ", Some(at_mention_state)).await;
+        if let AppMode::Prompt {
+            history_state,
+            slash_state,
+            ..
+        } = &mut app.mode
+        {
+            history_state.selected_index = Some(0);
+            history_state.draft_text = Some("draft".to_string());
+            slash_state.selected_index = 2;
+        }
+
+        // Act
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
+
+        // Assert
+        if let AppMode::Prompt {
+            at_mention_state,
+            attachment_state,
+            history_state,
+            input,
+            slash_state,
+            ..
+        } = &app.mode
+        {
+            assert_eq!(input.text(), "Review [Image #1]");
+            assert_eq!(attachment_state.attachments.len(), 1);
+            assert_eq!(
+                attachment_state.attachments[0].local_image_path,
+                std::path::PathBuf::from("/tmp/image-1.png")
+            );
+            assert_eq!(history_state.selected_index, None);
+            assert_eq!(history_state.draft_text, None);
+            assert_eq!(*slash_state, PromptSlashState::new());
+            assert!(at_mention_state.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_take_submitted_turn_prompt_drains_text_and_attachment_state() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("Review ", None).await;
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
+
+        // Act
+        let prompt = take_submitted_turn_prompt(&mut app);
+
+        // Assert
+        assert_eq!(prompt.text, "Review [Image #1]");
+        assert_eq!(prompt.attachments.len(), 1);
+        assert_eq!(prompt.attachments[0].placeholder, "[Image #1]");
+        assert_eq!(
+            prompt.attachments[0].local_image_path,
+            std::path::PathBuf::from("/tmp/image-1.png")
+        );
+        if let AppMode::Prompt {
+            attachment_state,
+            input,
+            ..
+        } = &app.mode
+        {
+            assert!(input.text().is_empty());
+            assert!(attachment_state.attachments.is_empty());
+            assert_eq!(attachment_state.next_attachment_number, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_take_submitted_turn_prompt_filters_deleted_attachment_placeholders() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("Review ", None).await;
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-2.png"));
+        if let AppMode::Prompt { input, .. } = &mut app.mode {
+            *input = InputState::with_text("Review [Image #2]".to_string());
+        }
+
+        // Act
+        let prompt = take_submitted_turn_prompt(&mut app);
+
+        // Assert
+        assert_eq!(prompt.text, "Review [Image #2]");
+        assert_eq!(prompt.attachments.len(), 1);
+        assert_eq!(prompt.attachments[0].placeholder, "[Image #2]");
+        assert_eq!(
+            prompt.attachments[0].local_image_path,
+            std::path::PathBuf::from("/tmp/image-2.png")
+        );
+        if let AppMode::Prompt {
+            attachment_state,
+            input,
+            ..
+        } = &app.mode
+        {
+            assert!(input.text().is_empty());
+            assert!(attachment_state.attachments.is_empty());
+            assert_eq!(attachment_state.next_attachment_number, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_take_submitted_turn_prompt_sorts_attachments_by_text_position() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("", None).await;
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-2.png"));
+        if let AppMode::Prompt { input, .. } = &mut app.mode {
+            *input = InputState::with_text("[Image #2] then [Image #1]".to_string());
+        }
+
+        // Act
+        let prompt = take_submitted_turn_prompt(&mut app);
+
+        // Assert
+        assert_eq!(prompt.attachments.len(), 2);
+        assert_eq!(prompt.attachments[0].placeholder, "[Image #2]");
+        assert_eq!(prompt.attachments[1].placeholder, "[Image #1]");
     }
 
     #[test]
@@ -1820,6 +2213,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_prompt_backspace_removes_whole_image_token_and_attachment() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("Review ", None).await;
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
+        if let AppMode::Prompt {
+            history_state,
+            input,
+            ..
+        } = &mut app.mode
+        {
+            history_state.selected_index = Some(0);
+            history_state.draft_text = Some("draft".to_string());
+            input.cursor = input.text().chars().count();
+        }
+
+        // Act
+        let key = KeyEvent::new(KeyCode::Backspace, event::KeyModifiers::NONE);
+        handle_prompt_backspace(&mut app, key);
+
+        // Assert
+        if let AppMode::Prompt {
+            attachment_state,
+            history_state,
+            input,
+            ..
+        } = &app.mode
+        {
+            assert_eq!(input.text(), "Review ");
+            assert!(attachment_state.attachments.is_empty());
+            assert_eq!(attachment_state.next_attachment_number, 1);
+            assert_eq!(history_state.selected_index, None);
+            assert_eq!(history_state.draft_text, None);
+        }
+    }
+
+    #[tokio::test]
     async fn test_handle_prompt_backspace_with_shift_removes_whole_word() {
         // Arrange
         let (mut app, _base_dir) = new_test_prompt_app("hello brave world", None).await;
@@ -1843,6 +2272,74 @@ mod tests {
             assert_eq!(input.text(), "hello brave");
             assert_eq!(history_state.selected_index, None);
             assert_eq!(history_state.draft_text, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_delete_removes_whole_image_token_and_attachment() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("Review ", None).await;
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
+        if let AppMode::Prompt {
+            history_state,
+            input,
+            ..
+        } = &mut app.mode
+        {
+            history_state.selected_index = Some(0);
+            history_state.draft_text = Some("draft".to_string());
+            input.cursor = "Review ".chars().count();
+        }
+
+        // Act
+        handle_prompt_delete(&mut app);
+
+        // Assert
+        if let AppMode::Prompt {
+            attachment_state,
+            history_state,
+            input,
+            ..
+        } = &app.mode
+        {
+            assert_eq!(input.text(), "Review ");
+            assert!(attachment_state.attachments.is_empty());
+            assert_eq!(attachment_state.next_attachment_number, 1);
+            assert_eq!(history_state.selected_index, None);
+            assert_eq!(history_state.draft_text, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_delete_reuses_deleted_image_number_on_next_paste() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("", None).await;
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-2.png"));
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-3.png"));
+        if let AppMode::Prompt { input, .. } = &mut app.mode {
+            input.cursor = "[Image #1][Image #2]".chars().count();
+        }
+
+        // Act
+        handle_prompt_delete(&mut app);
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-4.png"));
+
+        // Assert
+        if let AppMode::Prompt {
+            attachment_state,
+            input,
+            ..
+        } = &app.mode
+        {
+            assert_eq!(input.text(), "[Image #1][Image #2][Image #3]");
+            assert_eq!(attachment_state.attachments.len(), 3);
+            assert_eq!(attachment_state.next_attachment_number, 4);
+            assert_eq!(attachment_state.attachments[2].placeholder, "[Image #3]");
+            assert_eq!(
+                attachment_state.attachments[2].local_image_path,
+                std::path::PathBuf::from("/tmp/image-4.png")
+            );
         }
     }
 
@@ -2017,6 +2514,7 @@ mod tests {
         let (mut app, _base_dir) = new_test_prompt_app("follow up", None).await;
         app.mode = AppMode::Prompt {
             at_mention_state: None,
+            attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::new(Vec::new()),
             input: InputState::with_text("follow up".to_string()),
             session_id: "missing-session".to_string(),

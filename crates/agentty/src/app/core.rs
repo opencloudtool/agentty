@@ -34,6 +34,7 @@ use crate::domain::permission::PermissionMode;
 use crate::domain::project::{Project, ProjectListItem, project_name_from_path};
 use crate::domain::session::{PublishBranchAction, Session, SessionSize, Status};
 use crate::infra::agent::AgentResponse;
+use crate::infra::channel::TurnPrompt;
 use crate::infra::db::Database;
 use crate::infra::file_index::FileEntry;
 use crate::infra::fs::{FsClient, RealFsClient};
@@ -731,14 +732,18 @@ impl App {
     ///
     /// # Errors
     /// Returns an error if the session is missing or task enqueue fails.
-    pub async fn start_session(&mut self, session_id: &str, prompt: String) -> Result<(), String> {
+    pub async fn start_session(
+        &mut self,
+        session_id: &str,
+        prompt: impl Into<TurnPrompt>,
+    ) -> Result<(), String> {
         self.sessions
             .start_session(&self.services, session_id, prompt)
             .await
     }
 
     /// Submits a follow-up prompt for an existing session.
-    pub async fn reply(&mut self, session_id: &str, prompt: &str) {
+    pub async fn reply(&mut self, session_id: &str, prompt: impl Into<TurnPrompt>) {
         self.sessions
             .reply(&self.services, session_id, prompt)
             .await;

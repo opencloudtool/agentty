@@ -16,6 +16,7 @@ use crate::infra::app_server::{
 use crate::infra::app_server_transport::{
     self, extract_json_error_message, response_id_matches, write_json_line,
 };
+use crate::infra::channel::TurnPrompt;
 
 /// Canonical wire-level policy mapping for one [`PermissionMode`].
 ///
@@ -219,9 +220,10 @@ impl RealCodexAppServerClient {
         reasoning_level: ReasoningLevel,
     ) -> Result<(String, bool), String> {
         if let Some(provider_conversation_id) = provider_conversation_id {
-            match Self::resume_thread(session, provider_conversation_id, reasoning_level).await {
-                Ok(thread_id) => return Ok((thread_id, true)),
-                Err(_) => {}
+            if let Ok(thread_id) =
+                Self::resume_thread(session, provider_conversation_id, reasoning_level).await
+            {
+                return Ok((thread_id, true));
             }
         }
 
@@ -357,10 +359,11 @@ impl RealCodexAppServerClient {
     /// `stream_tx` as they arrive from the app-server event stream.
     async fn run_turn_with_runtime(
         session: &mut CodexSessionRuntime,
-        prompt: &str,
+        prompt: impl Into<TurnPrompt>,
         reasoning_level: ReasoningLevel,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
     ) -> Result<(String, u64, u64), String> {
+        let prompt = prompt.into();
         let auto_compact_threshold = Self::auto_compact_input_token_threshold(&session.model);
 
         if session.latest_input_tokens >= auto_compact_threshold {
@@ -371,7 +374,7 @@ impl RealCodexAppServerClient {
         }
 
         let result =
-            Self::execute_turn_event_loop(session, prompt, reasoning_level, stream_tx.clone())
+            Self::execute_turn_event_loop(session, &prompt, reasoning_level, stream_tx.clone())
                 .await;
 
         match result {
@@ -387,7 +390,7 @@ impl RealCodexAppServerClient {
                 Self::send_compact_request(session).await?;
 
                 let (message, input_tokens, output_tokens) =
-                    Self::execute_turn_event_loop(session, prompt, reasoning_level, stream_tx)
+                    Self::execute_turn_event_loop(session, &prompt, reasoning_level, stream_tx)
                         .await?;
                 session.latest_input_tokens = input_tokens;
 
@@ -505,13 +508,14 @@ impl RealCodexAppServerClient {
     /// observed.
     async fn execute_turn_event_loop(
         session: &mut CodexSessionRuntime,
-        prompt: &str,
+        prompt: impl Into<TurnPrompt>,
         reasoning_level: ReasoningLevel,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
     ) -> Result<(String, u64, u64), String> {
+        let prompt = prompt.into();
         Self::execute_turn_event_loop_with_timeout(
             session,
-            prompt,
+            &prompt,
             reasoning_level,
             stream_tx,
             CODEX_TURN_TIMEOUT,
@@ -523,18 +527,19 @@ impl RealCodexAppServerClient {
     /// caller-provided timeout window.
     async fn execute_turn_event_loop_with_timeout(
         session: &mut CodexSessionRuntime,
-        prompt: &str,
+        prompt: impl Into<TurnPrompt>,
         reasoning_level: ReasoningLevel,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
         turn_timeout: Duration,
     ) -> Result<(String, u64, u64), String> {
+        let prompt = prompt.into();
         let turn_start_id = format!("turn-start-{}", uuid::Uuid::new_v4());
         let turn_start_payload = Self::build_turn_start_payload(
             &session.folder,
             &session.model,
             reasoning_level,
             &session.thread_id,
-            prompt,
+            &prompt,
             &turn_start_id,
         );
         write_json_line(Self::runtime_stdin(session)?, &turn_start_payload).await?;
@@ -648,19 +653,17 @@ impl RealCodexAppServerClient {
         model: &str,
         reasoning_level: ReasoningLevel,
         thread_id: &str,
-        prompt: &str,
+        prompt: impl Into<TurnPrompt>,
         turn_start_id: &str,
     ) -> Value {
+        let prompt = prompt.into();
+
         serde_json::json!({
             "method": "turn/start",
             "id": turn_start_id,
             "params": {
                 "threadId": thread_id,
-                "input": [{
-                    "type": "text",
-                    "text": prompt,
-                    "text_elements": []
-                }],
+                "input": Self::build_turn_input_items(&prompt),
                 "cwd": folder.to_string_lossy(),
                 "approvalPolicy": Self::approval_policy(),
                 "sandboxPolicy": Self::turn_sandbox_policy(),
@@ -670,6 +673,67 @@ impl RealCodexAppServerClient {
                 "personality": Value::Null,
                 "outputSchema": agent_response_output_schema()
             }
+        })
+    }
+
+    /// Builds ordered Codex `turn/start` input items from one structured
+    /// prompt payload.
+    fn build_turn_input_items(prompt: &TurnPrompt) -> Vec<Value> {
+        if !prompt.has_attachments() {
+            return vec![serde_json::json!({
+                "type": "text",
+                "text": prompt.text,
+                "text_elements": []
+            })];
+        }
+
+        let mut input_items = Vec::new();
+        let mut remaining_text = prompt.text.as_str();
+
+        for attachment in &prompt.attachments {
+            if let Some(placeholder_index) = remaining_text.find(&attachment.placeholder) {
+                let (before_placeholder, after_placeholder) =
+                    remaining_text.split_at(placeholder_index);
+
+                if !before_placeholder.is_empty() {
+                    input_items.push(serde_json::json!({
+                        "type": "text",
+                        "text": before_placeholder,
+                        "text_elements": []
+                    }));
+                }
+
+                input_items.push(Self::build_local_image_input_item(
+                    &attachment.local_image_path,
+                ));
+
+                remaining_text = &after_placeholder[attachment.placeholder.len()..];
+
+                continue;
+            }
+
+            input_items.push(Self::build_local_image_input_item(
+                &attachment.local_image_path,
+            ));
+        }
+
+        if !remaining_text.is_empty() || input_items.is_empty() {
+            input_items.push(serde_json::json!({
+                "type": "text",
+                "text": remaining_text,
+                "text_elements": []
+            }));
+        }
+
+        input_items
+    }
+
+    /// Builds one Codex `localImage` input item using a plain filesystem path
+    /// string.
+    fn build_local_image_input_item(local_image_path: &Path) -> Value {
+        serde_json::json!({
+            "type": "localImage",
+            "path": local_image_path.to_string_lossy().into_owned()
         })
     }
 
@@ -1622,6 +1686,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
+    use crate::infra::channel::TurnPromptAttachment;
 
     /// Spawns a shell-backed fake Codex runtime that prints scripted stdout
     /// responses while keeping stdin open for request writes.
@@ -1667,7 +1732,7 @@ mod tests {
             folder,
             live_session_output: None,
             model: AgentModel::Gpt53Codex.as_str().to_string(),
-            prompt: "Implement the task".to_string(),
+            prompt: "Implement the task".into(),
             provider_conversation_id: provider_conversation_id.map(ToString::to_string),
             session_id: "session-123".to_string(),
             session_output: None,
@@ -2786,6 +2851,78 @@ sleep 5
             Some("object")
         );
         assert!(output_schema_properties.contains_key("messages"));
+    }
+
+    #[test]
+    fn build_turn_input_items_interleaves_text_and_local_images() {
+        // Arrange
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-1.png"),
+            }],
+            text: "Review [Image #1] before merge".to_string(),
+        };
+
+        // Act
+        let input_items = RealCodexAppServerClient::build_turn_input_items(&prompt);
+
+        // Assert
+        assert_eq!(input_items.len(), 3);
+        assert_eq!(input_items[0]["type"], Value::String("text".to_string()));
+        assert_eq!(input_items[0]["text"], Value::String("Review ".to_string()));
+        assert_eq!(
+            input_items[1]["type"],
+            Value::String("localImage".to_string())
+        );
+        assert_eq!(
+            input_items[1]["path"],
+            Value::String("/tmp/image-1.png".to_string())
+        );
+        assert_eq!(input_items[2]["type"], Value::String("text".to_string()));
+        assert_eq!(
+            input_items[2]["text"],
+            Value::String(" before merge".to_string())
+        );
+    }
+
+    #[test]
+    fn build_turn_start_payload_serializes_local_image_items_for_codex() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-1.png"),
+            }],
+            text: "Review [Image #1]".to_string(),
+        };
+
+        // Act
+        let payload = RealCodexAppServerClient::build_turn_start_payload(
+            temp_directory.path(),
+            "gpt-5.3-codex",
+            ReasoningLevel::Medium,
+            "thread-1",
+            prompt,
+            "turn-start-1",
+        );
+        let input_items = payload
+            .get("params")
+            .and_then(|params| params.get("input"))
+            .and_then(Value::as_array)
+            .expect("input items should be an array");
+
+        // Assert
+        assert_eq!(input_items.len(), 2);
+        assert_eq!(
+            input_items[1]["type"],
+            Value::String("localImage".to_string())
+        );
+        assert_eq!(
+            input_items[1]["path"],
+            Value::String("/tmp/image-1.png".to_string())
+        );
     }
 
     #[test]

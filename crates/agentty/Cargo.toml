@@ -18,10 +18,12 @@ workspace = true
 [dependencies]
 ag-forge.workspace = true
 agent-client-protocol.workspace = true
+arboard.workspace = true
 askama.workspace = true
 crossterm.workspace = true
 dirs.workspace = true
 ignore.workspace = true
+image.workspace = true
 ratatui.workspace = true
 schemars.workspace = true
 serde.workspace = true
