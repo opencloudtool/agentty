@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.11] - 2026-03-11
+
+### Changed
+
+- Track prompt image attachments in prompt mode.
+- Add size budgets to implementation plans.
+- Clarify implementation-plan AGENTS purpose.
+- Rename implementation plan priorities to steps.
+- Standardize titled substeps in implementation plans.
+- Consolidate architecture guide map into landing page.
+- Document single evolving session commit flow.
+
+### Contributors
+
+- @minev-dev
+
 ## [v0.5.10] - 2026-03-10
 
 ### Changed
