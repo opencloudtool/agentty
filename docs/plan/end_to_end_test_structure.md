@@ -2,7 +2,7 @@
 
 Plan for organizing `crates/agentty/tests/`, selected source-level tests, and contributor guidance so Agentty keeps a small, trustworthy end-to-end smoke layer around git, forge, and live agent workflows.
 
-## Priorities
+## Steps
 
 ## 1) Ship one deterministic local session workflow slice
 
@@ -84,7 +84,7 @@ Real provider and forge smoke suites are clearly named, ignored by default, and 
 ## Status Maintenance Rule
 
 - After implementing any step in this plan, immediately update its checklist status in this document and refresh any snapshot rows that changed.
-- When a step changes contributor workflow, test commands, or documentation, complete its `### Tests` and `### Docs` work in that same priority before marking it complete.
+- When a step changes contributor workflow, test commands, or documentation, complete its `### Tests` and `### Docs` work in that same step before marking it complete.
 
 ## Current State Snapshot
 
@@ -113,8 +113,8 @@ graph TD
 ```
 
 1. Start with `1) Ship one deterministic local session workflow slice` so the first iteration already proves an end-to-end user journey instead of stopping at harness scaffolding.
-1. Start `2) Expand the harness for deterministic PR/MR workflow scenarios` only after priority 1 lands, because the review-request slice should reuse the already-working local session baseline.
-1. Start `3) Isolate live smoke suites and finalize suite guidance` only after priority 2 lands so the live layer and contributor docs reflect the final deterministic suite ownership.
+1. Start `2) Expand the harness for deterministic PR/MR workflow scenarios` only after step 1 lands, because the review-request slice should reuse the already-working local session baseline.
+1. Start `3) Isolate live smoke suites and finalize suite guidance` only after step 2 lands so the live layer and contributor docs reflect the final deterministic suite ownership.
 
 ## Out of Scope for This Pass
 

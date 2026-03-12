@@ -2,7 +2,7 @@
 
 Plan for changing `crates/agentty/src/app`, `crates/agentty/src/infra`, and `crates/agentty/src/main.rs` so active session turns keep running after the TUI exits, finish while Agentty is closed, and reconnect cleanly when Agentty starts again.
 
-## Priorities
+## Steps
 
 ## 1) Ship detached turn execution that survives TUI exit
 
@@ -142,7 +142,7 @@ The repository has close-and-reopen regression coverage that exercises detached 
 ## Status Maintenance Rule
 
 - After implementing any step in this plan, immediately update its checklist status, refresh the current-state snapshot rows that changed, and note any new migration or docs dependency before moving to the next step.
-- When a step changes behavior, complete its `### Tests` and `### Docs` work in that same priority before marking the step complete.
+- When a step changes behavior, complete its `### Tests` and `### Docs` work in that same step before marking the step complete.
 
 ## Current State Snapshot
 
@@ -200,7 +200,7 @@ An `AGENTTY_DETACH=0` environment variable disables detached execution and falls
 - Start with the smallest usable detached slice: one detached execution path that can finish a turn while Agentty is closed before layering restart reconciliation, output mirroring, and stop hardening on top.
 - Keep SQLite plus the session worktree as the source of truth; the TUI should enqueue and observe work, while the long-running runner process owns turn execution, output persistence, and final status transitions.
 - Introduce modularity only where it lowers cross-process complexity: keep queueing in `worker.rs`, move restart recovery into `reconcile.rs`, and add `turn_runner.rs` or `output_replica.rs` only when the detached slices make them pull their weight.
-- Fold usage docs, architecture docs, and regression coverage into the same priorities that change session-lifetime behavior instead of deferring them to a final cleanup pass.
+- Fold usage docs, architecture docs, and regression coverage into the same steps that change session-lifetime behavior instead of deferring them to a final cleanup pass.
 - Add stronger stop and provider-resume hardening only after detached execution, restart reconciliation, and output continuity each work as their own usable slices.
 
 ## Detached Turn Workflow
@@ -227,11 +227,11 @@ graph TD
 ```
 
 1. Start with `1) Ship detached turn execution that survives TUI exit`; it is the smallest slice that proves a turn can outlive the UI and still finish into durable session state.
-1. Start `2) Reconcile live detached operations on restart` only after priority 1 is merged, because it depends on detached execution and persisted operation payloads already existing.
-1. Start `3) Mirror live output across processes` only after priority 2 is merged so output attachment builds on the settled ownership and liveness protocol.
-1. Start `4) Preserve stop, cancel, and provider-resume safety across detached execution` only after priority 3 is merged so stop behavior can rely on the final detached process and transcript handoff shape.
-1. Start `5) Validate detached session lifetime end to end` only after priority 4 is merged so the final regression pass covers the stabilized behavior.
-1. No top-level priorities are safe to run in parallel because each slice depends on the detached-runner ownership and recovery rules finalized by the previous slice.
+1. Start `2) Reconcile live detached operations on restart` only after step 1 is merged, because it depends on detached execution and persisted operation payloads already existing.
+1. Start `3) Mirror live output across processes` only after step 2 is merged so output attachment builds on the settled ownership and liveness protocol.
+1. Start `4) Preserve stop, cancel, and provider-resume safety across detached execution` only after step 3 is merged so stop behavior can rely on the final detached process and transcript handoff shape.
+1. Start `5) Validate detached session lifetime end to end` only after step 4 is merged so the final regression pass covers the stabilized behavior.
+1. No top-level steps are safe to run in parallel because each slice depends on the detached-runner ownership and recovery rules finalized by the previous slice.
 
 ## Out of Scope for This Pass
 

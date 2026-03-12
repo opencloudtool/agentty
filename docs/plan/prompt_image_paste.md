@@ -2,7 +2,7 @@
 
 Plan for extending the session chat composer in `crates/agentty/src/ui/component/chat_input.rs`, plus the required prompt/runtime plumbing, so users can paste clipboard images only while entering the first session prompt or a reply.
 
-## Priorities
+## Steps
 
 Codex CLI already has a workable reference shape: `codex-rs/tui/src/clipboard_paste.rs` reads clipboard images into temp PNG files and `codex-rs/tui/src/chatwidget.rs` binds `Ctrl+V`/`Alt+V` to `attach_image(path)` with model-capability checks. This plan keeps that split, but adapts it to Agentty's prompt mode and transport boundaries.
 

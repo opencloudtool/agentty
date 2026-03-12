@@ -2,7 +2,7 @@
 
 Plan for extending `crates/agentty/src/app`, `crates/agentty/src/infra`, and `crates/agentty/src/ui` so review-ready sessions can publish and track forge review requests across GitHub pull requests and GitLab merge requests.
 
-## Priorities
+## Steps
 
 The manual publish/create/open/refresh workflow in `crates/agentty/src/app/session/workflow`, `crates/agentty/src/infra/forge`, and session view is already landed and is the baseline for the remaining work below.
 
@@ -41,7 +41,7 @@ Linked sessions automatically reconcile to `Done` or `Canceled` after the remote
 ## Status Maintenance Rule
 
 - After implementing any step in this plan, immediately update its checklist status in this document and refresh any current-state snapshot rows that changed.
-- When a step changes behavior, complete its `### Tests` and `### Docs` work in that same priority before marking it complete.
+- When a step changes behavior, complete its `### Tests` and `### Docs` work in that same step before marking it complete.
 
 ## Current State Snapshot
 
@@ -57,7 +57,7 @@ Linked sessions automatically reconcile to `Done` or `Canceled` after the remote
 
 - Keep the already-landed manual review-request workflow as the working baseline: a review-ready session can publish its branch, link or create a review request, refresh stored metadata, and open the linked URL.
 - Build background reconciliation as an extension of that visible baseline rather than a prerequisite for publishing or refreshing review requests manually.
-- Update usage and architecture docs in the same priority as the reconciliation behavior so the runtime boundary and user expectations stay aligned.
+- Update usage and architecture docs in the same step as the reconciliation behavior so the runtime boundary and user expectations stay aligned.
 
 ## Suggested Execution Order
 
@@ -68,7 +68,7 @@ graph TD
 
 1. Treat the manual publish/create/open/refresh workflow as the already-landed prerequisite baseline.
 1. Start `1) Add Background Review-Request Status Reconciliation and Final Architecture Docs` next, because automatic status gathering should extend the already-discoverable manual workflow instead of redefining it.
-1. No top-level priorities are safe to run in parallel right now; the usage docs can trail final user-visible status wording, and the architecture docs can trail the final poller boundary once reducer flow is settled.
+1. No top-level steps are safe to run in parallel right now; the usage docs can trail final user-visible status wording, and the architecture docs can trail the final poller boundary once reducer flow is settled.
 
 ## Out of Scope for This Pass
 
