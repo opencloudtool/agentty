@@ -112,7 +112,7 @@ From prompt submit to persisted result:
 1. Persist session questions and emit `AppEvent::AgentResponseReceived`.
 1. Persist stats and per-model usage.
 1. Persist provider conversation id (app-server providers).
-1. Run auto-commit assistance path, which regenerates the single session-branch commit message from the cumulative diff and syncs session `title`/`summary` from that commit after successful commit creation.
+1. Run auto-commit assistance path, which preserves a single evolving commit on the session branch: the first successful file-changing turn creates the commit, later turns regenerate the message from the cumulative diff and amend `HEAD`, and the session `title`/`summary` are synced from that rewritten commit after success.
 1. Refresh persisted session size.
 1. Update final status (`Review` or `Question`; on failure -> `Review`).
 
@@ -241,7 +241,7 @@ Detached/background execution paths and their trigger conditions:
 | Deferred session cleanup | Delete with deferred cleanup path | `delete_selected_session_deferred_cleanup` | Filesystem/git side effects | Removes worktree folder and branch asynchronously after DB deletion. |
 | Focused review assist | View mode focused-review open when diff is reviewable | `TaskService::spawn_focused_review_assist_task` | `FocusedReviewPrepared` / `FocusedReviewPreparationFailed` | Runs model review prompt and stores final review text or error. |
 | Sync-main workflow task | List-mode sync action (`s`) | `TokioSyncMainRunner::start_sync_main` | `AppEvent::SyncMainCompleted` | Pull-rebase/push selected project branch, with assisted conflict flow. |
-| Session merge task | Merge confirmation accepted | `SessionMergeService::merge_session` | Output append, status updates, session metadata updates | Runs rebase, reuses the session branch `HEAD` commit message for squash merge, then cleans up the worktree in background. |
+| Session merge task | Merge confirmation accepted | `SessionMergeService::merge_session` | Output append, status updates, session metadata updates | Runs rebase, reuses the single evolving session-branch `HEAD` commit message for squash merge, then cleans up the worktree in background. |
 | Session rebase task | Rebase action in view mode | `SessionMergeService::rebase_session` | Output append, status updates | Runs assisted rebase and returns session to `Review`/`Question`. |
 
 ## Sync, Merge, and Rebase Flows
@@ -250,7 +250,7 @@ Detached/background execution paths and their trigger conditions:
 Project and session git workflows use shared boundaries (`GitClient`, `FsClient`, assist helpers) but have distinct orchestration paths:
 
 - `sync main`: selected project branch pull/rebase/push, optional assisted conflict resolution, popup result summary.
-- session merge: queue-aware workflow, assisted rebase first, reuse the session branch `HEAD` commit message for the squash commit into the base branch, then clean up the worktree and set status `Done`.
+- session merge: queue-aware workflow, assisted rebase first, reuse the single evolving session-branch `HEAD` commit message for the squash commit into the base branch, then clean up the worktree and set status `Done`.
 - session rebase: assisted rebase of session branch onto base branch, returns to `Review` after completion/failure reporting.
 - session branch publish: review-ready sessions push the session branch through `GitClient`; pull request or merge request creation is left to the user's manual forge workflow.
 

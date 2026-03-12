@@ -15,6 +15,7 @@ layer boundaries.
 1. Update orchestration in `crates/agentty/src/app/session/` (`lifecycle.rs`, `worker.rs`, `task.rs`, etc.).
 1. Keep persistence in `crates/agentty/src/infra/db.rs`.
 1. Keep git operations behind `GitClient` in `crates/agentty/src/infra/git/client.rs` (re-exported from `crates/agentty/src/infra/git.rs`).
+1. Preserve the session-branch invariant: one evolving commit per session branch, with the first file-changing turn creating it and later file-changing turns updating it by amending `HEAD`.
 1. Update docs when lifecycle/status behavior changes: `docs/site/content/docs/usage/workflow.md`.
 
 ## Add a New Agent Backend or Model

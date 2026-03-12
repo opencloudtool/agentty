@@ -48,7 +48,7 @@ choose the correct module when implementing changes.
 | - `workflow/merge.rs` | Merge/rebase workflows. |
 | - `workflow/refresh.rs` | Periodic refresh scheduling plus on-demand forge review-request refresh. |
 | - `workflow/review.rs` | Review transcript replay and review-mode restoration helpers. |
-| - `workflow/task.rs` | Session process execution, session commit-message generation, auto-commit orchestration, and status persistence. |
+| - `workflow/task.rs` | Session process execution, session commit-message generation, auto-commit orchestration that keeps one evolving session-branch commit, and status persistence. |
 | - `workflow/worker.rs` | Per-session command queue orchestration, `AgentChannel` turn dispatch. |
 
 ## Domain Layer (`domain/`)
@@ -68,7 +68,7 @@ choose the correct module when implementing changes.
 |------|------------------|
 | `crates/agentty/src/infra/db.rs` | SQLite persistence and queries; database open config enables `WAL` and foreign keys. |
 | `crates/agentty/src/infra/fs.rs` | `FsClient` trait and production async filesystem adapter used by app orchestration. |
-| `crates/agentty/src/infra/git.rs` + `infra/git/` | Git module router plus async git workflow commands (`merge.rs`, `rebase.rs`, `repo.rs`, `sync.rs`, `worktree.rs`). |
+| `crates/agentty/src/infra/git.rs` + `infra/git/` | Git module router plus async git workflow commands (`merge.rs`, `rebase.rs`, `repo.rs`, `sync.rs`, `worktree.rs`), including the single-session-commit sync path that stages changes and amends `HEAD` after the first session commit exists. |
 | `crates/agentty/src/infra/git/client.rs` | `GitClient` trait boundary, `RealGitClient` production adapter, and git client integration tests. |
 | `crates/agentty/src/infra/channel.rs` + `infra/channel/` | `AgentChannel` trait and provider-agnostic turn execution: |
 | - `cli.rs` | `CliAgentChannel` - CLI subprocess adapter (Claude). |
