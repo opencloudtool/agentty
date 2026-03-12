@@ -18,7 +18,7 @@ use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::ui::util::{
     calculate_input_height, question_panel_layout, truncate_with_ellipsis, wrap_lines,
 };
-use crate::ui::{Component, Page, style};
+use crate::ui::{Component, Page};
 
 /// Maximum rendered height of the prompt input panel, including borders.
 const CHAT_INPUT_MAX_PANEL_HEIGHT: u16 = 10;
@@ -33,6 +33,14 @@ pub struct SessionChatPage<'a> {
 }
 
 impl<'a> SessionChatPage<'a> {
+    /// Fixed prompt-mode actions rendered in the composer help footer.
+    const PROMPT_FOOTER_ACTIONS: [help_action::HelpAction; 4] = [
+        help_action::HelpAction::new("submit", "Enter", "Submit prompt"),
+        help_action::HelpAction::new("newline", "Alt+Enter", "Insert newline"),
+        help_action::HelpAction::new("paste image", "Ctrl+V/Alt+V", "Paste image"),
+        help_action::HelpAction::new("cancel", "Esc", "Cancel prompt"),
+    ];
+
     /// Creates a session chat page renderer.
     pub fn new(
         sessions: &'a [Session],
@@ -425,11 +433,10 @@ impl<'a> SessionChatPage<'a> {
 
             chat_input.render(f, sections[0]);
             f.render_widget(
-                Paragraph::new(Self::prompt_footer_text(
+                Paragraph::new(Self::prompt_footer_line(
                     session,
                     attachment_state.attachments.len(),
-                ))
-                .style(Style::default().fg(style::palette::TEXT_MUTED)),
+                )),
                 sections[1],
             );
 
@@ -509,25 +516,36 @@ impl<'a> SessionChatPage<'a> {
         }
     }
 
-    /// Returns the prompt-mode footer line shown under the composer.
-    fn prompt_footer_text(session: &Session, attachment_count: usize) -> String {
-        let mut footer_segments = vec![
-            "Enter submit".to_string(),
-            "Alt+Enter newline".to_string(),
-            "Ctrl+V/Alt+V paste image".to_string(),
-            "Esc cancel".to_string(),
-        ];
+    /// Returns the prompt-mode footer line shown under the composer using the
+    /// same highlighted key styling used by other Agentty help text.
+    fn prompt_footer_line(session: &Session, attachment_count: usize) -> Line<'static> {
+        let mut footer_line = help_action::footer_line(Self::prompt_footer_actions());
 
         if attachment_count > 0 {
             let suffix = if attachment_count == 1 { "" } else { "s" };
-            footer_segments.push(format!("{attachment_count} image{suffix} ready"));
+            Self::append_prompt_footer_note(
+                &mut footer_line,
+                format!("{attachment_count} image{suffix} ready"),
+            );
         }
 
         if let Some(footer_hint) = session.model.prompt_image_footer_hint() {
-            footer_segments.push(footer_hint.to_string());
+            Self::append_prompt_footer_note(&mut footer_line, footer_hint.to_string());
         }
 
-        footer_segments.join("  ·  ")
+        footer_line
+    }
+
+    /// Returns the fixed prompt-mode actions rendered in the composer help
+    /// footer.
+    fn prompt_footer_actions() -> &'static [help_action::HelpAction] {
+        &Self::PROMPT_FOOTER_ACTIONS
+    }
+
+    /// Appends one muted informational note to the prompt footer line.
+    fn append_prompt_footer_note(footer_line: &mut Line<'static>, note: String) {
+        footer_line.spans.push(help_action::footer_separator_span());
+        footer_line.spans.push(help_action::footer_muted_span(note));
     }
 }
 
@@ -1268,31 +1286,49 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_footer_text_shows_attachment_count_for_codex_sessions() {
+    fn test_prompt_footer_line_shows_highlighted_actions_and_attachment_count_for_codex_sessions() {
         // Arrange
         let mut session = session_fixture();
         session.model = AgentModel::Gpt54;
 
         // Act
-        let footer_text = SessionChatPage::prompt_footer_text(&session, 2);
+        let footer_line = SessionChatPage::prompt_footer_line(&session, 2);
 
         // Assert
-        assert!(footer_text.contains("Ctrl+V/Alt+V paste image"));
-        assert!(footer_text.contains("2 images ready"));
-        assert!(!footer_text.contains("send images with Codex"));
+        assert_eq!(
+            footer_line.to_string(),
+            "Enter: submit | Alt+Enter: newline | Ctrl+V/Alt+V: paste image | Esc: cancel | 2 \
+             images ready"
+        );
+        assert_eq!(
+            footer_line.spans[0].style,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(footer_line.spans[1].style, Style::default().fg(Color::Gray));
+        assert_eq!(
+            footer_line.spans[footer_line.spans.len() - 2].style,
+            Style::default().fg(Color::DarkGray)
+        );
+        assert_eq!(
+            footer_line.spans[footer_line.spans.len() - 1].style,
+            Style::default().fg(Color::Gray)
+        );
+        assert!(!footer_line.to_string().contains("send images with Codex"));
     }
 
     #[test]
-    fn test_prompt_footer_text_warns_when_current_model_cannot_send_images() {
+    fn test_prompt_footer_line_warns_when_current_model_cannot_send_images() {
         // Arrange
         let session = session_fixture();
 
         // Act
-        let footer_text = SessionChatPage::prompt_footer_text(&session, 1);
+        let footer_line = SessionChatPage::prompt_footer_line(&session, 1);
 
         // Assert
-        assert!(footer_text.contains("1 image ready"));
-        assert!(footer_text.contains("send images with Codex"));
+        assert!(footer_line.to_string().contains("1 image ready"));
+        assert!(footer_line.to_string().contains("send images with Codex"));
     }
 
     #[test]
