@@ -597,7 +597,8 @@ mod tests {
             db,
             app_server_client,
         )
-        .await;
+        .await
+        .expect("failed to build app");
         let mock_git_client = create_default_mock_git_client(working_dir);
         install_mock_git_client(&mut app, mock_git_client);
 

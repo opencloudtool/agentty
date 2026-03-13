@@ -815,8 +815,9 @@ mod tests {
             .await
             .expect("failed to open in-memory db");
         let clients = AppClients::new(mock_app_server()).with_tmux_client(tmux_client);
-        let app =
-            App::new_with_clients(base_path.clone(), base_path, None, database, clients).await;
+        let app = App::new_with_clients(base_path.clone(), base_path, None, database, clients)
+            .await
+            .expect("failed to build app");
 
         (app, base_dir)
     }
@@ -878,7 +879,8 @@ mod tests {
             database,
             clients,
         )
-        .await;
+        .await
+        .expect("failed to build app");
 
         (app, base_dir)
     }

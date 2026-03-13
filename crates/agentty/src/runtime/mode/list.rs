@@ -327,7 +327,8 @@ mod tests {
             database,
             mock_app_server(),
         )
-        .await;
+        .await
+        .expect("failed to build app");
 
         (app, base_dir)
     }
@@ -381,7 +382,8 @@ mod tests {
             database,
             mock_app_server(),
         )
-        .await;
+        .await
+        .expect("failed to build app");
 
         (app, base_dir)
     }

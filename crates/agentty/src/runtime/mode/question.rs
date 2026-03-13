@@ -495,6 +495,7 @@ mod tests {
             mock_app_server(),
         )
         .await
+        .expect("failed to build app")
     }
 
     #[tokio::test]

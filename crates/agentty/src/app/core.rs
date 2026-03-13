@@ -456,6 +456,10 @@ impl App {
     ///
     /// When `auto_update` is `true`, a background `npm i -g agentty@latest`
     /// runs automatically after detecting a newer version.
+    ///
+    /// # Errors
+    /// Returns an error if startup project metadata cannot be persisted or
+    /// required startup state cannot be loaded from the database.
     pub async fn new(
         auto_update: bool,
         base_path: PathBuf,
@@ -463,7 +467,7 @@ impl App {
         git_branch: Option<String>,
         db: Database,
         app_server_client: Arc<dyn app_server::AppServerClient>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let clients = AppClients::new(app_server_client);
 
         Self::new_with_options(auto_update, base_path, working_dir, git_branch, db, clients).await
@@ -473,6 +477,10 @@ impl App {
     ///
     /// Auto-update is disabled by default; use [`App::new`] with an explicit
     /// `auto_update` flag for production startup.
+    ///
+    /// # Errors
+    /// Returns an error if startup project metadata cannot be persisted or
+    /// required startup state cannot be loaded from the database.
     #[cfg(test)]
     pub(crate) async fn new_with_clients(
         base_path: PathBuf,
@@ -480,11 +488,15 @@ impl App {
         git_branch: Option<String>,
         db: Database,
         clients: AppClients,
-    ) -> Self {
+    ) -> Result<Self, String> {
         Self::new_with_options(false, base_path, working_dir, git_branch, db, clients).await
     }
 
     /// Core constructor with all options explicit.
+    ///
+    /// # Errors
+    /// Returns an error if startup project metadata cannot be persisted or
+    /// required startup state cannot be loaded from the database.
     async fn new_with_options(
         auto_update: bool,
         base_path: PathBuf,
@@ -492,13 +504,25 @@ impl App {
         git_branch: Option<String>,
         db: Database,
         clients: AppClients,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let current_project_id = db
             .upsert_project(&working_dir.to_string_lossy(), git_branch.as_deref())
             .await
-            .unwrap_or(0);
+            .map_err(|error| {
+                format!(
+                    "Failed to persist startup project `{}`: {error}",
+                    working_dir.display()
+                )
+            })?;
 
-        let _ = db.backfill_session_project(current_project_id).await;
+        db.backfill_session_project(current_project_id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to backfill startup sessions for project `{}`: {error}",
+                    working_dir.display()
+                )
+            })?;
         let (
             active_project_id,
             startup_working_dir,
@@ -513,7 +537,7 @@ impl App {
             git_branch,
             current_project_id,
         )
-        .await;
+        .await?;
 
         SessionManager::fail_unfinished_operations_from_previous_run(&db).await;
 
@@ -577,7 +601,7 @@ impl App {
 
         Self::spawn_background_tasks(auto_update, &event_tx, &projects, &services);
 
-        Self {
+        Ok(Self {
             mode: AppMode::List,
             settings,
             tabs: TabManager::new(),
@@ -592,7 +616,7 @@ impl App {
             session_progress_messages: HashMap::new(),
             sync_main_runner: clients.sync_main_runner,
             tmux_client: clients.tmux_client,
-        }
+        })
     }
 
     /// Spawns background pollers for git status and version checks.
@@ -2054,6 +2078,9 @@ impl App {
     /// Persisted projects whose directories no longer exist are ignored so
     /// startup falls back to the current working directory instead of reviving
     /// stale project entries.
+    ///
+    /// # Errors
+    /// Returns an error if startup project metadata cannot be persisted.
     async fn load_startup_project_context(
         db: &Database,
         fs_client: &dyn FsClient,
@@ -2061,7 +2088,7 @@ impl App {
         working_dir: &Path,
         git_branch: Option<String>,
         current_project_id: i64,
-    ) -> (i64, PathBuf, Option<String>, Vec<ProjectListItem>, String) {
+    ) -> Result<(i64, PathBuf, Option<String>, Vec<ProjectListItem>, String), String> {
         let startup_active_project_id =
             Self::resolve_startup_active_project_id(db, fs_client, current_project_id).await;
         let startup_active_project = Self::load_project(
@@ -2085,20 +2112,39 @@ impl App {
                 startup_git_branch.as_deref(),
             )
             .await
-            .unwrap_or(startup_active_project.id);
-        let _ = db.set_active_project_id(active_project_id).await;
-        let _ = db.touch_project_last_opened(active_project_id).await;
+            .map_err(|error| {
+                format!(
+                    "Failed to persist active startup project `{}`: {error}",
+                    startup_working_dir.display()
+                )
+            })?;
+        db.set_active_project_id(active_project_id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to store active startup project `{}`: {error}",
+                    startup_working_dir.display()
+                )
+            })?;
+        db.touch_project_last_opened(active_project_id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to update startup project activity for `{}`: {error}",
+                    startup_working_dir.display()
+                )
+            })?;
         let project_items = Self::load_project_items(db, fs_client).await;
         let active_project_name =
             Self::project_title_for_id(&project_items, active_project_id, &startup_working_dir);
 
-        (
+        Ok((
             active_project_id,
             startup_working_dir,
             startup_git_branch,
             project_items,
             active_project_name,
-        )
+        ))
     }
 
     /// Resolves startup active project id from settings, falling back to the
@@ -2721,7 +2767,9 @@ mod tests {
             .expect("failed to open in-memory db");
         let clients = AppClients::new(mock_app_server()).with_tmux_client(tmux_client);
 
-        App::new_with_clients(base_path.clone(), base_path, None, database, clients).await
+        App::new_with_clients(base_path.clone(), base_path, None, database, clients)
+            .await
+            .expect("failed to build test app")
     }
 
     /// Builds a test app rooted at one temporary workspace with a mocked tmux
@@ -2791,7 +2839,8 @@ mod tests {
             database,
             mock_app_server(),
         )
-        .await;
+        .await
+        .expect("failed to build app");
 
         // Act
         app.switch_project(second_project_id)
@@ -2852,13 +2901,74 @@ mod tests {
             database,
             mock_app_server(),
         )
-        .await;
+        .await
+        .expect("failed to build app");
 
         // Assert
         assert_eq!(
             app.selected_session().map(|session| session.id.as_str()),
             Some(active_session_id)
         );
+    }
+
+    #[tokio::test]
+    async fn test_new_returns_error_when_startup_project_upsert_fails() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        sqlx::query("DROP TABLE project")
+            .execute(database.pool())
+            .await
+            .expect("failed to drop project table");
+
+        // Act
+        let error = App::new(
+            true,
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            mock_app_server(),
+        )
+        .await
+        .err()
+        .expect("expected startup project upsert failure");
+
+        // Assert
+        assert!(error.contains("Failed to persist startup project"));
+    }
+
+    #[tokio::test]
+    async fn test_new_returns_error_when_startup_active_project_persistence_fails() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        sqlx::query("DROP TABLE setting")
+            .execute(database.pool())
+            .await
+            .expect("failed to drop setting table");
+
+        // Act
+        let error = App::new(
+            true,
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            mock_app_server(),
+        )
+        .await
+        .err()
+        .expect("expected startup active project persistence failure");
+
+        // Assert
+        assert!(error.contains("Failed to store active startup project"));
     }
 
     /// Builds a test app with one selected session, configurable open command,
@@ -3618,5 +3728,658 @@ mod tests {
             event_batch.agent_responses.get("session-1").cloned(),
             Some(latest_response)
         );
+    }
+    #[test]
+    /// Verifies that `UpdateStatusChanged` events update the event batch so
+    /// the reducer can apply the latest update progress state.
+    fn app_event_batch_collect_event_stores_update_status() {
+        // Arrange
+        let mut event_batch = AppEventBatch::default();
+
+        // Act
+        event_batch.collect_event(AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::InProgress {
+                version: "v1.0.0".to_string(),
+            },
+        });
+        event_batch.collect_event(AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::Complete {
+                version: "v1.0.0".to_string(),
+            },
+        });
+
+        // Assert — last event wins
+        assert_eq!(
+            event_batch.update_status,
+            Some(UpdateStatus::Complete {
+                version: "v1.0.0".to_string()
+            })
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies that the reducer applies `UpdateStatusChanged` events to
+    /// `App.update_status`.
+    async fn apply_app_events_update_status_changed_updates_app_state() {
+        // Arrange
+        let mut app = new_test_app().await;
+        assert!(app.update_status().is_none());
+
+        // Act
+        app.apply_app_events(AppEvent::UpdateStatusChanged {
+            update_status: UpdateStatus::InProgress {
+                version: "v2.0.0".to_string(),
+            },
+        })
+        .await;
+
+        // Assert
+        assert_eq!(
+            app.update_status().cloned(),
+            Some(UpdateStatus::InProgress {
+                version: "v2.0.0".to_string()
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_app_events_agent_response_switches_view_mode_to_question_mode() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-question-view")));
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            focused_review_status_message: None,
+            focused_review_text: None,
+            session_id: "session-1".to_string(),
+            scroll_offset: None,
+        };
+        let response = AgentResponse {
+            messages: vec![
+                AgentResponseMessage::question_with_options(
+                    "Need a target branch?",
+                    vec!["main".to_string(), "develop".to_string()],
+                ),
+                AgentResponseMessage::question_with_options(
+                    "Need integration tests?",
+                    vec!["Yes".to_string(), "No".to_string()],
+                ),
+            ],
+        };
+        let expected_questions = response.question_items();
+
+        // Act
+        app.apply_app_events(AppEvent::AgentResponseReceived {
+            response,
+            session_id: "session-1".to_string(),
+        })
+        .await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                ref session_id,
+                ref questions,
+                ref responses,
+                current_index: 0,
+                ref input,
+                selected_option_index: Some(0),
+                ..
+            } if session_id == "session-1"
+                && questions == &expected_questions
+                && responses.is_empty()
+                && input.text().is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_app_events_agent_response_keeps_list_mode_when_not_viewing_session() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = AppMode::List;
+        let response = AgentResponse {
+            messages: vec![AgentResponseMessage::question("Need context?")],
+        };
+
+        // Act
+        app.apply_app_events(AppEvent::AgentResponseReceived {
+            response,
+            session_id: "session-1".to_string(),
+        })
+        .await;
+
+        // Assert
+        assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[test]
+    fn discover_home_project_paths_includes_git_repos_and_excludes_session_worktrees() {
+        // Arrange
+        let home_directory = tempdir().expect("failed to create temp dir");
+        let top_level_repo = home_directory.path().join("agentty");
+        create_git_repo_marker(top_level_repo.as_path());
+        let nested_repo = home_directory.path().join("code").join("service");
+        create_git_repo_marker(nested_repo.as_path());
+        let session_worktree_root = home_directory.path().join("agentty-worktrees");
+        let session_worktree_repo = session_worktree_root.join("a1b2c3d4");
+        create_git_repo_marker(session_worktree_repo.as_path());
+
+        // Act
+        let discovered_project_paths = App::discover_home_project_paths(
+            home_directory.path(),
+            session_worktree_root.as_path(),
+        );
+
+        // Assert
+        assert!(
+            discovered_project_paths.contains(&top_level_repo),
+            "top-level git repository should be discovered"
+        );
+        assert!(
+            discovered_project_paths.contains(&nested_repo),
+            "nested git repository should be discovered"
+        );
+        assert!(
+            !discovered_project_paths.contains(&session_worktree_repo),
+            "session worktree repositories must be excluded"
+        );
+    }
+
+    #[test]
+    fn discover_home_project_paths_respects_repository_limit() {
+        // Arrange
+        let home_directory = tempdir().expect("failed to create temp dir");
+        for index in 0..=HOME_PROJECT_SCAN_MAX_RESULTS {
+            let repository = home_directory.path().join(format!("repo-{index}"));
+            create_git_repo_marker(repository.as_path());
+        }
+
+        // Act
+        let discovered_project_paths = App::discover_home_project_paths(
+            home_directory.path(),
+            Path::new("/tmp/non-session-worktree"),
+        );
+
+        // Assert
+        assert_eq!(
+            discovered_project_paths.len(),
+            HOME_PROJECT_SCAN_MAX_RESULTS
+        );
+    }
+
+    #[test]
+    fn resolve_agentty_home_returns_env_override_when_set() {
+        // Arrange
+        let agentty_root = Some(PathBuf::from("/tmp/custom-agentty"));
+        let home_dir = Some(PathBuf::from("/home/test-user"));
+
+        // Act
+        let home = resolve_agentty_home(agentty_root, home_dir);
+
+        // Assert
+        assert_eq!(home, PathBuf::from("/tmp/custom-agentty"));
+    }
+
+    #[test]
+    fn resolve_agentty_home_falls_back_to_home_directory_when_override_is_empty() {
+        // Arrange
+        let agentty_root = Some(PathBuf::new());
+        let home_dir = Some(PathBuf::from("/home/test-user"));
+
+        // Act
+        let home = resolve_agentty_home(agentty_root, home_dir);
+
+        // Assert
+        assert_eq!(home, PathBuf::from("/home/test-user/.agentty"));
+    }
+
+    #[test]
+    fn resolve_agentty_home_falls_back_to_relative_directory_without_home_dir() {
+        // Arrange
+        let agentty_root = None;
+        let home_dir = None;
+
+        // Act
+        let home = resolve_agentty_home(agentty_root, home_dir);
+
+        // Assert
+        assert_eq!(home, PathBuf::from(".agentty"));
+    }
+
+    #[test]
+    fn is_session_worktree_project_path_returns_true_for_agentty_worktree_path() {
+        // Arrange
+        let session_worktree_root = Path::new("/home/test/.agentty/wt");
+        let project_path = "/home/test/.agentty/wt/a1b2c3d4";
+
+        // Act
+        let is_session_worktree =
+            App::is_session_worktree_project_path(project_path, session_worktree_root);
+
+        // Assert
+        assert!(is_session_worktree);
+    }
+
+    #[test]
+    fn is_session_worktree_project_path_returns_false_for_main_repository_path() {
+        // Arrange
+        let session_worktree_root = Path::new("/home/test/.agentty/wt");
+        let project_path = "/home/test/src/agentty";
+
+        // Act
+        let is_session_worktree =
+            App::is_session_worktree_project_path(project_path, session_worktree_root);
+
+        // Assert
+        assert!(!is_session_worktree);
+    }
+
+    #[test]
+    fn is_existing_project_path_returns_true_when_fs_client_reports_directory() {
+        // Arrange
+        let project_path = "/home/test/src/agentty";
+        let expected_path = PathBuf::from(project_path);
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client
+            .expect_is_dir()
+            .once()
+            .withf(move |path| path == &expected_path)
+            .return_const(true);
+
+        // Act
+        let project_exists = App::is_existing_project_path(&fs_client, project_path);
+
+        // Assert
+        assert!(project_exists);
+    }
+
+    #[test]
+    fn visible_project_rows_excludes_missing_and_session_worktree_projects() {
+        // Arrange
+        let existing_project_path = "/home/test/src/agentty".to_string();
+        let session_worktree_project_path = "/home/test/.agentty/wt/a1b2c3d4".to_string();
+        let missing_project_path = "/home/test/src/removed".to_string();
+        let session_worktree_root = Path::new("/home/test/.agentty/wt");
+        let project_rows = vec![
+            project_list_row_fixture(1, existing_project_path.clone()),
+            project_list_row_fixture(2, session_worktree_project_path),
+            project_list_row_fixture(3, missing_project_path.clone()),
+        ];
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        let existing_project_path_for_match = PathBuf::from(existing_project_path.clone());
+        let missing_project_path_for_match = PathBuf::from(missing_project_path);
+        fs_client
+            .expect_is_dir()
+            .once()
+            .withf(move |path| path == &existing_project_path_for_match)
+            .return_const(true);
+        fs_client
+            .expect_is_dir()
+            .once()
+            .withf(move |path| path == &missing_project_path_for_match)
+            .return_const(false);
+
+        // Act
+        let visible_rows =
+            App::visible_project_rows(project_rows, &fs_client, session_worktree_root);
+
+        // Assert
+        assert_eq!(visible_rows.len(), 1);
+        assert_eq!(visible_rows[0].path, existing_project_path);
+    }
+
+    #[tokio::test]
+    async fn resolve_startup_active_project_id_falls_back_when_stored_project_path_is_missing() {
+        // Arrange
+        let current_project_dir = tempdir().expect("failed to create current project dir");
+        let current_project_path = current_project_dir.path().to_path_buf();
+        let missing_project_path = current_project_path.join("removed-project");
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let current_project_id = database
+            .upsert_project(&current_project_path.to_string_lossy(), Some("main"))
+            .await
+            .expect("failed to insert current project");
+        let missing_project_id = database
+            .upsert_project(&missing_project_path.to_string_lossy(), Some("main"))
+            .await
+            .expect("failed to insert missing project");
+        database
+            .set_active_project_id(missing_project_id)
+            .await
+            .expect("failed to persist active project");
+        let missing_project_path = missing_project_path.clone();
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client
+            .expect_is_dir()
+            .once()
+            .withf(move |path| path == &missing_project_path)
+            .return_const(false);
+
+        // Act
+        let resolved_project_id =
+            App::resolve_startup_active_project_id(&database, &fs_client, current_project_id).await;
+
+        // Assert
+        assert_eq!(resolved_project_id, current_project_id);
+    }
+
+    #[tokio::test]
+    async fn apply_app_events_refresh_sessions_reloads_project_active_session_count() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project(&base_path.to_string_lossy(), None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session(
+                "session-active",
+                "gemini-3-flash-preview",
+                "main",
+                &Status::Review.to_string(),
+                project_id,
+            )
+            .await
+            .expect("failed to insert active session");
+
+        let session_folder_name = "session-".chars().take(8).collect::<String>();
+        let session_data_dir = base_path.join(session_folder_name).join(SESSION_DATA_DIR);
+        fs::create_dir_all(session_data_dir).expect("failed to create session dir");
+
+        let mut app = App::new(
+            true,
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            mock_app_server(),
+        )
+        .await
+        .expect("failed to build app");
+
+        let initial_active_count = app
+            .projects
+            .project_items()
+            .iter()
+            .find(|item| item.project.id == project_id)
+            .map_or(0, |item| item.active_session_count);
+        assert_eq!(initial_active_count, 1);
+
+        app.services
+            .db()
+            .update_session_status("session-active", &Status::Done.to_string())
+            .await
+            .expect("failed to update session status");
+
+        // Act
+        app.apply_app_events(AppEvent::RefreshSessions).await;
+
+        // Assert
+        let updated_active_count = app
+            .projects
+            .project_items()
+            .iter()
+            .find(|item| item.project.id == project_id)
+            .map_or(0, |item| item.active_session_count);
+        assert_eq!(updated_active_count, 0);
+    }
+
+    /// Creates one directory with a `.git` marker for repository discovery
+    /// tests.
+    fn create_git_repo_marker(repository_path: &Path) {
+        fs::create_dir_all(repository_path.join(".git"))
+            .expect("failed to create repository .git marker");
+    }
+
+    /// Builds one lightweight project row fixture for project list tests.
+    fn project_list_row_fixture(project_id: i64, project_path: String) -> db::ProjectListRow {
+        db::ProjectListRow {
+            active_session_count: 0,
+            created_at: 0,
+            display_name: None,
+            git_branch: Some("main".to_string()),
+            id: project_id,
+            is_favorite: false,
+            last_opened_at: None,
+            last_session_updated_at: None,
+            path: project_path,
+            session_count: 0,
+            updated_at: 0,
+        }
+    }
+
+    /// Replaces the app-level git dependencies with one caller-provided mock.
+    fn install_mock_git_client(
+        app: &mut App,
+        mock_git_client: crate::infra::git::MockGitClient,
+    ) {
+        let mock_git_client: Arc<dyn crate::infra::git::GitClient> = Arc::new(mock_git_client);
+        let base_path = app.services.base_path().to_path_buf();
+        let db = app.services.db().clone();
+        let event_sender = app.services.event_sender();
+        let app_server_client = app.services.app_server_client();
+        let fs_client = app.services.fs_client();
+        let review_request_client = app.services.review_request_client();
+
+        app.services = AppServices::new(
+            base_path,
+            db,
+            event_sender,
+            fs_client,
+            Arc::clone(&mock_git_client),
+            review_request_client,
+            app_server_client,
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_focused_review_update_stores_success_in_cache() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-review-cache";
+        let review_text = "## Review\nLooks good.";
+        app.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::Loading { diff_hash: 123 },
+        );
+
+        // Act
+        app.apply_focused_review_update(
+            session_id,
+            FocusedReviewUpdate {
+                diff_hash: 123,
+                result: Ok(review_text.to_string()),
+            },
+        );
+
+        // Assert
+        assert!(matches!(
+            app.focused_review_cache.get(session_id),
+            Some(FocusedReviewCacheEntry::Ready { text, diff_hash }) if text == review_text && *diff_hash == 123
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_focused_review_update_stores_failure_in_cache() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-review-fail";
+        let error_message = "Review assist failed with exit code 1";
+        app.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::Loading { diff_hash: 456 },
+        );
+
+        // Act
+        app.apply_focused_review_update(
+            session_id,
+            FocusedReviewUpdate {
+                diff_hash: 456,
+                result: Err(error_message.to_string()),
+            },
+        );
+
+        // Assert
+        assert!(matches!(
+            app.focused_review_cache.get(session_id),
+            Some(FocusedReviewCacheEntry::Failed { error, diff_hash }) if error == error_message && *diff_hash == 456
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_focused_review_update_ignores_stale_diff_hash() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-review-stale";
+        app.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::Loading { diff_hash: 999 },
+        );
+
+        // Act
+        app.apply_focused_review_update(
+            session_id,
+            FocusedReviewUpdate {
+                diff_hash: 111,
+                result: Ok("stale review".to_string()),
+            },
+        );
+
+        // Assert
+        assert!(matches!(
+            app.focused_review_cache.get(session_id),
+            Some(FocusedReviewCacheEntry::Loading { diff_hash }) if *diff_hash == 999
+        ));
+    }
+
+    #[tokio::test]
+    async fn auto_start_focused_reviews_clears_cache_on_in_progress_transition() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-1";
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-cache-clear")));
+        app.sessions.sessions[0].status = Status::InProgress;
+        app.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::Ready {
+                diff_hash: 789,
+                text: "old review".to_string(),
+            },
+        );
+        let session_ids = HashSet::from([session_id.to_string()]);
+        let previous_states = HashMap::from([(session_id.to_string(), Status::Review)]);
+
+        // Act
+        app.auto_start_focused_reviews(&session_ids, &previous_states)
+            .await;
+
+        // Assert
+        assert!(!app.focused_review_cache.contains_key(session_id));
+    }
+
+    #[tokio::test]
+    async fn auto_start_focused_reviews_skips_when_diff_hash_unchanged() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-1";
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-hash-skip")));
+        app.sessions.sessions[0].status = Status::Review;
+
+        let diff_text = "diff --git a/file.rs b/file.rs\n+new line";
+        let hash = diff_content_hash(diff_text);
+        app.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::Ready {
+                diff_hash: hash,
+                text: "existing review".to_string(),
+            },
+        );
+        let session_ids = HashSet::from([session_id.to_string()]);
+        let previous_states = HashMap::from([(session_id.to_string(), Status::InProgress)]);
+
+        let mut mock_git_client = crate::infra::git::MockGitClient::new();
+        mock_git_client
+            .expect_diff()
+            .returning(move |_, _| Box::pin(async move { Ok(diff_text.to_string()) }));
+        install_mock_git_client(&mut app, mock_git_client);
+
+        // Act
+        app.auto_start_focused_reviews(&session_ids, &previous_states)
+            .await;
+
+        // Assert — cache should remain unchanged (review not regenerated)
+        assert!(matches!(
+            app.focused_review_cache.get(session_id),
+            Some(FocusedReviewCacheEntry::Ready { text, .. }) if text == "existing review"
+        ));
+    }
+
+    #[tokio::test]
+    async fn auto_start_focused_reviews_starts_loading_for_review_transition() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-1";
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-hash-start")));
+        app.sessions.sessions[0].status = Status::Review;
+
+        let diff_text = "diff --git a/file.rs b/file.rs\n+new line";
+        let expected_hash = diff_content_hash(diff_text);
+        let session_ids = HashSet::from([session_id.to_string()]);
+        let previous_states = HashMap::from([(session_id.to_string(), Status::InProgress)]);
+
+        let mut mock_git_client = crate::infra::git::MockGitClient::new();
+        mock_git_client
+            .expect_diff()
+            .returning(move |_, _| Box::pin(async move { Ok(diff_text.to_string()) }));
+        install_mock_git_client(&mut app, mock_git_client);
+
+        // Act
+        app.auto_start_focused_reviews(&session_ids, &previous_states)
+            .await;
+
+        // Assert
+        assert!(matches!(
+            app.focused_review_cache.get(session_id),
+            Some(FocusedReviewCacheEntry::Loading { diff_hash }) if *diff_hash == expected_hash
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_selected_session_clears_focused_review_cache() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-delete-cache")));
+        app.sessions.table_state.select(Some(0));
+        let session_id = app.sessions.sessions[0].id.clone();
+        app.focused_review_cache.insert(
+            session_id.clone(),
+            FocusedReviewCacheEntry::Ready {
+                diff_hash: 42,
+                text: "cached review".to_string(),
+            },
+        );
+
+        // Act
+        app.delete_selected_session().await;
+
+        // Assert
+        assert!(!app.focused_review_cache.contains_key(&session_id));
     }
 }

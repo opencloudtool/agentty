@@ -1354,7 +1354,8 @@ mod tests {
             database,
             mock_app_server,
         )
-        .await;
+        .await
+        .expect("failed to build app");
 
         let session_id = app
             .create_session()

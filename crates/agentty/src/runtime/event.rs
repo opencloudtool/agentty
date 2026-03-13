@@ -249,6 +249,7 @@ mod tests {
             mock_app_server(),
         )
         .await
+        .expect("failed to build app")
     }
 
     /// Verifies the event reader forwards one queued event before stopping on
