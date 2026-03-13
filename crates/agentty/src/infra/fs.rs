@@ -25,11 +25,11 @@ pub trait FsClient: Send + Sync {
     /// Returns an error when filesystem removal fails.
     fn remove_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), String>>;
 
-    /// Reads one file into bytes.
+    /// Reads one file into bytes without blocking the async runtime.
     ///
     /// # Errors
     /// Returns an error when file read fails.
-    fn read_file(&self, path: PathBuf) -> Result<Vec<u8>, String>;
+    fn read_file(&self, path: PathBuf) -> FsFuture<Result<Vec<u8>, String>>;
 
     /// Removes one file from disk.
     ///
@@ -64,8 +64,12 @@ impl FsClient for RealFsClient {
         })
     }
 
-    fn read_file(&self, path: PathBuf) -> Result<Vec<u8>, String> {
-        std::fs::read(path).map_err(|error| error.to_string())
+    fn read_file(&self, path: PathBuf) -> FsFuture<Result<Vec<u8>, String>> {
+        Box::pin(async move {
+            tokio::fs::read(path)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 
     fn remove_file(&self, path: PathBuf) -> FsFuture<Result<(), String>> {
@@ -80,5 +84,53 @@ impl FsClient for RealFsClient {
 
     fn is_dir(&self, path: PathBuf) -> bool {
         path.is_dir()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    /// Verifies `RealFsClient::read_file()` reads bytes through the async
+    /// filesystem adapter.
+    #[tokio::test]
+    async fn test_real_fs_client_read_file_reads_existing_file() {
+        // Arrange
+        let temp_dir = tempdir().expect("create temp dir");
+        let file_path = temp_dir.path().join("example.txt");
+        tokio::fs::write(&file_path, b"hello world")
+            .await
+            .expect("write file");
+        let fs_client = RealFsClient;
+
+        // Act
+        let content = fs_client
+            .read_file(file_path)
+            .await
+            .expect("read existing file");
+
+        // Assert
+        assert_eq!(content, b"hello world");
+    }
+
+    /// Verifies `RealFsClient::read_file()` surfaces read failures through the
+    /// async boundary.
+    #[tokio::test]
+    async fn test_real_fs_client_read_file_returns_error_for_missing_file() {
+        // Arrange
+        let temp_dir = tempdir().expect("create temp dir");
+        let file_path = temp_dir.path().join("missing.txt");
+        let fs_client = RealFsClient;
+
+        // Act
+        let error = fs_client
+            .read_file(file_path)
+            .await
+            .expect_err("missing file should error");
+
+        // Assert
+        assert!(error.contains("No such file") || error.contains("cannot find the path"));
     }
 }

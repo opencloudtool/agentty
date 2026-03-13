@@ -274,7 +274,13 @@ mod tests {
         mock_fs_client
             .expect_read_file()
             .times(0..)
-            .returning(|path| std::fs::read(path).map_err(|error| error.to_string()));
+            .returning(|path| {
+                Box::pin(async move {
+                    tokio::fs::read(path)
+                        .await
+                        .map_err(|error| error.to_string())
+                })
+            });
         mock_fs_client
             .expect_remove_file()
             .times(0..)
@@ -474,34 +480,43 @@ mod tests {
     /// Production tests rely on file-edit volume to estimate session size.
     /// This helper counts lines in non-metadata files so mocked git clients
     /// can still drive size-related assertions without invoking shell `git`.
-    fn synthetic_diff_from_session_folder(folder: &Path) -> String {
-        fn count_lines_recursively(fs_client: &dyn fs::FsClient, entry: &Path) -> usize {
-            if !entry.is_dir() {
-                return fs_client
-                    .read_file(entry.to_path_buf())
-                    .map_or(0, |content| {
-                        String::from_utf8_lossy(&content).lines().count()
-                    });
+    async fn synthetic_diff_from_session_folder(folder: &Path) -> String {
+        /// Counts lines across one worktree using the async filesystem boundary
+        /// for file reads while keeping directory traversal simple in tests.
+        async fn count_lines_recursively(fs_client: &dyn fs::FsClient, root: &Path) -> usize {
+            let mut pending_entries = vec![root.to_path_buf()];
+            let mut line_count = 0;
+
+            while let Some(entry) = pending_entries.pop() {
+                if !entry.is_dir() {
+                    if let Ok(content) = fs_client.read_file(entry).await {
+                        line_count += String::from_utf8_lossy(&content).lines().count();
+                    }
+
+                    continue;
+                }
+
+                if entry
+                    .file_name()
+                    .is_some_and(|name| name == SESSION_DATA_DIR)
+                {
+                    continue;
+                }
+
+                if let Ok(entries) = std::fs::read_dir(entry) {
+                    pending_entries.extend(
+                        entries
+                            .filter_map(Result::ok)
+                            .map(|dir_entry| dir_entry.path()),
+                    );
+                }
             }
 
-            if entry
-                .file_name()
-                .is_some_and(|name| name == SESSION_DATA_DIR)
-            {
-                return 0;
-            }
-
-            match std::fs::read_dir(entry) {
-                Ok(entries) => entries
-                    .filter_map(Result::ok)
-                    .map(|entry| count_lines_recursively(fs_client, &entry.path()))
-                    .sum(),
-                Err(_) => 0,
-            }
+            line_count
         }
 
         let fs_client = create_passthrough_mock_fs_client();
-        let line_count = count_lines_recursively(&fs_client, folder);
+        let line_count = count_lines_recursively(&fs_client, folder).await;
 
         if line_count == 0 {
             String::new()
@@ -530,7 +545,7 @@ mod tests {
             .times(0..)
             .returning(|_, _| Box::pin(async { Ok(()) }));
         mock.expect_diff().times(0..).returning(|folder, _| {
-            Box::pin(async move { Ok(synthetic_diff_from_session_folder(&folder)) })
+            Box::pin(async move { Ok(synthetic_diff_from_session_folder(&folder).await) })
         });
         mock.expect_is_worktree_clean()
             .times(0..)

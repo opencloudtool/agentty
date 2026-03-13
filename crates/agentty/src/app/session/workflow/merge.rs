@@ -1283,7 +1283,8 @@ impl SessionManager {
                     assist_input.fs_client(),
                     assist_input.folder(),
                     &conflicted_files,
-                );
+                )
+                .await;
                 if failure_tracker.observe(&conflict_fingerprint) {
                     return Err(assist_input.unchanged_conflict_files_error());
                 }
@@ -1563,7 +1564,7 @@ impl SessionManager {
     /// but not all conflict markers) changes the fingerprint and prevents the
     /// [`FailureTracker`] from firing prematurely. The fingerprint is
     /// order-independent because paths are sorted before hashing.
-    fn conflicted_file_fingerprint(
+    async fn conflicted_file_fingerprint(
         fs_client: &dyn FsClient,
         folder: &Path,
         conflicted_files: &[String],
@@ -1575,7 +1576,7 @@ impl SessionManager {
         for file in &sorted_files {
             file.hash(&mut hasher);
             let file_path = folder.join(file);
-            if let Ok(content) = fs_client.read_file(file_path) {
+            if let Ok(content) = fs_client.read_file(file_path).await {
                 content.hash(&mut hasher);
             }
         }
@@ -1667,7 +1668,13 @@ mod tests {
         mock_fs_client
             .expect_read_file()
             .times(0..)
-            .returning(|path| std::fs::read(path).map_err(|error| error.to_string()));
+            .returning(|path| {
+                Box::pin(async move {
+                    tokio::fs::read(path)
+                        .await
+                        .map_err(|error| error.to_string())
+                })
+            });
         mock_fs_client
             .expect_remove_file()
             .times(0..)
@@ -2656,7 +2663,8 @@ mod tests {
             &fingerprint_fs_client,
             temp_dir.path(),
             &["src/lib.rs".to_string()],
-        );
+        )
+        .await;
 
         let mut mock_git_client = git::MockGitClient::new();
         mock_git_client
@@ -2705,8 +2713,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_conflicted_file_fingerprint_changes_with_file_content() {
+    #[tokio::test]
+    async fn test_conflicted_file_fingerprint_changes_with_file_content() {
         // Arrange
         let fs_client = create_passthrough_mock_fs_client();
         let temp_dir = std::env::temp_dir().join(format!(
@@ -2724,14 +2732,14 @@ mod tests {
         std::fs::write(&file_path, "<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>>")
             .expect("write initial content");
         let fingerprint_before =
-            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files);
+            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files).await;
         std::fs::write(
             &file_path,
             "<<<<<<< HEAD\nfoo_patched\n=======\nbar\n>>>>>>>",
         )
         .expect("write patched content");
         let fingerprint_after =
-            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files);
+            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files).await;
 
         // Assert — partial progress changes the fingerprint
         assert_ne!(fingerprint_before, fingerprint_after);
@@ -2739,8 +2747,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    #[test]
-    fn test_conflicted_file_fingerprint_stable_for_unchanged_content() {
+    #[tokio::test]
+    async fn test_conflicted_file_fingerprint_stable_for_unchanged_content() {
         // Arrange
         let fs_client = create_passthrough_mock_fs_client();
         let temp_dir = std::env::temp_dir().join(format!(
@@ -2756,9 +2764,9 @@ mod tests {
 
         // Act
         let fingerprint_a =
-            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files);
+            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files).await;
         let fingerprint_b =
-            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files);
+            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files).await;
 
         // Assert — identical content produces identical fingerprint
         assert_eq!(fingerprint_a, fingerprint_b);
@@ -2766,8 +2774,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    #[test]
-    fn test_conflicted_file_fingerprint_order_independent() {
+    #[tokio::test]
+    async fn test_conflicted_file_fingerprint_order_independent() {
         // Arrange
         let fs_client = create_passthrough_mock_fs_client();
         let temp_dir = std::env::temp_dir().join(format!(
@@ -2786,12 +2794,14 @@ mod tests {
             &fs_client,
             &temp_dir,
             &["a.rs".to_string(), "b.rs".to_string()],
-        );
+        )
+        .await;
         let fingerprint_ba = SessionManager::conflicted_file_fingerprint(
             &fs_client,
             &temp_dir,
             &["b.rs".to_string(), "a.rs".to_string()],
-        );
+        )
+        .await;
 
         // Assert — order of file list does not affect the fingerprint
         assert_eq!(fingerprint_ab, fingerprint_ba);
@@ -2799,8 +2809,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    #[test]
-    fn test_conflicted_file_fingerprint_missing_file_is_stable() {
+    #[tokio::test]
+    async fn test_conflicted_file_fingerprint_missing_file_is_stable() {
         // Arrange — reference a file that does not exist on disk
         let fs_client = create_passthrough_mock_fs_client();
         let temp_dir = std::env::temp_dir().join(format!(
@@ -2815,9 +2825,9 @@ mod tests {
 
         // Act — should not panic; missing files are silently skipped
         let fingerprint_a =
-            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files);
+            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files).await;
         let fingerprint_b =
-            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files);
+            SessionManager::conflicted_file_fingerprint(&fs_client, &temp_dir, &files).await;
 
         // Assert — deterministic even when file is absent
         assert_eq!(fingerprint_a, fingerprint_b);

@@ -1547,7 +1547,13 @@ mod tests {
         mock_fs_client
             .expect_read_file()
             .times(0..)
-            .returning(|path| std::fs::read(path).map_err(|error| error.to_string()));
+            .returning(|path| {
+                Box::pin(async move {
+                    tokio::fs::read(path)
+                        .await
+                        .map_err(|error| error.to_string())
+                })
+            });
         mock_fs_client
             .expect_remove_file()
             .times(0..)
