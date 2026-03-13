@@ -12,3 +12,5 @@ Keep size budgeting in the skill workflow only; do not render `### Size` section
 - [`end_to_end_test_structure.md`](end_to_end_test_structure.md) - Implementation plan for organizing deterministic local scenario tests and thin live smoke suites around git, forge, and agent workflows.
 
 - [`forge_review_request_support.md`](forge_review_request_support.md) - Implementation plan for adding forge-generic review request workflows across GitHub and GitLab.
+
+- [`multi_method_auto_update.md`](multi_method_auto_update.md) - Implementation plan for detecting the installation method and running the appropriate auto-update command for npm, cargo, sh, and npx.
