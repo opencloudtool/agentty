@@ -47,7 +47,8 @@ use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode, HelpContext, Que
 use crate::ui::state::prompt::PromptAtMentionState;
 use crate::{app, ui};
 
-/// Relative directory name used for session git worktrees under `~/.agentty`.
+/// Relative directory name used for session git worktrees within the
+/// `agentty` home directory.
 pub const AGENTTY_WT_DIR: &str = "wt";
 
 /// Maximum directory depth to scan under the user home for git repositories.
@@ -56,10 +57,11 @@ const HOME_PROJECT_SCAN_MAX_DEPTH: usize = 5;
 /// Maximum number of repositories discovered from one home-directory scan.
 const HOME_PROJECT_SCAN_MAX_RESULTS: usize = 200;
 
-/// Returns the agentty home directory.
+/// Returns the resolved `agentty` home directory.
 ///
-/// By default, this is `~/.agentty`, but it can be overridden by setting the
-/// `AGENTTY_ROOT` environment variable.
+/// The `AGENTTY_ROOT` environment variable takes precedence when set to a
+/// non-empty path. Otherwise the resolver falls back to `~/.agentty`, then to
+/// a relative `.agentty` directory when no home directory is available.
 pub fn agentty_home() -> PathBuf {
     let agentty_root = env::var_os("AGENTTY_ROOT").map(PathBuf::from);
     let home_dir = dirs::home_dir();
@@ -1260,8 +1262,7 @@ impl App {
         self.apply_focused_review_updates(event_batch.focused_review_updates);
 
         if let Some(branch_publish_action_update) = event_batch.branch_publish_action_update {
-            self.apply_branch_publish_action_update(branch_publish_action_update)
-                .await;
+            self.apply_branch_publish_action_update(branch_publish_action_update);
         }
 
         for (session_id, progress_message) in event_batch.session_progress_updates {
@@ -1562,7 +1563,7 @@ impl App {
     }
 
     /// Applies one completed branch-publish action and updates the popup.
-    async fn apply_branch_publish_action_update(
+    fn apply_branch_publish_action_update(
         &mut self,
         branch_publish_action_update: BranchPublishActionUpdate,
     ) {
@@ -1600,8 +1601,6 @@ impl App {
                 restore_view,
             ),
         };
-
-        let _ = session_id;
         self.mode = popup_mode;
     }
 
@@ -3209,8 +3208,7 @@ mod tests {
                 upstream_reference: "origin/agentty/session-1".to_string(),
             }),
             session_id: "session-1".to_string(),
-        })
-        .await;
+        });
 
         // Assert
         assert!(matches!(

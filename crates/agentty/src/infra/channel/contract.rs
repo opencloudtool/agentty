@@ -143,6 +143,8 @@ pub(crate) fn split_turn_prompt_content<'prompt>(
 
     let mut ordered_attachments = attachments.iter().collect::<Vec<_>>();
     ordered_attachments
+        // Attachments without an inline placeholder are appended after the
+        // text-bearing attachments so transcript order stays deterministic.
         .sort_by_key(|attachment| text.find(&attachment.placeholder).unwrap_or(usize::MAX));
 
     let mut content_parts = Vec::new();

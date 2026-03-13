@@ -205,7 +205,8 @@ impl Database {
         Ok(Self { pool })
     }
 
-    /// Returns a reference to the underlying connection pool.
+    /// Returns the shared `SQLite` connection pool for lower-level query
+    /// access.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
