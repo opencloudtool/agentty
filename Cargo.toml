@@ -17,7 +17,7 @@ homepage = "https://github.com/agentty-xyz/agentty"
 
 [workspace.dependencies]
 ag-forge = { path = "crates/ag-forge", version = "0.6.2" }
-agent-client-protocol = "0.10.0"
+agent-client-protocol = "0.10.2"
 arboard = { version = "3", features = ["image-data"] }
 askama = "0.15.4"
 base64 = "0.22"
@@ -29,7 +29,7 @@ ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 mockall = "0.14"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-tempfile = "3.26"
+tempfile = "3.27"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
