@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 use super::backend::{
     AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
-    prepend_protocol_instructions, prepend_repo_root_path_instructions,
+    prepend_protocol_instructions,
 };
 use crate::domain::agent::ReasoningLevel;
 
@@ -46,7 +46,6 @@ impl AgentBackend for CodexBackend {
                 session_output,
             } => build_resume_prompt(prompt, session_output)?,
         };
-        let prompt = prepend_repo_root_path_instructions(&prompt)?;
         let prompt = prepend_protocol_instructions(&prompt)?;
 
         let mut command = Command::new("codex");

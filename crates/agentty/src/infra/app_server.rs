@@ -400,8 +400,9 @@ fn read_latest_session_output(request: &AppServerTurnRequest) -> Option<String> 
 
 /// Returns the turn prompt, replaying session output after context reset.
 ///
-/// The returned prompt always includes repo-root-relative file path guidance so
-/// assistant responses use consistent path references across providers.
+/// The returned prompt always includes the shared protocol preamble, which
+/// carries both repo-root-relative file path guidance and structured response
+/// instructions so providers see one consistent contract.
 ///
 /// # Errors
 /// Returns an error when Askama prompt rendering fails after a context reset.
@@ -417,9 +418,6 @@ pub fn turn_prompt_for_runtime(
     } else {
         prompt.text.clone()
     };
-
-    let turn_prompt = agent::prepend_repo_root_path_instructions(&turn_prompt)
-        .map_err(|error| error.to_string())?;
 
     let turn_prompt =
         agent::prepend_protocol_instructions(&turn_prompt).map_err(|error| error.to_string())?;

@@ -14,10 +14,6 @@ use crate::infra::channel::TurnPromptAttachment;
 /// in a prompt.
 const PROTOCOL_INSTRUCTIONS_MARKER: &str = "Structured response protocol:";
 
-/// Marker used to detect whether repo-root path instructions are already
-/// included in a prompt.
-const REPO_ROOT_PATH_INSTRUCTIONS_MARKER: &str = "repository-root-relative POSIX paths";
-
 /// Transport runtime used to execute turns for one backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentTransport {
@@ -137,13 +133,6 @@ struct ProtocolInstructionPromptTemplate<'a> {
     response_json_schema: &'a str,
 }
 
-/// Askama view model for rendering repo-root file path contract instructions.
-#[derive(Template)]
-#[template(path = "repo_root_path_prompt.md", escape = "none")]
-struct RepoRootPathPromptTemplate<'a> {
-    prompt: &'a str,
-}
-
 /// Builds and configures external agent CLI commands.
 #[cfg_attr(test, mockall::automock)]
 pub trait AgentBackend: Send + Sync {
@@ -234,35 +223,12 @@ pub(crate) fn build_resume_prompt(
     Ok(rendered.trim_end().to_string())
 }
 
-/// Prepends mandatory repo-root-relative file path instructions to a prompt.
-///
-/// If the prompt already contains the path-instruction marker, this function
-/// returns the prompt unchanged to avoid duplicated guidance.
-///
-/// # Errors
-/// Returns an error if Askama template rendering fails.
-pub(crate) fn prepend_repo_root_path_instructions(
-    prompt: &str,
-) -> Result<String, AgentBackendError> {
-    if prompt.contains(REPO_ROOT_PATH_INSTRUCTIONS_MARKER) {
-        return Ok(prompt.to_string());
-    }
-
-    let template = RepoRootPathPromptTemplate { prompt };
-    let rendered = template.render().map_err(|error| {
-        AgentBackendError::CommandBuild(format!(
-            "Failed to render `repo_root_path_prompt.md`: {error}"
-        ))
-    })?;
-
-    Ok(rendered.trim_end().to_string())
-}
-
 /// Prepends structured response protocol instructions to a prompt.
 ///
 /// Tells agents to emit one top-level JSON object that matches the shared
 /// schema so response parsing can deserialize directly into the internal
-/// protocol structs. If the prompt already contains the protocol marker, this
+/// protocol structs, and requires repository-root-relative POSIX file paths in
+/// rendered answers. If the prompt already contains the protocol marker, this
 /// function returns the prompt unchanged to avoid duplicated guidance.
 ///
 /// # Errors
@@ -368,37 +334,6 @@ mod tests {
     }
 
     #[test]
-    /// Ensures repo-root path instructions are prepended to plain prompts.
-    fn test_prepend_repo_root_path_instructions_adds_contract() {
-        // Arrange
-        let prompt = "Implement feature";
-
-        // Act
-        let rendered_prompt = prepend_repo_root_path_instructions(prompt)
-            .expect("path instruction prompt should render");
-
-        // Assert
-        assert!(rendered_prompt.contains("repository-root-relative POSIX paths"));
-        assert!(rendered_prompt.contains("Paths must be relative to the repository root."));
-        assert!(rendered_prompt.ends_with(prompt));
-    }
-
-    #[test]
-    /// Ensures path instructions are not duplicated when already present.
-    fn test_prepend_repo_root_path_instructions_is_idempotent() {
-        // Arrange
-        let prompt = prepend_repo_root_path_instructions("Implement feature")
-            .expect("path instruction prompt should render");
-
-        // Act
-        let rendered_prompt = prepend_repo_root_path_instructions(&prompt)
-            .expect("path instruction prompt should render");
-
-        // Assert
-        assert_eq!(rendered_prompt, prompt);
-    }
-
-    #[test]
     /// Ensures protocol instructions are prepended to plain prompts.
     fn test_prepend_protocol_instructions_adds_session_protocol_instructions() {
         // Arrange
@@ -409,6 +344,9 @@ mod tests {
             .expect("protocol instruction prompt should render");
 
         // Assert
+        assert!(rendered_prompt.contains("File path output requirements:"));
+        assert!(rendered_prompt.contains("repository-root-relative POSIX paths"));
+        assert!(rendered_prompt.contains("Paths must be relative to the repository root."));
         assert!(rendered_prompt.contains("Structured response protocol:"));
         assert!(rendered_prompt.contains("Return a single JSON object"));
         assert!(rendered_prompt.contains("Do not wrap the JSON in markdown code fences."));
