@@ -221,7 +221,9 @@ mod tests {
 
     use super::*;
     use crate::db::Database;
+    use crate::domain::agent::AgentKind;
     use crate::domain::input::InputState;
+    use crate::domain::session::{Session, SessionSize, SessionStats, Status};
     use crate::infra::agent::protocol::QuestionItem;
     use crate::infra::app_server;
     use crate::ui::state::app_mode::{AppMode, QuestionFocus};
@@ -389,6 +391,25 @@ mod tests {
         // Arrange
         let mut app = new_test_app().await;
         let session_id = "session-1".to_string();
+        app.sessions.sessions.push(Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: std::env::temp_dir(),
+            id: session_id.clone(),
+            model: AgentKind::Gemini.default_model(),
+            output: String::new(),
+            project_name: "project".to_string(),
+            prompt: String::new(),
+            published_upstream_ref: None,
+            questions: Vec::new(),
+            review_request: None,
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::New,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        });
         app.mode = AppMode::Prompt {
             at_mention_state: None,
             attachment_state: PromptAttachmentState::default(),
