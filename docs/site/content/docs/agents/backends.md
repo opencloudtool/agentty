@@ -32,6 +32,20 @@ backend:
 - Claude Code turns receive the prompt over stdin with `[Image #n]`
   placeholders rewritten to local image paths that Claude can inspect.
 
+## Project Instruction Files
+
+<a id="backends-project-instruction-files"></a>
+Agentty relies on each backend's native project-instruction discovery instead
+of inlining repository guidance into prompts.
+
+- Codex loads `AGENTS.md`.
+- Claude Code loads `CLAUDE.md`.
+- Gemini CLI loads `GEMINI.md`.
+
+This repository keeps `CLAUDE.md` and `GEMINI.md` as symlinks to the canonical
+root `AGENTS.md`, so all three backends see the same project instructions when
+they run in the session worktree.
+
 ## Claude Authentication
 
 <a id="backends-claude-authentication"></a>

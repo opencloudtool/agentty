@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -14,7 +13,9 @@ use crate::domain::agent::ReasoningLevel;
 /// Interactive `codex` requires a TTY and fails in this app with
 /// `Error: stdout is not a terminal`, so this backend runs
 /// `codex exec --full-auto`. Resume uses `codex exec resume --last --full-auto`
-/// only when replay history is not injected into the prompt.
+/// only when replay history is not injected into the prompt. Project
+/// instruction discovery is left to Codex's native `AGENTS.md` loading in the
+/// current worktree.
 pub(super) struct CodexBackend;
 
 impl AgentBackend for CodexBackend {
@@ -46,7 +47,6 @@ impl AgentBackend for CodexBackend {
                 session_output,
             } => build_resume_prompt(prompt, session_output)?,
         };
-        let prompt = prepend_root_instructions_if_available(&prompt, folder);
         let prompt = prepend_repo_root_path_instructions(&prompt)?;
         let prompt = prepend_protocol_instructions(
             &prompt,
@@ -81,27 +81,6 @@ impl AgentBackend for CodexBackend {
     }
 }
 
-/// Prefixes a user prompt with worktree root instructions when `AGENTS.md`
-/// exists and is non-empty.
-fn prepend_root_instructions_if_available(prompt: &str, folder: &Path) -> String {
-    let Some(instructions) = load_root_agents_instructions(folder) else {
-        return prompt.to_string();
-    };
-
-    format!("Project instructions from AGENTS.md:\n\n{instructions}\n\nUser prompt:\n{prompt}")
-}
-
-fn load_root_agents_instructions(folder: &Path) -> Option<String> {
-    let agents_markdown = folder.join("AGENTS.md");
-
-    fs::read_to_string(agents_markdown)
-        .ok()
-        .as_deref()
-        .map(str::trim)
-        .filter(|instructions| !instructions.is_empty())
-        .map(ToString::to_string)
-}
-
 /// Renders the Codex CLI `model_reasoning_effort` override value.
 fn model_reasoning_effort_config(reasoning_level: ReasoningLevel) -> String {
     format!(r#"model_reasoning_effort="{}""#, reasoning_level.codex())
@@ -114,13 +93,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_start_command_appends_root_instructions() {
+    fn build_start_command_includes_protocol_and_reasoning_settings() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let backend = CodexBackend;
-        let instructions = "Follow project rules";
-        std::fs::write(temp_directory.path().join("AGENTS.md"), instructions)
-            .expect("failed to write test instructions");
 
         // Act
         let command = AgentBackend::build_command(
@@ -139,15 +115,10 @@ mod tests {
         let debug_command = format!("{command:?}");
 
         // Assert
-        assert!(debug_command.contains("Project instructions from AGENTS.md"));
-        assert!(debug_command.contains(instructions));
         assert!(debug_command.contains("-c"));
         assert!(debug_command.contains("model_reasoning_effort"));
         assert!(debug_command.contains("high"));
-        assert!(
-            debug_command.contains("User prompt:\nRun checks")
-                || debug_command.contains("User prompt:\\nRun checks")
-        );
+        assert!(debug_command.contains("Run checks"));
         assert!(debug_command.contains("Structured response protocol:"));
         assert!(!debug_command.contains("Follow this JSON Schema exactly:"));
     }
@@ -155,13 +126,10 @@ mod tests {
     /// Verifies resume command composes replay-based prompt content when
     /// session output is available.
     #[test]
-    fn build_resume_command_appends_root_instructions_and_session_output() {
+    fn build_resume_command_includes_session_output_replay() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let backend = CodexBackend;
-        let instructions = "Follow project rules";
-        std::fs::write(temp_directory.path().join("AGENTS.md"), instructions)
-            .expect("failed to write test instructions");
 
         // Act
         let command = AgentBackend::build_command(
@@ -181,8 +149,6 @@ mod tests {
         let debug_command = format!("{command:?}");
 
         // Assert
-        assert!(debug_command.contains("Project instructions from AGENTS.md"));
-        assert!(debug_command.contains(instructions));
         assert!(debug_command.contains("-c"));
         assert!(debug_command.contains("model_reasoning_effort"));
         assert!(debug_command.contains("high"));
@@ -197,9 +163,6 @@ mod tests {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let backend = CodexBackend;
-        let instructions = "Follow project rules";
-        std::fs::write(temp_directory.path().join("AGENTS.md"), instructions)
-            .expect("failed to write test instructions");
 
         // Act
         let command = AgentBackend::build_command(
@@ -222,15 +185,10 @@ mod tests {
         assert!(debug_command.contains("exec"));
         assert!(debug_command.contains("resume"));
         assert!(debug_command.contains("--last"));
-        assert!(debug_command.contains("Project instructions from AGENTS.md"));
-        assert!(debug_command.contains(instructions));
         assert!(debug_command.contains("-c"));
         assert!(debug_command.contains("model_reasoning_effort"));
         assert!(debug_command.contains("high"));
-        assert!(
-            debug_command.contains("User prompt:\nContinue edits")
-                || debug_command.contains("User prompt:\\nContinue edits")
-        );
+        assert!(debug_command.contains("Continue edits"));
         assert!(!debug_command.contains("Continue this session using the full transcript below."));
     }
 

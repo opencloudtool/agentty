@@ -181,7 +181,8 @@ impl Database {
     /// be opened, or migrations fail.
     pub async fn open(db_path: &Path) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)
+            tokio::fs::create_dir_all(parent)
+                .await
                 .map_err(|err| format!("Failed to create database directory: {err}"))?;
         }
 
@@ -1737,6 +1738,8 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
     use crate::agent::AgentModel;
     use crate::domain::session::{ForgeKind, ReviewRequestState, ReviewRequestSummary};
@@ -1873,6 +1876,24 @@ WHERE id = ?
             started_at: row.get("started_at"),
             status: row.get("status"),
         }
+    }
+
+    /// Verifies `open()` creates missing parent directories before opening the
+    /// on-disk database.
+    #[tokio::test]
+    async fn test_open_creates_missing_parent_directory() {
+        // Arrange
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let db_path = temp_dir.path().join("nested").join("db").join(DB_FILE);
+
+        // Act
+        let database = Database::open(&db_path)
+            .await
+            .expect("database should open with missing parent directories");
+
+        // Assert
+        assert!(db_path.parent().is_some_and(|parent| parent.is_dir()));
+        assert!(!database.pool().is_closed());
     }
 
     /// Verifies `load_sessions()` maps persisted joined session fields.
