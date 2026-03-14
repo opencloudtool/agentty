@@ -66,7 +66,7 @@ pub struct AgentResponseMessage {
     #[schemars(
         title = "options",
         description = "Predefined answer choices for `question` messages. The protocol instructs \
-                       agents to always include options, keep them focused to 2-5 likely answers, \
+                       agents to always include options, keep them focused to 1-3 likely answers, \
                        put the recommended choice first, and omit deferral or non-answer choices. \
                        The UI renders a selectable option list with a virtual \"Type custom \
                        answer\" entry appended. The Rust type remains `Option` so non-compliant \
