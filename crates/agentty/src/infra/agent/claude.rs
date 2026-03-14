@@ -2,9 +2,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::backend::{
-    AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest,
-    ProtocolInstructionMode, build_resume_prompt, prepend_protocol_instructions,
-    prepend_repo_root_path_instructions,
+    AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
+    prepend_protocol_instructions, prepend_repo_root_path_instructions,
 };
 use crate::infra::agent::protocol::agent_response_output_schema_json;
 use crate::infra::channel::{
@@ -86,11 +85,7 @@ pub(super) fn build_prompt_stdin_payload(
         )?,
     };
     let prompt = prepend_repo_root_path_instructions(&prompt)?;
-    let prompt = prepend_protocol_instructions(
-        &prompt,
-        ProtocolInstructionMode::WithoutSchema,
-        request.mode.protocol_prompt_kind(),
-    )?;
+    let prompt = prepend_protocol_instructions(&prompt, request.mode.protocol_prompt_kind())?;
 
     Ok(prompt.into_bytes())
 }

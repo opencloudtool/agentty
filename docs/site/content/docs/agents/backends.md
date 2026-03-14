@@ -126,6 +126,9 @@ Agentty validates final agent output against the structured response protocol.
   commit messages, or review text.
 - Claude turns use native schema validation via `claude --json-schema` and
   `--output-format json` (no Claude `stream-json` mode).
+- Inline protocol schema docs keep the raw self-descriptive `schemars`
+  metadata (`title`, `description`, and related annotations), while transport
+  `outputSchema` payloads are normalized separately for provider compatibility.
 - Claude and Gemini stream the rendered prompt body through stdin for CLI
   one-shot/repair flows so large diffs and review prompts do not hit OS argv
   length limits.
@@ -134,7 +137,8 @@ Agentty validates final agent output against the structured response protocol.
 - Claude turns allow file-modifying tools (`Edit`, `MultiEdit`, `Write`) plus
   `Bash`, `EnterPlanMode`, and `ExitPlanMode` for unattended worktree edits.
 - Codex app-server turns enforce structured output through transport
-  `outputSchema`; Codex prompts do not prepend schema text.
+  `outputSchema`; prompt instructions also embed the same full self-descriptive
+  schema for consistency across providers.
 - Claude always uses structured protocol output, including isolated one-shot
   utility prompts, through native schema enforcement plus prompt instructions.
 - Codex app-server turns include `outputSchema` at transport level and then use

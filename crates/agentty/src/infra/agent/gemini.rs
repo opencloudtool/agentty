@@ -2,9 +2,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::backend::{
-    AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest,
-    ProtocolInstructionMode, build_resume_prompt, prepend_protocol_instructions,
-    prepend_repo_root_path_instructions,
+    AgentBackend, AgentBackendError, AgentCommandMode, BuildCommandRequest, build_resume_prompt,
+    prepend_protocol_instructions, prepend_repo_root_path_instructions,
 };
 
 /// Backend implementation for the Gemini CLI.
@@ -67,11 +66,7 @@ pub(super) fn build_prompt_stdin_payload(
         } => build_resume_prompt(prompt, session_output)?,
     };
     let prompt = prepend_repo_root_path_instructions(&prompt)?;
-    let prompt = prepend_protocol_instructions(
-        &prompt,
-        ProtocolInstructionMode::WithSchema,
-        request.mode.protocol_prompt_kind(),
-    )?;
+    let prompt = prepend_protocol_instructions(&prompt, request.mode.protocol_prompt_kind())?;
 
     Ok(prompt.into_bytes())
 }

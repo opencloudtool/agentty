@@ -176,7 +176,10 @@ Provider conversation id flow:
 <a id="architecture-agent-interaction-protocol"></a>
 Provider output is normalized to one structured response protocol:
 
-1. Prompt builders prepend protocol instructions (`answer`/`question` schema).
+1. Prompt builders prepend protocol instructions (`answer`/`question` schema),
+   using the self-descriptive `schemars` document for inline prompt guidance
+   and a separately normalized schema for transport-enforced `outputSchema`
+   paths.
 1. Session discussion prompts also require every turn to end with a markdown `## Change Summary` containing `### Current Turn` and `### Session Changes`.
 1. One-shot prompts keep the same JSON envelope but omit the change-summary footer so internal utility calls can parse commit messages, generated titles, focused review text, and assist-task transcript output directly from `answer` messages.
 1. Channels stream deltas/progress as `TurnEvent`.

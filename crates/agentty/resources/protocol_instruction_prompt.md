@@ -4,22 +4,8 @@ Structured response protocol:
 
 - Do not wrap the JSON in markdown code fences.
 
-{% if let Some(protocol_schema_json) = protocol_schema_json %}
-
 - Follow this JSON Schema exactly:
-  {{ protocol_schema_json }}
-  {% else %}
-
-- The JSON Schema is enforced externally. Match it exactly.
-
-- Emit a top-level `messages` array.
-
-- Each `messages` item must include:
-
-  - `type`: one of `answer` or `question`.
-  - `text`: markdown text content.
-  - `options` (required for `question`): array of strings with predefined answer choices.
-    {% endif %}
+  {{ response_json_schema }}
 
 - You may include multiple messages in one response.
 

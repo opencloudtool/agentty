@@ -85,7 +85,6 @@ impl RealCodexAppServerClient {
         app_server::run_turn_with_restart_retry(
             sessions,
             request,
-            crate::infra::agent::ProtocolInstructionMode::WithoutSchema,
             app_server::RuntimeInspector {
                 matches_request: CodexSessionRuntime::matches_request,
                 pid: |runtime| runtime.child.id(),
@@ -3454,13 +3453,8 @@ sleep 5
         let session_output = Some("prior context");
 
         // Act
-        let turn_prompt = app_server::turn_prompt_for_runtime(
-            prompt,
-            session_output,
-            false,
-            crate::infra::agent::ProtocolInstructionMode::WithoutSchema,
-        )
-        .expect("turn prompt should render");
+        let turn_prompt = app_server::turn_prompt_for_runtime(prompt, session_output, false)
+            .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
@@ -3474,13 +3468,8 @@ sleep 5
         let session_output = Some("assistant: proposed plan");
 
         // Act
-        let turn_prompt = app_server::turn_prompt_for_runtime(
-            prompt,
-            session_output,
-            true,
-            crate::infra::agent::ProtocolInstructionMode::WithoutSchema,
-        )
-        .expect("turn prompt should render");
+        let turn_prompt = app_server::turn_prompt_for_runtime(prompt, session_output, true)
+            .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));

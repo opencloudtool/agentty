@@ -2,9 +2,9 @@
 //! response parsing.
 //!
 //! Defines the [`AgentResponse`] payload returned by agent turns, the
-//! [`agent_response_output_schema`] JSON Schema used by schema-capable
-//! providers, and [`parse_agent_response`] which deserializes raw provider
-//! output into structured messages.
+//! prompt-facing and transport-facing JSON Schema renderings derived from that
+//! model, and [`parse_agent_response`] which deserializes raw provider output
+//! into structured messages.
 //!
 //! Parsing first attempts strict whole-response JSON decoding that matches the
 //! schema. When parsing fails, the raw payload is preserved as a single
@@ -38,9 +38,17 @@ pub enum AgentResponseMessageKind {
 /// One structured message emitted by the assistant protocol payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(
+    title = "AgentResponseMessage",
+    description = "One structured message emitted by the assistant protocol payload."
+)]
 pub struct AgentResponseMessage {
     /// Message kind selector.
     #[serde(rename = "type")]
+    #[schemars(
+        title = "type",
+        description = "Message kind tag used by one AgentResponseMessage."
+    )]
     pub kind: AgentResponseMessageKind,
     /// Predefined answer choices for `question` messages.
     ///
@@ -50,8 +58,20 @@ pub struct AgentResponseMessage {
     /// output (missing or null `options`) deserializes gracefully instead of
     /// failing the entire response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        title = "options",
+        description = "Predefined answer choices for `question` messages. The protocol instructs \
+                       agents to always include options, and the UI renders a selectable option \
+                       list with a virtual \"Type custom answer\" entry appended. The Rust type \
+                       remains `Option` so non-compliant agent output (missing or null `options`) \
+                       deserializes gracefully instead of failing the entire response."
+    )]
     pub options: Option<Vec<String>>,
     /// Human-readable markdown text for this message.
+    #[schemars(
+        title = "text",
+        description = "Human-readable markdown text for this message."
+    )]
     pub text: String,
 }
 
@@ -113,8 +133,18 @@ pub struct QuestionItem {
 /// asked to emit this object as the entire assistant response payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(
+    title = "AgentResponse",
+    description = "Wire-format protocol payload used for schema-driven provider output. Providers \
+                   that support output schemas (for example, Codex app-server) are asked to emit \
+                   this object as the entire assistant response payload."
+)]
 pub struct AgentResponse {
     /// Ordered response messages emitted for this turn.
+    #[schemars(
+        title = "messages",
+        description = "Ordered response messages emitted for this turn."
+    )]
     pub messages: Vec<AgentResponseMessage>,
 }
 
@@ -216,23 +246,38 @@ fn push_display_message(display_messages: &mut Vec<String>, text: &str) {
     display_messages.push(text.to_string());
 }
 
-/// Returns the JSON Schema used for structured assistant output.
+/// Returns the self-descriptive JSON Schema for the response payload.
 ///
-/// The returned value is passed directly to providers that support enforced
-/// output schemas. Its shape mirrors [`AgentResponse`].
-pub(crate) fn agent_response_output_schema() -> Value {
+/// This preserves the raw `schemars` output, including metadata such as
+/// `title` and `description`, so prompt templates can show models the richest
+/// possible schema contract.
+fn agent_response_json_schema() -> Value {
     let schema = schemars::schema_for!(AgentResponse);
 
     // Serialization should always succeed for schema documents. This fallback
-    // keeps transport setup non-panicking under strict lint settings.
-    match serde_json::to_value(schema) {
-        Ok(mut value) => {
-            normalize_schema_for_codex(&mut value);
+    // keeps prompt rendering non-panicking under strict lint settings.
+    serde_json::to_value(schema).unwrap_or(Value::Null)
+}
 
-            value
-        }
-        Err(_) => Value::Null,
-    }
+/// Returns the JSON Schema used for structured assistant output.
+///
+/// The returned value is passed directly to providers that support enforced
+/// output schemas. It starts from the self-descriptive response schema and then
+/// applies compatibility normalization required by schema-enforcing agents.
+pub(crate) fn agent_response_output_schema() -> Value {
+    let mut value = agent_response_json_schema();
+    normalize_schema_for_transport(&mut value);
+
+    value
+}
+
+/// Returns a pretty-printed JSON Schema string for prompt instruction
+/// templating.
+///
+/// This keeps the raw `schemars` metadata intact so inline prompt guidance can
+/// show a fully self-descriptive schema document.
+pub(crate) fn agent_response_json_schema_json() -> String {
+    stringify_schema_json(agent_response_json_schema())
 }
 
 /// Returns a pretty-printed JSON Schema string for prompt instruction
@@ -240,10 +285,14 @@ pub(crate) fn agent_response_output_schema() -> Value {
 ///
 /// This is used by prompt builders for providers that cannot enforce
 /// `outputSchema` at transport level and must be guided by in-prompt schema
-/// text instead.
+/// text instead, or by native schema-validation flags that accept a serialized
+/// schema document.
 pub(crate) fn agent_response_output_schema_json() -> String {
-    let schema = agent_response_output_schema();
+    stringify_schema_json(agent_response_output_schema())
+}
 
+/// Pretty-prints one schema document for prompt or transport wiring.
+fn stringify_schema_json(schema: Value) -> String {
     match serde_json::to_string_pretty(&schema) {
         Ok(schema_json) => schema_json,
         Err(_) => "null".to_string(),
@@ -313,7 +362,7 @@ pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
 /// Builds one follow-up repair prompt that asks the model to emit only a valid
 /// protocol JSON object.
 pub(crate) fn build_protocol_repair_prompt(invalid_response: &str) -> String {
-    let schema_json = agent_response_output_schema_json();
+    let schema_json = agent_response_json_schema_json();
 
     format!(
         "Your previous response did not match the required JSON schema.\nReturn only one valid \
@@ -337,16 +386,16 @@ fn parse_structured_json_response(raw: &str) -> Option<AgentResponse> {
     Some(payload)
 }
 
-/// Normalizes one schema tree for Codex `response_format` compatibility.
+/// Normalizes one schema tree for transport-level provider compatibility.
 ///
 /// Codex rejects schemas that use `oneOf` for enum-like constants. Schemars
 /// can emit this shape for simple Rust enums, so this normalizer rewrites
 /// those fragments to string `enum` definitions.
-fn normalize_schema_for_codex(value: &mut Value) {
+fn normalize_schema_for_transport(value: &mut Value) {
     match value {
         Value::Object(object) => {
             for nested_value in object.values_mut() {
-                normalize_schema_for_codex(nested_value);
+                normalize_schema_for_transport(nested_value);
             }
 
             normalize_ref_object_for_codex(object);
@@ -382,7 +431,7 @@ fn normalize_schema_for_codex(value: &mut Value) {
         }
         Value::Array(array) => {
             for nested_value in array {
-                normalize_schema_for_codex(nested_value);
+                normalize_schema_for_transport(nested_value);
             }
         }
         _ => {}
@@ -1100,6 +1149,148 @@ mod tests {
 
     #[test]
     /// Exposes a parseable pretty JSON schema string for prompt templating.
+    fn test_agent_response_json_schema_json_is_parseable_value() {
+        // Arrange / Act
+        let schema_json = agent_response_json_schema_json();
+        let parsed_schema: Value =
+            serde_json::from_str(&schema_json).expect("schema string should parse as JSON");
+        let schema_value = agent_response_json_schema();
+
+        // Assert
+        assert_eq!(parsed_schema, schema_value);
+    }
+
+    #[test]
+    /// Keeps response schemas self-descriptive so inline prompt docs include
+    /// explicit top-level `schemars` metadata.
+    fn test_agent_response_json_schema_preserves_explicit_payload_metadata() {
+        // Arrange / Act
+        let schema = agent_response_json_schema();
+
+        // Assert
+        assert_eq!(
+            schema.get("title").and_then(Value::as_str),
+            Some("AgentResponse")
+        );
+        assert_eq!(
+            schema.get("description").and_then(Value::as_str),
+            Some(
+                "Wire-format protocol payload used for schema-driven provider output. Providers \
+                 that support output schemas (for example, Codex app-server) are asked to emit \
+                 this object as the entire assistant response payload."
+            )
+        );
+    }
+
+    #[test]
+    /// Keeps nested response-schema models self-descriptive for inline docs.
+    fn test_agent_response_json_schema_preserves_message_metadata() {
+        // Arrange / Act
+        let schema = agent_response_json_schema();
+        let message_definition = schema
+            .get("$defs")
+            .and_then(|value| value.get("AgentResponseMessage"))
+            .and_then(Value::as_object)
+            .expect("message definition should exist");
+
+        // Assert
+        assert_eq!(
+            message_definition.get("title").and_then(Value::as_str),
+            Some("AgentResponseMessage")
+        );
+        assert_eq!(
+            message_definition
+                .get("description")
+                .and_then(Value::as_str),
+            Some("One structured message emitted by the assistant protocol payload.")
+        );
+    }
+
+    #[test]
+    /// Keeps response-schema fields self-descriptive for inline schema docs.
+    fn test_agent_response_json_schema_preserves_field_metadata() {
+        // Arrange / Act
+        let schema = agent_response_json_schema();
+        let response_properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("response properties should exist");
+        let message_definition = schema
+            .get("$defs")
+            .and_then(|value| value.get("AgentResponseMessage"))
+            .and_then(Value::as_object)
+            .expect("message definition should exist");
+        let message_properties = message_definition
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("message properties should exist");
+
+        // Assert
+        assert_eq!(
+            response_properties
+                .get("messages")
+                .and_then(|value| value.get("title"))
+                .and_then(Value::as_str),
+            Some("messages")
+        );
+        assert_eq!(
+            response_properties
+                .get("messages")
+                .and_then(|value| value.get("description"))
+                .and_then(Value::as_str),
+            Some("Ordered response messages emitted for this turn.")
+        );
+        assert_eq!(
+            message_properties
+                .get("text")
+                .and_then(|value| value.get("title"))
+                .and_then(Value::as_str),
+            Some("text")
+        );
+        assert_eq!(
+            message_properties
+                .get("text")
+                .and_then(|value| value.get("description"))
+                .and_then(Value::as_str),
+            Some("Human-readable markdown text for this message.")
+        );
+        assert_eq!(
+            message_properties
+                .get("options")
+                .and_then(|value| value.get("title"))
+                .and_then(Value::as_str),
+            Some("options")
+        );
+    }
+
+    #[test]
+    /// Preserves optional prompt fields in the raw schema instead of forcing
+    /// transport-only requirements into prompt docs.
+    fn test_agent_response_json_schema_keeps_optional_options_field() {
+        // Arrange / Act
+        let schema = agent_response_json_schema();
+        let message_definition = schema
+            .get("$defs")
+            .and_then(|value| value.get("AgentResponseMessage"))
+            .and_then(Value::as_object)
+            .expect("message definition should exist");
+        let required_fields = message_definition
+            .get("required")
+            .and_then(Value::as_array)
+            .expect("message definition should have required fields");
+
+        // Assert
+        assert!(
+            required_fields
+                .iter()
+                .all(|field| field.as_str() != Some("options")),
+            "response schema should keep optional fields optional"
+        );
+    }
+
+    #[test]
+    /// Exposes a parseable pretty JSON schema string for transport-level
+    /// schema enforcement.
     fn test_agent_response_output_schema_json_is_parseable_value() {
         // Arrange / Act
         let schema_json = agent_response_output_schema_json();

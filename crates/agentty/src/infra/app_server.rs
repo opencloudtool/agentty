@@ -222,7 +222,6 @@ pub struct RuntimeInspector<Runtime> {
 pub async fn run_turn_with_restart_retry<Runtime, StartRuntime, RunTurn, ShutdownRuntime>(
     sessions: &AppServerSessionRegistry<Runtime>,
     request: AppServerTurnRequest,
-    protocol_instruction_mode: agent::ProtocolInstructionMode,
     inspector: RuntimeInspector<Runtime>,
     mut start_runtime: StartRuntime,
     mut run_turn_with_runtime: RunTurn,
@@ -261,7 +260,6 @@ where
     let first_prompt = match build_attempt_prompt(
         &request,
         first_replays,
-        protocol_instruction_mode,
         &mut shutdown_runtime,
         &mut session_runtime,
     )
@@ -301,7 +299,6 @@ where
     let retry_prompt = match build_attempt_prompt(
         &request,
         retry_replays,
-        protocol_instruction_mode,
         &mut shutdown_runtime,
         &mut restarted,
     )
@@ -363,7 +360,6 @@ fn needs_replay<Runtime>(
 async fn build_attempt_prompt<Runtime, ShutdownRuntime>(
     request: &AppServerTurnRequest,
     replays_context: bool,
-    protocol_instruction_mode: agent::ProtocolInstructionMode,
     shutdown_runtime: &mut ShutdownRuntime,
     runtime: &mut Runtime,
 ) -> Result<TurnPrompt, String>
@@ -372,12 +368,7 @@ where
 {
     let session_output = read_latest_session_output(request);
 
-    match turn_prompt_for_runtime(
-        &request.prompt,
-        session_output.as_deref(),
-        replays_context,
-        protocol_instruction_mode,
-    ) {
+    match turn_prompt_for_runtime(&request.prompt, session_output.as_deref(), replays_context) {
         Ok(prompt) => Ok(prompt),
         Err(error) => {
             shutdown_runtime(runtime).await;
@@ -418,7 +409,6 @@ pub fn turn_prompt_for_runtime(
     prompt: impl Into<TurnPrompt>,
     session_output: Option<&str>,
     context_reset: bool,
-    protocol_instruction_mode: agent::ProtocolInstructionMode,
 ) -> Result<TurnPrompt, String> {
     let prompt = prompt.into();
     let turn_prompt = if context_reset {
@@ -433,7 +423,6 @@ pub fn turn_prompt_for_runtime(
 
     let turn_prompt = agent::prepend_protocol_instructions(
         &turn_prompt,
-        protocol_instruction_mode,
         agent::ProtocolPromptKind::SessionDiscussion,
     )
     .map_err(|error| error.to_string())?;
@@ -488,13 +477,8 @@ mod tests {
         let prompt = "Implement feature";
 
         // Act
-        let turn_prompt = turn_prompt_for_runtime(
-            prompt,
-            Some("prior context"),
-            false,
-            agent::ProtocolInstructionMode::WithSchema,
-        )
-        .expect("turn prompt should render");
+        let turn_prompt = turn_prompt_for_runtime(prompt, Some("prior context"), false)
+            .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
@@ -507,13 +491,8 @@ mod tests {
         let prompt = "Implement feature";
 
         // Act
-        let turn_prompt = turn_prompt_for_runtime(
-            prompt,
-            Some("assistant: proposed plan"),
-            true,
-            agent::ProtocolInstructionMode::WithSchema,
-        )
-        .expect("turn prompt should render");
+        let turn_prompt = turn_prompt_for_runtime(prompt, Some("assistant: proposed plan"), true)
+            .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
@@ -629,7 +608,6 @@ mod tests {
         let response = run_turn_with_restart_retry(
             &sessions,
             request,
-            agent::ProtocolInstructionMode::WithSchema,
             RuntimeInspector {
                 matches_request: |runtime: &TestRuntime, request| runtime.model == request.model,
                 pid: |_runtime| Some(42),
@@ -706,7 +684,6 @@ mod tests {
         let response = run_turn_with_restart_retry(
             &sessions,
             request,
-            agent::ProtocolInstructionMode::WithSchema,
             RuntimeInspector {
                 matches_request: |runtime: &TestRuntime, request| runtime.model == request.model,
                 pid: |_runtime| Some(42),
@@ -787,7 +764,6 @@ mod tests {
         let response = run_turn_with_restart_retry(
             &sessions,
             request,
-            agent::ProtocolInstructionMode::WithSchema,
             RuntimeInspector {
                 matches_request: |runtime: &TestRuntime, request| runtime.model == request.model,
                 pid: |_runtime| Some(24),

@@ -27,15 +27,6 @@ pub enum AgentTransport {
     Cli,
 }
 
-/// Schema-instruction rendering mode for protocol prompt templates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProtocolInstructionMode {
-    /// Inlines the full JSON schema in the prompt body.
-    WithSchema,
-    /// Omits the schema body and relies on externally enforced schema.
-    WithoutSchema,
-}
-
 /// Prompt contract layered on top of the structured response envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolPromptKind {
@@ -153,9 +144,8 @@ struct ResumeWithSessionOutputPromptTemplate<'a> {
 /// Askama view model for rendering structured response protocol
 /// instructions.
 ///
-/// When `protocol_schema_json` is `Some`, the template embeds the JSON schema
-/// directly in the prompt. When it is `None`, the template tells the provider
-/// that schema enforcement happens externally.
+/// The template always embeds the full self-descriptive JSON schema so every
+/// provider sees the same prompt-side protocol contract.
 #[derive(Template)]
 #[template(path = "protocol_instruction_prompt.md", escape = "none")]
 struct ProtocolInstructionPromptTemplate<'a> {
@@ -166,9 +156,9 @@ struct ProtocolInstructionPromptTemplate<'a> {
     max_questions: usize,
     /// User prompt appended after protocol instructions.
     prompt: &'a str,
-    /// Pretty-printed JSON schema contract injected into the prompt template
-    /// when the provider requires inline schema instructions.
-    protocol_schema_json: Option<&'a str>,
+    /// Pretty-printed self-descriptive JSON schema contract injected into the
+    /// prompt template.
+    response_json_schema: &'a str,
 }
 
 /// Askama view model for rendering repo-root file path contract instructions.
@@ -304,7 +294,6 @@ pub(crate) fn prepend_repo_root_path_instructions(
 /// Returns an error if Askama template rendering fails.
 pub(crate) fn prepend_protocol_instructions(
     prompt: &str,
-    mode: ProtocolInstructionMode,
     prompt_kind: ProtocolPromptKind,
 ) -> Result<String, AgentBackendError> {
     if prompt.contains(PROTOCOL_INSTRUCTIONS_MARKER) {
@@ -312,15 +301,12 @@ pub(crate) fn prepend_protocol_instructions(
     }
 
     let include_change_summary = matches!(prompt_kind, ProtocolPromptKind::SessionDiscussion);
-    let protocol_schema_json = match mode {
-        ProtocolInstructionMode::WithSchema => Some(protocol::agent_response_output_schema_json()),
-        ProtocolInstructionMode::WithoutSchema => None,
-    };
+    let response_json_schema = protocol::agent_response_json_schema_json();
     let template = ProtocolInstructionPromptTemplate {
         include_change_summary,
         max_questions: protocol::MAX_QUESTIONS,
         prompt,
-        protocol_schema_json: protocol_schema_json.as_deref(),
+        response_json_schema: &response_json_schema,
     };
     let rendered = template.render().map_err(|error| {
         AgentBackendError::CommandBuild(format!(
@@ -445,17 +431,14 @@ mod tests {
 
     #[test]
     /// Ensures protocol instructions are prepended to plain prompts.
-    fn test_prepend_protocol_instructions_with_schema_adds_session_protocol_instructions() {
+    fn test_prepend_protocol_instructions_adds_session_protocol_instructions() {
         // Arrange
         let prompt = "Implement feature";
 
         // Act
-        let rendered_prompt = prepend_protocol_instructions(
-            prompt,
-            ProtocolInstructionMode::WithSchema,
-            ProtocolPromptKind::SessionDiscussion,
-        )
-        .expect("protocol instruction prompt should render");
+        let rendered_prompt =
+            prepend_protocol_instructions(prompt, ProtocolPromptKind::SessionDiscussion)
+                .expect("protocol instruction prompt should render");
 
         // Assert
         assert!(rendered_prompt.contains("Structured response protocol:"));
@@ -466,56 +449,28 @@ mod tests {
         assert!(rendered_prompt.contains("### Current Turn"));
         assert!(rendered_prompt.contains("### Session Changes"));
         assert!(rendered_prompt.contains("\"messages\""));
+        assert!(rendered_prompt.contains("\"title\""));
+        assert!(rendered_prompt.contains("\"description\""));
         assert!(rendered_prompt.ends_with(prompt));
     }
 
     #[test]
     /// Ensures protocol instructions are not duplicated when already present.
-    fn test_prepend_protocol_instructions_with_schema_is_idempotent() {
+    fn test_prepend_protocol_instructions_is_idempotent() {
         // Arrange
         let prompt = prepend_protocol_instructions(
             "Implement feature",
-            ProtocolInstructionMode::WithSchema,
             ProtocolPromptKind::SessionDiscussion,
         )
         .expect("protocol instruction prompt should render");
 
         // Act
-        let rendered_prompt = prepend_protocol_instructions(
-            &prompt,
-            ProtocolInstructionMode::WithSchema,
-            ProtocolPromptKind::SessionDiscussion,
-        )
-        .expect("protocol instruction prompt should render");
+        let rendered_prompt =
+            prepend_protocol_instructions(&prompt, ProtocolPromptKind::SessionDiscussion)
+                .expect("protocol instruction prompt should render");
 
         // Assert
         assert_eq!(rendered_prompt, prompt);
-    }
-
-    #[test]
-    /// Ensures non-schema protocol instructions are prepended to plain prompts.
-    fn test_prepend_protocol_instructions_without_schema_adds_session_protocol_instructions() {
-        // Arrange
-        let prompt = "Implement feature";
-
-        // Act
-        let rendered_prompt = prepend_protocol_instructions(
-            prompt,
-            ProtocolInstructionMode::WithoutSchema,
-            ProtocolPromptKind::SessionDiscussion,
-        )
-        .expect("protocol instruction prompt should render");
-
-        // Assert
-        assert!(rendered_prompt.contains("Structured response protocol:"));
-        assert!(rendered_prompt.contains("Return a single JSON object"));
-        assert!(rendered_prompt.contains("Do not wrap the JSON in markdown code fences."));
-        assert!(rendered_prompt.contains("The JSON Schema is enforced externally"));
-        assert!(rendered_prompt.contains("## Change Summary"));
-        assert!(rendered_prompt.contains("### Current Turn"));
-        assert!(rendered_prompt.contains("### Session Changes"));
-        assert!(!rendered_prompt.contains("Follow this JSON Schema exactly:"));
-        assert!(rendered_prompt.ends_with(prompt));
     }
 
     #[test]
@@ -551,17 +506,13 @@ mod tests {
     #[test]
     /// Ensures one-shot prompts keep the protocol envelope without session
     /// change-summary requirements.
-    fn test_prepend_protocol_instructions_without_schema_skips_change_summary_for_one_shot() {
+    fn test_prepend_protocol_instructions_skips_change_summary_for_one_shot() {
         // Arrange
         let prompt = "Generate title";
 
         // Act
-        let rendered_prompt = prepend_protocol_instructions(
-            prompt,
-            ProtocolInstructionMode::WithoutSchema,
-            ProtocolPromptKind::OneShot,
-        )
-        .expect("protocol instruction prompt should render");
+        let rendered_prompt = prepend_protocol_instructions(prompt, ProtocolPromptKind::OneShot)
+            .expect("protocol instruction prompt should render");
 
         // Assert
         assert!(rendered_prompt.contains("Structured response protocol:"));

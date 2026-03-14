@@ -127,7 +127,6 @@ impl RealGeminiAcpClient {
         app_server::run_turn_with_restart_retry(
             sessions,
             request,
-            crate::infra::agent::ProtocolInstructionMode::WithSchema,
             app_server::RuntimeInspector {
                 matches_request: GeminiSessionRuntime::matches_request,
                 pid: |runtime| runtime.child.id(),
