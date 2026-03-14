@@ -66,7 +66,7 @@ pub(super) fn build_prompt_stdin_payload(
         } => build_resume_prompt(prompt, session_output)?,
     };
     let prompt = prepend_repo_root_path_instructions(&prompt)?;
-    let prompt = prepend_protocol_instructions(&prompt, request.mode.protocol_prompt_kind())?;
+    let prompt = prepend_protocol_instructions(&prompt)?;
 
     Ok(prompt.into_bytes())
 }
@@ -123,9 +123,9 @@ mod tests {
     }
 
     #[test]
-    /// Verifies one-shot Gemini prompts keep the protocol wrapper without the
-    /// session change-summary contract.
-    fn test_gemini_one_shot_command_skips_change_summary_instructions() {
+    /// Verifies one-shot Gemini prompts keep the shared schema-only protocol
+    /// wrapper.
+    fn test_gemini_one_shot_command_uses_schema_only_protocol_instructions() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let backend = GeminiBackend;
@@ -165,7 +165,9 @@ mod tests {
 
         // Assert
         assert!(prompt.contains("Structured response protocol:"));
-        assert!(!prompt.contains("## Change Summary"));
+        assert!(
+            !prompt.contains("Emit the top-level `summary` field required by the JSON Schema.")
+        );
         assert!(debug_command.contains("--output-format"));
         assert!(!args.iter().any(String::is_empty));
     }

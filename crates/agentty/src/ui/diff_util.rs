@@ -1,3 +1,5 @@
+use crate::infra::agent::protocol::AgentResponseSummary;
+
 /// The kind of a line in a unified diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
@@ -202,15 +204,29 @@ pub fn build_focused_review_text(diff: &str, summary: Option<&str>) -> String {
 
 /// Extracts concise one-line agent comments from session summary text.
 fn focused_review_agent_comments(summary: Option<&str>) -> Vec<String> {
-    let mut comments = summary
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
+    let summary_text = summary.unwrap_or_default().trim();
+    let structured_summary_lines = serde_json::from_str::<AgentResponseSummary>(summary_text)
+        .ok()
+        .into_iter()
+        .flat_map(|summary_payload| [summary_payload.turn, summary_payload.session])
+        .collect::<Vec<_>>();
+    let summary_lines = if structured_summary_lines.is_empty() {
+        summary_text
+            .lines()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        structured_summary_lines
+    };
+    let mut comments = summary_lines
+        .into_iter()
+        .flat_map(|line| line.lines().map(ToString::to_string).collect::<Vec<_>>())
+        .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty())
-        .map(strip_markdown_list_prefix)
-        .map(strip_markdown_heading_prefix)
+        .map(|line| strip_markdown_list_prefix(line.trim()).to_string())
+        .map(|line| strip_markdown_heading_prefix(&line).to_string())
+        .filter(|line| !is_protocol_summary_heading(line))
         .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
         .take(MAX_AGENT_COMMENT_COUNT)
         .collect::<Vec<_>>();
 
@@ -219,6 +235,11 @@ fn focused_review_agent_comments(summary: Option<&str>) -> Vec<String> {
     }
 
     comments
+}
+
+/// Returns whether one normalized summary line is a protocol summary heading.
+fn is_protocol_summary_heading(line: &str) -> bool {
+    matches!(line, "Change Summary" | "Current Turn" | "Session Changes")
 }
 
 /// Returns scored review highlights from unified diff text.
@@ -772,6 +793,41 @@ diff --git a/src/main.rs b/src/main.rs
         assert!(focused_review.contains(DEFAULT_REVIEW_COMMENT));
         assert!(focused_review.contains("General code change; inspect full diff for context."));
         assert!(focused_review.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_build_focused_review_text_skips_protocol_summary_headings() {
+        // Arrange
+        let summary = Some(
+            "## Change Summary\n### Current Turn\n- Added protocol summary fields.\n\n### Session \
+             Changes\n- Session output renders summary markdown separately.",
+        );
+
+        // Act
+        let focused_review = build_focused_review_text("", summary);
+
+        // Assert
+        assert!(focused_review.contains("- Added protocol summary fields."));
+        assert!(focused_review.contains("- Session output renders summary markdown separately."));
+        assert!(!focused_review.contains("- Change Summary"));
+        assert!(!focused_review.contains("- Current Turn"));
+        assert!(!focused_review.contains("- Session Changes"));
+    }
+
+    #[test]
+    fn test_build_focused_review_text_parses_structured_summary_json() {
+        // Arrange
+        let summary = Some(
+            "{\"turn\":\"- Added protocol summary fields.\",\"session\":\"- Session output \
+             renders summary markdown separately.\"}",
+        );
+
+        // Act
+        let focused_review = build_focused_review_text("", summary);
+
+        // Assert
+        assert!(focused_review.contains("- Added protocol summary fields."));
+        assert!(focused_review.contains("- Session output renders summary markdown separately."));
     }
 
     #[test]

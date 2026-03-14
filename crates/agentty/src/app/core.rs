@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use ag_forge as forge;
 use ag_forge::{RealReviewRequestClient, ReviewRequestClient};
 use app::merge_queue::{MergeQueue, MergeQueueProgress};
 use app::project::ProjectManager;
@@ -26,6 +25,7 @@ use ratatui::Frame;
 use ratatui::widgets::TableState;
 use session::{SessionTaskService, SyncMainOutcome, SyncSessionStartError};
 use tokio::sync::mpsc;
+use {ag_forge as forge, serde_json};
 
 use crate::app::session;
 use crate::domain::agent::{AgentKind, AgentModel};
@@ -1327,21 +1327,29 @@ impl App {
     ///
     /// At the app layer, only `question` messages require explicit mode
     /// routing. `answer` messages are already appended to transcript output by
-    /// the session worker before this event is handled.
+    /// the session worker before this event is handled, while the structured
+    /// summary payload is stored here for immediate UI refresh.
     fn apply_agent_response_received(&mut self, session_id: &str, response: &AgentResponse) {
+        let Some(session) = self
+            .sessions
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        else {
+            return;
+        };
+
+        session.summary = response
+            .summary
+            .as_ref()
+            .and_then(|summary| serde_json::to_string(summary).ok());
+
         let questions = response.question_items();
         if questions.is_empty() {
             return;
         }
 
-        if let Some(session) = self
-            .sessions
-            .sessions
-            .iter_mut()
-            .find(|session| session.id == session_id)
-        {
-            session.questions.clone_from(&questions);
-        }
+        session.questions.clone_from(&questions);
 
         let is_viewing_session = match &self.mode {
             AppMode::View {
@@ -2723,7 +2731,7 @@ mod tests {
     use crate::domain::agent::AgentModel;
     use crate::domain::session::{SESSION_DATA_DIR, Session, SessionSize, SessionStats, Status};
     use crate::domain::setting::SettingName;
-    use crate::infra::agent::protocol::AgentResponseMessage;
+    use crate::infra::agent::protocol::{AgentResponseMessage, AgentResponseSummary};
     use crate::infra::db::Database;
     use crate::infra::file_index::FileEntry;
     use crate::infra::tmux::{MockTmuxClient, TmuxClient};
@@ -3709,12 +3717,14 @@ mod tests {
                 AgentResponseMessage::question("Need branch?"),
                 AgentResponseMessage::question("Need tests?"),
             ],
+            summary: None,
         };
 
         // Act
         event_batch.collect_event(AppEvent::AgentResponseReceived {
             response: AgentResponse {
                 messages: vec![AgentResponseMessage::question("Old question")],
+                summary: None,
             },
             session_id: "session-1".to_string(),
         });
@@ -3807,6 +3817,7 @@ mod tests {
                     vec!["Yes".to_string(), "No".to_string()],
                 ),
             ],
+            summary: None,
         };
         let expected_questions = response.question_items();
 
@@ -3842,6 +3853,7 @@ mod tests {
         app.mode = AppMode::List;
         let response = AgentResponse {
             messages: vec![AgentResponseMessage::question("Need context?")],
+            summary: None,
         };
 
         // Act
@@ -3853,6 +3865,45 @@ mod tests {
 
         // Assert
         assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    /// Verifies structured response summaries refresh the in-memory session
+    /// summary markdown even when no question flow is triggered.
+    async fn apply_app_events_agent_response_updates_session_summary() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-summary-view")));
+        let response = AgentResponse {
+            messages: vec![AgentResponseMessage::answer(
+                "Implemented the protocol update.",
+            )],
+            summary: Some(AgentResponseSummary {
+                turn: "- Added structured protocol summary fields.".to_string(),
+                session: "- Session output now renders summary markdown separately.".to_string(),
+            }),
+        };
+
+        // Act
+        app.apply_app_events(AppEvent::AgentResponseReceived {
+            response,
+            session_id: "session-1".to_string(),
+        })
+        .await;
+
+        let expected_summary = serde_json::to_string(&AgentResponseSummary {
+            turn: "- Added structured protocol summary fields.".to_string(),
+            session: "- Session output now renders summary markdown separately.".to_string(),
+        })
+        .expect("summary payload should serialize");
+
+        // Assert
+        assert_eq!(
+            app.sessions.sessions[0].summary.as_deref(),
+            Some(expected_summary.as_str())
+        );
     }
 
     #[test]

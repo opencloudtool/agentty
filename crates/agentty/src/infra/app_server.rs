@@ -421,11 +421,8 @@ pub fn turn_prompt_for_runtime(
     let turn_prompt = agent::prepend_repo_root_path_instructions(&turn_prompt)
         .map_err(|error| error.to_string())?;
 
-    let turn_prompt = agent::prepend_protocol_instructions(
-        &turn_prompt,
-        agent::ProtocolPromptKind::SessionDiscussion,
-    )
-    .map_err(|error| error.to_string())?;
+    let turn_prompt =
+        agent::prepend_protocol_instructions(&turn_prompt).map_err(|error| error.to_string())?;
 
     Ok(TurnPrompt {
         attachments: prompt.attachments,

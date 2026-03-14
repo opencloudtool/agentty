@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use serde_json;
 use tokio::sync::mpsc;
 
 use super::SessionTaskService;
@@ -509,9 +510,10 @@ impl SessionManager {
     }
 }
 
-/// Applies the turn result: appends the final response, updates stats, and
-/// runs auto-commit. Returns `Ok(Status)` on success or `Err(description)` on
-/// turn failure after appending the error to session output.
+/// Applies the turn result: appends the final response, persists the raw
+/// summary payload, updates stats, and runs auto-commit. Returns `Ok(Status)`
+/// on success or `Err(description)` on turn failure after appending the error
+/// to session output.
 ///
 /// The final parsed response appends non-empty protocol `answer` text only
 /// when no assistant stream chunks were already appended for this turn. This
@@ -520,6 +522,10 @@ impl SessionManager {
 /// When no `answer` messages exist, worker output falls back to joined
 /// `question` text so clarification prompts remain visible while thought-only
 /// responses are not persisted as final transcript output.
+///
+/// Structured response summaries are stored separately from transcript output
+/// so the UI can render them without parsing answer markdown from `answer`
+/// messages.
 ///
 /// `question` messages are persisted to the session row and trigger
 /// `Status::Question`; all responses are emitted through
@@ -552,6 +558,16 @@ async fn apply_turn_result(
                 )
                 .await;
             }
+
+            let summary_markdown = assistant_message
+                .summary
+                .as_ref()
+                .and_then(|summary| serde_json::to_string(summary).ok())
+                .unwrap_or_default();
+            let _ = context
+                .db
+                .update_session_summary(&context.session_id, &summary_markdown)
+                .await;
 
             let question_items = assistant_message.question_items();
             let target_status = if question_items.is_empty() {
@@ -888,6 +904,7 @@ mod tests {
                 AgentResponseMessage::question("Need a target branch?"),
                 AgentResponseMessage::question("Need migration notes?"),
             ],
+            summary: None,
         };
 
         // Act
@@ -911,6 +928,7 @@ mod tests {
              checks and\nrollback notes?";
         let agent_response = AgentResponse {
             messages: vec![AgentResponseMessage::question(numbered_questions)],
+            summary: None,
         };
 
         // Act
@@ -930,6 +948,7 @@ mod tests {
                 AgentResponseMessage::answer("Implemented the fix."),
                 AgentResponseMessage::question("Need me to run tests?"),
             ],
+            summary: None,
         };
 
         // Act
@@ -949,6 +968,7 @@ mod tests {
         // Arrange
         let response = AgentResponse {
             messages: vec![AgentResponseMessage::answer("Implemented the fix.")],
+            summary: None,
         };
 
         // Act
@@ -965,6 +985,7 @@ mod tests {
         // Arrange
         let response = AgentResponse {
             messages: vec![AgentResponseMessage::question("Should I apply the patch?")],
+            summary: None,
         };
 
         // Act
@@ -986,6 +1007,7 @@ mod tests {
                 AgentResponseMessage::answer(""),
                 AgentResponseMessage::question("\n"),
             ],
+            summary: None,
         };
 
         // Act

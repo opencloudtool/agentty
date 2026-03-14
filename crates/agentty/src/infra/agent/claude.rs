@@ -85,7 +85,7 @@ pub(super) fn build_prompt_stdin_payload(
         )?,
     };
     let prompt = prepend_repo_root_path_instructions(&prompt)?;
-    let prompt = prepend_protocol_instructions(&prompt, request.mode.protocol_prompt_kind())?;
+    let prompt = prepend_protocol_instructions(&prompt)?;
 
     Ok(prompt.into_bytes())
 }
@@ -304,9 +304,9 @@ mod tests {
     }
 
     #[test]
-    /// Verifies one-shot Claude prompts keep protocol JSON and skip session
-    /// change-summary requirements.
-    fn test_claude_one_shot_command_enforces_json_schema_without_change_summary() {
+    /// Verifies one-shot Claude prompts keep protocol JSON with schema-only
+    /// summary guidance.
+    fn test_claude_one_shot_command_enforces_json_schema_without_summary_prose() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let backend = ClaudeBackend;
@@ -342,7 +342,9 @@ mod tests {
 
         // Assert
         assert!(prompt.contains("Structured response protocol:"));
-        assert!(!prompt.contains("## Change Summary"));
+        assert!(
+            !prompt.contains("Emit the top-level `summary` field required by the JSON Schema.")
+        );
         assert!(debug_command.contains("--output-format"));
         assert!(debug_command.contains("json"));
         assert!(debug_command.contains("--json-schema"));
@@ -390,7 +392,9 @@ mod tests {
         assert!(debug_command.contains("--json-schema"));
         assert!(debug_command.contains("AgentResponse"));
         assert!(prompt.contains("Structured response protocol:"));
-        assert!(prompt.contains("## Change Summary"));
+        assert!(
+            !prompt.contains("Emit the top-level `summary` field required by the JSON Schema.")
+        );
     }
 
     #[test]

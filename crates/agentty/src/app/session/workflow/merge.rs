@@ -646,7 +646,7 @@ impl SessionManager {
         .map_err(|error| format!("Merged successfully but failed to remove worktree: {error}"))?;
 
         if let Some(commit_message) = authoritative_commit_message {
-            Self::update_session_title_and_summary_from_commit_message(
+            Self::update_session_title_from_commit_message(
                 &db,
                 &id,
                 &commit_message,
@@ -1094,7 +1094,7 @@ impl SessionManager {
         .await
         {
             Ok(outcome) => {
-                Self::update_session_title_and_summary_from_commit_message(
+                Self::update_session_title_from_commit_message(
                     &input.db,
                     &input.id,
                     &outcome.commit_message,
@@ -1182,40 +1182,35 @@ impl SessionManager {
             SessionTaskService::update_status(status, db, app_event_tx, id, Status::Review).await;
     }
 
-    /// Updates persisted session title and summary from the canonical session
-    /// commit message.
-    pub(crate) async fn update_session_title_and_summary_from_commit_message(
+    /// Updates the persisted session title from the canonical session commit
+    /// message without replacing the structured session summary payload.
+    pub(crate) async fn update_session_title_from_commit_message(
         db: &Database,
         session_id: &str,
         commit_message: &str,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
     ) {
-        let (title, summary) = Self::session_title_and_summary_from_commit_message(commit_message);
+        let title = Self::session_title_from_commit_message(commit_message);
 
         let _ = db.update_session_title(session_id, &title).await;
-
-        let _ = db.update_session_summary(session_id, &summary).await;
 
         let _ = app_event_tx.send(AppEvent::RefreshSessions);
     }
 
-    fn session_title_and_summary_from_commit_message(commit_message: &str) -> (String, String) {
+    /// Extracts the first non-empty line from one session commit message for
+    /// use as the session title.
+    fn session_title_from_commit_message(commit_message: &str) -> String {
         let trimmed_message = commit_message.trim();
         if trimmed_message.is_empty() {
-            let fallback_message = "Apply session updates".to_string();
-
-            return (fallback_message.clone(), fallback_message);
+            return "Apply session updates".to_string();
         }
 
-        let title = trimmed_message
+        trimmed_message
             .lines()
             .map(str::trim)
             .find(|line| !line.is_empty())
             .unwrap_or("Apply session updates")
-            .to_string();
-        let summary = trimmed_message.to_string();
-
-        (title, summary)
+            .to_string()
     }
 
     /// Runs a bounded rebase-assistance loop until conflicts are resolved.
@@ -1800,49 +1795,43 @@ mod tests {
     }
 
     #[test]
-    fn test_session_title_and_summary_from_commit_message() {
+    fn test_session_title_from_commit_message() {
         // Arrange
         let commit_message = "Refine merge flow\n\n- Update title handling";
 
         // Act
-        let (title, summary) =
-            SessionManager::session_title_and_summary_from_commit_message(commit_message);
+        let title = SessionManager::session_title_from_commit_message(commit_message);
 
         // Assert
         assert_eq!(title, "Refine merge flow");
-        assert_eq!(summary, "Refine merge flow\n\n- Update title handling");
     }
 
     #[test]
-    fn test_session_title_and_summary_from_commit_message_skips_blank_prefix() {
+    fn test_session_title_from_commit_message_skips_blank_prefix() {
         // Arrange
         let commit_message = "\n\nRefine merge flow\n\n- Update title handling";
 
         // Act
-        let (title, summary) =
-            SessionManager::session_title_and_summary_from_commit_message(commit_message);
+        let title = SessionManager::session_title_from_commit_message(commit_message);
 
         // Assert
         assert_eq!(title, "Refine merge flow");
-        assert_eq!(summary, "Refine merge flow\n\n- Update title handling");
     }
 
     #[test]
-    fn test_session_title_and_summary_from_commit_message_empty_uses_fallback() {
+    fn test_session_title_from_commit_message_empty_uses_fallback() {
         // Arrange
         let commit_message = "  \n";
 
         // Act
-        let (title, summary) =
-            SessionManager::session_title_and_summary_from_commit_message(commit_message);
+        let title = SessionManager::session_title_from_commit_message(commit_message);
 
         // Assert
         assert_eq!(title, "Apply session updates");
-        assert_eq!(summary, "Apply session updates");
     }
 
     #[tokio::test]
-    async fn test_update_session_title_and_summary_from_commit_message_persists_commit_message() {
+    async fn test_update_session_title_from_commit_message_preserves_existing_summary() {
         // Arrange
         let database = Database::open_in_memory()
             .await
@@ -1861,11 +1850,17 @@ mod tests {
             )
             .await
             .expect("failed to insert session");
+        let existing_summary =
+            "{\"turn\":\"- Updated README.\",\"session\":\"- Session branch updates README.\"}";
+        database
+            .update_session_summary("session-id", existing_summary)
+            .await
+            .expect("failed to persist existing summary");
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
         let commit_message = "Refine session commit message\n\n- Keep title in sync";
 
         // Act
-        SessionManager::update_session_title_and_summary_from_commit_message(
+        SessionManager::update_session_title_from_commit_message(
             &database,
             "session-id",
             commit_message,
@@ -1882,7 +1877,7 @@ mod tests {
             sessions[0].title.as_deref(),
             Some("Refine session commit message")
         );
-        assert_eq!(sessions[0].summary.as_deref(), Some(commit_message));
+        assert_eq!(sessions[0].summary.as_deref(), Some(existing_summary));
         assert_eq!(
             app_event_rx.try_recv().ok(),
             Some(AppEvent::RefreshSessions)

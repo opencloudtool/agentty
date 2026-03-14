@@ -79,20 +79,20 @@ each entry has:
 - `type`: `answer` or `question`
 - `text`: markdown text payload
 - `options` (optional): array of predefined answer strings (only for `question` type)
+- `summary` (optional): top-level structured summary object
 
-Session discussion turns add one extra prompt contract on top of the JSON
-envelope:
+The embedded JSON Schema is self-descriptive and carries the summary-field
+metadata directly in the prompt:
 
-- every discussion turn must include at least one `answer` message that ends
-  with a `## Change Summary` section
-- `## Change Summary` must contain `### Current Turn` (what changed in this
-  turn only) and `### Session Changes` (the cumulative session-branch diff)
+- `summary.turn` describes only the work completed in the current turn
+- `summary.session` describes the cumulative session-branch diff that still
+  applies
 
 One-shot utility prompts, such as title generation, session commit-message
 generation, focused review preparation, auto-commit assistance, and rebase
-conflict assistance, still return the same protocol JSON shape but skip the
-change-summary footer so the answer text stays usable as a machine-readable
-artifact.
+conflict assistance, still return the same protocol JSON shape. They commonly
+omit `summary` or set it to `null`, while session discussion turns typically
+populate it.
 
 Example payload:
 
@@ -101,17 +101,23 @@ Example payload:
   "messages": [
     {
       "type": "answer",
-      "text": "Implemented the change.\n\n## Change Summary\n### Current Turn\n- Updated the protocol prompt templates.\n### Session Changes\n- Added mandatory per-turn change summaries to the structured response contract."
+      "text": "Implemented the change."
     },
     { "type": "question", "text": "Should I run the full test suite?", "options": ["Yes", "No", "Only changed files"] }
-  ]
+  ],
+  "summary": {
+    "turn": "- Updated the protocol prompt templates.",
+    "session": "- Added mandatory structured summaries to the response contract."
+  }
 }
 ```
 
 <a id="backends-structured-response-routing"></a>
 `answer` messages are appended to the normal session transcript. `question`
 messages are persisted separately and move the session to **Question** status
-so Agentty can collect clarifications in question input mode.
+so Agentty can collect clarifications in question input mode. The top-level
+`summary` object is persisted separately and rendered in the session summary
+panel instead of being parsed back out of answer markdown.
 
 ## Protocol Validation and Repair
 
@@ -126,9 +132,10 @@ Agentty validates final agent output against the structured response protocol.
   commit messages, or review text.
 - Claude turns use native schema validation via `claude --json-schema` and
   `--output-format json` (no Claude `stream-json` mode).
-- Inline protocol schema docs keep the raw self-descriptive `schemars`
-  metadata (`title`, `description`, and related annotations), while transport
-  `outputSchema` payloads are normalized separately for provider compatibility.
+- Prompt-side protocol instructions rely on the raw self-descriptive
+  `schemars` metadata (`title`, `description`, and related annotations),
+  while transport `outputSchema` payloads are normalized separately for
+  provider compatibility.
 - Claude and Gemini stream the rendered prompt body through stdin for CLI
   one-shot/repair flows so large diffs and review prompts do not hit OS argv
   length limits.

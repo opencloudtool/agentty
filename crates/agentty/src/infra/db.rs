@@ -799,7 +799,7 @@ WHERE id = ?
         Ok(())
     }
 
-    /// Updates the terminal summary for a session row.
+    /// Updates the persisted summary payload for a session row.
     ///
     /// # Errors
     /// Returns an error if the summary update fails.

@@ -74,7 +74,7 @@ choose the correct module when implementing changes.
 | - `cli.rs` | `CliAgentChannel` - CLI subprocess adapter (Claude). |
 | - `app_server.rs` | `AppServerAgentChannel` - app-server RPC adapter (Codex/Gemini). |
 | `crates/agentty/src/infra/agent/` | Per-provider backend command builders and response parsing: |
-| - `backend.rs` | `AgentBackend` trait, transport mode selection, and protocol prompt templates for session discussion vs one-shot interactions. |
+| - `backend.rs` | `AgentBackend` trait, transport mode selection, and shared protocol prompt templating. |
 | - `claude.rs` | Claude backend implementation. |
 | - `codex.rs` | Codex backend implementation. |
 | - `gemini.rs` | Gemini backend implementation. |

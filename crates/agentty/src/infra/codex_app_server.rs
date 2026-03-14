@@ -2832,6 +2832,7 @@ sleep 5
             Some("object")
         );
         assert!(output_schema_properties.contains_key("messages"));
+        assert!(output_schema_properties.contains_key("summary"));
     }
 
     #[test]

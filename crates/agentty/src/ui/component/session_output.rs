@@ -5,9 +5,11 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use serde_json;
 
 use crate::domain::session::{Session, Status};
 use crate::icon::Icon;
+use crate::infra::agent::protocol::AgentResponseSummary;
 use crate::ui::markdown::render_markdown;
 use crate::ui::state::app_mode::DoneSessionOutputMode;
 use crate::ui::{Component, style};
@@ -28,6 +30,8 @@ pub struct SessionOutput<'a> {
 }
 
 impl<'a> SessionOutput<'a> {
+    const DEFAULT_SUMMARY_TEXT: &'static str = "No changes";
+
     /// Creates a new session output component.
     pub fn new(session: &'a Session) -> Self {
         Self {
@@ -217,34 +221,81 @@ impl<'a> SessionOutput<'a> {
 
         match status {
             Status::Done if done_session_output_mode == DoneSessionOutputMode::Summary => {
-                if let Some(summary) = session
-                    .summary
-                    .as_deref()
-                    .filter(|summary| !summary.is_empty())
-                {
-                    return summary.to_string();
-                }
+                return Self::render_summary_text(Self::session_summary_text(session));
             }
             Status::Canceled => {
-                if let Some(summary) = session
-                    .summary
-                    .as_deref()
-                    .filter(|summary| !summary.is_empty())
-                {
-                    return summary.to_string();
-                }
+                return Self::render_summary_text(Self::session_summary_text(session));
+            }
+            Status::Review | Status::Question => {
+                return Self::session_output_with_summary(session);
             }
             Status::New
-            | Status::Review
-            | Status::Question
+            | Status::Done
             | Status::InProgress
             | Status::Queued
             | Status::Rebasing
-            | Status::Merging
-            | Status::Done => {}
+            | Status::Merging => {}
         }
 
         session.output.clone()
+    }
+
+    /// Returns transcript output with the rendered summary appended below it.
+    fn session_output_with_summary(session: &Session) -> String {
+        let summary_text = Self::session_summary_text(session);
+        let output_text = session.output.trim_end();
+        if output_text.is_empty() {
+            return Self::render_summary_text(summary_text);
+        }
+
+        format!(
+            "{}\n\n{}",
+            output_text,
+            Self::render_summary_text(summary_text)
+        )
+    }
+
+    /// Returns the persisted raw summary payload or plain-text fallback.
+    fn session_summary_text(session: &Session) -> &str {
+        session
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|summary| !summary.is_empty())
+            .unwrap_or("")
+    }
+
+    /// Renders one persisted summary payload into markdown for display.
+    fn render_summary_text(summary_text: &str) -> String {
+        let trimmed_summary = summary_text.trim();
+        if let Ok(summary_payload) = serde_json::from_str::<AgentResponseSummary>(trimmed_summary) {
+            return format!(
+                "## Change Summary\n### Current Turn\n{}\n\n### Session Changes\n{}",
+                Self::summary_section_text(&summary_payload.turn),
+                Self::summary_section_text(&summary_payload.session)
+            );
+        }
+
+        if !trimmed_summary.is_empty() {
+            return trimmed_summary.to_string();
+        }
+
+        format!(
+            "## Change Summary\n### Current Turn\n{}\n\n### Session Changes\n{}",
+            Self::DEFAULT_SUMMARY_TEXT,
+            Self::DEFAULT_SUMMARY_TEXT
+        )
+    }
+
+    /// Returns one rendered summary section value, falling back to
+    /// `No changes` when the persisted value is blank.
+    fn summary_section_text(summary_text: &str) -> &str {
+        let trimmed_summary = summary_text.trim();
+        if trimmed_summary.is_empty() {
+            return Self::DEFAULT_SUMMARY_TEXT;
+        }
+
+        trimmed_summary
     }
 
     /// Adds visual spacing around user prompt blocks while preserving pasted
@@ -459,10 +510,20 @@ mod tests {
     use std::path::PathBuf;
 
     use ratatui::style::Modifier;
+    use serde_json;
 
     use super::*;
     use crate::agent::AgentModel;
     use crate::domain::session::{SessionSize, SessionStats};
+    use crate::infra::agent::protocol::AgentResponseSummary;
+
+    fn summary_fixture() -> String {
+        serde_json::to_string(&AgentResponseSummary {
+            turn: "- Added the structured protocol summary.".to_string(),
+            session: "- Session output now renders persisted summary markdown.".to_string(),
+        })
+        .expect("summary fixture should serialize")
+    }
 
     fn session_fixture() -> Session {
         Session {
@@ -520,7 +581,7 @@ mod tests {
         // Arrange
         let mut session = session_fixture();
         session.output = "streamed output".to_string();
-        session.summary = Some("terminal summary".to_string());
+        session.summary = Some(summary_fixture());
         session.status = Status::Done;
 
         // Act
@@ -540,7 +601,8 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(text.contains("terminal summary"));
+        assert!(text.contains("Added the structured protocol summary."));
+        assert!(text.contains("Session output now renders persisted summary markdown."));
         assert!(!text.contains("streamed output"));
     }
 
@@ -549,7 +611,7 @@ mod tests {
         // Arrange
         let mut session = session_fixture();
         session.output = "streamed output".to_string();
-        session.summary = Some("terminal summary".to_string());
+        session.summary = Some(summary_fixture());
         session.status = Status::Done;
 
         // Act
@@ -569,8 +631,77 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(!text.contains("terminal summary"));
+        assert!(!text.contains("Added the structured protocol summary."));
         assert!(text.contains("streamed output"));
+    }
+
+    #[test]
+    fn test_output_lines_review_session_appends_summary_after_output() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = "implemented the feature".to_string();
+        session.summary = Some(summary_fixture());
+        session.status = Status::Review;
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 5),
+            session.status,
+            DoneSessionOutputMode::Summary,
+            None,
+            None,
+            None,
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("implemented the feature"));
+        assert!(text.contains("Added the structured protocol summary."));
+        assert!(text.contains("Session output now renders persisted summary markdown."));
+    }
+
+    #[test]
+    fn test_output_lines_review_session_uses_no_changes_summary_fallback() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = "implemented the feature".to_string();
+        session.status = Status::Review;
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 5),
+            session.status,
+            DoneSessionOutputMode::Summary,
+            None,
+            None,
+            None,
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("implemented the feature"));
+        assert!(text.contains("No changes"));
+        assert!(text.contains("Current Turn"));
+        assert!(text.contains("Session Changes"));
+    }
+
+    #[test]
+    fn test_render_summary_text_uses_plain_text_fallback_for_non_protocol_summary() {
+        // Arrange / Act
+        let rendered_summary = SessionOutput::render_summary_text("plain summary");
+
+        // Assert
+        assert_eq!(rendered_summary, "plain summary");
     }
 
     #[test]
@@ -578,7 +709,7 @@ mod tests {
         // Arrange
         let mut session = session_fixture();
         session.output = "streamed output".to_string();
-        session.summary = Some("terminal summary".to_string());
+        session.summary = Some(summary_fixture());
         session.status = Status::Done;
 
         // Act
@@ -606,7 +737,7 @@ mod tests {
         // Arrange
         let mut session = session_fixture();
         session.output = "streamed output".to_string();
-        session.summary = Some("terminal summary".to_string());
+        session.summary = Some(summary_fixture());
         session.status = Status::Done;
 
         // Act
@@ -741,7 +872,7 @@ mod tests {
         // Arrange
         let mut session = session_fixture();
         session.output = "streamed output".to_string();
-        session.summary = Some("canceled summary".to_string());
+        session.summary = Some(summary_fixture());
         session.status = Status::Canceled;
 
         // Act
@@ -761,7 +892,7 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(text.contains("canceled summary"));
+        assert!(text.contains("Added the structured protocol summary."));
         assert!(!text.contains("streamed output"));
     }
 

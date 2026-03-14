@@ -55,8 +55,9 @@ ready, or shows a loading message while generation is still running.
 After each successful turn with file changes, Agentty keeps the session branch
 at one evolving commit. It regenerates that commit message from the cumulative
 session diff, applies the active project's `Coauthored by Agentty` setting to
-the final commit trailer, amends `HEAD`, and refreshes the session title and
-summary from the same commit text before merge begins.
+the final commit trailer, amends `HEAD`, and refreshes the session title from
+the same commit text before merge begins. The session summary panel continues
+to show the structured turn/session summary returned by the agent.
 
 When a session enters **Merging**, Agentty reuses the session branch `HEAD`
 commit message for the final squash commit on the base branch. Merge still

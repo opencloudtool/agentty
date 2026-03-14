@@ -103,7 +103,7 @@ impl SessionTaskService {
     pub(in crate::app) async fn handle_auto_commit(context: AssistContext) {
         match Self::commit_changes_with_assist(&context).await {
             Ok(Some(outcome)) => {
-                SessionManager::update_session_title_and_summary_from_commit_message(
+                SessionManager::update_session_title_from_commit_message(
                     &context.db,
                     &context.id,
                     &outcome.commit_message,
@@ -678,9 +678,12 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
+    use serde_json;
+
     use super::*;
     use crate::db::Database;
     use crate::infra::agent::AgentCommandMode;
+    use crate::infra::agent::protocol::AgentResponseSummary;
     use crate::infra::agent::tests::MockAgentBackend;
     use crate::infra::git::MockGitClient;
 
@@ -941,6 +944,84 @@ mod tests {
             .map(|buffer| buffer.clone())
             .unwrap_or_default();
         assert!(output_text.contains("[Commit] No changes to commit."));
+    }
+
+    #[tokio::test]
+    /// Verifies successful auto-commit updates the title while preserving the
+    /// structured session summary payload used by the UI.
+    async fn test_handle_auto_commit_preserves_structured_session_summary() {
+        // Arrange
+        let mut mock_git_client = MockGitClient::new();
+        mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(false) }));
+        mock_git_client
+            .expect_has_commits_since()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(true) }));
+        mock_git_client
+            .expect_head_commit_message()
+            .times(1)
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(Some(
+                        "Refine README updates\n\n- Keep title aligned with commit".to_string(),
+                    ))
+                })
+            });
+        mock_git_client
+            .expect_commit_all_preserving_single_commit()
+            .times(1)
+            .returning(|_, _, _, _, _| Box::pin(async { Ok(()) }));
+        mock_git_client
+            .expect_head_short_hash()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok("abc1234".to_string()) }));
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        insert_review_session(&database, AgentModel::Gpt53Codex.as_str()).await;
+        let summary_payload = serde_json::to_string(&AgentResponseSummary {
+            turn: "- Updated README body.".to_string(),
+            session: "- Session branch updates README formatting.".to_string(),
+        })
+        .expect("summary payload should serialize");
+        database
+            .update_session_summary("session-id", &summary_payload)
+            .await
+            .expect("failed to persist summary payload");
+        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+        let output = Arc::new(Mutex::new(String::new()));
+        let context = AssistContext {
+            app_event_tx,
+            child_pid: Arc::new(Mutex::new(None)),
+            db: database.clone(),
+            folder: PathBuf::from("/tmp/project"),
+            git_client: Arc::new(mock_git_client),
+            id: "session-id".to_string(),
+            output: Arc::clone(&output),
+            session_model: AgentModel::Gpt53Codex,
+        };
+
+        // Act
+        SessionTaskService::handle_auto_commit(context).await;
+        let sessions = database
+            .load_sessions()
+            .await
+            .expect("failed to load sessions");
+
+        // Assert
+        assert_eq!(sessions[0].title.as_deref(), Some("Refine README updates"));
+        assert_eq!(
+            sessions[0].summary.as_deref(),
+            Some(summary_payload.as_str())
+        );
+        let output_text = output
+            .lock()
+            .map(|buffer| buffer.clone())
+            .unwrap_or_default();
+        assert!(output_text.contains("[Commit] committed with hash `abc1234`"));
     }
 
     #[tokio::test]

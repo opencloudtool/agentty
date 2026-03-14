@@ -112,7 +112,7 @@ From prompt submit to persisted result:
 1. Persist session questions and emit `AppEvent::AgentResponseReceived`.
 1. Persist stats and per-model usage.
 1. Persist provider conversation id (app-server providers).
-1. Run auto-commit assistance path, which preserves a single evolving commit on the session branch: the first successful file-changing turn creates the commit, later turns regenerate the message from the cumulative diff and amend `HEAD`, and the session `title`/`summary` are synced from that rewritten commit after success.
+1. Run auto-commit assistance path, which preserves a single evolving commit on the session branch: the first successful file-changing turn creates the commit, later turns regenerate the message from the cumulative diff and amend `HEAD`, and the session `title` is synced from that rewritten commit after success while the structured response `summary` payload remains unchanged.
 1. Refresh persisted session size.
 1. Update final status (`Review` or `Question`; on failure -> `Review`).
 
@@ -176,15 +176,11 @@ Provider conversation id flow:
 <a id="architecture-agent-interaction-protocol"></a>
 Provider output is normalized to one structured response protocol:
 
-1. Prompt builders prepend protocol instructions (`answer`/`question` schema),
-   using the self-descriptive `schemars` document for inline prompt guidance
-   and a separately normalized schema for transport-enforced `outputSchema`
-   paths.
-1. Session discussion prompts also require every turn to end with a markdown `## Change Summary` containing `### Current Turn` and `### Session Changes`.
-1. One-shot prompts keep the same JSON envelope but omit the change-summary footer so internal utility calls can parse commit messages, generated titles, focused review text, and assist-task transcript output directly from `answer` messages.
+1. Prompt builders prepend protocol instructions and the self-descriptive `schemars` document, so every provider sees the same `messages`/optional-`summary` schema and transport-enforced `outputSchema` paths can normalize that same contract separately.
+1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts often omit `summary` or return `null`.
 1. Channels stream deltas/progress as `TurnEvent`.
-1. Final output is parsed to protocol `messages`.
-1. Worker persists final display text and question payloads, then emits `AgentResponseReceived`.
+1. Final output is parsed to protocol `messages` plus the optional structured summary.
+1. Worker persists final display text, raw summary payload, and question payloads, then emits `AgentResponseReceived`.
 
 <a id="architecture-agent-interaction-streaming"></a>
 Streaming behavior differs by transport/provider:

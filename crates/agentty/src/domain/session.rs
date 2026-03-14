@@ -269,7 +269,8 @@ pub struct Session {
     pub stats: SessionStats,
     /// Current lifecycle status.
     pub status: Status,
-    /// Optional summary generated for list display.
+    /// Optional persisted summary payload rendered by the UI and reused as
+    /// review-assist context.
     pub summary: Option<String>,
     /// Optional explicit session title.
     pub title: Option<String>,

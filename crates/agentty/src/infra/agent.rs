@@ -17,7 +17,7 @@ pub use backend::{
     create_backend, parse_response, transport_mode,
 };
 pub(crate) use backend::{
-    ProtocolPromptKind, build_command_stdin_payload, build_resume_prompt, parse_stream_output_line,
+    build_command_stdin_payload, build_resume_prompt, parse_stream_output_line,
     prepend_protocol_instructions, prepend_repo_root_path_instructions,
 };
 pub(crate) use protocol::AgentResponse;

@@ -47,7 +47,7 @@ impl AgentBackend for CodexBackend {
             } => build_resume_prompt(prompt, session_output)?,
         };
         let prompt = prepend_repo_root_path_instructions(&prompt)?;
-        let prompt = prepend_protocol_instructions(&prompt, mode.protocol_prompt_kind())?;
+        let prompt = prepend_protocol_instructions(&prompt)?;
 
         let mut command = Command::new("codex");
         command.arg("exec");
@@ -219,9 +219,9 @@ mod tests {
     }
 
     #[test]
-    /// Verifies one-shot Codex prompts keep the protocol wrapper without the
-    /// session change-summary contract.
-    fn build_one_shot_command_uses_protocol_without_change_summary() {
+    /// Verifies one-shot Codex prompts keep the shared schema-only protocol
+    /// wrapper.
+    fn build_one_shot_command_uses_schema_only_protocol_instructions() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let backend = CodexBackend;
@@ -244,6 +244,9 @@ mod tests {
 
         // Assert
         assert!(debug_command.contains("Structured response protocol:"));
-        assert!(!debug_command.contains("## Change Summary"));
+        assert!(
+            !debug_command
+                .contains("Emit the top-level `summary` field required by the JSON Schema.")
+        );
     }
 }

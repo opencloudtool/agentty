@@ -4,7 +4,8 @@
 //! Defines the [`AgentResponse`] payload returned by agent turns, the
 //! prompt-facing and transport-facing JSON Schema renderings derived from that
 //! model, and [`parse_agent_response`] which deserializes raw provider output
-//! into structured messages.
+//! into structured messages plus the optional structured session summary
+//! block.
 //!
 //! Parsing first attempts strict whole-response JSON decoding that matches the
 //! schema. When parsing fails, the raw payload is preserved as a single
@@ -127,6 +128,32 @@ pub struct QuestionItem {
     pub text: String,
 }
 
+/// Structured session summary block emitted alongside protocol messages.
+///
+/// Session-discussion turns use this object instead of embedding the change
+/// summary inside `answer` message text. One-shot prompts set the top-level
+/// `summary` field to `null`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(
+    title = "AgentResponseSummary",
+    description = "Structured session summary block emitted alongside protocol messages."
+)]
+pub struct AgentResponseSummary {
+    /// Concise summary of only the work completed in the current turn.
+    #[schemars(
+        title = "turn",
+        description = "Concise summary of only the work completed in the current turn."
+    )]
+    pub turn: String,
+    /// Cumulative summary of active changes on the current session branch.
+    #[schemars(
+        title = "session",
+        description = "Cumulative summary of active changes on the current session branch."
+    )]
+    pub session: String,
+}
+
 /// Wire-format protocol payload used for schema-driven provider output.
 ///
 /// Providers that support output schemas (for example, Codex app-server) are
@@ -146,6 +173,15 @@ pub struct AgentResponse {
         description = "Ordered response messages emitted for this turn."
     )]
     pub messages: Vec<AgentResponseMessage>,
+    /// Structured summary for session-discussion turns, or `None` for legacy
+    /// payloads and one-shot prompts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        title = "summary",
+        description = "Structured summary for session-discussion turns, or `null` for legacy \
+                       payloads and one-shot prompts."
+    )]
+    pub summary: Option<AgentResponseSummary>,
 }
 
 /// Structured response parsing failure details.
@@ -173,6 +209,7 @@ impl AgentResponse {
     pub fn plain(text: impl Into<String>) -> Self {
         Self {
             messages: vec![AgentResponseMessage::answer(text)],
+            summary: None,
         }
     }
 
@@ -277,7 +314,9 @@ pub(crate) fn agent_response_output_schema() -> Value {
 /// This keeps the raw `schemars` metadata intact so inline prompt guidance can
 /// show a fully self-descriptive schema document.
 pub(crate) fn agent_response_json_schema_json() -> String {
-    stringify_schema_json(agent_response_json_schema())
+    let schema = agent_response_json_schema();
+
+    stringify_schema_json(&schema)
 }
 
 /// Returns a pretty-printed JSON Schema string for prompt instruction
@@ -288,12 +327,14 @@ pub(crate) fn agent_response_json_schema_json() -> String {
 /// text instead, or by native schema-validation flags that accept a serialized
 /// schema document.
 pub(crate) fn agent_response_output_schema_json() -> String {
-    stringify_schema_json(agent_response_output_schema())
+    let schema = agent_response_output_schema();
+
+    stringify_schema_json(&schema)
 }
 
 /// Pretty-prints one schema document for prompt or transport wiring.
-fn stringify_schema_json(schema: Value) -> String {
-    match serde_json::to_string_pretty(&schema) {
+fn stringify_schema_json(schema: &Value) -> String {
+    match serde_json::to_string_pretty(schema) {
         Ok(schema_json) => schema_json,
         Err(_) => "null".to_string(),
     }
@@ -614,6 +655,7 @@ mod tests {
             response,
             AgentResponse {
                 messages: vec![AgentResponseMessage::answer("Here is my analysis.")],
+                summary: None,
             }
         );
         assert_eq!(response.to_display_text(), "Here is my analysis.");
@@ -633,6 +675,7 @@ mod tests {
             response,
             Ok(AgentResponse {
                 messages: vec![AgentResponseMessage::answer("Here is my analysis.")],
+                summary: None,
             })
         );
     }
@@ -652,6 +695,7 @@ mod tests {
             response,
             Ok(AgentResponse {
                 messages: vec![AgentResponseMessage::answer("Done.")],
+                summary: None,
             })
         );
     }
@@ -675,6 +719,7 @@ mod tests {
             response,
             Ok(AgentResponse {
                 messages: vec![AgentResponseMessage::answer("Recovered.")],
+                summary: None,
             })
         );
     }
@@ -771,6 +816,7 @@ mod tests {
                 AgentResponseMessage::question("Need one decision."),
                 AgentResponseMessage::answer("Applied updates."),
             ],
+            summary: None,
         };
 
         // Act
@@ -793,6 +839,7 @@ mod tests {
                 AgentResponseMessage::answer("Completed implementation."),
                 AgentResponseMessage::answer("Applied updates."),
             ],
+            summary: None,
         };
 
         // Act
@@ -818,6 +865,7 @@ mod tests {
                 AgentResponseMessage::question("Need one decision."),
                 AgentResponseMessage::question("Need migration details?"),
             ],
+            summary: None,
         };
 
         // Act
@@ -846,7 +894,10 @@ mod tests {
         let messages: Vec<AgentResponseMessage> = (0..20)
             .map(|index| AgentResponseMessage::question(format!("Question {index}?")))
             .collect();
-        let response = AgentResponse { messages };
+        let response = AgentResponse {
+            messages,
+            summary: None,
+        };
 
         // Act
         let items = response.question_items();
@@ -869,6 +920,7 @@ mod tests {
                 "Which approach?",
                 vec!["Option A".to_string(), "Option B".to_string()],
             )],
+            summary: None,
         };
 
         // Act
@@ -878,6 +930,25 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "Which approach?");
         assert_eq!(items[0].options, vec!["Option A", "Option B"]);
+    }
+
+    #[test]
+    /// Parses a structured response summary from JSON.
+    fn test_parse_agent_response_preserves_summary_field() {
+        // Arrange
+        let raw = r#"{"messages":[{"type":"answer","text":"Done."}],"summary":{"turn":"- Updated the protocol payload.","session":"- Session branch now uses structured summaries."}}"#;
+
+        // Act
+        let response = parse_agent_response(raw);
+
+        // Assert
+        assert_eq!(
+            response.summary,
+            Some(AgentResponseSummary {
+                turn: "- Updated the protocol payload.".to_string(),
+                session: "- Session branch now uses structured summaries.".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -950,6 +1021,7 @@ mod tests {
             response,
             AgentResponse {
                 messages: vec![AgentResponseMessage::question("Need details.")],
+                summary: None,
             }
         );
         assert_eq!(response.to_display_text(), "Need details.");
@@ -1050,6 +1122,10 @@ mod tests {
                 AgentResponseMessage::answer("Step 1"),
                 AgentResponseMessage::question("Need one decision"),
             ],
+            summary: Some(AgentResponseSummary {
+                turn: "- Added the protocol summary field.".to_string(),
+                session: "- Session changes remain pending.".to_string(),
+            }),
         };
 
         // Act
@@ -1073,6 +1149,7 @@ mod tests {
             response,
             AgentResponse {
                 messages: vec![AgentResponseMessage::answer("Hello")],
+                summary: None,
             }
         );
     }
@@ -1098,6 +1175,7 @@ mod tests {
                 .any(|field| field.as_str() == Some("messages"))
         );
         assert!(properties.contains_key("messages"));
+        assert!(properties.contains_key("summary"));
     }
 
     #[test]
@@ -1192,6 +1270,11 @@ mod tests {
             .and_then(|value| value.get("AgentResponseMessage"))
             .and_then(Value::as_object)
             .expect("message definition should exist");
+        let summary_definition = schema
+            .get("$defs")
+            .and_then(|value| value.get("AgentResponseSummary"))
+            .and_then(Value::as_object)
+            .expect("summary definition should exist");
 
         // Assert
         assert_eq!(
@@ -1203,6 +1286,16 @@ mod tests {
                 .get("description")
                 .and_then(Value::as_str),
             Some("One structured message emitted by the assistant protocol payload.")
+        );
+        assert_eq!(
+            summary_definition.get("title").and_then(Value::as_str),
+            Some("AgentResponseSummary")
+        );
+        assert_eq!(
+            summary_definition
+                .get("description")
+                .and_then(Value::as_str),
+            Some("Structured session summary block emitted alongside protocol messages.")
         );
     }
 
@@ -1220,46 +1313,52 @@ mod tests {
             .and_then(|value| value.get("AgentResponseMessage"))
             .and_then(Value::as_object)
             .expect("message definition should exist");
+        let summary_definition = schema
+            .get("$defs")
+            .and_then(|value| value.get("AgentResponseSummary"))
+            .and_then(Value::as_object)
+            .expect("summary definition should exist");
         let message_properties = message_definition
             .get("properties")
             .and_then(Value::as_object)
             .expect("message properties should exist");
+        let summary_properties = summary_definition
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("summary properties should exist");
 
         // Assert
-        assert_eq!(
-            response_properties
-                .get("messages")
-                .and_then(|value| value.get("title"))
-                .and_then(Value::as_str),
-            Some("messages")
+        assert_schema_property_title_and_description(
+            response_properties,
+            "messages",
+            "messages",
+            "Ordered response messages emitted for this turn.",
         );
-        assert_eq!(
-            response_properties
-                .get("messages")
-                .and_then(|value| value.get("description"))
-                .and_then(Value::as_str),
-            Some("Ordered response messages emitted for this turn.")
+        assert_schema_property_title_and_description(
+            response_properties,
+            "summary",
+            "summary",
+            "Structured summary for session-discussion turns, or `null` for legacy payloads and \
+             one-shot prompts.",
         );
-        assert_eq!(
-            message_properties
-                .get("text")
-                .and_then(|value| value.get("title"))
-                .and_then(Value::as_str),
-            Some("text")
+        assert_schema_property_title_and_description(
+            message_properties,
+            "text",
+            "text",
+            "Human-readable markdown text for this message.",
         );
-        assert_eq!(
-            message_properties
-                .get("text")
-                .and_then(|value| value.get("description"))
-                .and_then(Value::as_str),
-            Some("Human-readable markdown text for this message.")
+        assert_schema_property_title(message_properties, "options", "options");
+        assert_schema_property_title_and_description(
+            summary_properties,
+            "turn",
+            "turn",
+            "Concise summary of only the work completed in the current turn.",
         );
-        assert_eq!(
-            message_properties
-                .get("options")
-                .and_then(|value| value.get("title"))
-                .and_then(Value::as_str),
-            Some("options")
+        assert_schema_property_title_and_description(
+            summary_properties,
+            "session",
+            "session",
+            "Cumulative summary of active changes on the current session branch.",
         );
     }
 
@@ -1391,5 +1490,38 @@ mod tests {
             Value::Array(array) => array.iter().all(all_properties_in_required),
             _ => true,
         }
+    }
+
+    /// Asserts one property schema has the expected `title`.
+    fn assert_schema_property_title(
+        properties: &serde_json::Map<String, Value>,
+        property_name: &str,
+        expected_title: &str,
+    ) {
+        assert_eq!(
+            properties
+                .get(property_name)
+                .and_then(|value| value.get("title"))
+                .and_then(Value::as_str),
+            Some(expected_title)
+        );
+    }
+
+    /// Asserts one property schema has the expected `title` and
+    /// `description`.
+    fn assert_schema_property_title_and_description(
+        properties: &serde_json::Map<String, Value>,
+        property_name: &str,
+        expected_title: &str,
+        expected_description: &str,
+    ) {
+        assert_schema_property_title(properties, property_name, expected_title);
+        assert_eq!(
+            properties
+                .get(property_name)
+                .and_then(|value| value.get("description"))
+                .and_then(Value::as_str),
+            Some(expected_description)
+        );
     }
 }
