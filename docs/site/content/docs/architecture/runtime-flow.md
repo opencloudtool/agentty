@@ -176,7 +176,8 @@ Provider conversation id flow:
 <a id="architecture-agent-interaction-protocol"></a>
 Provider output is normalized to one structured response protocol:
 
-1. Prompt builders prepend protocol instructions and the self-descriptive `schemars` document, so every provider sees the same `messages`/optional-`summary` schema and transport-enforced `outputSchema` paths can normalize that same contract separately.
+1. Prompt builders prepend the shared protocol preamble template and the self-descriptive `schemars` document, so every provider sees the same `messages`/optional-`summary` schema and transport-enforced `outputSchema` paths can normalize that same contract separately.
+   `crates/agentty/resources/protocol_instruction_prompt.md` owns only the static prompt preamble, while `crates/agentty/src/infra/agent/protocol.rs` remains the authoritative source for dynamic schema titles, descriptions, response shape metadata, and all field-specific guidance.
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts often omit `summary` or return `null`.
 1. Channels stream deltas/progress as `TurnEvent`.
 1. Final output is parsed to protocol `messages` plus the optional structured summary.

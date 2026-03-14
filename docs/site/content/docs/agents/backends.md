@@ -73,16 +73,16 @@ POSIX paths. This keeps file references consistent in session output and reviews
 ## Structured Response Protocol
 
 <a id="backends-structured-response-protocol"></a>
-Agent responses should be a single JSON object with a `messages` array, where
-each entry has:
+Agentty prepends a shared protocol preamble from
+`crates/agentty/resources/protocol_instruction_prompt.md` and then embeds the
+full self-descriptive JSON Schema generated from
+`crates/agentty/src/infra/agent/protocol.rs`. The template owns the static
+top-level prompt instructions only, while `protocol.rs` remains the single
+source of truth for the dynamic response shape, field descriptions, and all
+field-specific guidance used in prompts and schema-enforced transports.
 
-- `type`: `answer` or `question`
-- `text`: markdown text payload
-- `options` (optional): array of predefined answer strings (only for `question` type)
-- `summary` (optional): top-level structured summary object
-
-The embedded JSON Schema is self-descriptive and carries the summary-field
-metadata directly in the prompt:
+The shared schema defines a top-level `messages` array plus the optional
+top-level `summary` object. Session turns typically populate:
 
 - `summary.turn` describes only the work completed in the current turn
 - `summary.session` describes the cumulative session-branch diff that still

@@ -117,7 +117,8 @@ mod tests {
         assert!(debug_command.contains("high"));
         assert!(debug_command.contains("Run checks"));
         assert!(debug_command.contains("Structured response protocol:"));
-        assert!(debug_command.contains("Follow this JSON Schema exactly:"));
+        assert!(debug_command.contains("Follow this JSON Schema exactly."));
+        assert!(debug_command.contains("Authoritative JSON Schema:"));
     }
 
     /// Verifies resume command composes replay-based prompt content when

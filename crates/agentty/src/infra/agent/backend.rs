@@ -130,9 +130,6 @@ struct ResumeWithSessionOutputPromptTemplate<'a> {
 #[derive(Template)]
 #[template(path = "protocol_instruction_prompt.md", escape = "none")]
 struct ProtocolInstructionPromptTemplate<'a> {
-    /// Server-side question cap rendered into the prompt so the limit stays
-    /// in sync with [`protocol::MAX_QUESTIONS`].
-    max_questions: usize,
     /// User prompt appended after protocol instructions.
     prompt: &'a str,
     /// Pretty-printed self-descriptive JSON schema contract injected into the
@@ -277,7 +274,6 @@ pub(crate) fn prepend_protocol_instructions(prompt: &str) -> Result<String, Agen
 
     let response_json_schema = protocol::agent_response_json_schema_json();
     let template = ProtocolInstructionPromptTemplate {
-        max_questions: protocol::MAX_QUESTIONS,
         prompt,
         response_json_schema: &response_json_schema,
     };
@@ -416,7 +412,14 @@ mod tests {
         assert!(rendered_prompt.contains("Structured response protocol:"));
         assert!(rendered_prompt.contains("Return a single JSON object"));
         assert!(rendered_prompt.contains("Do not wrap the JSON in markdown code fences."));
-        assert!(rendered_prompt.contains("Follow this JSON Schema exactly:"));
+        assert!(rendered_prompt.contains("Follow this JSON Schema exactly."));
+        assert!(rendered_prompt.contains("Treat the JSON Schema titles and descriptions"));
+        assert!(rendered_prompt.contains("Authoritative JSON Schema:"));
+        assert!(!rendered_prompt.contains("Question guidelines:"));
+        assert!(
+            !rendered_prompt.contains("Do not place user-directed clarification questions inside")
+        );
+        assert!(!rendered_prompt.contains("emit that request as a `question` message"));
         assert!(
             !rendered_prompt
                 .contains("Emit the top-level `summary` field required by the JSON Schema.")

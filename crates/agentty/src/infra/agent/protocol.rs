@@ -41,14 +41,18 @@ pub enum AgentResponseMessageKind {
 #[serde(deny_unknown_fields)]
 #[schemars(
     title = "AgentResponseMessage",
-    description = "One structured message emitted by the assistant protocol payload."
+    description = "One structured message emitted by the assistant protocol payload. Use `answer` \
+                   for delivered work or status updates, and use `question` only when user input, \
+                   approval, or a mutually exclusive decision is required before continuing."
 )]
 pub struct AgentResponseMessage {
     /// Message kind selector.
     #[serde(rename = "type")]
     #[schemars(
         title = "type",
-        description = "Message kind tag used by one AgentResponseMessage."
+        description = "Message kind tag used by one AgentResponseMessage. Use `question` only \
+                       when user input, approval, or a mutually exclusive decision is required \
+                       before continuing; otherwise use `answer`."
     )]
     pub kind: AgentResponseMessageKind,
     /// Predefined answer choices for `question` messages.
@@ -62,16 +66,20 @@ pub struct AgentResponseMessage {
     #[schemars(
         title = "options",
         description = "Predefined answer choices for `question` messages. The protocol instructs \
-                       agents to always include options, and the UI renders a selectable option \
-                       list with a virtual \"Type custom answer\" entry appended. The Rust type \
-                       remains `Option` so non-compliant agent output (missing or null `options`) \
-                       deserializes gracefully instead of failing the entire response."
+                       agents to always include options, keep them focused to 2-5 likely answers, \
+                       put the recommended choice first, and omit deferral or non-answer choices. \
+                       The UI renders a selectable option list with a virtual \"Type custom \
+                       answer\" entry appended. The Rust type remains `Option` so non-compliant \
+                       agent output (missing or null `options`) deserializes gracefully instead \
+                       of failing the entire response."
     )]
     pub options: Option<Vec<String>>,
     /// Human-readable markdown text for this message.
     #[schemars(
         title = "text",
-        description = "Human-readable markdown text for this message."
+        description = "Human-readable markdown text for this message. For `question`, ask one \
+                       specific actionable question instead of bundling multiple decisions into \
+                       one message."
     )]
     pub text: String,
 }
@@ -137,7 +145,9 @@ pub struct QuestionItem {
 #[serde(deny_unknown_fields)]
 #[schemars(
     title = "AgentResponseSummary",
-    description = "Structured session summary block emitted alongside protocol messages."
+    description = "Structured session summary block emitted alongside protocol messages instead \
+                   of embedding the change summary inside `answer` markdown on session-discussion \
+                   turns."
 )]
 pub struct AgentResponseSummary {
     /// Concise summary of only the work completed in the current turn.
@@ -162,15 +172,18 @@ pub struct AgentResponseSummary {
 #[serde(deny_unknown_fields)]
 #[schemars(
     title = "AgentResponse",
-    description = "Wire-format protocol payload used for schema-driven provider output. Providers \
-                   that support output schemas (for example, Codex app-server) are asked to emit \
-                   this object as the entire assistant response payload."
+    description = "Wire-format protocol payload used for schema-driven provider output. Return \
+                   this object as the entire assistant response payload. Providers that support \
+                   output schemas (for example, Codex app-server) are asked to emit this object \
+                   directly."
 )]
 pub struct AgentResponse {
     /// Ordered response messages emitted for this turn.
     #[schemars(
         title = "messages",
-        description = "Ordered response messages emitted for this turn."
+        description = "Ordered response messages emitted for this turn. Multiple messages are \
+                       allowed. Keep user-directed clarification requests as separate `question` \
+                       messages instead of embedding them inside `answer` text."
     )]
     pub messages: Vec<AgentResponseMessage>,
     /// Structured summary for session-discussion turns, or `None` for legacy
@@ -178,8 +191,8 @@ pub struct AgentResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
         title = "summary",
-        description = "Structured summary for session-discussion turns, or `null` for legacy \
-                       payloads and one-shot prompts."
+        description = "Structured summary for session-discussion turns, kept outside `answer` \
+                       markdown. Use `null` for one-shot prompts and legacy payloads."
     )]
     pub summary: Option<AgentResponseSummary>,
 }
@@ -290,10 +303,35 @@ fn push_display_message(display_messages: &mut Vec<String>, text: &str) {
 /// possible schema contract.
 fn agent_response_json_schema() -> Value {
     let schema = schemars::schema_for!(AgentResponse);
+    let mut schema_value = serde_json::to_value(schema).unwrap_or(Value::Null);
 
-    // Serialization should always succeed for schema documents. This fallback
-    // keeps prompt rendering non-panicking under strict lint settings.
-    serde_json::to_value(schema).unwrap_or(Value::Null)
+    inject_dynamic_schema_guidance(&mut schema_value);
+
+    schema_value
+}
+
+/// Injects dynamic prompt guidance that depends on runtime constants into the
+/// schema metadata shown to providers.
+fn inject_dynamic_schema_guidance(schema: &mut Value) {
+    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(messages_property) = properties
+        .get_mut("messages")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+
+    messages_property.insert(
+        "description".to_string(),
+        Value::String(format!(
+            "Ordered response messages emitted for this turn. Multiple messages are allowed. Keep \
+             user-directed clarification requests as separate `question` messages instead of \
+             embedding them inside `answer` text. Emit at most {MAX_QUESTIONS} `question` \
+             messages in one response."
+        )),
+    );
 }
 
 /// Returns the JSON Schema used for structured assistant output.
@@ -1253,9 +1291,9 @@ mod tests {
         assert_eq!(
             schema.get("description").and_then(Value::as_str),
             Some(
-                "Wire-format protocol payload used for schema-driven provider output. Providers \
-                 that support output schemas (for example, Codex app-server) are asked to emit \
-                 this object as the entire assistant response payload."
+                "Wire-format protocol payload used for schema-driven provider output. Return this \
+                 object as the entire assistant response payload. Providers that support output \
+                 schemas (for example, Codex app-server) are asked to emit this object directly."
             )
         );
     }
@@ -1285,7 +1323,11 @@ mod tests {
             message_definition
                 .get("description")
                 .and_then(Value::as_str),
-            Some("One structured message emitted by the assistant protocol payload.")
+            Some(
+                "One structured message emitted by the assistant protocol payload. Use `answer` \
+                 for delivered work or status updates, and use `question` only when user input, \
+                 approval, or a mutually exclusive decision is required before continuing."
+            )
         );
         assert_eq!(
             summary_definition.get("title").and_then(Value::as_str),
@@ -1295,7 +1337,11 @@ mod tests {
             summary_definition
                 .get("description")
                 .and_then(Value::as_str),
-            Some("Structured session summary block emitted alongside protocol messages.")
+            Some(
+                "Structured session summary block emitted alongside protocol messages instead of \
+                 embedding the change summary inside `answer` markdown on session-discussion \
+                 turns."
+            )
         );
     }
 
@@ -1326,26 +1372,35 @@ mod tests {
             .get("properties")
             .and_then(Value::as_object)
             .expect("summary properties should exist");
+        let expected_messages_description = format!(
+            "Ordered response messages emitted for this turn. Multiple messages are allowed. Keep \
+             user-directed clarification requests as separate `question` messages instead of \
+             embedding them inside `answer` text. Emit at most {MAX_QUESTIONS} `question` \
+             messages in one response."
+        );
 
         // Assert
-        assert_schema_property_title_and_description(
-            response_properties,
-            "messages",
-            "messages",
-            "Ordered response messages emitted for this turn.",
+        assert_schema_property_title(response_properties, "messages", "messages");
+        assert_eq!(
+            response_properties
+                .get("messages")
+                .and_then(|value| value.get("description"))
+                .and_then(Value::as_str),
+            Some(expected_messages_description.as_str())
         );
         assert_schema_property_title_and_description(
             response_properties,
             "summary",
             "summary",
-            "Structured summary for session-discussion turns, or `null` for legacy payloads and \
-             one-shot prompts.",
+            "Structured summary for session-discussion turns, kept outside `answer` markdown. Use \
+             `null` for one-shot prompts and legacy payloads.",
         );
         assert_schema_property_title_and_description(
             message_properties,
             "text",
             "text",
-            "Human-readable markdown text for this message.",
+            "Human-readable markdown text for this message. For `question`, ask one specific \
+             actionable question instead of bundling multiple decisions into one message.",
         );
         assert_schema_property_title(message_properties, "options", "options");
         assert_schema_property_title_and_description(
