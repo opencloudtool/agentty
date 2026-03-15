@@ -23,4 +23,4 @@ Keep size budgeting in the skill workflow only; do not render `### Size` section
 
 - [`session_in_progress_timer.md`](session_in_progress_timer.md) - Implementation plan for persisting and rendering cumulative session `InProgress` time in chat and list views.
 
-- [`tui_e2e_testing_framework.md`](tui_e2e_testing_framework.md) - Implementation plan for a custom Playwright-inspired TUI end-to-end testing framework with PTY-based interaction, snapshot assertions, and a scriptable scenario DSL.
+- [`tui_e2e_testing_framework.md`](tui_e2e_testing_framework.md) - Implementation plan for a Rust-native Playwright-inspired TUI end-to-end testing framework with in-process `TestBackend` harness, `insta` snapshot assertions, and PTY-based smoke validation.

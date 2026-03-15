@@ -4,7 +4,7 @@ Plan for building a Rust-native, Playwright-inspired TUI testing framework that 
 
 ## How It Works — Simple Explanation
 
-The framework introduces an `ag-tui-test` crate that provides five layered capabilities:
+The framework introduces an `ag-tui-test` crate that provides four layered capabilities:
 
 1. **In-process `TestBackend` harness** — Boots the full TUI app in memory using ratatui's `TestBackend`, injects key events through a scriptable `EventSource`, and reads the rendered terminal buffer directly. No real terminal needed. Tests run in sub-millisecond per frame, making them fast and deterministic.
 
@@ -12,17 +12,43 @@ The framework introduces an `ag-tui-test` crate that provides five layered capab
 
 1. **Visual regression snapshots** — Captures the full styled terminal output (characters, colors, bold, borders) as stable text representations using `insta` snapshots. Region-scoped snapshots test individual components without full-screen fragility. Responsive layout helpers test the same screen at multiple terminal sizes.
 
-1. **PTY-based true terminal validation** — A thin smoke layer that launches the actual `agentty` binary in a pseudo-terminal using `portable-pty`, parses real escape sequences with `vte`, and asserts on the reconstructed screen. Catches issues that `TestBackend` cannot: raw mode handling, escape sequence bugs, platform-specific rendering.
-
-1. **Recording, tape DSL, and CI integration** — Record real TUI interactions and export them as test scripts. A declarative VHS-inspired tape DSL (`Type`, `Wait`, `Snapshot`, `Assert`) allows writing tests without Rust boilerplate. CI collects snapshot diff artifacts on failure for visual review on PRs.
+1. **PTY-based true terminal validation** — A thin smoke layer that launches the actual `agentty` binary in a pseudo-terminal using `portable-pty`, parses real escape sequences with `vt100`, and asserts on the reconstructed screen. Catches issues that `TestBackend` cannot: raw mode handling, escape sequence bugs, platform-specific rendering.
 
 ## Steps
 
-## 1) Ship the core test harness with one interactive scenario
+## 1) Make the runtime generic over backend
 
 ### Why now
 
-The codebase has strong unit-test coverage via `mockall` boundaries but no way to exercise a full user journey through the actual event loop, key handlers, and rendering pipeline. The existing `end_to_end_test_structure.md` plan covers workflow-level harness testing (fake CLIs, session state), but nothing tests what the user actually *sees* on screen. A minimal harness that drives the real `App` + `Terminal<TestBackend>` loop with injected events and buffer assertions proves the architecture before building richer APIs.
+The runtime hardcodes `TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>` in `crates/agentty/src/runtime/core.rs:18`. The main loop (`run_main_loop`), `render_frame`, and `process_events` all use this concrete type. Mode handlers in `session_view.rs` and `prompt.rs` call `terminal.size()` through this concrete alias. The event loop reads from `mpsc::UnboundedReceiver<crossterm::event::Event>` fed by a background `EventSource` poller thread. Before the test harness crate can drive the app with `TestBackend`, the runtime must accept any `ratatui::backend::Backend` implementation and the event injection path must be decoupled from the crossterm poller.
+
+### Usable outcome
+
+The runtime functions (`run_main_loop`, `render_frame`, `process_events`, `handle_key_event`, and mode handlers) accept a generic `B: Backend` instead of the hardcoded `TuiTerminal` alias, and tests can construct a `Terminal<TestBackend>` that drives the same code paths as production.
+
+### Substeps
+
+- [ ] **Parameterize the runtime core over `Backend`.** In `crates/agentty/src/runtime/core.rs`, change `TuiTerminal` from a concrete type alias to a generic parameter. Update `MainLoopState`, `run_main_loop`, and `render_frame` to accept `Terminal<B>` where `B: Backend`. The production entry point `run()` instantiates `B = CrosstermBackend<io::Stdout>` as before.
+
+- [ ] **Propagate the generic through event processing and key handling.** Update `process_events` and `process_event` in `crates/agentty/src/runtime/event.rs`, `handle_key_event` in `crates/agentty/src/runtime/key_handler.rs`, and the mode handlers in `crates/agentty/src/runtime/mode/session_view.rs` and `crates/agentty/src/runtime/mode/prompt.rs` to accept `&mut Terminal<B>` instead of `&mut TuiTerminal`. These handlers only call `terminal.size()` which is available on all `Backend` implementations.
+
+- [ ] **Decouple event injection from the crossterm poller.** Add a test-friendly entry point (e.g., `run_with_backend` or a `TestRuntime` struct) in `crates/agentty/src/runtime/core.rs` that accepts an `mpsc::UnboundedReceiver<crossterm::event::Event>` and a `Terminal<B>` directly, bypassing `spawn_event_reader` and `terminal::setup_terminal`. Tests inject `crossterm::event::Event` values through the sender side of the channel. The existing `EventSource` trait and poller thread remain unchanged for production.
+
+### Tests
+
+- [ ] Run the existing runtime unit tests (`cargo test -p agentty -- runtime`) to verify all existing tests still compile and pass after the generic refactor.
+- [ ] Add one minimal test in `crates/agentty/src/runtime/core.rs` that constructs a `Terminal<TestBackend>`, sends a quit key event through the channel, and verifies `run_with_backend` exits cleanly.
+
+### Docs
+
+- [ ] Update doc comments on `run_main_loop`, `render_frame`, `process_events`, and `handle_key_event` to reflect the generic `B: Backend` parameter.
+- [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` with the new `Backend`-generic runtime boundary.
+
+## 2) Ship the in-process test harness crate with one scenario
+
+### Why now
+
+With the runtime accepting any backend, the `ag-tui-test` crate can construct a `Terminal<TestBackend>`, inject events, and read the rendered buffer — the foundation for all TUI E2E tests.
 
 ### Usable outcome
 
@@ -30,13 +56,13 @@ A developer can write a test that boots the full TUI app in-memory, sends a sequ
 
 ### Substeps
 
-- [ ] **Create the `ag-tui-test` crate and baseline config surface.** Add `crates/ag-tui-test/` as a workspace member with shared dependencies declared in the root `Cargo.toml`, create the local `AGENTS.md` plus symlinks, and add `crates/ag-tui-test/src/config.rs` with the first `TuiTestConfig` builder fields for terminal size, timeout, tick rate, injected mocks, temp-dir setup, and preloaded project or session state.
+- [ ] **Create the `ag-tui-test` crate and config surface.** Add `crates/ag-tui-test/` as a workspace member with shared dependencies declared in the root `Cargo.toml`, create the local `AGENTS.md` plus symlinks, and add `crates/ag-tui-test/src/config.rs` with the first `TuiTestConfig` builder fields for terminal size, timeout, tick rate, injected mocks, temp-dir setup, and preloaded project or session state.
 
-- [ ] **Implement the in-process app harness.** Create `crates/ag-tui-test/src/context.rs` with `TuiTestContext` owning the `Terminal<TestBackend>`, injected terminal and app event channels, the running app-loop handle, and readable app state; add the supporting `crates/ag-tui-test/src/event_source.rs` implementation of `EventSource` so tests can drive the real runtime through queued synthetic events and clean shutdown.
+- [ ] **Implement the in-process app harness.** Create `crates/ag-tui-test/src/context.rs` with `TuiTestContext` owning the `Terminal<TestBackend>`, the `mpsc::UnboundedSender<crossterm::event::Event>` for event injection, the running app-loop handle, and readable app state. The context uses the `run_with_backend` entry point from step 1 to drive the real runtime.
 
 - [ ] **Add locator and auto-wait assertion primitives.** Create `crates/ag-tui-test/src/locator.rs` and `crates/ag-tui-test/src/assertion.rs` so tests can find exact text, substring matches, regex matches, and region-scoped content in a `Buffer`, then wait for visibility or mode changes through repeated `tick()`-driven rendering.
 
-- [ ] **Add snapshot helpers for the first frame assertions.** Create `crates/ag-tui-test/src/snapshot.rs` with plain and styled buffer serializers plus an `assert_snapshot!` helper so the initial harness can capture stable `insta` snapshots of rendered terminal frames.
+- [ ] **Add plain-text snapshot helpers with `insta` redactions.** Create `crates/ag-tui-test/src/snapshot.rs` with a plain-text buffer serializer (characters only, no style encoding) plus an `assert_snapshot!` helper. Configure `insta` redaction filters from the start using `insta::with_settings!({ filters => ... })` to replace non-deterministic content — timestamps, session UUIDs, file paths, elapsed time counters — with stable placeholders. Styled snapshot support (colors, modifiers) is deferred to step 4.
 
 - [ ] **Write one full interactive scenario test.** Add `crates/agentty/tests/tui_session_list_navigation.rs` that:
 
@@ -51,17 +77,17 @@ A developer can write a test that boots the full TUI app in-memory, sends a sequ
 
 ### Tests
 
-- [ ] Run `cargo test -p ag-tui-test` for unit tests within the framework crate itself (locator matching, buffer-to-string conversion, event source behavior).
-- [ ] Run the `tui_session_list_navigation` integration test and verify the insta snapshot is stable across runs.
+- [ ] Run `cargo test -p ag-tui-test` for unit tests within the framework crate itself (locator matching, buffer-to-string conversion).
+- [ ] Run the `tui_session_list_navigation` integration test and verify the `insta` snapshot is stable across runs.
 
 ### Docs
 
-- [ ] Add `/// ` doc comments to all public types and methods in `ag-tui-test`.
+- [ ] Add `///` doc comments to all public types and methods in `ag-tui-test`.
 - [ ] Update `CONTRIBUTING.md` with a "TUI E2E Tests" section explaining how to write and run TUI scenario tests.
 - [ ] Update `docs/plan/AGENTS.md` directory index with this plan file.
 - [ ] Add `ag-tui-test` to the module map at `docs/site/content/docs/architecture/module-map.md`.
 
-## 2) Expand the locator and interaction API for complex scenarios
+## 3) Expand the interaction API for complex scenarios
 
 ### Why now
 
@@ -69,7 +95,7 @@ After the core harness works for simple navigation, the framework needs richer i
 
 ### Usable outcome
 
-Developers can write tests for prompt editing (typing, backspace, cursor movement), slash command completion, confirmation dialogs, diff view scrolling, and multi-turn agent sessions with scripted responses.
+Developers can write tests for prompt editing (typing, backspace, cursor movement), slash command completion, confirmation dialogs, and multi-turn agent sessions with scripted responses.
 
 ### Substeps
 
@@ -87,11 +113,33 @@ Developers can write tests for prompt editing (typing, backspace, cursor movemen
   - `Locator::by_style(ctx, Style)` — find cells with specific styling (selected item highlight, error text).
   - `Locator::focused_input(ctx)` — locate the active text input area by cursor position.
 
-- [ ] **Add multi-turn session scenario support.** Create `crates/ag-tui-test/src/scenario.rs` with a `Scenario` builder:
+- [ ] **Add multi-turn session scenario support.** Create `crates/ag-tui-test/src/scenario.rs` with a `Scenario` builder that wraps the existing `MockAgentChannel` pattern (established in `crates/agentty/src/app/session/core.rs`) as a thin ergonomic layer:
 
   - `Scenario::new().on_prompt("write tests").reply("I'll write the tests now").on_prompt("looks good").reply("Done!").build()` — chainable mock agent turn definitions.
-  - The builder produces a configured `MockAgentChannel` that responds to sequential prompts with scripted replies.
+  - The builder configures a `MockAgentChannel` internally using the same `expect_run_turn().returning(...)` and `test_agent_channels.insert(...)` patterns the codebase already uses — it does not introduce a parallel mock abstraction.
   - Support for simulating `InProgress` → `Review` state transitions with realistic timing.
+
+### Tests
+
+- [ ] Run all new integration tests and verify snapshot stability.
+- [ ] Run existing unit tests to ensure the `EventSource` trait changes are backward-compatible.
+
+### Docs
+
+- [ ] Add a `## Writing Complex Scenarios` section to `CONTRIBUTING.md` with examples of prompt, dialog, and multi-turn test patterns.
+- [ ] Update `ag-tui-test` crate-level doc comment with a usage guide.
+
+## 4) Write prompt and confirmation dialog scenario tests
+
+### Why now
+
+The interaction API from step 3 needs real scenario tests to validate it works end-to-end and to establish patterns for future test authors.
+
+### Usable outcome
+
+Developers have reference scenario tests for prompt input, slash command completion, and confirmation dialogs that serve as copy-paste templates for new TUI tests.
+
+### Substeps
 
 - [ ] **Write prompt input and slash command scenario tests.** Add `crates/agentty/tests/tui_prompt_interaction.rs`:
 
@@ -112,23 +160,21 @@ Developers can write tests for prompt editing (typing, backspace, cursor movemen
 
 ### Tests
 
-- [ ] Run all new integration tests and verify snapshot stability.
-- [ ] Run existing unit tests to ensure the `EventSource` trait changes are backward-compatible.
+- [ ] Run `tui_prompt_interaction` and `tui_confirmation_dialog` integration tests and verify snapshot stability.
 
 ### Docs
 
-- [ ] Add a `## Writing Complex Scenarios` section to `CONTRIBUTING.md` with examples of prompt, dialog, and multi-turn test patterns.
-- [ ] Update `ag-tui-test` crate-level doc comment with a usage guide.
+- [ ] Add worked examples from these tests to the `## Writing Complex Scenarios` section in `CONTRIBUTING.md`.
 
-## 3) Add visual regression testing with styled snapshots and diff reporting
+## 5) Add styled snapshots with visual regression testing
 
 ### Why now
 
-Text-only assertions catch content bugs but miss styling regressions (wrong colors, missing bold, broken borders). After interaction coverage is solid, adding style-aware snapshots and clear diff reporting catches a broader class of visual regressions.
+Plain-text assertions catch content bugs but miss styling regressions (wrong colors, missing bold, broken borders). After interaction coverage is solid, adding style-aware snapshots catches a broader class of visual regressions.
 
 ### Usable outcome
 
-Developers can snapshot the full styled terminal output (including colors, bold, borders) and get clear, human-readable diffs when a visual regression occurs. CI can run the full TUI snapshot suite and fail on unexpected visual changes.
+Developers can snapshot the full styled terminal output (including colors, bold, borders) and get clear, human-readable diffs when a visual regression occurs via `cargo insta review`.
 
 ### Substeps
 
@@ -140,19 +186,34 @@ Developers can snapshot the full styled terminal output (including colors, bold,
   - A clean grid layout with row numbers for easy visual inspection.
   - Style annotations only emitted when they change from the previous cell (run-length encoding for readability).
 
-- [ ] **Add region-scoped snapshots.** Add `snapshot_region(buffer, Rect) -> String` to capture only a specific area of the screen. This is critical for testing individual components (status bar, footer, popup content) without full-screen snapshot fragility.
-
-- [ ] **Add snapshot diff reporting.** Create `crates/ag-tui-test/src/diff.rs` with a custom diff renderer that:
-
-  - Highlights character-level differences between expected and actual buffers.
-  - Shows row/column coordinates for changed cells.
-  - Optionally renders side-by-side comparison for CI output.
-  - Integrates with `insta`'s review workflow (`cargo insta review`).
+- [ ] **Add region-scoped snapshots.** Add `snapshot_region(buffer, Rect) -> String` to `crates/ag-tui-test/src/snapshot.rs` to capture only a specific area of the screen. This is critical for testing individual components (status bar, footer, popup content) without full-screen snapshot fragility.
 
 - [ ] **Add responsive layout testing.** Create `crates/ag-tui-test/src/responsive.rs` with helpers to test the same screen at multiple terminal sizes:
 
   - `assert_responsive(ctx, &[(80, 24), (120, 40), (200, 50)], |ctx| { ... })` — runs the same assertion block at each size.
   - Produces separate named snapshots per size (e.g., `session_list_80x24.snap`, `session_list_120x40.snap`).
+
+### Tests
+
+- [ ] Run `cargo insta test` to verify all snapshots are generated and stable.
+- [ ] Run the full test suite to ensure no regressions from the snapshot serialization changes.
+
+### Docs
+
+- [ ] Add a `## Visual Regression Testing` section to `CONTRIBUTING.md` explaining the `cargo insta review` workflow for TUI snapshots.
+- [ ] Document the snapshot format in `ag-tui-test` crate docs so contributors understand the encoding.
+
+## 6) Write visual regression tests for key screens
+
+### Why now
+
+With styled snapshot infrastructure in place, capturing reference snapshots for the most important screens provides baseline coverage for visual regressions.
+
+### Usable outcome
+
+Key TUI screens have styled `insta` snapshots that break on any visual change, giving developers immediate feedback on unintended layout or styling regressions.
+
+### Substeps
 
 - [ ] **Write visual regression tests for key screens.** Add `crates/agentty/tests/tui_visual_regression.rs` with snapshot tests for:
 
@@ -166,15 +227,13 @@ Developers can snapshot the full styled terminal output (including colors, bold,
 
 ### Tests
 
-- [ ] Run `cargo insta test` to verify all snapshots are generated and stable.
-- [ ] Run the full test suite to ensure no regressions from the snapshot serialization changes.
+- [ ] Run `cargo insta test` to verify all snapshots are generated and stable across runs.
 
 ### Docs
 
-- [ ] Add a `## Visual Regression Testing` section to `CONTRIBUTING.md` explaining the `cargo insta review` workflow for TUI snapshots.
-- [ ] Document the snapshot format in `ag-tui-test` crate docs so contributors understand the encoding.
+- [ ] Add the list of covered screens and sizes to the `## Visual Regression Testing` section in `CONTRIBUTING.md`.
 
-## 4) Add PTY-based true terminal validation layer
+## 7) Add PTY-based true terminal validation layer
 
 ### Why now
 
@@ -186,30 +245,22 @@ Developers can write tests that launch the actual `agentty` binary in a pseudo-t
 
 ### Substeps
 
-- [ ] **Add `portable-pty` and `vte` dependencies.** Add `portable-pty` and `vte` to `[workspace.dependencies]` in the root `Cargo.toml` and as dependencies of `ag-tui-test`. `portable-pty` provides cross-platform PTY creation (Linux, macOS). `vte` parses terminal escape sequences to reconstruct the visible screen state from raw PTY output.
+- [ ] **Add `portable-pty` and `vt100` dependencies.** Add `portable-pty` and `vt100` to `[workspace.dependencies]` in the root `Cargo.toml` and as dev-dependencies of `ag-tui-test`. `portable-pty` provides cross-platform PTY creation (Linux, macOS). `vt100` is a complete terminal emulator crate that maintains screen state (cursor position, scrolling, SGR sequences) — no custom `ScreenParser` needed.
 
 - [ ] **Implement `PtyTestContext`.** Create `crates/ag-tui-test/src/pty.rs` with a `PtyTestContext` struct that:
 
   - Spawns the `agentty` binary in a PTY with configurable size via `portable-pty`.
-  - Captures raw terminal output into a buffer.
-  - Parses escape sequences using `vte` (terminal state machine parser) to reconstruct the visible screen state.
-  - Provides `send_key()`, `send_text()` for input injection using the same `Key` enum as the in-process layer.
-  - Provides `wait_for_text(text, timeout)` auto-waiting assertion.
+  - Feeds raw terminal output into `vt100::Parser` which maintains the full virtual screen state.
+  - Provides `send_key()`, `send_text()` for input injection.
+  - Provides `wait_for_text(text, timeout)` auto-waiting assertion by polling the `vt100` screen.
   - Provides `screenshot() -> String` for snapshot testing of the parsed screen.
   - Handles graceful shutdown (sends `Ctrl+C`, waits for exit, kills if needed).
-
-- [ ] **Implement `ScreenParser`.** Create `crates/ag-tui-test/src/screen_parser.rs` that implements `vte::Perform` to maintain a virtual screen buffer:
-
-  - Tracks cursor position, scrolling region, character set.
-  - Handles SGR (color/style) sequences to track cell styles.
-  - Handles cursor movement, erase, insert/delete line sequences.
-  - Produces a `Buffer`-compatible output for reuse of `Locator` and snapshot APIs.
 
 - [ ] **Implement `Key` enum and encoding.** Create `crates/ag-tui-test/src/key.rs` with:
 
   - `Key` enum variants: `Char(char)`, `Enter`, `Esc`, `Tab`, `Backspace`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Delete`, `Ctrl(char)`, `Alt(char)`, `F(u8)`.
   - `fn encode(key: &Key) -> Vec<u8>` — converts a `Key` to the raw byte sequence the PTY master expects (ANSI escape sequences for special keys, raw bytes for characters).
-  - Used by both `PtyTestContext` (for raw PTY I/O) and as a convenient API for test authors.
+  - Used by `PtyTestContext` for raw PTY I/O.
 
 - [ ] **Write one PTY smoke test.** Add `crates/agentty/tests/tui_pty_smoke.rs` (marked `#[ignore]` by default since it requires a built binary) that:
 
@@ -226,62 +277,25 @@ Developers can write tests that launch the actual `agentty` binary in a pseudo-t
 
 - [ ] Run the PTY smoke test with `cargo test -- --ignored tui_pty_smoke` and verify it passes on the local platform.
 - [ ] Unit tests for `Key` encoding verifying correct ANSI escape sequences.
-- [ ] Unit tests for `ScreenParser` verifying correct screen reconstruction from sample escape sequences.
 - [ ] Run the in-process test suite to ensure no regressions from shared API changes.
 
 ### Docs
 
 - [ ] Add a `## PTY Tests` section to `CONTRIBUTING.md` explaining when to use PTY tests vs in-process tests, and the `--ignored` flag requirement.
-- [ ] Document `PtyTestContext` and `ScreenParser` APIs in the `ag-tui-test` crate docs.
+- [ ] Document `PtyTestContext` API in the `ag-tui-test` crate docs.
 - [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` with the new PTY testing boundary.
 
-## 5) Add test recording, playback, and CI integration
+## 8) Add CI integration and snapshot artifact collection
 
 ### Why now
 
-After both in-process and PTY testing layers are functional, the final step is developer experience: making it easy to create tests from real interactions, replay them, and run the full suite in CI with clear failure reporting.
+After both in-process and PTY testing layers are functional, CI needs to run the full suite and surface visual diff artifacts on failure so reviewers can assess snapshot changes without checking out the branch.
 
 ### Usable outcome
 
-Developers can record a TUI interaction session and export it as a test script. CI runs the full TUI E2E suite with visual diff artifacts on failure. A declarative tape DSL allows writing tests without Rust boilerplate.
+CI runs the full TUI E2E snapshot suite, fails on unexpected visual changes, and uploads diff artifacts for PR review.
 
 ### Substeps
-
-- [ ] **Implement test recording.** Create `crates/ag-tui-test/src/recorder.rs` with a `TestRecorder` that:
-
-  - Wraps a `TuiTestContext` and records all injected events with timestamps.
-  - On completion, exports a Rust test function source code with the recorded event sequence and snapshot assertions.
-  - Supports `recorder.mark_assertion("session list visible")` to insert named checkpoints that become `expect_text` calls in the exported test.
-  - Output format: a standalone `#[tokio::test]` function that can be pasted into a test file.
-
-- [ ] **Implement test playback with VHS-style tape files.** Create `crates/ag-tui-test/src/tape.rs` with a simple DSL for declarative test scripts (inspired by Charmbracelet VHS but with assertions):
-
-  ```
-  # agentty-tape format
-  Set Width 120
-  Set Height 40
-  Wait "Sessions"
-  Key Down
-  Key Down
-  Key Enter
-  Wait "Session output"
-  Snapshot "session_view"
-  Key Escape
-  Wait "Sessions"
-  Snapshot "back_to_list"
-  ```
-
-  - Each line maps to a scenario step.
-  - `Set Width/Height` configures initial terminal size.
-  - `Set Timeout <duration>` configures default wait timeout.
-  - `Type "<text>"` types the quoted string.
-  - Key names (`Enter`, `Tab`, `Esc`, `Up`, `Down`, `Ctrl+<char>`, `Alt+<char>`, `F1`–`F12`) map to key press events.
-  - `Wait "<text>"` waits for text to appear (auto-waiting).
-  - `Snapshot "<name>"` captures a named `insta` snapshot.
-  - `StyledSnapshot "<name>"` captures a styled snapshot.
-  - `Sleep <duration>` pauses execution.
-  - `Resize <cols> <rows>` resizes the terminal.
-  - `Assert "<text>"` / `AssertNot "<text>"` for text presence/absence.
 
 - [ ] **Add CI snapshot artifact collection.** Create a CI helper in `crates/ag-tui-test/src/ci.rs` that:
 
@@ -296,23 +310,13 @@ Developers can record a TUI interaction session and export it as a test script. 
   - Set `INSTA_UPDATE=no` to fail on snapshot mismatches.
   - Upload snapshot diff artifacts on failure for PR review.
 
-- [ ] **Write tape-format tests for key user journeys.** Add tape files under `crates/agentty/tests/tapes/` for:
-
-  1. `session_lifecycle.tape` — create session, type prompt, view response, merge.
-  1. `project_switching.tape` — switch between projects, verify session list updates.
-  1. `help_navigation.tape` — open help from various contexts, verify context-specific content.
-
 ### Tests
 
-- [ ] Run tape-based tests and verify they produce stable snapshots.
-- [ ] Test the recorder by recording a simple interaction and replaying the exported test.
 - [ ] Verify CI workflow runs TUI E2E tests successfully in a test PR.
 - [ ] Verify `cargo insta review` works correctly for both `ag-tui-test` and `agentty` snapshot locations.
 
 ### Docs
 
-- [ ] Add a `## Recording Tests` section to `CONTRIBUTING.md` explaining the recording workflow.
-- [ ] Add a `## Tape Format Reference` section documenting the tape DSL syntax.
 - [ ] Document the tiered testing strategy in `CONTRIBUTING.md`: unit/mock tests → `TestBackend` snapshots → PTY E2E tests.
 - [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` with the full TUI testing boundary map.
 
@@ -332,39 +336,48 @@ Developers can record a TUI interaction session and export it as a test script. 
 
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
-| In-process TUI test harness | No framework for driving the app through `Terminal<TestBackend>` with injected events and buffer assertions. | Not started |
+| Runtime backend generics | `TuiTerminal` is hardcoded to `CrosstermBackend<io::Stdout>` in `runtime/core.rs`. | Not started |
+| In-process TUI test harness | No framework for driving the app through `Terminal<TestBackend>` with injected events. | Not started |
 | Locator / element finder API | No equivalent of Playwright's `getByText` for ratatui buffers. | Not started |
 | Auto-waiting assertions | No timeout-based polling assertions for TUI state. | Not started |
-| Snapshot testing (`insta`) | Not used in the project; `TestBackend` not used for rendering assertions. | Not started |
+| Plain-text snapshot testing | `insta` not used in the project; `TestBackend` not used for rendering assertions. | Not started |
+| Styled snapshot testing | No style-aware buffer serialization or visual regression snapshots. | Not started |
 | PTY-based terminal tests | No PTY test infrastructure; only unit tests with `mockall` and live provider tests (ignored). | Not started |
-| Test recording/playback | No recording or declarative test scripting capability. | Not started |
 | CI TUI visual regression | No TUI snapshot comparison in CI pipeline. | Not started |
 
 ## Implementation Approach
 
 - Build a Rust-native framework (`ag-tui-test` crate) rather than depending on external TypeScript/Go tools, keeping the test stack homogeneous and CI-simple.
+- Start with the backend-generic refactor (step 1) because it is the prerequisite that unblocks all in-process testing. Keep it minimal — only parameterize existing functions, do not redesign the runtime.
 - Start with the in-process `TestBackend` layer because it is fast (sub-millisecond per frame), deterministic, and requires no external dependencies beyond ratatui itself. This covers 90% of TUI testing needs.
 - Add the PTY layer only after the in-process layer is proven, since PTY tests are slower and platform-dependent. Keep PTY tests as a thin smoke layer, not the primary coverage mechanism.
 - Follow Playwright's API design philosophy — locators, auto-waiting, readable assertions — because it is proven to reduce test flakiness and improve developer experience.
-- Use `insta` for snapshot management because its review workflow (`cargo insta review`) is the Rust ecosystem standard and integrates cleanly with CI.
-- The tape DSL is intentionally simple and domain-specific. Unlike VHS (which targets demo recording), our tapes include assertions (`Wait`, `Snapshot`) and are designed for automated testing, not visual documentation.
+- Use `insta` for snapshot management because its review workflow (`cargo insta review`) is the Rust ecosystem standard and integrates cleanly with CI. Rely on `insta`'s built-in diff output rather than building a custom diff renderer.
+- Use `insta` redaction filters from step 2 onward to replace non-deterministic content (timestamps, UUIDs, paths) with stable placeholders, preventing flaky snapshots.
+- Plain-text snapshots land first (step 2); styled snapshots with colors and modifiers are added later (step 5) once the interaction API is mature enough to set up meaningful screen states.
 
 ## Suggested Execution Order
 
 ```mermaid
 graph TD
-    P1[1. Core harness + one scenario] --> P2[2. Rich interaction API]
-    P2 --> P3[3. Visual regression snapshots]
-    P1 --> P4[4. PTY validation layer]
-    P3 --> P5[5. Recording, tapes, and CI]
-    P4 --> P5
+    P1[1. Runtime backend generics] --> P2[2. Test harness crate + one scenario]
+    P2 --> P3[3. Rich interaction API]
+    P3 --> P4[4. Prompt and dialog scenario tests]
+    P4 --> P5[5. Styled snapshots]
+    P5 --> P6[6. Visual regression tests]
+    P2 --> P7[7. PTY validation layer]
+    P6 --> P8[8. CI integration]
+    P7 --> P8
 ```
 
-1. Start with `1) Ship the core test harness with one interactive scenario` — this is the foundation that all later steps build on.
-1. Start `2) Expand the locator and interaction API` after step 1 lands, as it extends the proven harness with richer primitives.
-1. Start `3) Add visual regression testing` after step 2, since styled snapshots require the full interaction API to set up meaningful screen states.
-1. Start `4) Add PTY-based true terminal validation` after step 1 (can run in parallel with steps 2–3), since it is architecturally independent from the in-process interaction API.
-1. Start `5) Add test recording, playback, and CI integration` only after steps 3 and 4, as it ties together both layers into a cohesive developer experience.
+1. Start with `1) Make the runtime generic over backend` — this is the prerequisite that unblocks all in-process testing.
+1. Start `2) Ship the in-process test harness crate with one scenario` after step 1, as it depends on the generic runtime entry point.
+1. Start `3) Expand the interaction API` after step 2, extending the proven harness with richer primitives.
+1. Start `4) Write prompt and confirmation dialog scenario tests` after step 3, validating the interaction API with real scenarios.
+1. Start `5) Add styled snapshots` after step 4, since styled snapshots require the full interaction API to set up meaningful screen states.
+1. Start `6) Write visual regression tests` after step 5, capturing baseline snapshots for key screens.
+1. Start `7) Add PTY-based true terminal validation` after step 2 (can run in parallel with steps 3–6), since it is architecturally independent from the in-process interaction API.
+1. Start `8) Add CI integration` only after steps 6 and 7, as it ties together both layers.
 
 ## Out of Scope for This Pass
 
@@ -375,6 +388,8 @@ graph TD
 - Visual test result dashboard or web UI for reviewing snapshots — rely on `cargo insta review` and CI artifacts.
 - Testing third-party terminal emulator compatibility (iTerm2, Alacritty, WezTerm rendering differences).
 - Accessibility testing (screen reader output, high-contrast mode) — valuable but separate concern.
+- Declarative tape DSL for writing tests without Rust boilerplate — can be a future plan if Rust test functions prove insufficient for developer experience. The Rust harness API (`type_text`, `wait_for_text`, `snapshot`) is already concise and benefits from IDE autocomplete, type checking, and go-to-definition.
+- Test recording and playback — deferred until the core framework proves its value and test authoring friction is better understood.
 
 ## Research References
 
@@ -385,6 +400,5 @@ graph TD
 | [Charmbracelet VHS](https://github.com/charmbracelet/vhs) | Recording | Go | Tape DSL inspiration — declarative scripting syntax (`Type`, `Enter`, `Wait`, `Sleep`). 18.9k stars. Not a testing tool (no assertions). |
 | [`insta`](https://github.com/mitsuhiko/insta) | Snapshot | Rust | Snapshot management — `cargo insta review` workflow, redactions for non-deterministic values, inline snapshots. 2.8k stars. De facto Rust standard. |
 | [`portable-pty`](https://docs.rs/portable-pty) | PTY | Rust | Cross-platform PTY creation for true terminal testing (macOS, Linux). Part of WezTerm ecosystem. |
-| [`vte`](https://docs.rs/vte) | Parser | Rust | Terminal escape sequence parsing — implements a `vte::Perform` trait to build a virtual screen from raw PTY output. Used by Alacritty. |
+| [`vt100`](https://docs.rs/vt100) | Terminal emulator | Rust | Full terminal emulator that maintains screen state (cursor, scrolling, colors, styles). Higher-level than raw `vte` — eliminates the need for a custom `ScreenParser`. |
 | [`ratatui-testlib`](https://github.com/raibid-labs/ratatui-testlib) | PTY E2E | Rust | Prior art — PTY harness for ratatui apps with `wait_for_text`, `send_key`. Very early stage (4 stars), Linux-focused. Validates the approach. |
-| [`vt100`](https://docs.rs/vt100) | Terminal emulator | Rust | Higher-level alternative to `vte` — full terminal emulator that maintains screen state. May be simpler than building on raw `vte`. |
