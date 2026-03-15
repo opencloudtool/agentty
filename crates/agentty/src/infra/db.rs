@@ -3,8 +3,8 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
-use sqlx::{Row, SqlitePool};
+use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 use crate::domain::agent::ReasoningLevel;
 use crate::domain::session::{ReviewRequest, SessionStats};
@@ -53,6 +53,56 @@ pub struct ProjectListRow {
     pub path: String,
     pub session_count: i64,
     pub updated_at: i64,
+}
+
+/// Macro-mapped row returned when loading one project with optional joined
+/// session aggregates.
+struct ProjectListQueryRow {
+    active_session_count: Option<i64>,
+    created_at: Option<i64>,
+    display_name: Option<String>,
+    git_branch: Option<String>,
+    id: Option<i64>,
+    is_favorite: bool,
+    last_opened_at: Option<i64>,
+    last_session_updated_at: Option<i64>,
+    path: String,
+    session_count: Option<i64>,
+    updated_at: Option<i64>,
+}
+
+impl ProjectListQueryRow {
+    /// Converts the optional joined aggregate values into the public project
+    /// list row shape.
+    fn into_project_list_row(self) -> ProjectListRow {
+        let Self {
+            active_session_count,
+            created_at,
+            display_name,
+            git_branch,
+            id,
+            is_favorite,
+            last_opened_at,
+            last_session_updated_at,
+            path,
+            session_count,
+            updated_at,
+        } = self;
+
+        ProjectListRow {
+            active_session_count: active_session_count.unwrap_or(0),
+            created_at: created_at.expect("project.created_at should always be present"),
+            display_name,
+            git_branch,
+            id: id.expect("project.id should always be present"),
+            is_favorite,
+            last_opened_at,
+            last_session_updated_at,
+            path,
+            session_count: session_count.unwrap_or(0),
+            updated_at: updated_at.expect("project.updated_at should always be present"),
+        }
+    }
 }
 
 /// Row returned when loading one `session_review_request`.
@@ -119,6 +169,11 @@ pub struct SessionUsageRow {
     pub session_id: Option<String>,
 }
 
+/// Row returned when loading one session activity timestamp.
+struct TimestampValueRow {
+    pub created_at: i64,
+}
+
 /// Row returned when loading an optional `i64` scalar value.
 struct OptionalI64ValueRow {
     value: Option<i64>,
@@ -140,55 +195,154 @@ struct SessionMetadataRow {
     session_count: i64,
 }
 
-/// Maps one joined `session` query row into the public session row model.
-fn parse_session_row(row: &SqliteRow) -> SessionRow {
-    SessionRow {
-        base_branch: row.get("base_branch"),
-        created_at: row.get("created_at"),
-        id: row.get("id"),
-        input_tokens: row.get("input_tokens"),
-        model: row.get("model"),
-        output: row.get("output"),
-        output_tokens: row.get("output_tokens"),
-        project_id: row.get("project_id"),
-        prompt: row.get("prompt"),
-        published_upstream_ref: row.get("published_upstream_ref"),
-        questions: row.get("questions"),
-        review_request: parse_session_review_request_row(row),
-        size: row.get("size"),
-        status: row.get("status"),
-        summary: row.get("summary"),
-        title: row.get("title"),
-        updated_at: row.get("updated_at"),
+/// Row returned when loading one non-null boolean scalar value.
+struct RequiredBoolValueRow {
+    value: bool,
+}
+
+/// Row returned when loading one non-null `i64` scalar value.
+struct RequiredI64ValueRow {
+    value: i64,
+}
+
+/// Row returned when loading one `session` plus aliased
+/// `session_review_request` join columns.
+struct SessionJoinRow {
+    base_branch: String,
+    created_at: i64,
+    id: String,
+    input_tokens: i64,
+    model: String,
+    output: String,
+    output_tokens: i64,
+    project_id: Option<i64>,
+    prompt: String,
+    published_upstream_ref: Option<String>,
+    questions: Option<String>,
+    review_request_display_id: Option<String>,
+    review_request_forge_kind: Option<String>,
+    review_request_last_refreshed_at: Option<i64>,
+    review_request_source_branch: Option<String>,
+    review_request_state: Option<String>,
+    review_request_status_summary: Option<String>,
+    review_request_target_branch: Option<String>,
+    review_request_title: Option<String>,
+    review_request_web_url: Option<String>,
+    size: String,
+    status: String,
+    summary: Option<String>,
+    title: Option<String>,
+    updated_at: i64,
+}
+
+impl SessionJoinRow {
+    /// Converts the macro-mapped join row into the public `SessionRow` model.
+    fn into_session_row(self) -> SessionRow {
+        let Self {
+            base_branch,
+            created_at,
+            id,
+            input_tokens,
+            model,
+            output,
+            output_tokens,
+            project_id,
+            prompt,
+            published_upstream_ref,
+            questions,
+            review_request_display_id,
+            review_request_forge_kind,
+            review_request_last_refreshed_at,
+            review_request_source_branch,
+            review_request_state,
+            review_request_status_summary,
+            review_request_target_branch,
+            review_request_title,
+            review_request_web_url,
+            size,
+            status,
+            summary,
+            title,
+            updated_at,
+        } = self;
+
+        let review_request = SessionReviewRequestJoinRow {
+            display_id: review_request_display_id,
+            forge_kind: review_request_forge_kind,
+            last_refreshed_at: review_request_last_refreshed_at,
+            source_branch: review_request_source_branch,
+            state: review_request_state,
+            status_summary: review_request_status_summary,
+            target_branch: review_request_target_branch,
+            title: review_request_title,
+            web_url: review_request_web_url,
+        }
+        .into_review_request_row();
+
+        SessionRow {
+            base_branch,
+            created_at,
+            id,
+            input_tokens,
+            model,
+            output,
+            output_tokens,
+            project_id,
+            prompt,
+            published_upstream_ref,
+            questions,
+            review_request,
+            size,
+            status,
+            summary,
+            title,
+            updated_at,
+        }
     }
 }
 
-/// Maps one joined `session_review_request` row when all required fields exist.
-///
-/// A partially populated join is treated as absent so callers never observe an
-/// invalid review-request row model.
-fn parse_session_review_request_row(row: &SqliteRow) -> Option<SessionReviewRequestRow> {
-    let display_id: Option<String> = row.get("review_request_display_id");
-    let forge_kind: Option<String> = row.get("review_request_forge_kind");
-    let last_refreshed_at: Option<i64> = row.get("review_request_last_refreshed_at");
-    let source_branch: Option<String> = row.get("review_request_source_branch");
-    let state: Option<String> = row.get("review_request_state");
-    let status_summary: Option<String> = row.get("review_request_status_summary");
-    let target_branch: Option<String> = row.get("review_request_target_branch");
-    let title: Option<String> = row.get("review_request_title");
-    let web_url: Option<String> = row.get("review_request_web_url");
+/// Aliased nullable `session_review_request` columns loaded through a joined
+/// session query.
+struct SessionReviewRequestJoinRow {
+    display_id: Option<String>,
+    forge_kind: Option<String>,
+    last_refreshed_at: Option<i64>,
+    source_branch: Option<String>,
+    state: Option<String>,
+    status_summary: Option<String>,
+    target_branch: Option<String>,
+    title: Option<String>,
+    web_url: Option<String>,
+}
 
-    Some(SessionReviewRequestRow {
-        display_id: display_id?,
-        forge_kind: forge_kind?,
-        last_refreshed_at: last_refreshed_at?,
-        source_branch: source_branch?,
-        state: state?,
-        status_summary,
-        target_branch: target_branch?,
-        title: title?,
-        web_url: web_url?,
-    })
+impl SessionReviewRequestJoinRow {
+    /// Converts the joined nullable columns into a review-request row only
+    /// when every required field is present.
+    fn into_review_request_row(self) -> Option<SessionReviewRequestRow> {
+        let Self {
+            display_id,
+            forge_kind,
+            last_refreshed_at,
+            source_branch,
+            state,
+            status_summary,
+            target_branch,
+            title,
+            web_url,
+        } = self;
+
+        Some(SessionReviewRequestRow {
+            display_id: display_id?,
+            forge_kind: forge_kind?,
+            last_refreshed_at: last_refreshed_at?,
+            source_branch: source_branch?,
+            state: state?,
+            status_summary,
+            target_branch: target_branch?,
+            title: title?,
+            web_url: web_url?,
+        })
+    }
 }
 
 impl Database {
@@ -257,19 +411,20 @@ SET git_branch = excluded.git_branch,
         .await
         .map_err(|err| format!("Failed to upsert project: {err}"))?;
 
-        let row = sqlx::query(
-            r"
-SELECT id
+        let row = sqlx::query_as!(
+            RequiredI64ValueRow,
+            r#"
+SELECT id AS "value!: _"
 FROM project
 WHERE path = ?
-",
+"#,
+            path
         )
-        .bind(path)
         .fetch_one(&self.pool)
         .await
         .map_err(|err| format!("Failed to fetch project id: {err}"))?;
 
-        Ok(row.get("id"))
+        Ok(row.value)
     }
 
     /// Looks up a project by identifier.
@@ -305,21 +460,10 @@ WHERE id = ?
     /// # Errors
     /// Returns an error if project rows cannot be read from the database.
     pub async fn load_projects_with_stats(&self) -> Result<Vec<ProjectListRow>, String> {
-        let rows = sqlx::query(
-            r"
-SELECT COALESCE(stats.active_session_count, 0) AS active_session_count,
-       p.created_at,
-       p.display_name,
-       p.git_branch,
-       p.id,
-       p.is_favorite,
-       p.last_opened_at,
-       stats.last_session_updated_at,
-       p.path,
-       COALESCE(stats.session_count, 0) AS session_count,
-       p.updated_at
-FROM project AS p
-LEFT JOIN (
+        let rows = sqlx::query_as!(
+            ProjectListQueryRow,
+            r#"
+WITH stats AS (
     SELECT project_id,
            MAX(updated_at) AS last_session_updated_at,
            COUNT(*) AS session_count,
@@ -328,32 +472,33 @@ LEFT JOIN (
     FROM session
     WHERE project_id IS NOT NULL
     GROUP BY project_id
-) AS stats
+)
+SELECT stats.active_session_count,
+       p.created_at,
+       p.display_name,
+       p.git_branch,
+       p.id,
+       p.is_favorite AS "is_favorite: _",
+       p.last_opened_at,
+       stats.last_session_updated_at,
+       p.path,
+       stats.session_count,
+       p.updated_at
+FROM project AS p
+LEFT JOIN stats
 ON stats.project_id = p.id
 ORDER BY p.is_favorite DESC,
          COALESCE(p.last_opened_at, 0) DESC,
          p.path
-",
+            "#
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|err| format!("Failed to load projects: {err}"))?;
 
         Ok(rows
-            .iter()
-            .map(|row| ProjectListRow {
-                active_session_count: row.get("active_session_count"),
-                created_at: row.get("created_at"),
-                display_name: row.get("display_name"),
-                git_branch: row.get("git_branch"),
-                id: row.get("id"),
-                is_favorite: row.get::<i64, _>("is_favorite") != 0,
-                last_opened_at: row.get("last_opened_at"),
-                last_session_updated_at: row.get("last_session_updated_at"),
-                path: row.get("path"),
-                session_count: row.get("session_count"),
-                updated_at: row.get("updated_at"),
-            })
+            .into_iter()
+            .map(ProjectListQueryRow::into_project_list_row)
             .collect())
     }
 
@@ -494,34 +639,50 @@ ON CONFLICT(session_id) DO NOTHING
         &self,
         project_id: i64,
     ) -> Result<Vec<SessionRow>, String> {
-        let rows = sqlx::query(
-            r"
-SELECT session.id, session.model, session.base_branch, session.status, session.title,
-       session.project_id, session.prompt, session.output, session.created_at,
-       session.updated_at, session.input_tokens, session.output_tokens, session.size,
-       session.summary, session.questions, session.published_upstream_ref,
-       session_review_request.display_id AS review_request_display_id,
-       session_review_request.forge_kind AS review_request_forge_kind,
-       session_review_request.last_refreshed_at AS review_request_last_refreshed_at,
-       session_review_request.source_branch AS review_request_source_branch,
-       session_review_request.state AS review_request_state,
-       session_review_request.status_summary AS review_request_status_summary,
-       session_review_request.target_branch AS review_request_target_branch,
-       session_review_request.title AS review_request_title,
-       session_review_request.web_url AS review_request_web_url
+        let rows = sqlx::query_as!(
+            SessionJoinRow,
+            r#"
+SELECT session.base_branch AS "base_branch!",
+       session.created_at AS "created_at!",
+       session.id AS "id!",
+       session.input_tokens AS "input_tokens!",
+       session.model AS "model!",
+       session.output AS "output!",
+       session.output_tokens AS "output_tokens!",
+       session.project_id,
+       session.prompt AS "prompt!",
+       session.published_upstream_ref,
+       session.questions,
+       session_review_request.display_id AS "review_request_display_id?",
+       session_review_request.forge_kind AS "review_request_forge_kind?",
+       session_review_request.last_refreshed_at AS "review_request_last_refreshed_at?",
+       session_review_request.source_branch AS "review_request_source_branch?",
+       session_review_request.state AS "review_request_state?",
+       session_review_request.status_summary AS "review_request_status_summary?",
+       session_review_request.target_branch AS "review_request_target_branch?",
+       session_review_request.title AS "review_request_title?",
+       session_review_request.web_url AS "review_request_web_url?",
+       session.size AS "size!",
+       session.status AS "status!",
+       session.summary,
+       session.title,
+       session.updated_at AS "updated_at!"
 FROM session
 LEFT JOIN session_review_request
 ON session_review_request.session_id = session.id
 WHERE session.project_id = ?
 ORDER BY session.updated_at DESC, session.id
-",
+"#,
+            project_id
         )
-        .bind(project_id)
         .fetch_all(&self.pool)
         .await
         .map_err(|err| format!("Failed to load sessions: {err}"))?;
 
-        Ok(rows.iter().map(parse_session_row).collect())
+        Ok(rows
+            .into_iter()
+            .map(SessionJoinRow::into_session_row)
+            .collect())
     }
 
     /// Loads all sessions ordered by most recent update.
@@ -529,32 +690,48 @@ ORDER BY session.updated_at DESC, session.id
     /// # Errors
     /// Returns an error if session rows cannot be read from the database.
     pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, String> {
-        let rows = sqlx::query(
-            r"
-SELECT session.id, session.model, session.base_branch, session.status, session.title,
-       session.project_id, session.prompt, session.output, session.created_at,
-       session.updated_at, session.input_tokens, session.output_tokens, session.size,
-       session.summary, session.questions, session.published_upstream_ref,
-       session_review_request.display_id AS review_request_display_id,
-       session_review_request.forge_kind AS review_request_forge_kind,
-       session_review_request.last_refreshed_at AS review_request_last_refreshed_at,
-       session_review_request.source_branch AS review_request_source_branch,
-       session_review_request.state AS review_request_state,
-       session_review_request.status_summary AS review_request_status_summary,
-       session_review_request.target_branch AS review_request_target_branch,
-       session_review_request.title AS review_request_title,
-       session_review_request.web_url AS review_request_web_url
+        let rows = sqlx::query_as!(
+            SessionJoinRow,
+            r#"
+SELECT session.base_branch AS "base_branch!",
+       session.created_at AS "created_at!",
+       session.id AS "id!",
+       session.input_tokens AS "input_tokens!",
+       session.model AS "model!",
+       session.output AS "output!",
+       session.output_tokens AS "output_tokens!",
+       session.project_id,
+       session.prompt AS "prompt!",
+       session.published_upstream_ref,
+       session.questions,
+       session_review_request.display_id AS "review_request_display_id?",
+       session_review_request.forge_kind AS "review_request_forge_kind?",
+       session_review_request.last_refreshed_at AS "review_request_last_refreshed_at?",
+       session_review_request.source_branch AS "review_request_source_branch?",
+       session_review_request.state AS "review_request_state?",
+       session_review_request.status_summary AS "review_request_status_summary?",
+       session_review_request.target_branch AS "review_request_target_branch?",
+       session_review_request.title AS "review_request_title?",
+       session_review_request.web_url AS "review_request_web_url?",
+       session.size AS "size!",
+       session.status AS "status!",
+       session.summary,
+       session.title,
+       session.updated_at AS "updated_at!"
 FROM session
 LEFT JOIN session_review_request
 ON session_review_request.session_id = session.id
 ORDER BY session.updated_at DESC, session.id
-",
+"#
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|err| format!("Failed to load sessions: {err}"))?;
 
-        Ok(rows.iter().map(parse_session_row).collect())
+        Ok(rows
+            .into_iter()
+            .map(SessionJoinRow::into_session_row)
+            .collect())
     }
 
     /// Loads persisted activity event timestamps used for activity stats.
@@ -563,7 +740,8 @@ ORDER BY session.updated_at DESC, session.id
     /// Returns an error if activity timestamps cannot be read from the
     /// database.
     pub async fn load_session_activity_timestamps(&self) -> Result<Vec<i64>, String> {
-        let rows = sqlx::query(
+        let rows = sqlx::query_as!(
+            TimestampValueRow,
             r"
 SELECT created_at
 FROM session_activity
@@ -574,10 +752,7 @@ ORDER BY id
         .await
         .map_err(|err| format!("Failed to load session activity timestamps: {err}"))?;
 
-        Ok(rows
-            .iter()
-            .map(|row| row.get("created_at"))
-            .collect::<Vec<i64>>())
+        Ok(rows.into_iter().map(|row| row.created_at).collect())
     }
 
     /// Loads lightweight session metadata used for cheap change detection.
@@ -1155,34 +1330,23 @@ VALUES (?, ?, ?, 'queued', ?)
     pub async fn load_unfinished_session_operations(
         &self,
     ) -> Result<Vec<SessionOperationRow>, String> {
-        let rows = sqlx::query(
-            r"
-SELECT id, session_id, kind, status, queued_at, started_at, finished_at,
-       heartbeat_at, last_error, cancel_requested
+        let rows = sqlx::query_as!(
+            SessionOperationRow,
+            r#"
+SELECT id AS "id!", session_id AS "session_id!", kind AS "kind!", status AS "status!",
+       queued_at, started_at, finished_at,
+       heartbeat_at, last_error,
+       cancel_requested AS "cancel_requested: _"
 FROM session_operation
 WHERE status IN ('queued', 'running')
 ORDER BY queued_at ASC, id ASC
-",
+            "#
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|err| format!("Failed to load unfinished session operations: {err}"))?;
 
-        Ok(rows
-            .iter()
-            .map(|row| SessionOperationRow {
-                cancel_requested: row.get::<i64, _>("cancel_requested") != 0,
-                finished_at: row.get("finished_at"),
-                heartbeat_at: row.get("heartbeat_at"),
-                id: row.get("id"),
-                kind: row.get("kind"),
-                last_error: row.get("last_error"),
-                queued_at: row.get("queued_at"),
-                session_id: row.get("session_id"),
-                started_at: row.get("started_at"),
-                status: row.get("status"),
-            })
-            .collect())
+        Ok(rows)
     }
 
     /// Returns whether an operation is still unfinished.
@@ -1195,22 +1359,23 @@ ORDER BY queued_at ASC, id ASC
         &self,
         operation_id: &str,
     ) -> Result<bool, String> {
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query_as!(
+            RequiredBoolValueRow,
+            r#"
 SELECT EXISTS(
     SELECT 1
     FROM session_operation
     WHERE id = ?
       AND status IN ('queued', 'running')
-) AS is_unfinished
-",
+) AS "value!: _"
+"#,
+            operation_id
         )
-        .bind(operation_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|err| format!("Failed to check unfinished operation state: {err}"))?;
 
-        Ok(row.get::<i64, _>("is_unfinished") != 0)
+        Ok(row.value)
     }
 
     /// Marks an operation as running and refreshes its heartbeat timestamp.
@@ -1364,23 +1529,24 @@ WHERE session_id = ?
         &self,
         session_id: &str,
     ) -> Result<bool, String> {
-        let row = sqlx::query(
-            r"
+        let row = sqlx::query_as!(
+            RequiredBoolValueRow,
+            r#"
 SELECT EXISTS(
     SELECT 1
     FROM session_operation
     WHERE session_id = ?
       AND cancel_requested = 1
       AND status IN ('queued', 'running')
-) AS is_requested
-",
+) AS "value!: _"
+"#,
+            session_id
         )
-        .bind(session_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|err| format!("Failed to check cancel request for session operations: {err}"))?;
 
-        Ok(row.get::<i64, _>("is_requested") != 0)
+        Ok(row.value)
     }
 
     /// Marks unfinished operations as failed after process restart.
@@ -1677,30 +1843,21 @@ ON CONFLICT(session_id, model) DO UPDATE SET
         &self,
         session_id: &str,
     ) -> Result<Vec<SessionUsageRow>, String> {
-        let rows = sqlx::query(
-            r"
+        let rows = sqlx::query_as!(
+            SessionUsageRow,
+            r#"
 SELECT session_id, model, created_at, input_tokens, invocation_count, output_tokens
 FROM session_usage
 WHERE session_id = ?
 ORDER BY model
-",
+            "#,
+            session_id
         )
-        .bind(session_id)
         .fetch_all(&self.pool)
         .await
         .map_err(|err| format!("Failed to load session usage: {err}"))?;
 
-        Ok(rows
-            .iter()
-            .map(|row| SessionUsageRow {
-                created_at: row.get("created_at"),
-                input_tokens: row.get("input_tokens"),
-                invocation_count: row.get("invocation_count"),
-                model: row.get("model"),
-                output_tokens: row.get("output_tokens"),
-                session_id: row.get("session_id"),
-            })
-            .collect())
+        Ok(rows)
     }
 
     /// Returns `(created_at, updated_at)` timestamps for a session.
@@ -1766,6 +1923,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use sqlx::Row;
     use tempfile::tempdir;
 
     use super::*;
@@ -1906,6 +2064,40 @@ WHERE id = ?
         }
     }
 
+    /// Builds one deterministic joined-session row fixture for conversion
+    /// tests.
+    fn session_join_row_fixture() -> SessionJoinRow {
+        SessionJoinRow {
+            base_branch: "main".to_string(),
+            created_at: 100,
+            id: "session-a".to_string(),
+            input_tokens: 11,
+            model: "gpt-5.3-codex".to_string(),
+            output: "Saved output".to_string(),
+            output_tokens: 29,
+            project_id: Some(7),
+            prompt: "Implement feature".to_string(),
+            published_upstream_ref: Some("origin/session-a".to_string()),
+            questions: Some("Question text".to_string()),
+            review_request_display_id: Some("#42".to_string()),
+            review_request_forge_kind: Some("GitHub".to_string()),
+            review_request_last_refreshed_at: Some(456),
+            review_request_source_branch: Some("feature/forge".to_string()),
+            review_request_state: Some("Open".to_string()),
+            review_request_status_summary: Some("2 approvals, checks passing".to_string()),
+            review_request_target_branch: Some("main".to_string()),
+            review_request_title: Some("Add forge review support".to_string()),
+            review_request_web_url: Some(
+                "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
+            ),
+            size: "M".to_string(),
+            status: "Review".to_string(),
+            summary: Some("Summary text".to_string()),
+            title: Some("Review session".to_string()),
+            updated_at: 200,
+        }
+    }
+
     /// Verifies `open()` creates missing parent directories before opening the
     /// on-disk database.
     #[tokio::test]
@@ -1920,7 +2112,7 @@ WHERE id = ?
             .expect("database should open with missing parent directories");
 
         // Assert
-        assert!(db_path.parent().is_some_and(|parent| parent.is_dir()));
+        assert!(db_path.parent().is_some_and(std::path::Path::is_dir));
         assert!(!database.pool().is_closed());
     }
 
@@ -2462,74 +2654,38 @@ WHERE model = ?
         assert_eq!(done_row.last_error, None);
     }
 
-    /// Verifies `parse_session_row()` maps joined session and review-request
-    /// columns into the public row model.
-    #[tokio::test]
-    async fn test_parse_session_row_maps_joined_review_request_columns() {
+    /// Verifies `SessionJoinRow::into_session_row()` drops partially
+    /// populated review-request columns instead of surfacing an invalid row
+    /// model.
+    #[test]
+    fn test_session_join_row_ignores_partial_review_request_columns() {
         // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("failed to open in-memory db");
-        let project_id = database
-            .upsert_project("/tmp/project", Some("main"))
-            .await
-            .expect("failed to insert project");
-        let review_request = review_request_fixture();
-
-        insert_session_fixture(&database, "session-a", "main", "Review", project_id).await;
-        database
-            .update_session_title("session-a", "Review session")
-            .await
-            .expect("failed to update session title");
-        database
-            .update_session_summary("session-a", "Summary text")
-            .await
-            .expect("failed to update session summary");
-        database
-            .update_session_questions("session-a", "Question text")
-            .await
-            .expect("failed to update session questions");
-        database
-            .update_session_published_upstream_ref("session-a", Some("origin/session-a"))
-            .await
-            .expect("failed to update session upstream ref");
-        database
-            .update_session_review_request("session-a", Some(&review_request))
-            .await
-            .expect("failed to update session review request");
-
-        let row = sqlx::query(
-            r"
-SELECT session.id, session.model, session.base_branch, session.status, session.title,
-       session.project_id, session.prompt, session.output, session.created_at,
-       session.updated_at, session.input_tokens, session.output_tokens, session.size,
-       session.summary, session.questions, session.published_upstream_ref,
-       session_review_request.display_id AS review_request_display_id,
-       session_review_request.forge_kind AS review_request_forge_kind,
-       session_review_request.last_refreshed_at AS review_request_last_refreshed_at,
-       session_review_request.source_branch AS review_request_source_branch,
-       session_review_request.state AS review_request_state,
-       session_review_request.status_summary AS review_request_status_summary,
-       session_review_request.target_branch AS review_request_target_branch,
-       session_review_request.title AS review_request_title,
-       session_review_request.web_url AS review_request_web_url
-FROM session
-LEFT JOIN session_review_request
-ON session_review_request.session_id = session.id
-WHERE session.id = ?
-",
-        )
-        .bind("session-a")
-        .fetch_one(database.pool())
-        .await
-        .expect("failed to load joined session row");
+        let mut session_join_row = session_join_row_fixture();
+        session_join_row.review_request_last_refreshed_at = None;
 
         // Act
-        let session_row = parse_session_row(&row);
+        let session_row = session_join_row.into_session_row();
 
         // Assert
         assert_eq!(session_row.id, "session-a");
-        assert_eq!(session_row.project_id, Some(project_id));
+        assert_eq!(session_row.project_id, Some(7));
+        assert_eq!(session_row.status, "Review");
+        assert_eq!(session_row.review_request, None);
+    }
+
+    /// Verifies `SessionJoinRow::into_session_row()` maps a fully populated
+    /// review-request into the public session row model.
+    #[test]
+    fn test_session_join_row_maps_review_request_columns() {
+        // Arrange
+        let session_join_row = session_join_row_fixture();
+
+        // Act
+        let session_row = session_join_row.into_session_row();
+
+        // Assert
+        assert_eq!(session_row.id, "session-a");
+        assert_eq!(session_row.project_id, Some(7));
         assert_eq!(
             session_row.published_upstream_ref.as_deref(),
             Some("origin/session-a")
@@ -2538,55 +2694,6 @@ WHERE session.id = ?
         assert_eq!(session_row.summary.as_deref(), Some("Summary text"));
         assert_eq!(session_row.title.as_deref(), Some("Review session"));
         assert_review_request_row(&session_row);
-    }
-
-    /// Verifies `parse_session_row()` drops partially populated review-request
-    /// join data instead of surfacing an invalid row model.
-    #[tokio::test]
-    async fn test_parse_session_row_ignores_partial_review_request_join_columns() {
-        // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("failed to open in-memory db");
-        let project_id = database
-            .upsert_project("/tmp/project", Some("main"))
-            .await
-            .expect("failed to insert project");
-
-        insert_session_fixture(&database, "session-a", "main", "Review", project_id).await;
-
-        let row = sqlx::query(
-            r"
-SELECT session.id, session.model, session.base_branch, session.status, session.title,
-       session.project_id, session.prompt, session.output, session.created_at,
-       session.updated_at, session.input_tokens, session.output_tokens, session.size,
-       session.summary, session.questions, session.published_upstream_ref,
-       '#42' AS review_request_display_id,
-       'GitHub' AS review_request_forge_kind,
-       CAST(NULL AS INTEGER) AS review_request_last_refreshed_at,
-       'feature/forge' AS review_request_source_branch,
-       'Open' AS review_request_state,
-       'checks passing' AS review_request_status_summary,
-       'main' AS review_request_target_branch,
-       'Add forge review support' AS review_request_title,
-       'https://github.com/agentty-xyz/agentty/pull/42' AS review_request_web_url
-FROM session
-WHERE session.id = ?
-",
-        )
-        .bind("session-a")
-        .fetch_one(database.pool())
-        .await
-        .expect("failed to load partially joined session row");
-
-        // Act
-        let session_row = parse_session_row(&row);
-
-        // Assert
-        assert_eq!(session_row.id, "session-a");
-        assert_eq!(session_row.project_id, Some(project_id));
-        assert_eq!(session_row.status, "Review");
-        assert_eq!(session_row.review_request, None);
     }
 
     /// Verifies `upsert_session_usage()` accumulates per-model token totals and

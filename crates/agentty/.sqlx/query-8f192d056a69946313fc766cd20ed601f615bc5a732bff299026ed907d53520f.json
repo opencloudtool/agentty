@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT EXISTS(\n    SELECT 1\n    FROM session_operation\n    WHERE id = ?\n      AND status IN ('queued', 'running')\n) AS \"value!: _\"\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "value!: _",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8f192d056a69946313fc766cd20ed601f615bc5a732bff299026ed907d53520f"
+}

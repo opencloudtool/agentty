@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT session_id, model, created_at, input_tokens, invocation_count, output_tokens\nFROM session_usage\nWHERE session_id = ?\nORDER BY model\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "session_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "model",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "input_tokens",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "invocation_count",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "output_tokens",
+        "ordinal": 5,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "752ea1df1fa1d6ddd1dcddfdc3b974a862401de3a70b0754eadabffc59ffe035"
+}

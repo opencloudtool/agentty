@@ -41,17 +41,17 @@ Project lists, session lists, session-operation readers, and usage readers are a
 
 ### Substeps
 
-- [ ] **Replace project and usage aggregate mappings.** Convert `load_projects_with_stats()`, `load_session_activity_timestamps()`, `load_unfinished_session_operations()`, and `load_session_usage()` in `crates/agentty/src/infra/db.rs` to `query_as!`-backed row types, handling SQLite boolean and nullable-column behavior explicitly in the selected field types.
-- [ ] **Refactor joined session loading away from `SqliteRow`.** Replace `parse_session_row()` and `parse_session_review_request_row()` in `crates/agentty/src/infra/db.rs` with macro-checked intermediate structs for the `session` plus `session_review_request` join, including the aliased review-request columns and the “partial join means no `SessionReviewRequestRow`” rule.
-- [ ] **Remove obsolete row-trait plumbing.** Drop `SqliteRow`, `Row`, and any helper code that only existed to support manual extraction once the remaining row-returning methods in `crates/agentty/src/infra/db.rs` have moved to typed macro mappings.
+- [x] **Replace project and usage aggregate mappings.** Convert `load_projects_with_stats()`, `load_session_activity_timestamps()`, `load_unfinished_session_operations()`, and `load_session_usage()` in `crates/agentty/src/infra/db.rs` to `query_as!`-backed row types, handling SQLite boolean and nullable-column behavior explicitly in the selected field types.
+- [x] **Refactor joined session loading away from `SqliteRow`.** Replace `parse_session_row()` and `parse_session_review_request_row()` in `crates/agentty/src/infra/db.rs` with macro-checked intermediate structs for the `session` plus `session_review_request` join, including the aliased review-request columns and the “partial join means no `SessionReviewRequestRow`” rule.
+- [x] **Remove obsolete row-trait plumbing.** Drop `SqliteRow`, `Row`, and any helper code that only existed to support manual extraction once the remaining row-returning methods in `crates/agentty/src/infra/db.rs` have moved to typed macro mappings.
 
 ### Tests
 
-- [ ] Run the `db.rs` tests that cover project loading, session loading, session-operation loading, and usage aggregation, then run `cargo test -q -- --test-threads=1` once this slice is complete.
+- [x] Run the `db.rs` tests that cover project loading, session loading, session-operation loading, and usage aggregation, then run `cargo test -q -- --test-threads=1` once this slice is complete. Validated with `cargo test -q infra::db::tests -- --test-threads=1`, `SQLX_OFFLINE=true cargo check -q --all-targets --all-features`, and `cargo test -q -- --test-threads=1`.
 
 ### Docs
 
-- [ ] Refresh any contributor-facing notes added in step 1 if the final macro pattern introduces additional guidance around aliased columns, nullable joins, or `.sqlx` regeneration.
+- [x] Refresh any contributor-facing notes added in step 1 if the final macro pattern introduces additional guidance around aliased columns, nullable joins, or `.sqlx` regeneration. No additional contributor-facing guidance was needed beyond the existing SQLx preparation workflow.
 
 ## 3) Convert test-only raw queries and finish the migration cleanup
 
@@ -66,7 +66,7 @@ The production code migration is not complete while the `db.rs` test module stil
 ### Substeps
 
 - [ ] **Migrate test helpers to typed rows.** Replace test-only helpers such as `load_session_operation_row()` and the retention checks near the `delete_session()` coverage in `crates/agentty/src/infra/db.rs` with `query_as!`-backed fixtures or helper structs instead of raw rows plus `row.get(...)`.
-- [ ] **Rewrite parser-specific tests around observable behavior.** Update the tests that currently target `parse_session_row()` directly in `crates/agentty/src/infra/db.rs` so they validate the remaining public behavior after the parser helpers are removed or collapsed into typed conversions.
+- [x] **Rewrite parser-specific tests around observable behavior.** Update the tests that currently target `parse_session_row()` directly in `crates/agentty/src/infra/db.rs` so they validate the remaining public behavior after the parser helpers are removed or collapsed into typed conversions.
 - [ ] **Regenerate final SQLx metadata and trim leftovers.** Refresh `.sqlx/` after the last query changes and remove any dead helper code, imports, or documentation that still assumes manual `sqlx::query(...)` row mapping.
 
 ### Tests
@@ -92,10 +92,10 @@ The production code migration is not complete while the `db.rs` test module stil
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
 | SQLx workspace setup | `Cargo.toml` enables `sqlx` with `runtime-tokio`, `sqlite`, and `macros`, and `CONTRIBUTING.md` documents the preparation workflow. | Complete |
-| Offline query metadata | `crates/agentty/.sqlx/` is present for the current step-1 `query_as!` set, and the workflow is validated with `SQLX_OFFLINE=true`. | Complete |
-| `db.rs` row-returning readers | `crates/agentty/src/infra/db.rs` now has `query_as!` for the first target reader slice (`get_project()`, `load_sessions_metadata()`, `get_session_base_branch()`, `get_session_provider_conversation_id()`, `get_setting()`, `get_project_setting()`, `load_session_project_id()`, `load_active_project_id()`) with joins and aggregate/operation readers still using manual extraction. | In progress |
-| Joined session mapping | `parse_session_row()` and `parse_session_review_request_row()` depend on `SqliteRow` plus aliased join columns to build `SessionRow` and `SessionReviewRequestRow`. | Not started |
-| Test coverage shape | The `db.rs` test module already covers the read behavior well, but several helpers and parser-focused tests still inspect raw query rows directly. | Partial |
+| Offline query metadata | `crates/agentty/.sqlx/` has been refreshed for the current step-2 `query_as!` set, and the workflow is validated with `SQLX_OFFLINE=true`. | Complete |
+| `db.rs` row-returning readers | Production row-returning readers in `crates/agentty/src/infra/db.rs` now use `query_as!` for the initial scalar slice, aggregate readers, joined session readers, and unfinished-operation/usage readers. | Complete |
+| Joined session mapping | `load_sessions()` and `load_sessions_for_project()` now deserialize through typed `SessionJoinRow` and `SessionReviewRequestJoinRow` conversions instead of `SqliteRow` parsing helpers. | Complete |
+| Test coverage shape | The `db.rs` test module now validates the typed joined-session conversion path, but some test helpers still inspect raw query rows directly. | Partial |
 
 ## Implementation Approach
 

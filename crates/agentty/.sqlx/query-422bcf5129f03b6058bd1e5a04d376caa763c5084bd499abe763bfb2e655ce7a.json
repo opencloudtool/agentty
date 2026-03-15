@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "\nWITH stats AS (\n    SELECT project_id,\n           MAX(updated_at) AS last_session_updated_at,\n           COUNT(*) AS session_count,\n           COUNT(CASE WHEN status NOT IN ('Done', 'Canceled', 'Queued', 'Merging')\n                      THEN 1 END) AS active_session_count\n    FROM session\n    WHERE project_id IS NOT NULL\n    GROUP BY project_id\n)\nSELECT stats.active_session_count,\n       p.created_at,\n       p.display_name,\n       p.git_branch,\n       p.id,\n       p.is_favorite AS \"is_favorite: _\",\n       p.last_opened_at,\n       stats.last_session_updated_at,\n       p.path,\n       stats.session_count,\n       p.updated_at\nFROM project AS p\nLEFT JOIN stats\nON stats.project_id = p.id\nORDER BY p.is_favorite DESC,\n         COALESCE(p.last_opened_at, 0) DESC,\n         p.path\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "active_session_count",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "display_name",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "git_branch",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "id",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "is_favorite: _",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_opened_at",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_session_updated_at",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "path",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "session_count",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 10,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "422bcf5129f03b6058bd1e5a04d376caa763c5084bd499abe763bfb2e655ce7a"
+}

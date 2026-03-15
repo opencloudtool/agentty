@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT id AS \"id!\", session_id AS \"session_id!\", kind AS \"kind!\", status AS \"status!\",\n       queued_at, started_at, finished_at,\n       heartbeat_at, last_error,\n       cancel_requested AS \"cancel_requested: _\"\nFROM session_operation\nWHERE status IN ('queued', 'running')\nORDER BY queued_at ASC, id ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "session_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "status!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "queued_at",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "started_at",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "heartbeat_at",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_error",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "cancel_requested: _",
+        "ordinal": 9,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "c315669af133f3b4c7fde602d04ea1dd0cc02cf7826128f51fa05eff004d04a9"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT id AS \"value!: _\"\nFROM project\nWHERE path = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "value!: _",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "1fe961aa59e6ec14e0ceda6ed64afceb25f876f5ffa3212132ab9bddda9d4952"
+}
