@@ -21,6 +21,8 @@ Keep size budgeting in the skill workflow only; do not render `### Size` section
 
 - [`protocol_request_instructions.md`](protocol_request_instructions.md) - Implementation plan for routing every agent request through the shared structured protocol with request-specific instruction injection owned by the protocol layer.
 
+- [`session_in_progress_timer.md`](session_in_progress_timer.md) - Implementation plan for persisting and rendering cumulative session `InProgress` time in chat and list views.
+
 - [`sqlx_query_as_db.md`](sqlx_query_as_db.md) - Implementation plan for migrating row-returning `db.rs` queries to compile-time checked `sqlx::query_as!` mappings.
 
 - [`tui_e2e_testing_framework.md`](tui_e2e_testing_framework.md) - Implementation plan for a custom Playwright-inspired TUI end-to-end testing framework with PTY-based interaction, snapshot assertions, and a scriptable scenario DSL.
