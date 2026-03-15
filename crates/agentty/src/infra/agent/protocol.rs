@@ -43,10 +43,10 @@ pub enum ProtocolRequestProfile {
     UtilityPrompt,
 }
 
-/// Message kind tag used by one [`AgentResponseMessage`].
+/// Message type tag used by one [`AgentResponseMessage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentResponseMessageKind {
+pub enum AgentResponseMessageType {
     /// Standard answer text.
     Answer,
     /// Clarification request text.
@@ -63,15 +63,14 @@ pub enum AgentResponseMessageKind {
                    approval, or a mutually exclusive decision is required before continuing."
 )]
 pub struct AgentResponseMessage {
-    /// Message kind selector.
-    #[serde(rename = "type")]
+    /// Message type selector.
     #[schemars(
         title = "type",
-        description = "Message kind tag used by one AgentResponseMessage. Use `question` only \
+        description = "Message type tag used by one AgentResponseMessage. Use `question` only \
                        when user input, approval, or a mutually exclusive decision is required \
                        before continuing; otherwise use `answer`."
     )]
-    pub kind: AgentResponseMessageKind,
+    pub r#type: AgentResponseMessageType,
     /// Predefined answer choices for `question` messages.
     ///
     /// The protocol instructs agents to always include options, and the UI
@@ -105,7 +104,7 @@ impl AgentResponseMessage {
     /// Constructs one `answer` protocol message.
     pub fn answer(text: impl Into<String>) -> Self {
         Self {
-            kind: AgentResponseMessageKind::Answer,
+            r#type: AgentResponseMessageType::Answer,
             options: None,
             text: text.into(),
         }
@@ -119,7 +118,7 @@ impl AgentResponseMessage {
     /// scenarios.
     pub fn question(text: impl Into<String>) -> Self {
         Self {
-            kind: AgentResponseMessageKind::Question,
+            r#type: AgentResponseMessageType::Question,
             options: None,
             text: text.into(),
         }
@@ -129,7 +128,7 @@ impl AgentResponseMessage {
     /// options.
     pub fn question_with_options(text: impl Into<String>, options: Vec<String>) -> Self {
         Self {
-            kind: AgentResponseMessageKind::Question,
+            r#type: AgentResponseMessageType::Question,
             options: if options.is_empty() {
                 None
             } else {
@@ -262,7 +261,7 @@ impl AgentResponse {
     pub fn to_answer_display_text(&self) -> String {
         let mut display_messages = Vec::new();
         for message in &self.messages {
-            if message.kind != AgentResponseMessageKind::Answer {
+            if message.r#type != AgentResponseMessageType::Answer {
                 continue;
             }
 
@@ -274,7 +273,7 @@ impl AgentResponse {
 
     /// Returns all `answer` messages in response order.
     pub fn answers(&self) -> Vec<String> {
-        self.messages_by_kind(AgentResponseMessageKind::Answer)
+        self.messages_by_type(AgentResponseMessageType::Answer)
     }
 
     /// Returns up to [`MAX_QUESTIONS`] `question` messages as [`QuestionItem`]
@@ -285,7 +284,7 @@ impl AgentResponse {
     pub fn question_items(&self) -> Vec<QuestionItem> {
         self.messages
             .iter()
-            .filter(|message| message.kind == AgentResponseMessageKind::Question)
+            .filter(|message| message.r#type == AgentResponseMessageType::Question)
             .take(MAX_QUESTIONS)
             .map(|message| QuestionItem {
                 options: message.options.clone().unwrap_or_default(),
@@ -294,11 +293,11 @@ impl AgentResponse {
             .collect()
     }
 
-    /// Collects all messages matching one kind while preserving order.
-    fn messages_by_kind(&self, kind: AgentResponseMessageKind) -> Vec<String> {
+    /// Collects all messages matching one type while preserving order.
+    fn messages_by_type(&self, message_type: AgentResponseMessageType) -> Vec<String> {
         self.messages
             .iter()
-            .filter(|message| message.kind == kind)
+            .filter(|message| message.r#type == message_type)
             .map(|message| message.text.clone())
             .collect()
     }
@@ -1246,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    /// Preserves message kind enum values after `oneOf` normalization.
+    /// Preserves message type enum values after `oneOf` normalization.
     fn test_agent_response_output_schema_contains_message_type_enum_values() {
         // Arrange / Act
         let schema = agent_response_output_schema();

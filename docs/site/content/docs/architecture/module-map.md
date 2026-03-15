@@ -78,7 +78,7 @@ choose the correct module when implementing changes.
 | - `claude.rs` | Claude backend implementation. |
 | - `codex.rs` | Codex backend implementation. |
 | - `gemini.rs` | Gemini backend implementation. |
-| - `protocol.rs` | Structured response contract (`AgentResponse`, `AgentResponseMessage`, `AgentResponseMessageKind`), prompt/transport JSON-schema generation, parsing, and stream normalization. |
+| - `protocol.rs` | Structured response contract (`AgentResponse`, `AgentResponseMessage`, `AgentResponseMessageType`), prompt/transport JSON-schema generation, parsing, and stream normalization. |
 | - `response_parser.rs` | Provider-specific final/stream output parsing and usage extraction for Claude, Gemini, and Codex. |
 | - `submission.rs` | Shared one-shot prompt execution and strict protocol validation for generated titles, session commit messages, assist prompts, and review text. |
 | `crates/agentty/src/infra/app_server.rs` | `AppServerClient` trait and shared request/response stream types. |
