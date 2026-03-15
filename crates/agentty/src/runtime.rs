@@ -13,4 +13,5 @@ mod timing;
 
 pub use core::run;
 pub(crate) use core::{EventResult, TuiTerminal};
+
 pub(crate) use timing::FRAME_INTERVAL;

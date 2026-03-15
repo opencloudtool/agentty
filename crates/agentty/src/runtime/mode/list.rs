@@ -46,7 +46,7 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
         KeyCode::BackTab => {
             app.tabs.previous();
         }
-        KeyCode::Char('a') => {
+        KeyCode::Char('a') if app.tabs.current() == Tab::Sessions => {
             open_new_session_prompt(app).await?;
         }
         KeyCode::Char('j') | KeyCode::Down => match app.tabs.current() {
@@ -477,6 +477,7 @@ mod tests {
     async fn test_handle_add_key_creates_session_and_opens_prompt_mode() {
         // Arrange
         let (mut app, _base_dir) = new_test_app_with_git().await;
+        app.tabs.set(Tab::Sessions);
 
         // Act
         let event_result = handle(
@@ -497,6 +498,46 @@ mod tests {
                 ..
             } if !session_id.is_empty()
         ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_add_key_ignored_on_projects_tab() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        app.tabs.set(Tab::Projects);
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(app.sessions.sessions.is_empty());
+        assert!(matches!(app.mode, AppMode::List));
+    }
+
+    #[tokio::test]
+    async fn test_handle_add_key_ignored_on_settings_tab() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        app.tabs.set(Tab::Settings);
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(app.sessions.sessions.is_empty());
+        assert!(matches!(app.mode, AppMode::List));
     }
 
     #[tokio::test]

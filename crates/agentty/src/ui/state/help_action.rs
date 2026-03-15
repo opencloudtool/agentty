@@ -69,6 +69,11 @@ pub(crate) fn session_list_actions(
     can_open_selected_session: bool,
 ) -> Vec<HelpAction> {
     let mut actions = list_base_actions();
+    actions.push(HelpAction::new(
+        "start new session",
+        "a",
+        "Start new session",
+    ));
 
     if can_delete_selected_session {
         actions.push(HelpAction::new("delete", "d", "Delete session"));
@@ -115,6 +120,11 @@ pub(crate) fn project_list_footer_actions() -> Vec<HelpAction> {
 /// Returns compact session list footer actions for the page-level hint line.
 pub(crate) fn session_list_footer_actions(can_open_selected_session: bool) -> Vec<HelpAction> {
     let mut actions = list_base_actions();
+    actions.push(HelpAction::new(
+        "start new session",
+        "a",
+        "Start new session",
+    ));
 
     if can_open_selected_session {
         actions.push(HelpAction::new("open session", "Enter", "Open session"));
@@ -344,14 +354,10 @@ pub(crate) fn footer_separator_span() -> Span<'static> {
     Span::styled(" | ", Style::default().fg(Color::DarkGray))
 }
 
-/// Returns list-mode actions that are shared by sessions, stats, and settings
-/// pages.
-///
-/// The `"a"` shortcut starts a new session.
+/// Returns list-mode actions shared by all tabs.
 fn list_base_actions() -> Vec<HelpAction> {
     vec![
         HelpAction::new("quit", "q", "Quit"),
-        HelpAction::new("start new session", "a", "Start new session"),
         HelpAction::new("sync", "s", "Sync"),
     ]
 }
@@ -369,6 +375,46 @@ fn publish_branch_help_action(action: PublishBranchAction) -> HelpAction {
 mod tests {
     use super::*;
     use crate::domain::session::PublishBranchAction;
+
+    #[test]
+    fn test_project_list_actions_exclude_new_session_shortcut() {
+        // Arrange
+        // Act
+        let actions = project_list_actions();
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "a"));
+    }
+
+    #[test]
+    fn test_settings_actions_exclude_new_session_shortcut() {
+        // Arrange
+        // Act
+        let actions = settings_actions();
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "a"));
+    }
+
+    #[test]
+    fn test_stats_actions_exclude_new_session_shortcut() {
+        // Arrange
+        // Act
+        let actions = stats_actions();
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "a"));
+    }
+
+    #[test]
+    fn test_session_list_actions_include_new_session_shortcut() {
+        // Arrange
+        // Act
+        let actions = session_list_actions(false, false, false);
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "a"));
+    }
 
     #[test]
     fn test_session_list_actions_hide_enter_without_openable_session() {
