@@ -16,7 +16,7 @@ Every request path can select a protocol profile and render it through the share
 
 ### Substeps
 
-- [x] **Define one protocol-owned request-profile surface.** Add one focused profile abstraction in `crates/agentty/src/infra/agent/protocol.rs` that names the supported request families and returns the extra protocol guidance they need, instead of scattering raw string constants across `crates/agentty/src/app/task.rs`, `crates/agentty/src/app/session/workflow/merge.rs`, and future call sites.
+- [x] **Define one protocol-owned request-profile surface.** Add one focused profile abstraction in `crates/agentty/src/infra/agent/protocol.rs` that names the supported request families and threads the selected profile through all request call sites in `crates/agentty/src/app/task.rs`, `crates/agentty/src/app/session/workflow/merge.rs`, and future call sites. Protocol-specific additions are still centralized in the shared template entry point before request-specific guidance lands in a later step.
 - [x] **Route the profile through every transport boundary.** Finish threading the selected profile through `crates/agentty/src/infra/agent/submission.rs`, `crates/agentty/src/infra/agent/backend.rs`, `crates/agentty/src/infra/channel/cli.rs`, `crates/agentty/src/infra/app_server.rs`, and the Codex, Claude, and Gemini backend prompt builders so start, resume, one-shot, repair, and context-reset paths all use the same renderer.
 - [x] **Keep the shared template as the only rendered protocol preamble.** Preserve `crates/agentty/resources/protocol_instruction_prompt.md` as the single place that renders the schema and optional request-specific protocol block, and remove any backend-local or call-site-local duplication of protocol-format instructions.
 
@@ -79,7 +79,7 @@ Session turns and utility requests all consume `AgentResponse` as the canonical 
 ## Cross-Plan Notes
 
 - No other active file in `docs/plan/` currently owns protocol prompt unification; if another plan starts changing the same request call sites, this plan should own the protocol contract while the other plan owns the feature-specific workflow.
-- This branch now intentionally contains only the planning docs after the recent rollback, so step 1 starts from the current baseline code in `crates/agentty/src/infra/agent/backend.rs`, `crates/agentty/src/infra/agent/submission.rs`, and the request call sites.
+- This branch currently contains only planning-doc changes, so step 1 starts from the current baseline code in `crates/agentty/src/infra/agent/backend.rs`, `crates/agentty/src/infra/agent/submission.rs`, and the request call sites.
 
 ## Status Maintenance Rule
 
@@ -92,7 +92,7 @@ Session turns and utility requests all consume `AgentResponse` as the canonical 
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
 | Shared response schema and parser | `crates/agentty/src/infra/agent/protocol.rs` already owns the JSON schema, parsing, repair prompts, and `AgentResponse` model for structured output. | Healthy |
-| Request-specific protocol injection | `ProtocolRequestProfile` now flows from session workers and one-shot utility call sites through `TurnRequest`, `AppServerTurnRequest`, `BuildCommandRequest`, repair retries, and app-server context-reset retries, so every request path renders the same shared protocol wrapper with request-family-specific guidance. | Healthy |
+| Request-specific protocol injection | `ProtocolRequestProfile` flows from session workers and one-shot utility call sites through `TurnRequest`, `AppServerTurnRequest`, `BuildCommandRequest`, repair retries, and app-server context-reset retries, so every request path uses the shared protocol wrapper while preserving the selected profile metadata end to end. Family-specific protocol text is still pending in the shared template entry point. | Partial |
 | Task prompt templates | Several templates under `crates/agentty/resources/` still mix task context with output-format instructions that belong in the protocol layer. | Not started |
 | Feature-level response handling | Utility workflows still keep request-specific output assumptions such as title extraction and commit-message validation outside a fully protocol-owned helper surface. | Partial |
 | Runtime and backend docs | `docs/site/content/docs/agents/backends.md` and `docs/site/content/docs/architecture/runtime-flow.md` now describe the shared protocol injection point and profile preservation across direct, repair, and context-reset flows, while later steps still need broader prompt/consumer documentation cleanup. | Partial |
