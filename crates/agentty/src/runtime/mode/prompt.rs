@@ -1,13 +1,15 @@
 use std::io;
 
 use crossterm::event::{self, KeyCode, KeyEvent};
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 
 use crate::app::{App, AppEvent, SessionStatsUsage};
 use crate::domain::agent::AgentKind;
 use crate::domain::input::InputState;
 use crate::infra::channel::{TurnPrompt, TurnPromptAttachment};
 use crate::infra::file_index;
-use crate::runtime::{EventResult, TuiTerminal, clipboard_image};
+use crate::runtime::{EventResult, clipboard_image};
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode};
 use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::ui::util::{format_token_count, move_input_cursor_down, move_input_cursor_up};
@@ -22,11 +24,14 @@ struct PromptContext {
 }
 
 /// Handles key input while the app is in `AppMode::Prompt`.
-pub(crate) async fn handle(
+pub(crate) async fn handle<B: Backend>(
     app: &mut App,
-    terminal: &mut TuiTerminal,
+    terminal: &mut Terminal<B>,
     key: KeyEvent,
-) -> io::Result<EventResult> {
+) -> io::Result<EventResult>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let Some(prompt_context) = prompt_context(app) else {
         return Ok(EventResult::Continue);
     };
@@ -61,12 +66,15 @@ fn handle_at_mention_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 /// Handles all editing, navigation, and submission keys in prompt mode.
-async fn handle_editing_key(
+async fn handle_editing_key<B: Backend>(
     app: &mut App,
-    terminal: &mut TuiTerminal,
+    terminal: &mut Terminal<B>,
     key: KeyEvent,
     prompt_context: &PromptContext,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     match key.code {
         KeyCode::Enter if should_insert_newline(key) => {
             reset_prompt_history_navigation(app);
@@ -370,11 +378,14 @@ fn normalize_pasted_text(pasted_text: &str) -> String {
     normalized_text
 }
 
-fn handle_prompt_up_key(
+fn handle_prompt_up_key<B: Backend>(
     app: &mut App,
-    terminal: &TuiTerminal,
+    terminal: &Terminal<B>,
     prompt_context: &PromptContext,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     if prompt_context.is_slash_command {
         if let AppMode::Prompt { slash_state, .. } = &mut app.mode {
             slash_state.selected_index = slash_state.selected_index.saturating_sub(1);
@@ -400,11 +411,14 @@ fn handle_prompt_up_key(
     Ok(())
 }
 
-fn handle_prompt_down_key(
+fn handle_prompt_down_key<B: Backend>(
     app: &mut App,
-    terminal: &TuiTerminal,
+    terminal: &Terminal<B>,
     prompt_context: &PromptContext,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     if prompt_context.is_slash_command {
         advance_prompt_slash_selection(app);
 
@@ -922,8 +936,11 @@ fn is_enter_key(key_code: KeyCode) -> bool {
     matches!(key_code, KeyCode::Enter | KeyCode::Char('\r' | '\n'))
 }
 
-fn prompt_input_width(terminal: &TuiTerminal) -> io::Result<u16> {
-    let terminal_width = terminal.size()?.width;
+fn prompt_input_width<B: Backend>(terminal: &Terminal<B>) -> io::Result<u16>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let terminal_width = terminal.size().map_err(crate::runtime::backend_err)?.width;
 
     Ok(terminal_width.saturating_sub(2))
 }

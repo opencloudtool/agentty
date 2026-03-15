@@ -1,13 +1,15 @@
 use std::io;
 
 use crossterm::event::{self, KeyCode, KeyEvent};
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 
 use crate::app::{App, FocusedReviewCacheEntry, diff_content_hash};
 use crate::domain::agent::AgentModel;
 use crate::domain::input::InputState;
 use crate::domain::session::{PublishBranchAction, Status};
+use crate::runtime::EventResult;
 use crate::runtime::mode::confirmation::DEFAULT_OPTION_INDEX;
-use crate::runtime::{EventResult, TuiTerminal};
 use crate::ui::page::session_chat::SessionChatPage;
 use crate::ui::state::app_mode::{
     AppMode, ConfirmationIntent, ConfirmationViewMode, DoneSessionOutputMode, HelpContext,
@@ -78,11 +80,14 @@ const REVIEW_NO_DIFF_MESSAGE: &str = "No diff changes found for review.";
 /// Processes view-mode key presses and keeps shortcut availability aligned with
 /// session status (`o` disabled for `Done`/`Canceled`/`Merging`/`Queued`, and
 /// diff/review only for `Review`).
-pub(crate) async fn handle(
+pub(crate) async fn handle<B: Backend>(
     app: &mut App,
-    terminal: &mut TuiTerminal,
+    terminal: &mut Terminal<B>,
     key: KeyEvent,
-) -> io::Result<EventResult> {
+) -> io::Result<EventResult>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let Some(view_context) = view_context(app) else {
         return Ok(EventResult::Continue);
     };
@@ -531,12 +536,15 @@ fn view_context(app: &mut App) -> Option<ViewContext> {
     })
 }
 
-fn view_metrics(
+fn view_metrics<B: Backend>(
     app: &App,
-    terminal: &TuiTerminal,
+    terminal: &Terminal<B>,
     view_context: &ViewContext,
-) -> io::Result<ViewMetrics> {
-    let terminal_size = terminal.size()?;
+) -> io::Result<ViewMetrics>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let terminal_size = terminal.size().map_err(crate::runtime::backend_err)?;
     let view_height = terminal_size.height.saturating_sub(5);
     let output_width = terminal_size.width.saturating_sub(2);
     let total_lines = view_total_lines(

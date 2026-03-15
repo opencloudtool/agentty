@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossterm::event::{Event, KeyEvent};
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
-use crate::runtime::{EventResult, FRAME_INTERVAL, TuiTerminal, key_handler, mode};
+use crate::runtime::{EventResult, FRAME_INTERVAL, key_handler, mode};
 use crate::ui::state::app_mode::AppMode;
 
 /// Reads terminal events from an underlying event backend.
@@ -73,12 +75,15 @@ fn spawn_event_reader_with_source(
 
 /// Waits for the next terminal/app event or tick and dispatches one runtime
 /// processing cycle.
-pub(crate) async fn process_events(
+pub(crate) async fn process_events<B: Backend>(
     app: &mut App,
-    terminal: &mut TuiTerminal,
+    terminal: &mut Terminal<B>,
     event_rx: &mut mpsc::UnboundedReceiver<Event>,
     tick: &mut tokio::time::Interval,
-) -> io::Result<EventResult> {
+) -> io::Result<EventResult>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     process_events_with_handler(app, terminal, event_rx, tick, |app, terminal, event| {
         Box::pin(process_event(app, terminal, event))
     })
@@ -156,11 +161,14 @@ where
 ///
 /// `Event::Paste` is handled in text-input modes so multiline clipboard
 /// content is inserted as text instead of interpreted as navigation keys.
-async fn process_event(
+async fn process_event<B: Backend>(
     app: &mut App,
-    terminal: &mut TuiTerminal,
+    terminal: &mut Terminal<B>,
     event: Option<Event>,
-) -> io::Result<EventResult> {
+) -> io::Result<EventResult>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     process_event_with_key_handler(app, terminal, event, |app, terminal, key| {
         Box::pin(key_handler::handle_key_event(app, terminal, key))
     })

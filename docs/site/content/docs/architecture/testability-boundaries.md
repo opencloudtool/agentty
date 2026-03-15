@@ -31,6 +31,7 @@ The traits below are mocked with `mockall`. Most use
 | `AppServerClient` | `infra/app_server.rs` | App-server RPC execution (provider routing, JSON-RPC transport). |
 | `EventSource` | `runtime/event.rs` | Terminal event polling for deterministic event-loop tests. |
 | `Clock` | `app/session/core.rs` | Shared wall-clock and monotonic time boundary used by session orchestration and runtime helpers such as pasted-image file naming. |
+| `Backend` (generic) | `runtime/core.rs` | Runtime accepts `Terminal<B: Backend>` via `run_with_backend`, enabling in-process TUI tests with `TestBackend` without a real terminal. |
 | `TerminalOperation` | `runtime/terminal.rs` | Terminal raw-mode and alternate-screen transitions for deterministic setup and restore failure-path tests. |
 | `Sleeper` | `lib.rs` | Wall-clock sleep boundary used by retry/polling flows such as git rebase assistance. |
 | `UpdateRunner` | `infra/version.rs` | npm install command execution for background auto-updates. |

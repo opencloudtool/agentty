@@ -28,21 +28,21 @@ The runtime functions (`run_main_loop`, `render_frame`, `process_events`, `handl
 
 ### Substeps
 
-- [ ] **Parameterize the runtime core over `Backend`.** In `crates/agentty/src/runtime/core.rs`, change `TuiTerminal` from a concrete type alias to a generic parameter. Update `MainLoopState`, `run_main_loop`, and `render_frame` to accept `Terminal<B>` where `B: Backend`. The production entry point `run()` instantiates `B = CrosstermBackend<io::Stdout>` as before.
+- [x] **Parameterize the runtime core over `Backend`.** `MainLoopState`, `run_main_loop`, and `render_frame` in `crates/agentty/src/runtime/core.rs` now accept `Terminal<B>` where `B: Backend`. Added `backend_err` helper for converting `B::Error` into `io::Error`. The production entry point `run()` still instantiates `B = CrosstermBackend<io::Stdout>`.
 
-- [ ] **Propagate the generic through event processing and key handling.** Update `process_events` and `process_event` in `crates/agentty/src/runtime/event.rs`, `handle_key_event` in `crates/agentty/src/runtime/key_handler.rs`, and the mode handlers in `crates/agentty/src/runtime/mode/session_view.rs` and `crates/agentty/src/runtime/mode/prompt.rs` to accept `&mut Terminal<B>` instead of `&mut TuiTerminal`. These handlers only call `terminal.size()` which is available on all `Backend` implementations.
+- [x] **Propagate the generic through event processing and key handling.** Updated `process_events` and `process_event` in `crates/agentty/src/runtime/event.rs`, `handle_key_event` in `crates/agentty/src/runtime/key_handler.rs`, and the mode handlers in `crates/agentty/src/runtime/mode/session_view.rs` and `crates/agentty/src/runtime/mode/prompt.rs` to accept `&mut Terminal<B>`. Terminal `size()` calls use `.map_err(backend_err)` for error conversion.
 
-- [ ] **Decouple event injection from the crossterm poller.** Add a test-friendly entry point (e.g., `run_with_backend` or a `TestRuntime` struct) in `crates/agentty/src/runtime/core.rs` that accepts an `mpsc::UnboundedReceiver<crossterm::event::Event>` and a `Terminal<B>` directly, bypassing `spawn_event_reader` and `terminal::setup_terminal`. Tests inject `crossterm::event::Event` values through the sender side of the channel. The existing `EventSource` trait and poller thread remain unchanged for production.
+- [x] **Decouple event injection from the crossterm poller.** Added `run_with_backend` in `crates/agentty/src/runtime/core.rs` that accepts an `mpsc::UnboundedReceiver<crossterm::event::Event>` and a `Terminal<B>` directly, bypassing `spawn_event_reader` and `terminal::setup_terminal`. Tests inject events through the sender side. The existing `EventSource` trait and poller thread remain unchanged for production.
 
 ### Tests
 
-- [ ] Run the existing runtime unit tests (`cargo test -p agentty -- runtime`) to verify all existing tests still compile and pass after the generic refactor.
-- [ ] Add one minimal test in `crates/agentty/src/runtime/core.rs` that constructs a `Terminal<TestBackend>`, sends a quit key event through the channel, and verifies `run_with_backend` exits cleanly.
+- [x] Ran all 308 existing runtime unit tests (`cargo test -p agentty -- runtime`); all pass after the generic refactor.
+- [x] Added `run_with_backend_exits_on_quit_key` test in `crates/agentty/src/runtime/core.rs` that constructs a `Terminal<TestBackend>`, sends `q` + `y` quit key events, and verifies `run_with_backend` exits cleanly.
 
 ### Docs
 
-- [ ] Update doc comments on `run_main_loop`, `render_frame`, `process_events`, and `handle_key_event` to reflect the generic `B: Backend` parameter.
-- [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` with the new `Backend`-generic runtime boundary.
+- [x] Updated doc comments on `run_with_backend`, `run_main_loop`, `render_frame`, and `backend_err` to reflect the generic `B: Backend` parameter.
+- [x] Updated `docs/site/content/docs/architecture/testability-boundaries.md` with the new `Backend`-generic runtime boundary.
 
 ## 2) Ship the in-process test harness crate with one scenario
 
@@ -336,7 +336,7 @@ CI runs the full TUI E2E snapshot suite, fails on unexpected visual changes, and
 
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
-| Runtime backend generics | `TuiTerminal` is hardcoded to `CrosstermBackend<io::Stdout>` in `runtime/core.rs`. | Not started |
+| Runtime backend generics | Runtime functions accept `Terminal<B: Backend>` via `run_with_backend`. `TuiTerminal` kept as concrete alias for production. One `TestBackend` test verifies quit flow. | Complete |
 | In-process TUI test harness | No framework for driving the app through `Terminal<TestBackend>` with injected events. | Not started |
 | Locator / element finder API | No equivalent of Playwright's `getByText` for ratatui buffers. | Not started |
 | Auto-waiting assertions | No timeout-based polling assertions for TUI state. | Not started |

@@ -7,14 +7,23 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use tokio::sync::mpsc;
 
 use crate::app::App;
 use crate::runtime::{FRAME_INTERVAL, event, terminal};
 
-/// Shared ratatui terminal type used by runtime helpers.
+/// Concrete terminal type used by the production runtime entry point.
 pub(crate) type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
+
+/// Converts a backend-specific error into `io::Error`.
+///
+/// This enables generic functions to use `?` with `Terminal` methods that
+/// return `Result<_, B::Error>` for any backend, including `TestBackend`
+/// whose error type is `Infallible`.
+pub(crate) fn backend_err<E: std::error::Error + Send + Sync + 'static>(error: E) -> io::Error {
+    io::Error::other(error)
+}
 
 /// Event-loop continuation outcome after processing one input/tick cycle.
 pub(crate) enum EventResult {
@@ -49,12 +58,39 @@ pub async fn run(app: &mut App) -> io::Result<()> {
     Ok(())
 }
 
-async fn run_main_loop(
+/// Runs the TUI event/render loop with an externally provided backend and
+/// event channel.
+///
+/// Tests use this to drive the full runtime with a `TestBackend` and injected
+/// `crossterm::event::Event` values, bypassing terminal setup and the
+/// background event-reader thread.
+///
+/// # Errors
+/// Returns an error if rendering or event processing fails.
+pub async fn run_with_backend<B: Backend>(
     app: &mut App,
-    terminal: &mut TuiTerminal,
+    terminal: &mut Terminal<B>,
+    event_rx: &mut mpsc::UnboundedReceiver<crossterm::event::Event>,
+) -> io::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let mut tick = tokio::time::interval(FRAME_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    run_main_loop(app, terminal, event_rx, &mut tick).await
+}
+
+/// Drives the main render/event loop until quit or error.
+async fn run_main_loop<B: Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
     event_rx: &mut mpsc::UnboundedReceiver<crossterm::event::Event>,
     tick: &mut tokio::time::Interval,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let mut main_loop_state = MainLoopState {
         app,
         event_rx,
@@ -66,14 +102,17 @@ async fn run_main_loop(
 }
 
 /// Borrowed runtime state required to process one main-loop cycle.
-struct MainLoopState<'a> {
+struct MainLoopState<'a, B: Backend> {
     app: &'a mut App,
     event_rx: &'a mut mpsc::UnboundedReceiver<crossterm::event::Event>,
-    terminal: &'a mut TuiTerminal,
+    terminal: &'a mut Terminal<B>,
     tick: &'a mut tokio::time::Interval,
 }
 
-impl MainLoopState<'_> {
+impl<B: Backend> MainLoopState<'_, B>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     /// Runs one render/event cycle and returns the continuation result.
     async fn run_cycle(&mut self) -> io::Result<EventResult> {
         self.app.sessions.sync_from_handles();
@@ -100,8 +139,14 @@ where
     Ok(())
 }
 
-fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
-    terminal.draw(|frame| app.draw(frame))?;
+/// Renders one frame of the TUI application into the terminal buffer.
+fn render_frame<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> io::Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    terminal
+        .draw(|frame| app.draw(frame))
+        .map_err(backend_err)?;
 
     Ok(())
 }
@@ -109,8 +154,15 @@ fn render_frame(app: &mut App, terminal: &mut TuiTerminal) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+    use tempfile::tempdir;
 
     use super::*;
+    use crate::db::Database;
+    use crate::infra::app_server;
 
     /// Test-only loop state that records call counts and scripted outcomes.
     struct TestLoopState {
@@ -170,5 +222,66 @@ mod tests {
         let error = loop_result.expect_err("loop should return the cycle error");
         assert_eq!(error.to_string(), "cycle failed");
         assert_eq!(state.cycle_count, 1);
+    }
+
+    /// Builds a test app rooted at a temporary directory.
+    ///
+    /// Returns both the `App` and the `TempDir` guard so the caller keeps the
+    /// temporary directory alive for the full test lifetime.
+    async fn new_test_app() -> (App, tempfile::TempDir) {
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let app_server_client: Arc<dyn app_server::AppServerClient> =
+            Arc::new(app_server::MockAppServerClient::new());
+
+        let app = App::new(
+            true,
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            app_server_client,
+        )
+        .await
+        .expect("failed to build test app");
+
+        (app, base_dir)
+    }
+
+    /// Verifies that `run_with_backend` drives the main loop with a
+    /// `TestBackend` and exits cleanly when quit key events are injected.
+    #[tokio::test]
+    async fn run_with_backend_exits_on_quit_key() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app().await;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("failed to create test terminal");
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+
+        // Send `q` to open the quit confirmation, then `y` to confirm.
+        event_tx
+            .send(Event::Key(KeyEvent::new(
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+            )))
+            .expect("failed to send quit key");
+        event_tx
+            .send(Event::Key(KeyEvent::new(
+                KeyCode::Char('y'),
+                KeyModifiers::NONE,
+            )))
+            .expect("failed to send confirm key");
+
+        // Act
+        let result = run_with_backend(&mut app, &mut terminal, &mut event_rx).await;
+
+        // Assert
+        assert!(
+            result.is_ok(),
+            "run_with_backend should exit cleanly on quit"
+        );
     }
 }

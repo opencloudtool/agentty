@@ -1,22 +1,27 @@
 use std::io;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 
 use crate::app::{App, FocusedReviewCacheEntry, diff_content_hash};
 use crate::runtime::mode::confirmation::ConfirmationDecision;
-use crate::runtime::{EventResult, TuiTerminal, mode};
+use crate::runtime::{EventResult, backend_err, mode};
 use crate::ui::state::app_mode::{
     AppMode, ConfirmationIntent, ConfirmationViewMode, DoneSessionOutputMode,
 };
 
 /// Routes key events to the active mode handler and returns the next runtime
 /// action.
-pub(crate) async fn handle_key_event(
+pub(crate) async fn handle_key_event<B: Backend>(
     app: &mut App,
-    terminal: &mut TuiTerminal,
+    terminal: &mut Terminal<B>,
     key: KeyEvent,
-) -> io::Result<EventResult> {
+) -> io::Result<EventResult>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     if let AppMode::Confirmation {
         selected_confirmation_index,
         ..
@@ -45,7 +50,7 @@ pub(crate) async fn handle_key_event(
         AppMode::View { .. } => mode::session_view::handle(app, terminal, key).await,
         AppMode::Prompt { .. } => mode::prompt::handle(app, terminal, key).await,
         AppMode::Question { .. } => {
-            let size = terminal.size()?;
+            let size = terminal.size().map_err(backend_err)?;
             let terminal_rect = Rect::new(0, 0, size.width, size.height);
 
             Ok(mode::question::handle(app, terminal_rect, key).await)

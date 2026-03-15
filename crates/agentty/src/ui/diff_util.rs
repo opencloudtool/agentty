@@ -239,7 +239,10 @@ fn focused_review_agent_comments(summary: Option<&str>) -> Vec<String> {
 
 /// Returns whether one normalized summary line is a protocol summary heading.
 fn is_protocol_summary_heading(line: &str) -> bool {
-    matches!(line, "Change Summary" | "Current Turn" | "Session Changes" | "Summary" | "Commit")
+    matches!(
+        line,
+        "Change Summary" | "Current Turn" | "Session Changes" | "Summary" | "Commit"
+    )
 }
 
 /// Returns scored review highlights from unified diff text.
@@ -800,7 +803,8 @@ diff --git a/src/main.rs b/src/main.rs
         // Arrange
         let summary = Some(
             "## Change Summary\n### Current Turn\n- Added protocol summary fields.\n\n### Session \
-             Changes\n- Session output renders summary markdown separately.\n\n# Summary\n- Final session summary line\n\n# Commit\n- Canonical commit note",
+             Changes\n- Session output renders summary markdown separately.\n\n# Summary\n- Final \
+             session summary line\n\n# Commit\n- Canonical commit note",
         );
 
         // Act
