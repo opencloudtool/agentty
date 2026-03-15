@@ -14,3 +14,4 @@ Terminal runtime loop and mode dispatch.
 - [`mode/`](mode/) - Per-mode key handlers.
 - [`mode.rs`](mode.rs) - Runtime mode module root and handler exports.
 - [`terminal.rs`](terminal.rs) - Terminal setup and cleanup guard.
+- [`timing.rs`](timing.rs) - Shared runtime redraw and input polling cadence constants.

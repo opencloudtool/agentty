@@ -9,7 +9,7 @@ use crossterm::event::{Event, KeyEvent};
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
-use crate::runtime::{EventResult, TuiTerminal, key_handler, mode};
+use crate::runtime::{EventResult, FRAME_INTERVAL, TuiTerminal, key_handler, mode};
 use crate::ui::state::app_mode::AppMode;
 
 /// Reads terminal events from an underlying event backend.
@@ -56,7 +56,7 @@ fn spawn_event_reader_with_source(
                 break;
             }
 
-            match event_source.poll(Duration::from_millis(50)) {
+            match event_source.poll(FRAME_INTERVAL) {
                 Ok(true) => {
                     if let Ok(event) = event_source.read()
                         && event_tx.send(event).is_err()
@@ -263,7 +263,7 @@ mod tests {
         let mut sequence = Sequence::new();
         mock_source
             .expect_poll()
-            .with(eq(Duration::from_millis(50)))
+            .with(eq(FRAME_INTERVAL))
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(true));
@@ -279,7 +279,7 @@ mod tests {
             });
         mock_source
             .expect_poll()
-            .with(eq(Duration::from_millis(50)))
+            .with(eq(FRAME_INTERVAL))
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Err(io::Error::new(ErrorKind::Interrupted, "stop")));
@@ -309,7 +309,7 @@ mod tests {
         let mut mock_source = MockEventSource::new();
         mock_source
             .expect_poll()
-            .with(eq(Duration::from_millis(50)))
+            .with(eq(FRAME_INTERVAL))
             .times(1)
             .returning(|_| Ok(true));
         mock_source.expect_read().times(1).returning(|| {
@@ -339,13 +339,13 @@ mod tests {
         let mut sequence = Sequence::new();
         mock_source
             .expect_poll()
-            .with(eq(Duration::from_millis(50)))
+            .with(eq(FRAME_INTERVAL))
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Ok(false));
         mock_source
             .expect_poll()
-            .with(eq(Duration::from_millis(50)))
+            .with(eq(FRAME_INTERVAL))
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Err(io::Error::new(ErrorKind::Interrupted, "stop")));

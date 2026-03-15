@@ -5,14 +5,13 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
 
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
 use crate::app::App;
-use crate::runtime::{event, terminal};
+use crate::runtime::{FRAME_INTERVAL, event, terminal};
 
 /// Shared ratatui terminal type used by runtime helpers.
 pub(crate) type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
@@ -39,7 +38,7 @@ pub async fn run(app: &mut App) -> io::Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     event::spawn_event_reader(event_tx, shutdown.clone());
 
-    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    let mut tick = tokio::time::interval(FRAME_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     run_main_loop(app, &mut terminal, &mut event_rx, &mut tick).await?;
