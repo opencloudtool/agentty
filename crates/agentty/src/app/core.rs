@@ -194,6 +194,14 @@ struct FocusedReviewUpdate {
     result: Result<String, String>,
 }
 
+/// Mutable render-state target for one focused-review-capable mode.
+struct FocusedReviewModeTarget<'a> {
+    /// Status banner shown while focused review loads or fails.
+    focused_review_status_message: &'a mut Option<String>,
+    /// Generated focused review text shown in the active mode.
+    focused_review_text: &'a mut Option<String>,
+}
+
 /// Session snapshot cloned into a branch-publish background task.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BranchPublishTaskSession {
@@ -436,6 +444,20 @@ impl FocusedReviewCacheEntry {
             | Self::Failed { diff_hash, .. } => *diff_hash,
         }
     }
+
+    /// Builds one cache entry from a completed focused-review result.
+    fn from_result(diff_hash: u64, result: &Result<String, String>) -> Self {
+        match result {
+            Ok(review_text) => Self::Ready {
+                diff_hash,
+                text: review_text.clone(),
+            },
+            Err(error) => Self::Failed {
+                diff_hash,
+                error: error.clone(),
+            },
+        }
+    }
 }
 
 /// Computes a deterministic hash of the diff text for cache invalidation.
@@ -505,24 +527,9 @@ impl App {
         db: Database,
         clients: AppClients,
     ) -> Result<Self, String> {
-        let current_project_id = db
-            .upsert_project(&working_dir.to_string_lossy(), git_branch.as_deref())
-            .await
-            .map_err(|error| {
-                format!(
-                    "Failed to persist startup project `{}`: {error}",
-                    working_dir.display()
-                )
-            })?;
-
-        db.backfill_session_project(current_project_id)
-            .await
-            .map_err(|error| {
-                format!(
-                    "Failed to backfill startup sessions for project `{}`: {error}",
-                    working_dir.display()
-                )
-            })?;
+        let current_project_id =
+            Self::persist_startup_project(&db, working_dir.as_path(), git_branch.as_deref())
+                .await?;
         let (
             active_project_id,
             startup_working_dir,
@@ -541,25 +548,10 @@ impl App {
 
         SessionManager::fail_unfinished_operations_from_previous_run(&db).await;
 
-        let mut table_state = TableState::default();
-        let mut handles = HashMap::new();
-        let (sessions, stats_activity) = SessionManager::load_sessions_with_fs_client(
-            &base_path,
-            &db,
-            active_project_id,
-            startup_working_dir.as_path(),
-            &mut handles,
-            clients.fs_client.as_ref(),
-        )
-        .await;
-        let (sessions_row_count, sessions_updated_at_max) =
-            db.load_sessions_metadata().await.unwrap_or((0, 0));
-        table_state.select(preferred_initial_session_index(&sessions));
-
         let git_status_cancel = Arc::new(AtomicBool::new(false));
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let services = AppServices::new(
-            base_path,
+            base_path.clone(),
             db.clone(),
             event_tx.clone(),
             Arc::clone(&clients.fs_client),
@@ -573,7 +565,7 @@ impl App {
             startup_git_branch,
             Arc::clone(&git_status_cancel),
             project_items,
-            startup_working_dir,
+            startup_working_dir.clone(),
         );
         let settings = SettingsManager::new(&services, active_project_id).await;
         let default_session_model = SessionManager::load_default_session_model(
@@ -582,22 +574,16 @@ impl App {
             AgentKind::Gemini.default_model(),
         )
         .await;
-        let clock: Arc<dyn session::Clock> = Arc::new(session::RealClock);
-        let sessions = SessionManager::new(
-            session::SessionDefaults {
-                model: default_session_model,
-            },
+        let sessions = Self::load_startup_sessions(
+            &base_path,
+            &db,
+            active_project_id,
+            startup_working_dir.as_path(),
+            clients.fs_client.as_ref(),
             services.git_client(),
-            SessionState::new(
-                handles,
-                sessions,
-                table_state,
-                clock,
-                sessions_row_count,
-                sessions_updated_at_max,
-            ),
-            stats_activity,
-        );
+            default_session_model,
+        )
+        .await;
 
         Self::spawn_background_tasks(auto_update, &event_tx, &projects, &services);
 
@@ -617,6 +603,84 @@ impl App {
             sync_main_runner: clients.sync_main_runner,
             tmux_client: clients.tmux_client,
         })
+    }
+
+    /// Persists the startup project row and backfills any legacy session
+    /// records that still lack a project association.
+    ///
+    /// # Errors
+    /// Returns an error if the startup project row or its backfill updates
+    /// cannot be written to the database.
+    async fn persist_startup_project(
+        db: &Database,
+        working_dir: &Path,
+        git_branch: Option<&str>,
+    ) -> Result<i64, String> {
+        let current_project_id = db
+            .upsert_project(&working_dir.to_string_lossy(), git_branch)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to persist startup project `{}`: {error}",
+                    working_dir.display()
+                )
+            })?;
+
+        db.backfill_session_project(current_project_id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to backfill startup sessions for project `{}`: {error}",
+                    working_dir.display()
+                )
+            })?;
+
+        Ok(current_project_id)
+    }
+
+    /// Loads startup session rows, metadata, and runtime handles into one
+    /// session manager instance.
+    async fn load_startup_sessions(
+        base_path: &Path,
+        db: &Database,
+        active_project_id: i64,
+        startup_working_dir: &Path,
+        fs_client: &dyn FsClient,
+        git_client: Arc<dyn GitClient>,
+        default_session_model: AgentModel,
+    ) -> SessionManager {
+        let mut table_state = TableState::default();
+        let mut handles = HashMap::new();
+        let (sessions, stats_activity) = SessionManager::load_sessions_with_fs_client(
+            base_path,
+            db,
+            active_project_id,
+            startup_working_dir,
+            &mut handles,
+            fs_client,
+        )
+        .await;
+        let (sessions_row_count, sessions_updated_at_max) =
+            db.load_sessions_metadata().await.unwrap_or((0, 0));
+        table_state.select(preferred_initial_session_index(&sessions));
+
+        let clock: Arc<dyn session::Clock> = Arc::new(session::RealClock);
+
+        SessionManager::new(
+            session::SessionDefaults {
+                model: default_session_model,
+            },
+            git_client,
+            SessionState::new(
+                handles,
+                sessions,
+                table_state,
+                clock,
+                sessions_row_count,
+                sessions_updated_at_max,
+            ),
+            stats_activity,
+        )
     }
 
     /// Spawns background pollers for git status and version checks.
@@ -1463,40 +1527,36 @@ impl App {
             return;
         }
 
-        match &result {
-            Ok(review_text) => {
-                self.focused_review_cache.insert(
-                    session_id.to_string(),
-                    FocusedReviewCacheEntry::Ready {
-                        diff_hash,
-                        text: review_text.clone(),
-                    },
-                );
-            }
-            Err(error) => {
-                self.focused_review_cache.insert(
-                    session_id.to_string(),
-                    FocusedReviewCacheEntry::Failed {
-                        diff_hash,
-                        error: error.clone(),
-                    },
-                );
-            }
-        }
+        self.focused_review_cache.insert(
+            session_id.to_string(),
+            FocusedReviewCacheEntry::from_result(diff_hash, &result),
+        );
 
-        match &mut self.mode {
+        if let Some(mode_target) = Self::focused_review_mode_target(&mut self.mode, session_id) {
+            Self::apply_focused_review_result(
+                mode_target.focused_review_status_message,
+                mode_target.focused_review_text,
+                result,
+            );
+        }
+    }
+
+    /// Returns the focused-review render fields for the active mode when it
+    /// targets the specified session.
+    fn focused_review_mode_target<'a>(
+        mode: &'a mut AppMode,
+        session_id: &str,
+    ) -> Option<FocusedReviewModeTarget<'a>> {
+        match mode {
             AppMode::View {
                 focused_review_status_message,
                 focused_review_text,
                 session_id: view_session_id,
                 ..
-            } if view_session_id == session_id => {
-                Self::apply_focused_review_result(
-                    focused_review_status_message,
-                    focused_review_text,
-                    result,
-                );
-            }
+            } if view_session_id == session_id => Some(FocusedReviewModeTarget {
+                focused_review_status_message,
+                focused_review_text,
+            }),
             AppMode::Help {
                 context:
                     HelpContext::View {
@@ -1506,60 +1566,14 @@ impl App {
                         ..
                     },
                 ..
-            } if view_session_id == session_id => {
-                Self::apply_focused_review_result(
-                    focused_review_status_message,
-                    focused_review_text,
-                    result,
-                );
-            }
-            AppMode::OpenCommandSelector {
-                restore_view:
-                    ConfirmationViewMode {
-                        focused_review_status_message,
-                        focused_review_text,
-                        session_id: view_session_id,
-                        ..
-                    },
-                ..
-            } if view_session_id == session_id => {
-                Self::apply_focused_review_result(
-                    focused_review_status_message,
-                    focused_review_text,
-                    result,
-                );
-            }
-            AppMode::PublishBranchInput {
-                restore_view:
-                    ConfirmationViewMode {
-                        focused_review_status_message,
-                        focused_review_text,
-                        session_id: view_session_id,
-                        ..
-                    },
-                ..
-            } if view_session_id == session_id => {
-                Self::apply_focused_review_result(
-                    focused_review_status_message,
-                    focused_review_text,
-                    result,
-                );
-            }
-            AppMode::ViewInfoPopup {
-                restore_view:
-                    ConfirmationViewMode {
-                        focused_review_status_message,
-                        focused_review_text,
-                        session_id: view_session_id,
-                        ..
-                    },
-                ..
-            } if view_session_id == session_id => {
-                Self::apply_focused_review_result(
-                    focused_review_status_message,
-                    focused_review_text,
-                    result,
-                );
+            } if view_session_id == session_id => Some(FocusedReviewModeTarget {
+                focused_review_status_message,
+                focused_review_text,
+            }),
+            AppMode::OpenCommandSelector { restore_view, .. }
+            | AppMode::PublishBranchInput { restore_view, .. }
+            | AppMode::ViewInfoPopup { restore_view, .. } => {
+                Self::confirmation_focused_review_mode_target(restore_view, session_id)
             }
             AppMode::List
             | AppMode::Confirmation { .. }
@@ -1568,11 +1582,24 @@ impl App {
             | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. }
-            | AppMode::OpenCommandSelector { .. }
-            | AppMode::PublishBranchInput { .. }
-            | AppMode::ViewInfoPopup { .. }
-            | AppMode::View { .. } => {}
+            | AppMode::View { .. } => None,
         }
+    }
+
+    /// Returns the focused-review fields stored in one confirmation restore
+    /// view when it targets the specified session.
+    fn confirmation_focused_review_mode_target<'a>(
+        restore_view: &'a mut ConfirmationViewMode,
+        session_id: &str,
+    ) -> Option<FocusedReviewModeTarget<'a>> {
+        if restore_view.session_id != session_id {
+            return None;
+        }
+
+        Some(FocusedReviewModeTarget {
+            focused_review_status_message: &mut restore_view.focused_review_status_message,
+            focused_review_text: &mut restore_view.focused_review_text,
+        })
     }
 
     /// Applies one review assist result to render-state fields.

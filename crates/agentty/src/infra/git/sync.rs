@@ -972,17 +972,17 @@ mod tests {
         let result = pull_rebase(temp_dir.path().to_path_buf()).await;
 
         // Assert
-        match result {
-            Ok(PullRebaseResult::Conflict { detail }) => {
-                let normalized_detail = detail.to_ascii_lowercase();
-                assert!(
-                    normalized_detail.contains("conflict")
-                        || normalized_detail.contains("could not apply")
-                );
-                assert!(!detail.is_empty());
-            }
-            other_result => panic!("expected conflict result, got {other_result:?}"),
-        }
+        assert!(matches!(
+            result,
+            Ok(PullRebaseResult::Conflict { ref detail })
+                if {
+                    let normalized_detail = detail.to_ascii_lowercase();
+
+                    (normalized_detail.contains("conflict")
+                        || normalized_detail.contains("could not apply"))
+                        && !detail.is_empty()
+                }
+        ));
     }
 
     #[tokio::test]

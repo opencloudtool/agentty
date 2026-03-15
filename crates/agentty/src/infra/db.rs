@@ -59,16 +59,16 @@ pub struct ProjectListRow {
 /// session aggregates.
 struct ProjectListQueryRow {
     active_session_count: Option<i64>,
-    created_at: Option<i64>,
+    created_at: i64,
     display_name: Option<String>,
     git_branch: Option<String>,
-    id: Option<i64>,
+    id: i64,
     is_favorite: bool,
     last_opened_at: Option<i64>,
     last_session_updated_at: Option<i64>,
     path: String,
     session_count: Option<i64>,
-    updated_at: Option<i64>,
+    updated_at: i64,
 }
 
 impl ProjectListQueryRow {
@@ -91,16 +91,16 @@ impl ProjectListQueryRow {
 
         ProjectListRow {
             active_session_count: active_session_count.unwrap_or(0),
-            created_at: created_at.expect("project.created_at should always be present"),
+            created_at,
             display_name,
             git_branch,
-            id: id.expect("project.id should always be present"),
+            id,
             is_favorite,
             last_opened_at,
             last_session_updated_at,
             path,
             session_count: session_count.unwrap_or(0),
-            updated_at: updated_at.expect("project.updated_at should always be present"),
+            updated_at,
         }
     }
 }
@@ -172,6 +172,12 @@ pub struct SessionUsageRow {
 /// Row returned when loading one session activity timestamp.
 struct TimestampValueRow {
     pub created_at: i64,
+}
+
+/// Row returned when loading both persisted timestamps for one session.
+struct SessionTimestampsRow {
+    created_at: i64,
+    updated_at: i64,
 }
 
 /// Row returned when loading an optional `i64` scalar value.
@@ -474,16 +480,16 @@ WITH stats AS (
     GROUP BY project_id
 )
 SELECT stats.active_session_count,
-       p.created_at,
+       p.created_at AS "created_at!",
        p.display_name,
        p.git_branch,
-       p.id,
+       p.id AS "id!",
        p.is_favorite AS "is_favorite: _",
        p.last_opened_at,
        stats.last_session_updated_at,
        p.path,
        stats.session_count,
-       p.updated_at
+       p.updated_at AS "updated_at!"
 FROM project AS p
 LEFT JOIN stats
 ON stats.project_id = p.id
@@ -1870,19 +1876,20 @@ ORDER BY model
         &self,
         session_id: &str,
     ) -> Result<Option<(i64, i64)>, String> {
-        let row = sqlx::query_as::<_, (i64, i64)>(
-            r"
+        let row = sqlx::query_as!(
+            SessionTimestampsRow,
+            r#"
 SELECT created_at, updated_at
 FROM session
 WHERE id = ?
-",
+            "#,
+            session_id
         )
-        .bind(session_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| format!("Failed to load session timestamps: {err}"))?;
 
-        Ok(row)
+        Ok(row.map(|row| (row.created_at, row.updated_at)))
     }
 }
 
@@ -1923,7 +1930,6 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::Row;
     use tempfile::tempdir;
 
     use super::*;
@@ -2037,31 +2043,25 @@ mod tests {
         database: &Database,
         operation_id: &str,
     ) -> SessionOperationRow {
-        let row = sqlx::query(
-            r"
-SELECT id, session_id, kind, status, queued_at, started_at, finished_at,
-       heartbeat_at, last_error, cancel_requested
+        sqlx::query_as!(
+            SessionOperationRow,
+            r#"
+SELECT id AS "id!", session_id AS "session_id!", kind AS "kind!", status AS "status!",
+       queued_at, started_at, finished_at,
+       heartbeat_at, last_error, cancel_requested AS "cancel_requested: _"
 FROM session_operation
 WHERE id = ?
-",
+"#,
+            operation_id
         )
-        .bind(operation_id)
         .fetch_one(database.pool())
         .await
-        .expect("failed to load session operation row");
+        .expect("failed to load session operation row")
+    }
 
-        SessionOperationRow {
-            cancel_requested: row.get::<i64, _>("cancel_requested") != 0,
-            finished_at: row.get("finished_at"),
-            heartbeat_at: row.get("heartbeat_at"),
-            id: row.get("id"),
-            kind: row.get("kind"),
-            last_error: row.get("last_error"),
-            queued_at: row.get("queued_at"),
-            session_id: row.get("session_id"),
-            started_at: row.get("started_at"),
-            status: row.get("status"),
-        }
+    /// Typed helper row used to verify nullable session references.
+    struct SessionUsageSessionIdRow {
+        session_id: Option<String>,
     }
 
     /// Builds one deterministic joined-session row fixture for conversion
@@ -2396,24 +2396,22 @@ WHERE id = ?
             .load_session_timestamps("session-a")
             .await
             .expect("failed to load deleted session timestamps");
-        let retained_usage_row = sqlx::query(
-            r"
-SELECT session_id
+        let retained_usage_row = sqlx::query_as!(
+            SessionUsageSessionIdRow,
+            r#"
+SELECT session_id AS "session_id: _"
 FROM session_usage
 WHERE model = ?
-",
+"#,
+            "claude-opus-4.1"
         )
-        .bind("claude-opus-4.1")
         .fetch_one(database.pool())
         .await
         .expect("failed to load retained usage row");
 
         // Assert
         assert_eq!(deleted_session, None);
-        assert_eq!(
-            retained_usage_row.get::<Option<String>, _>("session_id"),
-            None
-        );
+        assert_eq!(retained_usage_row.session_id, None,);
     }
 
     /// Verifies `load_unfinished_session_operations()` returns only queued and

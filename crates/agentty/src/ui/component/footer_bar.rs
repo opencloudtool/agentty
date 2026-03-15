@@ -300,9 +300,10 @@ mod tests {
 
         // Assert
         let buffer = terminal.backend().buffer();
-        let last_column = usize::from(buffer.area.width.saturating_sub(1));
-        let last_symbol = buffer[(last_column as u16, 0)].symbol();
-        let second_to_last_symbol = buffer[(last_column as u16 - 1, 0)].symbol();
+        let last_column_index = buffer.area.width.saturating_sub(1);
+        let second_to_last_column_index = last_column_index.saturating_sub(1);
+        let last_symbol = buffer[(last_column_index, 0)].symbol();
+        let second_to_last_symbol = buffer[(second_to_last_column_index, 0)].symbol();
         assert_eq!(last_symbol, " ");
         assert_eq!(second_to_last_symbol, "n");
     }

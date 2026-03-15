@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT session_id AS \"session_id: _\"\nFROM session_usage\nWHERE model = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "session_id: _",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "b88f5652d96b75591911bafa64b47776ea4090007e9e4bf8d82e31b40523090b"
+}

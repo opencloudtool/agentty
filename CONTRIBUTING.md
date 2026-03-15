@@ -68,7 +68,7 @@ after enabling or modifying `query_as!`-style queries.
 (
   cd crates/agentty
   DATABASE_URL=sqlite:///tmp/agentty_db.sqlite cargo sqlx database reset -y
-  DATABASE_URL=sqlite:///tmp/agentty_db.sqlite cargo sqlx prepare
+  DATABASE_URL=sqlite:///tmp/agentty_db.sqlite cargo sqlx prepare -- --all-targets --all-features
 )
 ```
 

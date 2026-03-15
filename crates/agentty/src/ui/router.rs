@@ -5,6 +5,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
 use crate::app::{SettingsManager, Tab};
+use crate::domain::input::InputState;
 use crate::domain::project::ProjectListItem;
 use crate::domain::session::{DailyActivity, Session};
 use crate::ui::overlay::{SyncBlockedPopupRenderContext, ViewInfoPopupRenderContext};
@@ -62,6 +63,18 @@ struct SessionChatRenderContext<'a> {
     session_progress_messages: &'a HashMap<String, String>,
     sessions: &'a [Session],
     scroll_offset: Option<u16>,
+}
+
+/// Borrowed inputs for rendering the publish-branch overlay and its
+/// background session view.
+#[derive(Clone, Copy)]
+struct PublishBranchOverlayContext<'a> {
+    default_branch_name: &'a str,
+    input: &'a InputState,
+    locked_upstream_ref: Option<&'a str>,
+    restore_view: &'a ConfirmationViewMode,
+    session_progress_messages: &'a HashMap<String, String>,
+    sessions: &'a [Session],
 }
 
 /// Shared immutable routing inputs that are not part of list-background state.
@@ -309,12 +322,14 @@ fn render_session_or_diff_mode(
         } => render_publish_branch_overlay(
             f,
             area,
-            sessions,
-            aux.session_progress_messages,
-            restore_view,
-            default_branch_name,
-            input,
-            locked_upstream_ref.as_deref(),
+            &PublishBranchOverlayContext {
+                default_branch_name,
+                input,
+                locked_upstream_ref: locked_upstream_ref.as_deref(),
+                restore_view,
+                session_progress_messages: aux.session_progress_messages,
+                sessions,
+            },
         ),
         AppMode::Diff {
             diff,
@@ -373,13 +388,16 @@ fn render_open_command_selector_overlay(
 fn render_publish_branch_overlay(
     f: &mut Frame,
     area: Rect,
-    sessions: &[Session],
-    session_progress_messages: &HashMap<String, String>,
-    restore_view: &ConfirmationViewMode,
-    default_branch_name: &str,
-    input: &crate::domain::input::InputState,
-    locked_upstream_ref: Option<&str>,
+    context: &PublishBranchOverlayContext<'_>,
 ) {
+    let PublishBranchOverlayContext {
+        default_branch_name,
+        input,
+        locked_upstream_ref,
+        restore_view,
+        session_progress_messages,
+        sessions,
+    } = *context;
     let background_mode = restore_view.clone().into_view_mode();
 
     render_session_chat(

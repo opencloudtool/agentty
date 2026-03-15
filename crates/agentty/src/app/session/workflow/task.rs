@@ -84,9 +84,12 @@ impl SessionTaskService {
         session_id: &str,
         folder: &Path,
     ) -> Option<SessionSize> {
-        let Some(base_branch) = db.get_session_base_branch(session_id).await.ok().flatten() else {
-            return None;
-        };
+        let base_branch = db
+            .get_session_base_branch(session_id)
+            .await
+            .ok()
+            .flatten()?;
+
         let computed_size =
             SessionManager::session_size_for_folder(git_client, folder, &base_branch).await;
         db.update_session_size(session_id, &computed_size.to_string())
