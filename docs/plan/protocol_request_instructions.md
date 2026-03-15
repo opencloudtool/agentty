@@ -16,17 +16,17 @@ Every request path can select a protocol profile and render it through the share
 
 ### Substeps
 
-- [ ] **Define one protocol-owned request-profile surface.** Add one focused profile abstraction in `crates/agentty/src/infra/agent/protocol.rs` that names the supported request families and returns the extra protocol guidance they need, instead of scattering raw string constants across `crates/agentty/src/app/task.rs`, `crates/agentty/src/app/session/workflow/merge.rs`, and future call sites.
-- [ ] **Route the profile through every transport boundary.** Finish threading the selected profile through `crates/agentty/src/infra/agent/submission.rs`, `crates/agentty/src/infra/agent/backend.rs`, `crates/agentty/src/infra/channel/cli.rs`, `crates/agentty/src/infra/app_server.rs`, and the Codex, Claude, and Gemini backend prompt builders so start, resume, one-shot, repair, and context-reset paths all use the same renderer.
-- [ ] **Keep the shared template as the only rendered protocol preamble.** Preserve `crates/agentty/resources/protocol_instruction_prompt.md` as the single place that renders the schema and optional request-specific protocol block, and remove any backend-local or call-site-local duplication of protocol-format instructions.
+- [x] **Define one protocol-owned request-profile surface.** Add one focused profile abstraction in `crates/agentty/src/infra/agent/protocol.rs` that names the supported request families and returns the extra protocol guidance they need, instead of scattering raw string constants across `crates/agentty/src/app/task.rs`, `crates/agentty/src/app/session/workflow/merge.rs`, and future call sites.
+- [x] **Route the profile through every transport boundary.** Finish threading the selected profile through `crates/agentty/src/infra/agent/submission.rs`, `crates/agentty/src/infra/agent/backend.rs`, `crates/agentty/src/infra/channel/cli.rs`, `crates/agentty/src/infra/app_server.rs`, and the Codex, Claude, and Gemini backend prompt builders so start, resume, one-shot, repair, and context-reset paths all use the same renderer.
+- [x] **Keep the shared template as the only rendered protocol preamble.** Preserve `crates/agentty/resources/protocol_instruction_prompt.md` as the single place that renders the schema and optional request-specific protocol block, and remove any backend-local or call-site-local duplication of protocol-format instructions.
 
 ### Tests
 
-- [ ] Extend `crates/agentty/src/infra/agent/backend.rs`, `crates/agentty/src/infra/agent/submission.rs`, `crates/agentty/src/infra/channel/cli.rs`, and `crates/agentty/src/infra/app_server.rs` tests to prove default and request-specific profiles are preserved across direct turns, repair turns, and context-reset turns.
+- [x] Extend `crates/agentty/src/infra/agent/backend.rs`, `crates/agentty/src/infra/agent/submission.rs`, `crates/agentty/src/infra/channel/cli.rs`, and `crates/agentty/src/infra/app_server.rs` tests to prove default and request-specific profiles are preserved across direct turns, repair turns, and context-reset turns.
 
 ### Docs
 
-- [ ] Update `docs/site/content/docs/agents/backends.md` and `docs/site/content/docs/architecture/runtime-flow.md` to describe the shared protocol injection point and the fact that every request path now flows through it.
+- [x] Update `docs/site/content/docs/agents/backends.md` and `docs/site/content/docs/architecture/runtime-flow.md` to describe the shared protocol injection point and the fact that every request path now flows through it.
 
 ## 2) Move Request Formatting Rules Out of Task Prompts
 
@@ -92,10 +92,10 @@ Session turns and utility requests all consume `AgentResponse` as the canonical 
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
 | Shared response schema and parser | `crates/agentty/src/infra/agent/protocol.rs` already owns the JSON schema, parsing, repair prompts, and `AgentResponse` model for structured output. | Healthy |
-| Request-specific protocol injection | The shared prompt wrapper exists, but `crates/agentty/src/infra/agent/backend.rs` and `crates/agentty/src/infra/agent/submission.rs` do not yet carry any request-specific protocol profile or injected request constraints. | Not started |
+| Request-specific protocol injection | `ProtocolRequestProfile` now flows from session workers and one-shot utility call sites through `TurnRequest`, `AppServerTurnRequest`, `BuildCommandRequest`, repair retries, and app-server context-reset retries, so every request path renders the same shared protocol wrapper with request-family-specific guidance. | Healthy |
 | Task prompt templates | Several templates under `crates/agentty/resources/` still mix task context with output-format instructions that belong in the protocol layer. | Not started |
 | Feature-level response handling | Utility workflows still keep request-specific output assumptions such as title extraction and commit-message validation outside a fully protocol-owned helper surface. | Partial |
-| Runtime and backend docs | Docs describe structured responses in general, but they do not yet explain the separation between task prompts, protocol profiles, and feature-level consumption. | Not started |
+| Runtime and backend docs | `docs/site/content/docs/agents/backends.md` and `docs/site/content/docs/architecture/runtime-flow.md` now describe the shared protocol injection point and profile preservation across direct, repair, and context-reset flows, while later steps still need broader prompt/consumer documentation cleanup. | Partial |
 
 ## Implementation Approach
 

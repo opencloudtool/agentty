@@ -21,6 +21,7 @@ pub(crate) use backend::{
     prepend_protocol_instructions,
 };
 pub(crate) use protocol::AgentResponse;
+pub use protocol::ProtocolRequestProfile;
 pub use response_parser::ParsedResponse;
 pub(crate) use response_parser::{
     compact_codex_progress_message, is_codex_completion_status_message,

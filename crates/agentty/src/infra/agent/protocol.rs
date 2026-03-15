@@ -26,6 +26,23 @@ use serde_json::Value;
 /// sync automatically.
 pub(crate) const MAX_QUESTIONS: usize = 5;
 
+/// Protocol-owned request family preserved across prompt submission and repair
+/// retries.
+///
+/// Session discussion turns and isolated utility prompts share the same
+/// top-level [`AgentResponse`] schema. Agentty still carries the request
+/// family through transport boundaries so call sites can keep one consistent
+/// protocol contract even when some callers ignore parts of the response, such
+/// as the optional top-level `summary`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProtocolRequestProfile {
+    /// Interactive session turn.
+    SessionTurn,
+    /// Isolated utility prompt.
+    UtilityPrompt,
+}
+
 /// Message kind tag used by one [`AgentResponseMessage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -436,18 +453,6 @@ pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
     }
 
     Some(raw.to_string())
-}
-
-/// Builds one follow-up repair prompt that asks the model to emit only a valid
-/// protocol JSON object.
-pub(crate) fn build_protocol_repair_prompt(invalid_response: &str) -> String {
-    let schema_json = agent_response_json_schema_json();
-
-    format!(
-        "Your previous response did not match the required JSON schema.\nReturn only one valid \
-         JSON object that strictly follows this schema.\nDo not include markdown fences or any \
-         extra text.\n\nSchema:\n{schema_json}\n\nPrevious response:\n{invalid_response}"
-    )
 }
 
 /// Attempts to parse one schema-driven structured JSON response.

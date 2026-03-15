@@ -1111,6 +1111,7 @@ impl SessionManager {
             folder,
             model,
             prompt,
+            protocol_profile: agent::ProtocolRequestProfile::UtilityPrompt,
             reasoning_level: ReasoningLevel::default(),
         })
         .await

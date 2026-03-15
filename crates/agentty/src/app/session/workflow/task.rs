@@ -477,6 +477,7 @@ impl SessionTaskService {
                 folder,
                 model: session_model,
                 prompt: &prompt,
+                protocol_profile: agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: crate::domain::agent::ReasoningLevel::default(),
             },
         )
@@ -534,6 +535,7 @@ impl SessionTaskService {
                 folder: &folder,
                 model: session_model,
                 prompt: &prompt,
+                protocol_profile: agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: crate::domain::agent::ReasoningLevel::default(),
             },
         )
@@ -1091,9 +1093,9 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies assist-task usage accounting includes the initial attempt and
-    /// any protocol-repair turns.
-    async fn test_run_agent_assist_task_accumulates_stats_across_protocol_repair_attempts() {
+    /// Verifies assist tasks surface invalid protocol output instead of
+    /// retrying with a repair prompt.
+    async fn test_run_agent_assist_task_returns_error_for_invalid_protocol_output() {
         // Arrange
         let database = Database::open_in_memory()
             .await
@@ -1102,55 +1104,27 @@ mod tests {
         let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
         let output = Arc::new(Mutex::new(String::new()));
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-        let build_call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut backend = MockAgentBackend::new();
-        backend.expect_build_command().times(2).returning({
-            let build_call_count = Arc::clone(&build_call_count);
-
-            move |request| {
-                let attempt =
-                    build_call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-                match attempt {
-                    0 => {
-                        assert!(matches!(
-                            request.mode,
-                            AgentCommandMode::OneShot {
-                                prompt: "Resolve conflict",
-                            }
-                        ));
-
-                        Ok(mock_shell_command(
-                            r#"{"result":"plain text","usage":{"input_tokens":2,"output_tokens":1}}"#,
-                            "",
-                            0,
-                        ))
+        backend
+            .expect_build_command()
+            .times(1)
+            .returning(|request| {
+                assert!(matches!(
+                    request.mode,
+                    AgentCommandMode::OneShot {
+                        prompt: "Resolve conflict",
                     }
-                    1 => {
-                        let prompt = match request.mode {
-                            AgentCommandMode::OneShot { prompt } => prompt,
-                            _ => "",
-                        };
-                        assert!(
-                            prompt.contains(
-                                "Your previous response did not match the required JSON schema."
-                            ),
-                            "repair prompt should explain the protocol failure"
-                        );
+                ));
 
-                        Ok(mock_shell_command(
-                            r#"{"result":"{\"messages\":[{\"type\":\"answer\",\"text\":\"Recovered conflict resolution.\"}]}","usage":{"input_tokens":3,"output_tokens":2}}"#,
-                            "",
-                            0,
-                        ))
-                    }
-                    _ => unreachable!("unexpected extra backend call"),
-                }
-            }
-        });
+                Ok(mock_shell_command(
+                    r#"{"result":"plain text","usage":{"input_tokens":2,"output_tokens":1}}"#,
+                    "",
+                    0,
+                ))
+            });
 
         // Act
-        let result = SessionTaskService::run_agent_assist_task_with_backend(
+        let error = SessionTaskService::run_agent_assist_task_with_backend(
             RunAgentAssistTaskInput {
                 app_event_tx,
                 child_pid: Arc::new(Mutex::new(None)),
@@ -1163,22 +1137,19 @@ mod tests {
             },
             &backend,
         )
-        .await;
+        .await
+        .expect_err("invalid protocol output should fail");
 
         // Assert
-        assert!(
-            result.is_ok(),
-            "assist task should succeed after repair: {:?}",
-            result.err()
-        );
+        assert!(error.contains("did not match the required JSON schema"));
         let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
-        assert!(output_text.contains("Recovered conflict resolution."));
+        assert!(output_text.is_empty());
         let sessions = database
             .load_sessions()
             .await
             .expect("failed to load sessions");
-        assert_eq!(sessions[0].input_tokens, 5);
-        assert_eq!(sessions[0].output_tokens, 3);
+        assert_eq!(sessions[0].input_tokens, 0);
+        assert_eq!(sessions[0].output_tokens, 0);
     }
 
     #[tokio::test]

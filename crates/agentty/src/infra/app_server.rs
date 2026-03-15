@@ -46,10 +46,6 @@ pub enum AppServerStreamEvent {
 /// Input payload for one app-server turn execution.
 #[derive(Clone)]
 pub struct AppServerTurnRequest {
-    /// Reasoning effort preference for this turn.
-    ///
-    /// Ignored by providers/models that do not support reasoning effort.
-    pub reasoning_level: ReasoningLevel,
     /// Session worktree folder where the provider runtime executes.
     pub folder: PathBuf,
     /// Live in-memory session output buffer updated by the streaming consumer.
@@ -62,9 +58,16 @@ pub struct AppServerTurnRequest {
     pub model: String,
     /// Structured user prompt for this turn.
     pub prompt: TurnPrompt,
+    /// Protocol-owned request family used to render the shared response
+    /// wrapper for this turn.
+    pub protocol_profile: agent::ProtocolRequestProfile,
     /// Provider-native thread/session id used to resume context in a newly
     /// started runtime.
     pub provider_conversation_id: Option<String>,
+    /// Reasoning effort preference for this turn.
+    ///
+    /// Ignored by providers/models that do not support reasoning effort.
+    pub reasoning_level: ReasoningLevel,
     /// Stable agentty session id.
     pub session_id: String,
     /// Snapshot of prior session output used for replay prompts.
@@ -368,7 +371,12 @@ where
 {
     let session_output = read_latest_session_output(request);
 
-    match turn_prompt_for_runtime(&request.prompt, session_output.as_deref(), replays_context) {
+    match turn_prompt_for_runtime(
+        &request.prompt,
+        request.protocol_profile,
+        session_output.as_deref(),
+        replays_context,
+    ) {
         Ok(prompt) => Ok(prompt),
         Err(error) => {
             shutdown_runtime(runtime).await;
@@ -408,6 +416,7 @@ fn read_latest_session_output(request: &AppServerTurnRequest) -> Option<String> 
 /// Returns an error when Askama prompt rendering fails after a context reset.
 pub fn turn_prompt_for_runtime(
     prompt: impl Into<TurnPrompt>,
+    profile: agent::ProtocolRequestProfile,
     session_output: Option<&str>,
     context_reset: bool,
 ) -> Result<TurnPrompt, String> {
@@ -419,8 +428,8 @@ pub fn turn_prompt_for_runtime(
         prompt.text.clone()
     };
 
-    let turn_prompt =
-        agent::prepend_protocol_instructions(&turn_prompt).map_err(|error| error.to_string())?;
+    let turn_prompt = agent::prepend_protocol_instructions(&turn_prompt, profile)
+        .map_err(|error| error.to_string())?;
 
     Ok(TurnPrompt {
         attachments: prompt.attachments,
@@ -472,11 +481,17 @@ mod tests {
         let prompt = "Implement feature";
 
         // Act
-        let turn_prompt = turn_prompt_for_runtime(prompt, Some("prior context"), false)
-            .expect("turn prompt should render");
+        let turn_prompt = turn_prompt_for_runtime(
+            prompt,
+            agent::ProtocolRequestProfile::SessionTurn,
+            Some("prior context"),
+            false,
+        )
+        .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
+        assert!(turn_prompt.contains("summary"));
         assert!(turn_prompt.ends_with(prompt));
     }
 
@@ -486,8 +501,13 @@ mod tests {
         let prompt = "Implement feature";
 
         // Act
-        let turn_prompt = turn_prompt_for_runtime(prompt, Some("assistant: proposed plan"), true)
-            .expect("turn prompt should render");
+        let turn_prompt = turn_prompt_for_runtime(
+            prompt,
+            agent::ProtocolRequestProfile::SessionTurn,
+            Some("assistant: proposed plan"),
+            true,
+        )
+        .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
@@ -497,16 +517,36 @@ mod tests {
     }
 
     #[test]
+    fn turn_prompt_for_runtime_uses_shared_protocol_wrapper_for_utility_prompts() {
+        // Arrange
+        let prompt = "Generate title";
+
+        // Act
+        let turn_prompt = turn_prompt_for_runtime(
+            prompt,
+            agent::ProtocolRequestProfile::UtilityPrompt,
+            None,
+            false,
+        )
+        .expect("turn prompt should render");
+
+        // Assert
+        assert!(turn_prompt.contains("summary"));
+        assert!(turn_prompt.ends_with(prompt));
+    }
+
+    #[test]
     fn read_latest_session_output_prefers_live_buffer_over_snapshot() {
         // Arrange
         let live_output = Arc::new(Mutex::new("live content from stream".to_string()));
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: Some(live_output),
             folder: PathBuf::from("/tmp"),
+            live_session_output: Some(live_output),
             model: "model-a".to_string(),
             prompt: "Do work".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
         };
@@ -523,12 +563,13 @@ mod tests {
         // Arrange
         let live_output = Arc::new(Mutex::new(String::new()));
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: Some(live_output),
             folder: PathBuf::from("/tmp"),
+            live_session_output: Some(live_output),
             model: "model-a".to_string(),
             prompt: "Do work".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
         };
@@ -544,12 +585,13 @@ mod tests {
     fn read_latest_session_output_falls_back_to_snapshot_when_no_live_buffer() {
         // Arrange
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: None,
             folder: PathBuf::from("/tmp"),
+            live_session_output: None,
             model: "model-a".to_string(),
             prompt: "Do work".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
         };
@@ -565,12 +607,13 @@ mod tests {
     fn read_latest_session_output_returns_none_when_both_are_absent() {
         // Arrange
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: None,
             folder: PathBuf::from("/tmp"),
+            live_session_output: None,
             model: "model-a".to_string(),
             prompt: "Do work".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: None,
         };
@@ -588,12 +631,13 @@ mod tests {
         let sessions = AppServerSessionRegistry::new("Test");
         let live_output = Arc::new(Mutex::new("streamed before crash".to_string()));
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: Some(live_output),
             folder: PathBuf::from("/tmp"),
+            live_session_output: Some(live_output),
             model: "model-a".to_string(),
             prompt: "Do work".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: Some("stale snapshot".to_string()),
         };
@@ -662,12 +706,13 @@ mod tests {
         // Arrange
         let sessions = AppServerSessionRegistry::new("Test");
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: None,
             folder: PathBuf::from("/tmp"),
+            live_session_output: None,
             model: "model-a".to_string(),
             prompt: "Do work".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: Some("previous output".to_string()),
         };
@@ -744,12 +789,13 @@ mod tests {
         // Arrange
         let sessions = AppServerSessionRegistry::new("Test");
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: None,
             folder: PathBuf::from("/tmp"),
+            live_session_output: None,
             model: "model-a".to_string(),
             prompt: "Do work".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: Some("thread-123".to_string()),
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: Some("previous output".to_string()),
         };

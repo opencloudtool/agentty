@@ -1709,12 +1709,13 @@ mod tests {
         provider_conversation_id: Option<&str>,
     ) -> AppServerTurnRequest {
         AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
             folder,
             live_session_output: None,
             model: AgentModel::Gpt53Codex.as_str().to_string(),
             prompt: "Implement the task".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: provider_conversation_id.map(ToString::to_string),
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-123".to_string(),
             session_output: None,
         }
@@ -3454,8 +3455,13 @@ sleep 5
         let session_output = Some("prior context");
 
         // Act
-        let turn_prompt = app_server::turn_prompt_for_runtime(prompt, session_output, false)
-            .expect("turn prompt should render");
+        let turn_prompt = app_server::turn_prompt_for_runtime(
+            prompt,
+            agent::ProtocolRequestProfile::SessionTurn,
+            session_output,
+            false,
+        )
+        .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
@@ -3469,8 +3475,13 @@ sleep 5
         let session_output = Some("assistant: proposed plan");
 
         // Act
-        let turn_prompt = app_server::turn_prompt_for_runtime(prompt, session_output, true)
-            .expect("turn prompt should render");
+        let turn_prompt = app_server::turn_prompt_for_runtime(
+            prompt,
+            agent::ProtocolRequestProfile::SessionTurn,
+            session_output,
+            true,
+        )
+        .expect("turn prompt should render");
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));

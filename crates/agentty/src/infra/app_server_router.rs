@@ -110,12 +110,13 @@ mod tests {
         );
         let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: None,
             folder: std::env::temp_dir(),
+            live_session_output: None,
             model: AgentModel::Gpt53Codex.as_str().to_string(),
             prompt: "prompt".into(),
+            protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: None,
         };
@@ -154,12 +155,13 @@ mod tests {
         );
         let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: None,
             folder: std::env::temp_dir(),
+            live_session_output: None,
             model: AgentModel::Gemini3FlashPreview.as_str().to_string(),
             prompt: "prompt".into(),
+            protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: None,
         };
@@ -187,12 +189,13 @@ mod tests {
         );
         let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
         let request = AppServerTurnRequest {
-            reasoning_level: ReasoningLevel::default(),
-            live_session_output: None,
             folder: std::env::temp_dir(),
+            live_session_output: None,
             model: "unknown-model".to_string(),
             prompt: "prompt".into(),
+            protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
             session_id: "session-1".to_string(),
             session_output: None,
         };

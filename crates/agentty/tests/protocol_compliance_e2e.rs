@@ -238,13 +238,14 @@ fn resolve_workspace_folder() -> Result<PathBuf, String> {
 /// Builds one standard turn request for protocol-compliance validation.
 fn build_turn_request(folder: PathBuf, model: AgentModel) -> TurnRequest {
     TurnRequest {
-        reasoning_level: ReasoningLevel::default(),
         folder,
         live_session_output: None,
         model: model.as_str().to_string(),
         mode: TurnMode::Start,
         prompt: PROTOCOL_COMPLIANCE_PROMPT.to_string().into(),
+        protocol_profile: agentty::infra::agent::ProtocolRequestProfile::SessionTurn,
         provider_conversation_id: None,
+        reasoning_level: ReasoningLevel::default(),
     }
 }
 

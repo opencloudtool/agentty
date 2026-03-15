@@ -36,6 +36,7 @@ impl AgentBackend for ClaudeBackend {
             folder,
             mode,
             model,
+            protocol_profile: _protocol_profile,
             reasoning_level: _reasoning_level,
         } = request;
         let mut command = Command::new("claude");
@@ -84,7 +85,7 @@ pub(super) fn build_prompt_stdin_payload(
             session_output,
         )?,
     };
-    let prompt = prepend_protocol_instructions(&prompt)?;
+    let prompt = prepend_protocol_instructions(&prompt, request.protocol_profile)?;
 
     Ok(prompt.into_bytes())
 }
@@ -207,6 +208,7 @@ mod tests {
                     prompt: "Plan prompt",
                 },
                 model: "claude-sonnet-4-6",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
@@ -257,6 +259,7 @@ mod tests {
                     prompt: "Inspect [Image #1] and [Image #2]",
                 },
                 model: "claude-sonnet-4-6",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
@@ -291,6 +294,7 @@ mod tests {
                     prompt: "Plan prompt",
                 },
                 model: "claude-sonnet-4-6",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::default(),
             })
             .expect("prompt payload should build"),
@@ -300,6 +304,7 @@ mod tests {
         // Assert
         assert!(prompt.contains("repository-root-relative POSIX paths"));
         assert!(prompt.contains("Paths must be relative to the repository root."));
+        assert!(prompt.contains("summary"));
     }
 
     #[test]
@@ -320,6 +325,7 @@ mod tests {
                     prompt: "Generate title",
                 },
                 model: "claude-sonnet-4-6",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
@@ -333,6 +339,7 @@ mod tests {
                     prompt: "Generate title",
                 },
                 model: "claude-sonnet-4-6",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             })
             .expect("prompt payload should build"),
@@ -341,9 +348,7 @@ mod tests {
 
         // Assert
         assert!(prompt.contains("Structured response protocol:"));
-        assert!(
-            !prompt.contains("Emit the top-level `summary` field required by the JSON Schema.")
-        );
+        assert!(prompt.contains("summary"));
         assert!(debug_command.contains("--output-format"));
         assert!(debug_command.contains("json"));
         assert!(debug_command.contains("--json-schema"));
@@ -368,6 +373,7 @@ mod tests {
                     prompt: "Return protocol response",
                 },
                 model: "claude-sonnet-4-6",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
@@ -381,6 +387,7 @@ mod tests {
                     prompt: "Return protocol response",
                 },
                 model: "claude-sonnet-4-6",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::default(),
             })
             .expect("prompt payload should build"),
@@ -391,9 +398,7 @@ mod tests {
         assert!(debug_command.contains("--json-schema"));
         assert!(debug_command.contains("AgentResponse"));
         assert!(prompt.contains("Structured response protocol:"));
-        assert!(
-            !prompt.contains("Emit the top-level `summary` field required by the JSON Schema.")
-        );
+        assert!(prompt.contains("summary"));
     }
 
     #[test]

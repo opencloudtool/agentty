@@ -76,13 +76,21 @@ The rule is carried by the shared prompt preamble in
 
 <a id="backends-structured-response-protocol"></a>
 Agentty prepends one shared protocol preamble from
-`crates/agentty/resources/protocol_instruction_prompt.md`. That preamble
-contains both the repository-root-relative file path rules and the structured
-response instructions, then embeds the full self-descriptive JSON Schema generated from
-`crates/agentty/src/infra/agent/protocol.rs`. The template owns the static
-top-level prompt instructions only, while `protocol.rs` remains the single
-source of truth for the dynamic response shape, field descriptions, and all
-field-specific guidance used in prompts and schema-enforced transports.
+`crates/agentty/resources/protocol_instruction_prompt.md`. That template
+contains the repository-root-relative file path rules, the structured response
+instructions, the explicit `---` separator that separates the task body, and
+the full self-descriptive JSON Schema generated from
+`crates/agentty/src/infra/agent/protocol.rs`. `protocol.rs` remains the single
+source of truth for the dynamic response shape, field descriptions, parsing,
+and transport-oriented schema generation.
+
+Each request path now selects a protocol-owned `ProtocolRequestProfile`
+before the backend sees the prompt:
+
+- Session turns use the `SessionTurn` profile.
+- One-shot utility prompts use the `UtilityPrompt` profile.
+- Strict and permissive request paths still select explicit profiles at the
+  transport boundary.
 
 The shared schema defines a top-level `messages` array plus the optional
 top-level `summary` object. Session turns typically populate:
@@ -93,9 +101,8 @@ top-level `summary` object. Session turns typically populate:
 
 One-shot utility prompts, such as title generation, session commit-message
 generation, focused review preparation, auto-commit assistance, and rebase
-conflict assistance, still return the same protocol JSON shape. They commonly
-omit `summary` or set it to `null`, while session discussion turns typically
-populate it.
+conflict assistance, still return the same protocol JSON shape. They may leave
+`summary` unused, while session discussion turns typically populate it.
 
 Example payload:
 
@@ -122,17 +129,15 @@ so Agentty can collect clarifications in question input mode. The top-level
 `summary` object is persisted separately and rendered in the session summary
 panel instead of being parsed back out of answer markdown.
 
-## Protocol Validation and Repair
+## Protocol Validation
 
 <a id="backends-protocol-validation-repair"></a>
 Agentty validates final agent output against the structured response protocol.
 
-- Claude and Gemini integrations use strict parsing and run one automatic
-  repair retry loop (up to three repair turns) when output does not match the
-  protocol schema.
-- One-shot utility prompts use the same repair loop for all backends so
-  internal callers always receive valid protocol JSON before parsing titles,
-  commit messages, or review text.
+- Claude and Gemini integrations use strict parsing and fail closed when
+  output does not match the protocol schema.
+- One-shot utility prompts also fail with a schema error when provider output
+  does not match the required protocol JSON.
 - Claude turns use native schema validation via `claude --json-schema` and
   `--output-format json` (no Claude `stream-json` mode).
 - Prompt-side protocol instructions rely on the raw self-descriptive
@@ -140,8 +145,8 @@ Agentty validates final agent output against the structured response protocol.
   while transport `outputSchema` payloads are normalized separately for
   provider compatibility.
 - Claude and Gemini stream the rendered prompt body through stdin for CLI
-  one-shot/repair flows so large diffs and review prompts do not hit OS argv
-  length limits.
+  one-shot flows so large diffs and review prompts do not hit OS argv length
+  limits.
 - Claude turns pass `--strict-mcp-config`, so only MCP servers explicitly
   provided by Agentty are allowed (none by default).
 - Claude turns allow file-modifying tools (`Edit`, `MultiEdit`, `Write`) plus

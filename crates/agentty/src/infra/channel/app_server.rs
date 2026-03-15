@@ -10,19 +10,15 @@ use tokio::sync::mpsc;
 use crate::domain::agent::AgentKind;
 use crate::infra::agent;
 use crate::infra::agent::protocol::{
-    build_protocol_repair_prompt, normalize_stream_assistant_chunk, parse_agent_response,
-    parse_agent_response_strict,
+    normalize_stream_assistant_chunk, parse_agent_response, parse_agent_response_strict,
 };
 use crate::infra::app_server::{
     AppServerClient, AppServerStreamEvent, AppServerTurnRequest, AppServerTurnResponse,
 };
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnMode,
-    TurnPrompt, TurnRequest, TurnResult,
+    TurnRequest, TurnResult,
 };
-
-/// Maximum number of repair turns for strict structured-protocol providers.
-const MAX_STRUCTURED_OUTPUT_REPAIR_ATTEMPTS: usize = 3;
 
 /// [`AgentChannel`] adapter backed by a persistent app-server session.
 ///
@@ -61,7 +57,7 @@ impl AgentChannel for AppServerAgentChannel {
     /// [`TurnEvent::AssistantDelta`] or [`TurnEvent::ThoughtDelta`] for
     /// non-strict providers. Strict providers suppress assistant stream chunks
     /// and rely on final payload parsing to avoid leaking malformed first-pass
-    /// output when a repair retry is needed.
+    /// output before validation finishes.
     ///
     /// Codex thought-style deltas (`phase: thinking/plan`) are emitted as
     /// [`TurnEvent::ThoughtDelta`]. Other assistant chunks are normalized via
@@ -90,17 +86,16 @@ impl AgentChannel for AppServerAgentChannel {
             };
 
             let request = AppServerTurnRequest {
-                reasoning_level: req.reasoning_level,
-                live_session_output: req.live_session_output,
                 folder: req.folder,
+                live_session_output: req.live_session_output,
                 model: req.model,
                 prompt: req.prompt,
+                protocol_profile: req.protocol_profile,
                 provider_conversation_id: req.provider_conversation_id,
+                reasoning_level: req.reasoning_level,
                 session_id,
                 session_output,
             };
-            let request_for_repair = request.clone();
-
             let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<AppServerStreamEvent>();
 
             let bridge_handle = {
@@ -158,13 +153,7 @@ impl AgentChannel for AppServerAgentChannel {
             match turn_result {
                 Ok(response) => {
                     let _ = events.send(TurnEvent::PidUpdate(response.pid));
-                    let assistant_message = parse_or_repair_structured_response(
-                        &client,
-                        kind,
-                        &request_for_repair,
-                        &response,
-                    )
-                    .await?;
+                    let assistant_message = parse_strict_structured_response(kind, &response)?;
 
                     Ok(TurnResult {
                         assistant_message,
@@ -240,53 +229,22 @@ fn is_codex_thought_phase_label(phase: &str) -> bool {
         || normalized_phase.eq_ignore_ascii_case("thought")
 }
 
-/// Parses one final assistant payload, optionally repairing malformed
-/// structured output for strict providers.
-async fn parse_or_repair_structured_response(
-    client: &Arc<dyn AppServerClient>,
+/// Parses one final assistant payload for providers that require strict
+/// structured output.
+fn parse_strict_structured_response(
     kind: AgentKind,
-    original_request: &AppServerTurnRequest,
     response: &AppServerTurnResponse,
 ) -> Result<agent::AgentResponse, AgentError> {
     if !requires_strict_structured_output(kind) {
         return Ok(parse_agent_response(&response.assistant_message));
     }
 
-    if let Ok(parsed_response) = parse_agent_response_strict(&response.assistant_message) {
-        return Ok(parsed_response);
-    }
-
-    let mut last_response_text = response.assistant_message.clone();
-    let mut provider_conversation_id = response.provider_conversation_id.clone();
-    let mut last_error = None;
-
-    for _attempt in 0..MAX_STRUCTURED_OUTPUT_REPAIR_ATTEMPTS {
-        let repair_request = build_repair_request(
-            original_request,
-            &last_response_text,
-            provider_conversation_id.as_deref(),
-        );
-        let (repair_stream_tx, _repair_stream_rx) = mpsc::unbounded_channel();
-        let repair_response = client
-            .run_turn(repair_request, repair_stream_tx)
-            .await
-            .map_err(AgentError)?;
-        provider_conversation_id = repair_response.provider_conversation_id;
-        last_response_text = repair_response.assistant_message;
-
-        match parse_agent_response_strict(&last_response_text) {
-            Ok(parsed_response) => return Ok(parsed_response),
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    let parse_error =
-        last_error.unwrap_or(crate::infra::agent::protocol::AgentResponseParseError::InvalidFormat);
-
-    Err(AgentError(format!(
-        "Agent output did not match the required JSON schema after \
-         {MAX_STRUCTURED_OUTPUT_REPAIR_ATTEMPTS} repair attempts: {parse_error}"
-    )))
+    parse_agent_response_strict(&response.assistant_message).map_err(|error| {
+        AgentError(format!(
+            "Agent output did not match the required JSON schema: {error}\nresponse:\n{}",
+            response.assistant_message
+        ))
+    })
 }
 
 /// Returns whether the provider should fail closed on invalid structured
@@ -295,31 +253,10 @@ fn requires_strict_structured_output(kind: AgentKind) -> bool {
     matches!(kind, AgentKind::Claude | AgentKind::Gemini)
 }
 
-/// Builds one app-server repair turn request from the original request.
-fn build_repair_request(
-    original_request: &AppServerTurnRequest,
-    assistant_message: &str,
-    provider_conversation_id: Option<&str>,
-) -> AppServerTurnRequest {
-    AppServerTurnRequest {
-        reasoning_level: original_request.reasoning_level,
-        folder: original_request.folder.clone(),
-        live_session_output: None,
-        model: original_request.model.clone(),
-        prompt: TurnPrompt::from_text(build_protocol_repair_prompt(assistant_message)),
-        provider_conversation_id: provider_conversation_id
-            .map(ToString::to_string)
-            .or_else(|| original_request.provider_conversation_id.clone()),
-        session_id: original_request.session_id.clone(),
-        session_output: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tokio::sync::mpsc;
 
@@ -330,13 +267,14 @@ mod tests {
 
     fn make_turn_request() -> TurnRequest {
         TurnRequest {
-            reasoning_level: ReasoningLevel::default(),
             folder: PathBuf::from("/tmp"),
             live_session_output: None,
             model: "gemini-3-flash-preview".to_string(),
             mode: TurnMode::Start,
             prompt: "Do something".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
         }
     }
 
@@ -673,49 +611,35 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies Gemini turns run one repair retry when final output is not
-    /// valid structured JSON.
-    async fn test_run_turn_repairs_invalid_structured_output_for_gemini() {
+    /// Verifies Gemini turns surface invalid structured output instead of
+    /// starting a repair retry.
+    async fn test_run_turn_returns_error_for_invalid_structured_output_for_gemini() {
         // Arrange
-        let call_count = Arc::new(AtomicUsize::new(0));
         let mut mock_client = MockAppServerClient::new();
-        mock_client.expect_run_turn().times(2).returning({
-            let call_count = Arc::clone(&call_count);
-            move |request, _stream_tx| {
-                let call_index = call_count.fetch_add(1, Ordering::SeqCst);
-                if call_index == 0 {
-                    assert_eq!(request.prompt, "Do something");
+        mock_client
+            .expect_run_turn()
+            .times(1)
+            .returning(|request, _stream_tx| {
+                assert_eq!(request.prompt, "Do something");
+                assert_eq!(
+                    request.protocol_profile,
+                    agent::ProtocolRequestProfile::SessionTurn
+                );
 
-                    Box::pin(async { Ok(make_ok_response("plain non-json response")) })
-                } else {
-                    assert!(
-                        request
-                            .prompt
-                            .contains("did not match the required JSON schema")
-                    );
-                    Box::pin(async {
-                        Ok(make_ok_response(
-                            r#"{"messages":[{"type":"answer","text":"Recovered output"}]}"#,
-                        ))
-                    })
-                }
-            }
-        });
+                Box::pin(async { Ok(make_ok_response("plain non-json response")) })
+            });
         let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Gemini);
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
 
         // Act
-        let result = channel
+        let error = channel
             .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
             .await
-            .expect("turn should succeed");
+            .expect_err("invalid structured output should fail");
 
         // Assert
-        assert_eq!(
-            result.assistant_message.to_display_text(),
-            "Recovered output"
-        );
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert!(error.0.contains("did not match the required JSON schema"));
+        assert!(error.0.contains("response:\nplain non-json response"));
     }
 
     #[tokio::test]

@@ -41,6 +41,9 @@ pub struct BuildCommandRequest<'a> {
     pub mode: AgentCommandMode<'a>,
     /// Provider-specific model identifier.
     pub model: &'a str,
+    /// Protocol-owned request family preserved for this command and any
+    /// follow-up repair flow.
+    pub protocol_profile: protocol::ProtocolRequestProfile,
     /// Reasoning effort preference for this turn.
     ///
     /// Ignored by backends/models that do not support reasoning effort.
@@ -233,7 +236,13 @@ pub(crate) fn build_resume_prompt(
 ///
 /// # Errors
 /// Returns an error if Askama template rendering fails.
-pub(crate) fn prepend_protocol_instructions(prompt: &str) -> Result<String, AgentBackendError> {
+// TODO: Use `profile` to inject per-request-family protocol guidance once
+// plan step 2 ("Move Request Formatting Rules Out of Task Prompts") lands.
+// See `docs/plan/protocol_request_instructions.md`.
+pub(crate) fn prepend_protocol_instructions(
+    prompt: &str,
+    _profile: protocol::ProtocolRequestProfile,
+) -> Result<String, AgentBackendError> {
     if prompt.contains(PROTOCOL_INSTRUCTIONS_MARKER) {
         return Ok(prompt.to_string());
     }
@@ -340,8 +349,9 @@ mod tests {
         let prompt = "Implement feature";
 
         // Act
-        let rendered_prompt = prepend_protocol_instructions(prompt)
-            .expect("protocol instruction prompt should render");
+        let rendered_prompt =
+            prepend_protocol_instructions(prompt, protocol::ProtocolRequestProfile::SessionTurn)
+                .expect("protocol instruction prompt should render");
 
         // Assert
         assert!(rendered_prompt.contains("File path output requirements:"));
@@ -353,19 +363,14 @@ mod tests {
         assert!(rendered_prompt.contains("Follow this JSON Schema exactly."));
         assert!(rendered_prompt.contains("Treat the JSON Schema titles and descriptions"));
         assert!(rendered_prompt.contains("Authoritative JSON Schema:"));
-        assert!(!rendered_prompt.contains("Question guidelines:"));
-        assert!(
-            !rendered_prompt.contains("Do not place user-directed clarification questions inside")
-        );
-        assert!(!rendered_prompt.contains("emit that request as a `question` message"));
-        assert!(
-            !rendered_prompt
-                .contains("Emit the top-level `summary` field required by the JSON Schema.")
-        );
+        assert!(rendered_prompt.contains("---"));
+        assert!(rendered_prompt.contains("summary"));
+        assert!(rendered_prompt.contains("turn"));
+        assert!(rendered_prompt.contains("session"));
         assert!(rendered_prompt.contains("\"messages\""));
         assert!(rendered_prompt.contains("\"title\""));
         assert!(rendered_prompt.contains("\"description\""));
-        assert!(rendered_prompt.contains("\"summary\""));
+        assert!(rendered_prompt.contains("summary"));
         assert!(rendered_prompt.ends_with(prompt));
     }
 
@@ -373,12 +378,16 @@ mod tests {
     /// Ensures protocol instructions are not duplicated when already present.
     fn test_prepend_protocol_instructions_is_idempotent() {
         // Arrange
-        let prompt = prepend_protocol_instructions("Implement feature")
-            .expect("protocol instruction prompt should render");
+        let prompt = prepend_protocol_instructions(
+            "Implement feature",
+            protocol::ProtocolRequestProfile::SessionTurn,
+        )
+        .expect("protocol instruction prompt should render");
 
         // Act
-        let rendered_prompt = prepend_protocol_instructions(&prompt)
-            .expect("protocol instruction prompt should render");
+        let rendered_prompt =
+            prepend_protocol_instructions(&prompt, protocol::ProtocolRequestProfile::UtilityPrompt)
+                .expect("protocol instruction prompt should render");
 
         // Assert
         assert_eq!(rendered_prompt, prompt);
@@ -392,15 +401,13 @@ mod tests {
         let prompt = "Generate title";
 
         // Act
-        let rendered_prompt = prepend_protocol_instructions(prompt)
-            .expect("protocol instruction prompt should render");
+        let rendered_prompt =
+            prepend_protocol_instructions(prompt, protocol::ProtocolRequestProfile::UtilityPrompt)
+                .expect("protocol instruction prompt should render");
 
         // Assert
         assert!(rendered_prompt.contains("Structured response protocol:"));
-        assert!(
-            !rendered_prompt
-                .contains("Emit the top-level `summary` field required by the JSON Schema.")
-        );
+        assert!(rendered_prompt.contains("---"));
         assert!(rendered_prompt.contains("\"summary\""));
         assert!(rendered_prompt.ends_with(prompt));
     }

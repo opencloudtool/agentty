@@ -215,6 +215,7 @@ impl TaskService {
                         folder: review_folder,
                         model: review_model,
                         prompt: focused_review_prompt,
+                        protocol_profile: agent::ProtocolRequestProfile::UtilityPrompt,
                         reasoning_level: ReasoningLevel::default(),
                     })
                     .await

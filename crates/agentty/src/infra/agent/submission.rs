@@ -12,13 +12,10 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::task::JoinHandle;
 
 use super::backend::{AgentBackend, AgentCommandMode, BuildCommandRequest};
-use super::protocol::{AgentResponse, build_protocol_repair_prompt, parse_agent_response_strict};
+use super::protocol::{AgentResponse, parse_agent_response_strict};
 use super::{ParsedResponse, create_backend, parse_response};
 use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::domain::session::SessionStats;
-
-/// Maximum number of repair attempts for one-shot protocol responses.
-const MAX_ONE_SHOT_PROTOCOL_REPAIR_ATTEMPTS: usize = 3;
 
 /// Input payload for one isolated prompt that must still return structured
 /// protocol output.
@@ -33,6 +30,9 @@ pub(crate) struct OneShotRequest<'a> {
     pub(crate) model: AgentModel,
     /// Prompt text submitted to the agent.
     pub(crate) prompt: &'a str,
+    /// Protocol-owned request family used to render shared response
+    /// instructions for this utility prompt.
+    pub(crate) protocol_profile: super::protocol::ProtocolRequestProfile,
     /// Reasoning effort preference for the one-shot prompt.
     pub(crate) reasoning_level: ReasoningLevel,
 }
@@ -42,7 +42,7 @@ pub(crate) struct OneShotRequest<'a> {
 pub(crate) struct OneShotSubmission {
     /// Structured protocol response parsed from the final successful attempt.
     pub(crate) response: AgentResponse,
-    /// Aggregated token usage across the initial attempt and any repair turns.
+    /// Aggregated token usage for the one-shot prompt execution.
     pub(crate) stats: SessionStats,
 }
 
@@ -50,7 +50,7 @@ pub(crate) struct OneShotSubmission {
 ///
 /// # Errors
 /// Returns an error when command construction fails, process execution fails,
-/// or the final output cannot be repaired into valid protocol JSON.
+/// or the final output does not match the required protocol JSON.
 pub(crate) async fn submit_one_shot(request: OneShotRequest<'_>) -> Result<AgentResponse, String> {
     let submission = submit_one_shot_with_stats(request).await?;
 
@@ -62,7 +62,7 @@ pub(crate) async fn submit_one_shot(request: OneShotRequest<'_>) -> Result<Agent
 ///
 /// # Errors
 /// Returns an error when command construction fails, process execution fails,
-/// or the final output cannot be repaired into valid protocol JSON.
+/// or the final output does not match the required protocol JSON.
 pub(crate) async fn submit_one_shot_with_stats(
     request: OneShotRequest<'_>,
 ) -> Result<OneShotSubmission, String> {
@@ -79,43 +79,25 @@ pub(crate) async fn submit_one_shot_with_stats(
 ///
 /// # Errors
 /// Returns an error when command construction fails, process execution fails,
-/// or the final output cannot be repaired into valid protocol JSON.
+/// or the final output does not match the required protocol JSON.
 pub(crate) async fn submit_one_shot_with_backend(
     backend: &dyn AgentBackend,
     request: OneShotRequest<'_>,
 ) -> Result<OneShotSubmission, String> {
-    let mut total_stats = SessionStats::default();
-    let mut last_response = execute_one_shot_command(backend, request.prompt, request).await?;
-    accumulate_stats(&mut total_stats, &last_response.stats);
-    let mut last_error = None;
+    let parsed_response = execute_one_shot_command(backend, request.prompt, request).await?;
+    let agent_response =
+        parse_agent_response_strict(&parsed_response.content).map_err(|error| {
+            format!(
+                "One-shot agent output did not match the required JSON schema: \
+                 {error}\nresponse:\n{}",
+                parsed_response.content
+            )
+        })?;
 
-    for attempt in 0..=MAX_ONE_SHOT_PROTOCOL_REPAIR_ATTEMPTS {
-        match parse_agent_response_strict(&last_response.content) {
-            Ok(agent_response) => {
-                return Ok(OneShotSubmission {
-                    response: agent_response,
-                    stats: total_stats,
-                });
-            }
-            Err(error) => last_error = Some(error),
-        }
-
-        if attempt == MAX_ONE_SHOT_PROTOCOL_REPAIR_ATTEMPTS {
-            break;
-        }
-
-        let repair_prompt = build_protocol_repair_prompt(&last_response.content);
-        last_response = execute_one_shot_command(backend, &repair_prompt, request).await?;
-        accumulate_stats(&mut total_stats, &last_response.stats);
-    }
-
-    let parse_error =
-        last_error.unwrap_or(crate::infra::agent::protocol::AgentResponseParseError::InvalidFormat);
-
-    Err(format!(
-        "One-shot agent output did not match the required JSON schema after \
-         {MAX_ONE_SHOT_PROTOCOL_REPAIR_ATTEMPTS} repair attempts: {parse_error}"
-    ))
+    Ok(OneShotSubmission {
+        response: agent_response,
+        stats: parsed_response.stats,
+    })
 }
 
 /// Runs one one-shot backend command and returns the parsed provider content.
@@ -138,6 +120,7 @@ async fn execute_one_shot_command(
         folder: request.folder,
         mode: AgentCommandMode::OneShot { prompt },
         model: request.model.as_str(),
+        protocol_profile: request.protocol_profile,
         reasoning_level: request.reasoning_level,
     };
     let command = backend
@@ -342,17 +325,9 @@ impl Drop for ChildPidGuard<'_> {
     }
 }
 
-/// Adds one parsed token-usage payload into the aggregated one-shot totals.
-fn accumulate_stats(total_stats: &mut SessionStats, next_stats: &SessionStats) {
-    total_stats.input_tokens += next_stats.input_tokens;
-    total_stats.output_tokens += next_stats.output_tokens;
-}
-
 #[cfg(test)]
 mod tests {
     use std::process::Command;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use tempfile::tempdir;
@@ -403,6 +378,10 @@ mod tests {
                     prompt: "Generate title",
                 }
             ));
+            assert_eq!(
+                request.protocol_profile,
+                crate::infra::agent::ProtocolRequestProfile::UtilityPrompt
+            );
 
             Ok(mock_shell_command(
                 r#"{"messages":[{"type":"answer","text":"Generated title"}]}"#,
@@ -419,6 +398,7 @@ mod tests {
                 folder: temp_directory.path(),
                 model: AgentModel::ClaudeSonnet46,
                 prompt: "Generate title",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
@@ -433,143 +413,89 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies one-shot execution runs a repair prompt when the first
-    /// response is not valid protocol JSON.
-    async fn test_submit_one_shot_with_backend_repairs_invalid_protocol_output() {
+    /// Verifies one-shot execution surfaces a schema error immediately when
+    /// the response is not valid protocol JSON.
+    async fn test_submit_one_shot_with_backend_returns_error_for_invalid_protocol_output() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
-        let call_count = Arc::new(AtomicUsize::new(0));
         let mut backend = MockAgentBackend::new();
-        backend.expect_build_command().times(2).returning({
-            let call_count = Arc::clone(&call_count);
-
-            move |request| {
-                let attempt = call_count.fetch_add(1, Ordering::SeqCst);
-
-                match attempt {
-                    0 => {
-                        assert!(matches!(
-                            request.mode,
-                            AgentCommandMode::OneShot {
-                                prompt: "Generate title",
-                            }
-                        ));
-
-                        Ok(mock_shell_command("plain text", "", 0))
+        backend
+            .expect_build_command()
+            .times(1)
+            .returning(|request| {
+                assert!(matches!(
+                    request.mode,
+                    AgentCommandMode::OneShot {
+                        prompt: "Generate title",
                     }
-                    1 => {
-                        assert!(matches!(request.mode, AgentCommandMode::OneShot { .. }));
-                        let prompt = match request.mode {
-                            AgentCommandMode::OneShot { prompt } => prompt,
-                            _ => "",
-                        };
-                        assert!(
-                            prompt.contains(
-                                "Your previous response did not match the required JSON schema."
-                            ),
-                            "repair prompt should explain the protocol failure"
-                        );
+                ));
 
-                        Ok(mock_shell_command(
-                            r#"{"messages":[{"type":"answer","text":"Recovered title"}]}"#,
-                            "",
-                            0,
-                        ))
-                    }
-                    _ => Ok(mock_shell_command("", "unexpected extra repair attempt", 1)),
-                }
-            }
-        });
+                Ok(mock_shell_command("plain text", "", 0))
+            });
 
         // Act
-        let response = submit_one_shot_with_backend(
+        let error = submit_one_shot_with_backend(
             &backend,
             OneShotRequest {
                 child_pid: None,
                 folder: temp_directory.path(),
                 model: AgentModel::Gpt54,
                 prompt: "Generate title",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
         .await
-        .expect("repair should succeed");
+        .expect_err("invalid protocol output should fail");
 
         // Assert
-        assert_eq!(
-            response.response.answers(),
-            vec!["Recovered title".to_string()]
-        );
+        assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("response:\nplain text"));
     }
 
     #[tokio::test]
-    /// Verifies one-shot usage totals accumulate across protocol repair turns.
-    async fn test_submit_one_shot_with_backend_accumulates_stats_across_repairs() {
+    /// Verifies wrapped provider output that still fails protocol parsing is
+    /// surfaced as an error without extra retries.
+    async fn test_submit_one_shot_with_backend_returns_error_for_wrapped_invalid_protocol_output() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
-        let call_count = Arc::new(AtomicUsize::new(0));
         let mut backend = MockAgentBackend::new();
-        backend.expect_build_command().times(2).returning({
-            let call_count = Arc::clone(&call_count);
-
-            move |request| {
-                let attempt = call_count.fetch_add(1, Ordering::SeqCst);
-
-                match attempt {
-                    0 => {
-                        assert!(matches!(
-                            request.mode,
-                            AgentCommandMode::OneShot {
-                                prompt: "Generate title",
-                            }
-                        ));
-
-                        Ok(mock_shell_command(
-                            r#"{"result":"plain text","usage":{"input_tokens":2,"output_tokens":1}}"#,
-                            "",
-                            0,
-                        ))
+        backend
+            .expect_build_command()
+            .times(1)
+            .returning(|request| {
+                assert!(matches!(
+                    request.mode,
+                    AgentCommandMode::OneShot {
+                        prompt: "Generate title",
                     }
-                    1 => {
-                        let prompt = match request.mode {
-                            AgentCommandMode::OneShot { prompt } => prompt,
-                            _ => "",
-                        };
-                        assert!(
-                            prompt.contains(
-                                "Your previous response did not match the required JSON schema."
-                            ),
-                            "repair prompt should explain the protocol failure"
-                        );
+                ));
 
-                        Ok(mock_shell_command(
-                            r#"{"result":"{\"messages\":[{\"type\":\"answer\",\"text\":\"Recovered title\"}]}","usage":{"input_tokens":3,"output_tokens":2}}"#,
-                            "",
-                            0,
-                        ))
-                    }
-                    _ => unreachable!("unexpected extra repair attempt"),
-                }
-            }
-        });
+                Ok(mock_shell_command(
+                    r#"{"result":"plain text","usage":{"input_tokens":2,"output_tokens":1}}"#,
+                    "",
+                    0,
+                ))
+            });
 
         // Act
-        let response = submit_one_shot_with_backend(
+        let error = submit_one_shot_with_backend(
             &backend,
             OneShotRequest {
                 child_pid: None,
                 folder: temp_directory.path(),
                 model: AgentModel::ClaudeSonnet46,
                 prompt: "Generate title",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
         .await
-        .expect("repair should succeed");
+        .expect_err("wrapped invalid protocol output should fail");
 
         // Assert
-        assert_eq!(response.stats.input_tokens, 5);
-        assert_eq!(response.stats.output_tokens, 3);
+        assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("response:\nplain text"));
     }
 
     #[tokio::test]
@@ -602,6 +528,7 @@ mod tests {
                     folder: temp_directory.path(),
                     model: AgentModel::ClaudeSonnet46,
                     prompt: &large_prompt,
+                    protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                     reasoning_level: ReasoningLevel::default(),
                 },
             ),
@@ -636,6 +563,7 @@ mod tests {
                 folder: temp_directory.path(),
                 model: AgentModel::ClaudeSonnet46,
                 prompt: "Generate title",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
@@ -675,6 +603,7 @@ mod tests {
                 folder: temp_directory.path(),
                 model: AgentModel::ClaudeSonnet46,
                 prompt: &large_prompt,
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
@@ -713,6 +642,7 @@ mod tests {
                 folder: temp_directory.path(),
                 model: AgentModel::ClaudeSonnet46,
                 prompt: "Generate title",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             },
         )

@@ -248,6 +248,9 @@ pub struct TurnRequest {
     pub mode: TurnMode,
     /// Structured user prompt for the turn.
     pub prompt: TurnPrompt,
+    /// Protocol-owned request family used to render shared response
+    /// instructions for this turn.
+    pub protocol_profile: crate::infra::agent::ProtocolRequestProfile,
     /// Provider-native conversation identifier loaded from persistence.
     ///
     /// When present, app-server channels forward this to the provider runtime

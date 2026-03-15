@@ -317,13 +317,14 @@ impl SessionWorkerService {
             .flatten();
 
         let req = TurnRequest {
-            reasoning_level,
             folder: context.folder.clone(),
             live_session_output: Some(Arc::clone(&context.output)),
             model: session_model.as_str().to_string(),
             mode: mode.clone(),
             prompt: prompt.clone(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id,
+            reasoning_level,
         };
 
         let (event_tx, event_rx) = mpsc::unbounded_channel::<TurnEvent>();

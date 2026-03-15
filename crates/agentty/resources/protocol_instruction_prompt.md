@@ -18,4 +18,6 @@ Structured response protocol:
 Authoritative JSON Schema:
 {{ response_json_schema }}
 
+--- {# task separator #}
+
 {{ prompt }}

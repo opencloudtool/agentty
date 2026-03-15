@@ -32,6 +32,7 @@ impl AgentBackend for CodexBackend {
             folder,
             mode,
             model,
+            protocol_profile,
             reasoning_level,
         } = request;
         let has_history_replay = mode
@@ -46,7 +47,7 @@ impl AgentBackend for CodexBackend {
                 session_output,
             } => build_resume_prompt(prompt, session_output)?,
         };
-        let prompt = prepend_protocol_instructions(&prompt)?;
+        let prompt = prepend_protocol_instructions(&prompt, protocol_profile)?;
 
         let mut command = Command::new("codex");
         command.arg("exec");
@@ -104,6 +105,7 @@ mod tests {
                     prompt: "Run checks",
                 },
                 model: "gpt-5.3-codex",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::High,
             },
         )
@@ -118,6 +120,7 @@ mod tests {
         assert!(debug_command.contains("Structured response protocol:"));
         assert!(debug_command.contains("Follow this JSON Schema exactly."));
         assert!(debug_command.contains("Authoritative JSON Schema:"));
+        assert!(debug_command.contains("summary"));
     }
 
     /// Verifies resume command composes replay-based prompt content when
@@ -139,6 +142,7 @@ mod tests {
                     session_output: Some("previous assistant output"),
                 },
                 model: "gpt-5.3-codex",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::High,
             },
         )
@@ -172,6 +176,7 @@ mod tests {
                     session_output: None,
                 },
                 model: "gpt-5.3-codex",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::High,
             },
         )
@@ -206,6 +211,7 @@ mod tests {
                     prompt: "Run checks",
                 },
                 model: "gpt-5.3-codex",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::Low,
             },
         )
@@ -236,6 +242,7 @@ mod tests {
                     prompt: "Generate title",
                 },
                 model: "gpt-5.3-codex",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::Low,
             },
         )
@@ -244,9 +251,6 @@ mod tests {
 
         // Assert
         assert!(debug_command.contains("Structured response protocol:"));
-        assert!(
-            !debug_command
-                .contains("Emit the top-level `summary` field required by the JSON Schema.")
-        );
+        assert!(debug_command.contains("summary"));
     }
 }

@@ -24,6 +24,7 @@ impl AgentBackend for GeminiBackend {
             folder,
             mode,
             model,
+            protocol_profile: _protocol_profile,
             reasoning_level: _reasoning_level,
         } = request;
         let has_history_replay = mode
@@ -65,7 +66,7 @@ pub(super) fn build_prompt_stdin_payload(
             session_output,
         } => build_resume_prompt(prompt, session_output)?,
     };
-    let prompt = prepend_protocol_instructions(&prompt)?;
+    let prompt = prepend_protocol_instructions(&prompt, request.protocol_profile)?;
 
     Ok(prompt.into_bytes())
 }
@@ -110,6 +111,7 @@ mod tests {
                     prompt: "Plan prompt",
                 },
                 model: "gemini-3-flash-preview",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::SessionTurn,
                 reasoning_level: ReasoningLevel::default(),
             })
             .expect("prompt payload should build"),
@@ -119,6 +121,7 @@ mod tests {
         // Assert
         assert!(prompt.contains("repository-root-relative POSIX paths"));
         assert!(prompt.contains("Paths must be relative to the repository root."));
+        assert!(prompt.contains("summary"));
     }
 
     #[test]
@@ -139,6 +142,7 @@ mod tests {
                     prompt: "Generate title",
                 },
                 model: "gemini-3-flash-preview",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             },
         )
@@ -156,6 +160,7 @@ mod tests {
                     prompt: "Generate title",
                 },
                 model: "gemini-3-flash-preview",
+                protocol_profile: crate::infra::agent::ProtocolRequestProfile::UtilityPrompt,
                 reasoning_level: ReasoningLevel::default(),
             })
             .expect("prompt payload should build"),
@@ -164,9 +169,7 @@ mod tests {
 
         // Assert
         assert!(prompt.contains("Structured response protocol:"));
-        assert!(
-            !prompt.contains("Emit the top-level `summary` field required by the JSON Schema.")
-        );
+        assert!(prompt.contains("summary"));
         assert!(debug_command.contains("--output-format"));
         assert!(!args.iter().any(String::is_empty));
     }

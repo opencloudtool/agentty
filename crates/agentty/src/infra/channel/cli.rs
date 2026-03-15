@@ -11,19 +11,15 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::domain::agent::{AgentKind, ReasoningLevel};
+use crate::domain::agent::AgentKind;
 use crate::infra::agent::protocol::{
-    build_protocol_repair_prompt, normalize_stream_assistant_chunk, parse_agent_response,
-    parse_agent_response_strict,
+    normalize_stream_assistant_chunk, parse_agent_response, parse_agent_response_strict,
 };
 use crate::infra::agent::{self as agent, AgentBackend, AgentCommandMode, BuildCommandRequest};
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnMode,
     TurnRequest, TurnResult,
 };
-
-/// Maximum number of repair turns for strict structured-protocol providers.
-const MAX_STRUCTURED_OUTPUT_REPAIR_ATTEMPTS: usize = 3;
 
 /// [`AgentChannel`] adapter that spawns one CLI subprocess per agent turn.
 ///
@@ -73,6 +69,7 @@ fn build_command_request(request: &TurnRequest) -> BuildCommandRequest<'_> {
             },
         },
         model: &request.model,
+        protocol_profile: request.protocol_profile,
         reasoning_level: request.reasoning_level,
     }
 }
@@ -105,14 +102,10 @@ impl AgentChannel for CliAgentChannel {
         req: TurnRequest,
         events: mpsc::UnboundedSender<TurnEvent>,
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
-        let backend = Arc::clone(&self.backend);
         let build_request = build_command_request(&req);
         let build_result = self.backend.build_command(build_request);
         let stdin_payload_result = agent::build_command_stdin_payload(self.kind, build_request);
         let kind = self.kind;
-        let reasoning_level = req.reasoning_level;
-        let folder = req.folder;
-        let model = req.model;
 
         Box::pin(async move {
             let command = build_result
@@ -202,15 +195,7 @@ impl AgentChannel for CliAgentChannel {
             }
 
             let parsed = agent::parse_response(kind, &stdout_text, &stderr_text);
-            let assistant_message = parse_or_repair_structured_response(
-                backend,
-                kind,
-                reasoning_level,
-                &folder,
-                &model,
-                &parsed.content,
-            )
-            .await?;
+            let assistant_message = parse_strict_structured_response(kind, &parsed.content)?;
 
             Ok(TurnResult {
                 assistant_message,
@@ -351,52 +336,22 @@ fn normalize_stream_response_content(text: &str) -> Option<String> {
     normalize_stream_assistant_chunk(text)
 }
 
-/// Parses one final assistant payload, optionally repairing malformed
-/// structured output for strict providers.
-async fn parse_or_repair_structured_response(
-    backend: Arc<dyn AgentBackend>,
+/// Parses one final assistant payload for providers that require strict
+/// structured output.
+fn parse_strict_structured_response(
     kind: AgentKind,
-    reasoning_level: ReasoningLevel,
-    folder: &std::path::Path,
-    model: &str,
     response_text: &str,
 ) -> Result<agent::AgentResponse, AgentError> {
     if !requires_strict_structured_output(kind) {
         return Ok(parse_agent_response(response_text));
     }
 
-    if let Ok(parsed_response) = parse_agent_response_strict(response_text) {
-        return Ok(parsed_response);
-    }
-
-    let mut last_response = response_text.to_string();
-    let mut last_error = None;
-
-    for _attempt in 0..MAX_STRUCTURED_OUTPUT_REPAIR_ATTEMPTS {
-        last_response = run_structured_output_repair_turn(
-            Arc::clone(&backend),
-            kind,
-            reasoning_level,
-            folder,
-            model,
-            &last_response,
-        )
-        .await?;
-
-        match parse_agent_response_strict(&last_response) {
-            Ok(parsed_response) => return Ok(parsed_response),
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    let parse_error =
-        last_error.unwrap_or(crate::infra::agent::protocol::AgentResponseParseError::InvalidFormat);
-
-    Err(AgentError(format!(
-        "Agent output did not match the required JSON schema after \
-         {MAX_STRUCTURED_OUTPUT_REPAIR_ATTEMPTS} repair attempts: \
-         {parse_error}\nlast_response:\n{last_response}"
-    )))
+    parse_agent_response_strict(response_text).map_err(|error| {
+        AgentError(format!(
+            "Agent output did not match the required JSON schema: \
+             {error}\nresponse:\n{response_text}"
+        ))
+    })
 }
 
 /// Formats one failed CLI turn into a user-facing error.
@@ -457,73 +412,6 @@ fn cli_turn_output_detail(stdout: &str, stderr: &str) -> String {
     }
 }
 
-/// Runs one best-effort repair turn that asks the model to re-emit valid
-/// protocol JSON only.
-async fn run_structured_output_repair_turn(
-    backend: Arc<dyn AgentBackend>,
-    kind: AgentKind,
-    reasoning_level: ReasoningLevel,
-    folder: &std::path::Path,
-    model: &str,
-    invalid_response: &str,
-) -> Result<String, AgentError> {
-    let repair_prompt = build_protocol_repair_prompt(invalid_response);
-    let build_request = BuildCommandRequest {
-        attachments: &[],
-        folder,
-        mode: AgentCommandMode::Start {
-            prompt: &repair_prompt,
-        },
-        model,
-        reasoning_level,
-    };
-    let repair_command = backend
-        .build_command(build_request)
-        .map_err(|error| AgentError(format!("Failed to build repair command: {error}")))?;
-    let stdin_payload = agent::build_command_stdin_payload(kind, build_request)
-        .map_err(|error| AgentError(format!("Failed to build repair stdin payload: {error}")))?;
-
-    let mut tokio_command = tokio::process::Command::from(repair_command);
-    tokio_command.stdin(if stdin_payload.is_some() {
-        std::process::Stdio::piped()
-    } else {
-        std::process::Stdio::null()
-    });
-    tokio_command.stdout(std::process::Stdio::piped());
-    tokio_command.stderr(std::process::Stdio::piped());
-
-    let mut child = tokio_command
-        .spawn()
-        .map_err(|error| AgentError(format!("Failed to run repair command: {error}")))?;
-    let stdin_write_task = spawn_optional_stdin_write(child.stdin.take(), stdin_payload);
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|error| AgentError(format!("Failed to run repair command: {error}")))?;
-    await_optional_stdin_write(stdin_write_task).await?;
-
-    if output.status.signal().is_some() {
-        return Err(AgentError(
-            "[Stopped] Agent interrupted during structured output repair.".to_string(),
-        ));
-    }
-
-    let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
-    if !output.status.success() {
-        return Err(format_cli_turn_exit_error(
-            kind,
-            output.status.code(),
-            &stdout_text,
-            &stderr_text,
-        ));
-    }
-
-    let parsed = agent::parse_response(kind, &stdout_text, &stderr_text);
-
-    Ok(parsed.content)
-}
-
 /// Returns whether the provider should fail closed on invalid structured
 /// output instead of falling back to plain text.
 fn requires_strict_structured_output(kind: AgentKind) -> bool {
@@ -534,7 +422,6 @@ fn requires_strict_structured_output(kind: AgentKind) -> bool {
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use tempfile::tempdir;
@@ -547,13 +434,14 @@ mod tests {
 
     fn make_turn_request(folder: PathBuf) -> TurnRequest {
         TurnRequest {
-            reasoning_level: ReasoningLevel::default(),
             folder,
             live_session_output: None,
             model: "claude-sonnet-4-6".to_string(),
             mode: TurnMode::Start,
             prompt: "Write a test".into(),
+            protocol_profile: agent::ProtocolRequestProfile::SessionTurn,
             provider_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
         }
     }
 
@@ -789,42 +677,23 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies Claude turns run one repair retry when final output is not
-    /// valid structured JSON.
-    async fn test_run_turn_repairs_invalid_structured_output_for_claude() {
+    /// Verifies Claude turns surface invalid structured output instead of
+    /// starting a repair retry.
+    async fn test_run_turn_returns_error_for_invalid_structured_output_for_claude() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
-        let call_count = Arc::new(AtomicUsize::new(0));
         let mut mock_backend = MockAgentBackend::new();
-        mock_backend.expect_build_command().times(2).returning({
-            let call_count = Arc::clone(&call_count);
-            move |request| {
-                let call_index = call_count.fetch_add(1, Ordering::SeqCst);
-                let mut command = std::process::Command::new("sh");
-                command.arg("-c");
+        mock_backend
+            .expect_build_command()
+            .times(1)
+            .returning(|request| {
+                assert!(matches!(request.mode, AgentCommandMode::Start { .. }));
 
-                if call_index == 0 {
-                    command.arg("printf 'plain non-json response'");
-                } else {
-                    assert!(
-                        matches!(request.mode, AgentCommandMode::Start { .. }),
-                        "repair turn should use start mode"
-                    );
-                    assert!(
-                        request
-                            .mode
-                            .prompt()
-                            .contains("did not match the required JSON schema")
-                    );
-                    command.arg(
-                        "printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"Recovered \
-                         output\"}]}'",
-                    );
-                }
+                let mut command = std::process::Command::new("sh");
+                command.arg("-c").arg("printf 'plain non-json response'");
 
                 Ok(command)
-            }
-        });
+            });
         let channel = CliAgentChannel {
             backend: Arc::new(mock_backend),
             kind: AgentKind::Claude,
@@ -833,22 +702,19 @@ mod tests {
         let req = make_turn_request(dir.path().to_path_buf());
 
         // Act
-        let result = channel
+        let error = channel
             .run_turn("sess-1".to_string(), req, events_tx)
             .await
-            .expect("turn should succeed");
+            .expect_err("invalid structured output should fail");
 
         // Assert
-        assert_eq!(
-            result.assistant_message.to_display_text(),
-            "Recovered output"
-        );
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert!(error.0.contains("did not match the required JSON schema"));
+        assert!(error.0.contains("response:\nplain non-json response"));
     }
 
     #[tokio::test]
     /// Verifies non-zero CLI turn exits surface actionable Claude
-    /// re-authentication guidance instead of protocol repair errors.
+    /// re-authentication guidance instead of protocol schema errors.
     async fn test_run_turn_returns_claude_auth_guidance_for_expired_token() {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
