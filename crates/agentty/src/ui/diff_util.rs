@@ -206,7 +206,8 @@ pub fn build_focused_review_text(diff: &str, summary: Option<&str>) -> String {
 ///
 /// Protocol summary headings are removed, but the content that follows those
 /// headings is retained so user-facing notes such as canonical commit text
-/// still appear in the focused review.
+/// still appear in the focused review. The returned list is capped at
+/// `MAX_AGENT_COMMENT_COUNT` entries to keep the focused review compact.
 fn focused_review_agent_comments(summary: Option<&str>) -> Vec<String> {
     let summary_text = summary.unwrap_or_default().trim();
     let structured_summary_lines = serde_json::from_str::<AgentResponseSummary>(summary_text)
@@ -844,8 +845,8 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[test]
     fn test_build_focused_review_text_truncates_comments_at_max_count() {
-        // Arrange — 5 content lines exceed MAX_AGENT_COMMENT_COUNT (3),
-        // verify only the first 3 survive and the rest are dropped.
+        // Arrange — 5 content lines exceed `MAX_AGENT_COMMENT_COUNT` (4),
+        // verify only the first 4 survive and the rest are dropped.
         let summary = Some(
             "- First comment\n- Second comment\n- Third comment\n- Fourth comment\n- Fifth comment",
         );
@@ -853,12 +854,12 @@ diff --git a/src/main.rs b/src/main.rs
         // Act
         let focused_review = build_focused_review_text("", summary);
 
-        // Assert — first three kept in order
+        // Assert — first four kept in order
         assert!(focused_review.contains("- First comment"));
         assert!(focused_review.contains("- Second comment"));
         assert!(focused_review.contains("- Third comment"));
-        // fourth and fifth truncated
-        assert!(!focused_review.contains("Fourth comment"));
+        assert!(focused_review.contains("- Fourth comment"));
+        // fifth truncated
         assert!(!focused_review.contains("Fifth comment"));
     }
 
