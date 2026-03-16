@@ -308,6 +308,14 @@ User- or AI-triggered workflow guides invoked via slash commands. Pure markdown 
 | [`implementation-plan`](skills/implementation-plan/SKILL.md) | Create iterative execution plans in `docs/plan/` with size budgeting. |
 | [`release`](skills/release/SKILL.md) | Version bump, changelog, tagging, and push workflow. |
 
+### Analysis Skills (`skills/`)
+
+Agent-driven analysis skills that review a codebase and return findings as prioritized markdown task lists in the `answer` field. Discovered organically via `AGENTS.md`.
+
+| Skill | Description |
+|-------|-------------|
+| [`security-audit`](skills/security-audit/SKILL.md) | Audit subprocess execution, path handling, SQL queries, panic conditions, and dependency risks. |
+
 ### Runtime Prompt Templates (`crates/agentty/src/infra/agent/template/`)
 
 Askama templates compiled into the binary that are sent to agent backends automatically during session workflows.

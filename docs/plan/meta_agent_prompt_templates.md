@@ -64,17 +64,17 @@ Covers a distinct analysis domain (auth flows, injection vulnerabilities, panic 
 
 ### Substeps
 
-- [ ] **Create Security Audit skill file.** Write `skills/security-audit/SKILL.md` with frontmatter instructing the agent to: (1) read root `AGENTS.md`, (2) traverse target directories reading their `AGENTS.md` files, (3) review auth flows, data parsing, edge cases, panic conditions, and injection vulnerabilities, (4) return findings as a prioritized markdown task list in the answer with priority (`Critical`/`High`/`Medium`/`Low`).
-- [ ] **Create symlinks.** Create `CLAUDE.md` and `GEMINI.md` symlinks pointing to `SKILL.md` in `skills/security-audit/`.
-- [ ] **Register in `skills/AGENTS.md`.** Add a directory index entry for `security-audit/` in `skills/AGENTS.md`.
+- [x] **Create Security Audit skill file.** Write `skills/security-audit/SKILL.md` with frontmatter instructing the agent to: (1) read root `AGENTS.md`, (2) traverse target directories reading their `AGENTS.md` files, (3) review auth flows, data parsing, edge cases, panic conditions, and injection vulnerabilities, (4) return findings as a prioritized markdown task list in the answer with priority (`Critical`/`High`/`Medium`/`Low`).
+- [x] **Create symlinks.** Create `CLAUDE.md` and `GEMINI.md` symlinks pointing to `SKILL.md` in `skills/security-audit/`.
+- [x] **Register in `skills/AGENTS.md`.** Add a directory index entry for `security-audit/` in `skills/AGENTS.md`.
 
 ### Tests
 
-- [ ] No automated tests — pure markdown. Manual verification of file structure and symlinks.
+- [x] No automated tests — pure markdown. Manual verification of file structure and symlinks.
 
 ### Docs
 
-- [ ] Add Security Audit to the Meta-Agent Inventory table in root `AGENTS.md`.
+- [x] Add Security Audit to the Meta-Agent Inventory table in root `AGENTS.md`.
 
 ## 4) Create Product Manager skill
 

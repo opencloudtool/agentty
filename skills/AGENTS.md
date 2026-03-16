@@ -8,3 +8,4 @@ Reusable skills available to agents in this repository.
 - [`implementation-plan/`](implementation-plan/) - Guide for creating and maintaining implementation plans under `docs/plan/`.
 - [`release/`](release/) - Guide for releasing a new version of the project, including version bumping, changelog updates, and tagging.
 - [`review/`](review/) - Guide for reviewing code changes, existing code, and the project in general, and generating a structured review report.
+- [`security-audit/`](security-audit/) - Audit subprocess execution, path handling, SQL queries, panic conditions, and dependency risks.
