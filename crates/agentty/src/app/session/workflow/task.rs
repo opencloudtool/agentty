@@ -751,6 +751,8 @@ mod tests {
 
         // Assert
         assert!(prompt.contains("Failed to commit: merge conflict remains"));
+        assert!(prompt.contains("return the required protocol JSON object"));
+        assert!(prompt.contains("`answer` field only"));
     }
 
     #[test]
@@ -782,6 +784,8 @@ mod tests {
         // Assert
         assert!(prompt.contains("Keep session commit accurate"));
         assert!(prompt.contains(diff));
+        assert!(prompt.contains("required protocol JSON object"));
+        assert!(!prompt.contains("Return one plain-text commit message"));
         assert!(!prompt.contains(SESSION_COMMIT_COAUTHORED_BY_AGENTTY_TRAILER));
     }
 
@@ -805,6 +809,53 @@ mod tests {
         // Assert
         assert!(!prompt.contains(SESSION_COMMIT_COAUTHORED_BY_AGENTTY_TRAILER));
         assert!(prompt.contains("Keep session commit accurate"));
+    }
+
+    #[tokio::test]
+    /// Verifies plain-text one-shot output still generates a valid session
+    /// commit message.
+    async fn test_generate_session_commit_message_with_backend_accepts_plain_text_output() {
+        // Arrange
+        let temp_directory = tempfile::tempdir().expect("failed to create temp dir");
+        let mut backend = MockAgentBackend::new();
+        backend
+            .expect_build_command()
+            .times(1)
+            .returning(|request| {
+                assert!(matches!(
+                    request.request_kind,
+                    AgentRequestKind::UtilityPrompt
+                ));
+                assert!(
+                    request
+                        .prompt
+                        .contains("Generate the canonical session commit message")
+                );
+
+                Ok(mock_shell_command(
+                    "Refactor agent prompt and protocol handling",
+                    "",
+                    0,
+                ))
+            });
+
+        // Act
+        let commit_message = SessionTaskService::generate_session_commit_message_with_backend(
+            temp_directory.path(),
+            AgentModel::Gpt54,
+            "diff --git a/a.rs b/a.rs",
+            None,
+            &backend,
+            false,
+        )
+        .await
+        .expect("plain-text one-shot commit message should succeed");
+
+        // Assert
+        assert_eq!(
+            commit_message,
+            "Refactor agent prompt and protocol handling"
+        );
     }
 
     #[test]
@@ -1085,9 +1136,9 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies assist tasks surface invalid protocol output instead of
-    /// retrying with a repair prompt.
-    async fn test_run_agent_assist_task_returns_error_for_invalid_protocol_output() {
+    /// Verifies assist tasks accept plain-text one-shot output and persist
+    /// it as answer text.
+    async fn test_run_agent_assist_task_accepts_plain_text_output() {
         // Arrange
         let database = Database::open_in_memory()
             .await
@@ -1115,7 +1166,7 @@ mod tests {
             });
 
         // Act
-        let error = SessionTaskService::run_agent_assist_task_with_backend(
+        SessionTaskService::run_agent_assist_task_with_backend(
             RunAgentAssistTaskInput {
                 app_event_tx,
                 child_pid: Arc::new(Mutex::new(None)),
@@ -1129,18 +1180,17 @@ mod tests {
             &backend,
         )
         .await
-        .expect_err("invalid protocol output should fail");
+        .expect("plain-text utility output should succeed");
 
         // Assert
-        assert!(error.contains("did not match the required JSON schema"));
         let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
-        assert!(output_text.is_empty());
+        assert!(output_text.contains("plain text"));
         let sessions = database
             .load_sessions()
             .await
             .expect("failed to load sessions");
-        assert_eq!(sessions[0].input_tokens, 0);
-        assert_eq!(sessions[0].output_tokens, 0);
+        assert_eq!(sessions[0].input_tokens, 2);
+        assert_eq!(sessions[0].output_tokens, 1);
     }
 
     #[tokio::test]

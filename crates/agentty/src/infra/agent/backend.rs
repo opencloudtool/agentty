@@ -3,16 +3,10 @@ use std::fmt;
 use std::path::Path;
 use std::process::Command;
 
-use askama::Template;
-
 use super::protocol;
 use super::response_parser::ParsedResponse;
 use crate::domain::agent::{AgentKind, ReasoningLevel};
 use crate::infra::channel::{AgentRequestKind, TurnPromptAttachment};
-
-/// Marker used to detect whether protocol instructions are already included
-/// in a prompt.
-const PROTOCOL_INSTRUCTIONS_MARKER: &str = "Structured response protocol:";
 
 /// Transport runtime used to execute turns for one backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +22,33 @@ impl AgentTransport {
     pub fn uses_app_server(self) -> bool {
         matches!(self, Self::AppServer)
     }
+}
+
+/// Prompt delivery mode used by one provider backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPromptTransport {
+    /// Prompt is passed inline through argv.
+    Argv,
+    /// Prompt is streamed through stdin.
+    Stdin,
+}
+
+/// Final protocol validation mode used after transport output is collected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentResponsePolicy {
+    /// Invalid protocol payloads fall back to plain text.
+    BestEffort,
+    /// Invalid protocol payloads fail the turn immediately.
+    Strict,
+}
+
+/// App-server thought-stream classification policy for one provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppServerThoughtPolicy {
+    /// Provider does not expose dedicated thought phases.
+    None,
+    /// Provider uses phase labels to distinguish thought chunks.
+    PhaseLabel,
 }
 
 /// Request payload used to build provider commands.
@@ -69,29 +90,6 @@ impl fmt::Display for AgentBackendError {
 }
 
 impl Error for AgentBackendError {}
-
-/// Askama view model for rendering resume prompts with prior session output.
-#[derive(Template)]
-#[template(path = "resume_with_session_output_prompt.md", escape = "none")]
-struct ResumeWithSessionOutputPromptTemplate<'a> {
-    prompt: &'a str,
-    session_output: &'a str,
-}
-
-/// Askama view model for rendering structured response protocol
-/// instructions.
-///
-/// The template embeds one shared self-descriptive JSON schema so every
-/// provider sees the same prompt-side protocol contract.
-#[derive(Template)]
-#[template(path = "protocol_instruction_prompt.md", escape = "none")]
-struct ProtocolInstructionPromptTemplate<'a> {
-    /// User prompt appended after protocol instructions.
-    prompt: &'a str,
-    /// Pretty-printed self-descriptive JSON schema contract injected into the
-    /// prompt template.
-    response_json_schema: &'a str,
-}
 
 /// Builds and configures external agent CLI commands.
 #[cfg_attr(test, mockall::automock)]
@@ -139,6 +137,65 @@ pub fn transport_mode(kind: AgentKind) -> AgentTransport {
     provider_descriptor(kind).transport
 }
 
+/// Returns whether the provider expects prompts through stdin.
+pub(crate) fn prompt_transport(kind: AgentKind) -> AgentPromptTransport {
+    provider_descriptor(kind).prompt_transport
+}
+
+/// Parses one final assistant payload according to the provider response
+/// policy and normalizes it for the active protocol profile.
+///
+/// # Errors
+/// Returns a descriptive error when a strict provider emits invalid protocol
+/// JSON.
+pub(crate) fn parse_turn_response(
+    kind: AgentKind,
+    response_text: &str,
+    protocol_profile: protocol::ProtocolRequestProfile,
+) -> Result<protocol::AgentResponse, String> {
+    let response = match provider_descriptor(kind).response_policy {
+        AgentResponsePolicy::BestEffort => protocol::parse_agent_response(response_text),
+        AgentResponsePolicy::Strict => protocol::parse_agent_response_strict(response_text)
+            .map_err(|error| {
+                format!(
+                    "Agent output did not match the required JSON schema: \
+                     {error}\nresponse:\n{response_text}"
+                )
+            })?,
+    };
+
+    Ok(protocol::normalize_turn_response(
+        response,
+        protocol_profile,
+    ))
+}
+
+/// Returns whether app-server assistant chunks should be forwarded while the
+/// turn is still in progress.
+pub(crate) fn should_stream_app_server_assistant_messages(kind: AgentKind) -> bool {
+    !matches!(
+        provider_descriptor(kind).response_policy,
+        AgentResponsePolicy::Strict
+    )
+}
+
+/// Returns whether one app-server assistant chunk should be treated as
+/// thought text instead of transcript output.
+pub(crate) fn is_app_server_thought_chunk(
+    kind: AgentKind,
+    is_delta: bool,
+    phase: Option<&str>,
+) -> bool {
+    if !is_delta {
+        return false;
+    }
+
+    match provider_descriptor(kind).app_server_thought_policy {
+        AppServerThoughtPolicy::None => false,
+        AppServerThoughtPolicy::PhaseLabel => phase.is_some_and(is_codex_thought_phase_label),
+    }
+}
+
 /// Builds one optional stdin payload for providers that stream prompts instead
 /// of sending them through argv.
 ///
@@ -148,81 +205,24 @@ pub(crate) fn build_command_stdin_payload(
     kind: AgentKind,
     request: BuildCommandRequest<'_>,
 ) -> Result<Option<Vec<u8>>, AgentBackendError> {
-    match kind {
-        AgentKind::Gemini => super::gemini::build_prompt_stdin_payload(request).map(Some),
-        AgentKind::Claude => super::claude::build_prompt_stdin_payload(request).map(Some),
-        AgentKind::Codex => Ok(None),
+    match prompt_transport(kind) {
+        AgentPromptTransport::Argv => Ok(None),
+        AgentPromptTransport::Stdin => match kind {
+            AgentKind::Gemini => super::gemini::build_prompt_stdin_payload(request).map(Some),
+            AgentKind::Claude => super::claude::build_prompt_stdin_payload(request).map(Some),
+            AgentKind::Codex => Ok(None),
+        },
     }
-}
-
-/// Builds a resume prompt that optionally prepends previous session output.
-///
-/// # Errors
-/// Returns an error if Askama template rendering fails.
-pub(crate) fn build_resume_prompt(
-    prompt: &str,
-    session_output: Option<&str>,
-) -> Result<String, AgentBackendError> {
-    let Some(session_output) = session_output
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(prompt.to_string());
-    };
-
-    let template = ResumeWithSessionOutputPromptTemplate {
-        prompt,
-        session_output,
-    };
-    let rendered = template.render().map_err(|error| {
-        AgentBackendError::CommandBuild(format!(
-            "Failed to render `resume_with_session_output_prompt.md`: {error}"
-        ))
-    })?;
-
-    Ok(rendered.trim_end().to_string())
-}
-
-/// Prepends structured response protocol instructions to a prompt.
-///
-/// Tells agents to emit one top-level JSON object that matches the shared
-/// schema so response parsing can deserialize directly into the internal
-/// protocol structs, and requires repository-root-relative POSIX file paths in
-/// rendered answers. If the prompt already contains the protocol marker, this
-/// function returns the prompt unchanged to avoid duplicated guidance.
-///
-/// # Errors
-/// Returns an error if Askama template rendering fails.
-// TODO: Use `profile` to inject per-request-family protocol guidance once
-// plan step 2 ("Move Request Formatting Rules Out of Task Prompts") lands.
-// See `docs/plan/protocol_request_instructions.md`.
-pub(crate) fn prepend_protocol_instructions(
-    prompt: &str,
-    _profile: protocol::ProtocolRequestProfile,
-) -> Result<String, AgentBackendError> {
-    if prompt.contains(PROTOCOL_INSTRUCTIONS_MARKER) {
-        return Ok(prompt.to_string());
-    }
-
-    let response_json_schema = protocol::agent_response_json_schema_json();
-    let template = ProtocolInstructionPromptTemplate {
-        prompt,
-        response_json_schema: &response_json_schema,
-    };
-    let rendered = template.render().map_err(|error| {
-        AgentBackendError::CommandBuild(format!(
-            "Failed to render `protocol_instruction_prompt.md`: {error}"
-        ))
-    })?;
-
-    Ok(rendered.trim_end().to_string())
 }
 
 /// One backend/provider descriptor containing construction and parsing hooks.
 struct AgentProviderDescriptor {
     backend_factory: fn() -> Box<dyn AgentBackend>,
+    prompt_transport: AgentPromptTransport,
     parse_response: fn(&str, &str) -> ParsedResponse,
     parse_stream_output_line: fn(&str) -> Option<(String, bool)>,
+    response_policy: AgentResponsePolicy,
+    app_server_thought_policy: AppServerThoughtPolicy,
     transport: AgentTransport,
 }
 
@@ -230,145 +230,50 @@ fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
     match kind {
         AgentKind::Gemini => AgentProviderDescriptor {
             backend_factory: || Box::new(super::gemini::GeminiBackend),
+            prompt_transport: AgentPromptTransport::Stdin,
             parse_response: super::response_parser::parse_gemini_response_with_fallback,
             parse_stream_output_line: super::response_parser::parse_gemini_stream_output_line,
+            response_policy: AgentResponsePolicy::Strict,
+            app_server_thought_policy: AppServerThoughtPolicy::None,
             transport: AgentTransport::AppServer,
         },
         AgentKind::Claude => AgentProviderDescriptor {
             backend_factory: || Box::new(super::claude::ClaudeBackend),
+            prompt_transport: AgentPromptTransport::Stdin,
             parse_response: super::response_parser::parse_claude_response_with_fallback,
             parse_stream_output_line: super::response_parser::parse_claude_stream_output_line,
+            response_policy: AgentResponsePolicy::Strict,
+            app_server_thought_policy: AppServerThoughtPolicy::None,
             transport: AgentTransport::Cli,
         },
         AgentKind::Codex => AgentProviderDescriptor {
             backend_factory: || Box::new(super::codex::CodexBackend),
+            prompt_transport: AgentPromptTransport::Argv,
             parse_response: super::response_parser::parse_codex_response_with_fallback,
             parse_stream_output_line: super::response_parser::parse_codex_stream_output_line,
+            response_policy: AgentResponsePolicy::BestEffort,
+            app_server_thought_policy: AppServerThoughtPolicy::PhaseLabel,
             transport: AgentTransport::AppServer,
         },
     }
 }
 
+/// Returns whether one Codex phase label denotes thought/planning text.
+///
+/// Phase matching is case-insensitive so provider variants such as `Thinking`
+/// and `PLAN` continue to route to thought deltas.
+fn is_codex_thought_phase_label(phase: &str) -> bool {
+    let normalized_phase = phase.trim();
+
+    normalized_phase.eq_ignore_ascii_case("thinking")
+        || normalized_phase.eq_ignore_ascii_case("plan")
+        || normalized_phase.eq_ignore_ascii_case("reasoning")
+        || normalized_phase.eq_ignore_ascii_case("thought")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    /// Ensures resume prompt rendering includes trimmed session output and
-    /// the new user prompt.
-    fn test_build_resume_prompt_includes_session_output_and_prompt() {
-        // Arrange
-        let prompt = "Continue and update tests";
-        let session_output = Some("  previous output line  \n");
-
-        // Act
-        let resume_prompt =
-            build_resume_prompt(prompt, session_output).expect("resume prompt should render");
-
-        // Assert
-        assert!(resume_prompt.contains("previous output line"));
-        assert!(resume_prompt.contains("Continue and update tests"));
-    }
-
-    #[test]
-    /// Ensures whitespace-only session output does not trigger transcript
-    /// wrapping and returns the original prompt.
-    fn test_build_resume_prompt_returns_original_prompt_when_output_is_blank() {
-        // Arrange
-        let prompt = "Follow-up request";
-        let session_output = Some("   ");
-
-        // Act
-        let resume_prompt =
-            build_resume_prompt(prompt, session_output).expect("resume prompt should render");
-
-        // Assert
-        assert_eq!(resume_prompt, prompt);
-    }
-
-    #[test]
-    /// Ensures absent session output keeps resume prompt formatting unchanged.
-    fn test_build_resume_prompt_returns_original_prompt_without_output() {
-        // Arrange
-        let prompt = "Retry merge";
-
-        // Act
-        let resume_prompt = build_resume_prompt(prompt, None).expect("resume prompt should render");
-
-        // Assert
-        assert_eq!(resume_prompt, prompt);
-    }
-
-    #[test]
-    /// Ensures protocol instructions are prepended to plain prompts.
-    fn test_prepend_protocol_instructions_adds_session_protocol_instructions() {
-        // Arrange
-        let prompt = "Implement feature";
-
-        // Act
-        let rendered_prompt =
-            prepend_protocol_instructions(prompt, protocol::ProtocolRequestProfile::SessionTurn)
-                .expect("protocol instruction prompt should render");
-
-        // Assert
-        assert!(rendered_prompt.contains("File path output requirements:"));
-        assert!(rendered_prompt.contains("repository-root-relative POSIX paths"));
-        assert!(rendered_prompt.contains("Paths must be relative to the repository root."));
-        assert!(rendered_prompt.contains("Structured response protocol:"));
-        assert!(rendered_prompt.contains("Return a single JSON object"));
-        assert!(rendered_prompt.contains("Do not wrap the JSON in markdown code fences."));
-        assert!(rendered_prompt.contains("Follow this JSON Schema exactly."));
-        assert!(rendered_prompt.contains("Treat the JSON Schema titles and descriptions"));
-        assert!(rendered_prompt.contains("Authoritative JSON Schema:"));
-        assert!(rendered_prompt.contains("---"));
-        assert!(rendered_prompt.contains("summary"));
-        assert!(rendered_prompt.contains("turn"));
-        assert!(rendered_prompt.contains("session"));
-        assert!(rendered_prompt.contains("\"answer\""));
-        assert!(rendered_prompt.contains("\"questions\""));
-        assert!(rendered_prompt.contains("\"title\""));
-        assert!(rendered_prompt.contains("\"description\""));
-        assert!(rendered_prompt.contains("summary"));
-        assert!(rendered_prompt.ends_with(prompt));
-    }
-
-    #[test]
-    /// Ensures protocol instructions are not duplicated when already present.
-    fn test_prepend_protocol_instructions_is_idempotent() {
-        // Arrange
-        let prompt = prepend_protocol_instructions(
-            "Implement feature",
-            protocol::ProtocolRequestProfile::SessionTurn,
-        )
-        .expect("protocol instruction prompt should render");
-
-        // Act
-        let rendered_prompt =
-            prepend_protocol_instructions(&prompt, protocol::ProtocolRequestProfile::UtilityPrompt)
-                .expect("protocol instruction prompt should render");
-
-        // Assert
-        assert_eq!(rendered_prompt, prompt);
-    }
-
-    #[test]
-    /// Ensures one-shot prompts reuse the shared schema-only protocol
-    /// instructions.
-    fn test_prepend_protocol_instructions_reuses_same_contract_for_one_shot() {
-        // Arrange
-        let prompt = "Generate title";
-
-        // Act
-        let rendered_prompt =
-            prepend_protocol_instructions(prompt, protocol::ProtocolRequestProfile::UtilityPrompt)
-                .expect("protocol instruction prompt should render");
-
-        // Assert
-        assert!(rendered_prompt.contains("Structured response protocol:"));
-        assert!(rendered_prompt.contains("---"));
-        assert!(rendered_prompt.contains("\"summary\""));
-        assert!(rendered_prompt.ends_with(prompt));
-    }
 
     #[test]
     /// Ensures transport capability is provided by infra backend descriptors,
@@ -388,5 +293,85 @@ mod tests {
         assert_eq!(claude_transport, AgentTransport::Cli);
         assert_eq!(codex_transport, AgentTransport::AppServer);
         assert_eq!(gemini_transport, AgentTransport::AppServer);
+    }
+
+    #[test]
+    /// Ensures prompt delivery is also derived from the shared provider
+    /// descriptor.
+    fn test_prompt_transport_reports_expected_mode_by_provider() {
+        // Arrange
+        let claude_kind = AgentKind::Claude;
+        let codex_kind = AgentKind::Codex;
+        let gemini_kind = AgentKind::Gemini;
+
+        // Act
+        let claude_transport = prompt_transport(claude_kind);
+        let codex_transport = prompt_transport(codex_kind);
+        let gemini_transport = prompt_transport(gemini_kind);
+
+        // Assert
+        assert_eq!(claude_transport, AgentPromptTransport::Stdin);
+        assert_eq!(codex_transport, AgentPromptTransport::Argv);
+        assert_eq!(gemini_transport, AgentPromptTransport::Stdin);
+    }
+
+    #[test]
+    /// Ensures strict providers reject malformed final protocol payloads.
+    fn test_parse_turn_response_rejects_invalid_payload_for_strict_provider() {
+        // Arrange
+        let raw_response = "plain response";
+
+        // Act
+        let result = parse_turn_response(
+            AgentKind::Claude,
+            raw_response,
+            protocol::ProtocolRequestProfile::SessionTurn,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    /// Ensures best-effort providers preserve plain-text payloads while still
+    /// normalizing the protocol profile.
+    fn test_parse_turn_response_keeps_plain_text_for_best_effort_provider() {
+        // Arrange
+        let raw_response = "plain response";
+
+        // Act
+        let result = parse_turn_response(
+            AgentKind::Codex,
+            raw_response,
+            protocol::ProtocolRequestProfile::SessionTurn,
+        )
+        .expect("best-effort provider should accept plain text");
+
+        // Assert
+        assert_eq!(result.answer, "plain response");
+        assert_eq!(
+            result.summary,
+            Some(protocol::AgentResponseSummary {
+                session: String::new(),
+                turn: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    /// Ensures Codex app-server phase labels map to thought deltas through the
+    /// shared provider descriptor.
+    fn test_is_app_server_thought_chunk_reports_codex_phase_labels() {
+        // Arrange / Act / Assert
+        assert!(is_app_server_thought_chunk(
+            AgentKind::Codex,
+            true,
+            Some("thinking"),
+        ));
+        assert!(!is_app_server_thought_chunk(
+            AgentKind::Gemini,
+            true,
+            Some("thinking"),
+        ));
     }
 }

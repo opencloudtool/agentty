@@ -1,10 +1,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::backend::{
-    AgentBackend, AgentBackendError, BuildCommandRequest, build_resume_prompt,
-    prepend_protocol_instructions,
-};
+use super::backend::{AgentBackend, AgentBackendError, BuildCommandRequest};
+use super::prompt::{PromptPreparationRequest, prepare_prompt_text};
 
 /// Backend implementation for the Gemini CLI.
 pub(super) struct GeminiBackend;
@@ -57,12 +55,12 @@ impl AgentBackend for GeminiBackend {
 pub(super) fn build_prompt_stdin_payload(
     request: BuildCommandRequest<'_>,
 ) -> Result<Vec<u8>, AgentBackendError> {
-    let prompt = if request.request_kind.is_resume() {
-        build_resume_prompt(request.prompt, request.request_kind.session_output())?
-    } else {
-        request.prompt.to_string()
-    };
-    let prompt = prepend_protocol_instructions(&prompt, request.request_kind.protocol_profile())?;
+    let prompt = prepare_prompt_text(PromptPreparationRequest {
+        prompt: request.prompt,
+        protocol_profile: request.request_kind.protocol_profile(),
+        replay_session_output: request.request_kind.session_output(),
+        should_replay_session_output: request.request_kind.is_resume(),
+    })?;
 
     Ok(prompt.into_bytes())
 }

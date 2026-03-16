@@ -74,11 +74,12 @@ choose the correct module when implementing changes.
 | - `cli.rs` | `CliAgentChannel` - CLI subprocess adapter (Claude). |
 | - `app_server.rs` | `AppServerAgentChannel` - app-server RPC adapter (Codex/Gemini). |
 | `crates/agentty/src/infra/agent/` | Per-provider backend command builders and response parsing: |
-| - `backend.rs` | `AgentBackend` trait, transport mode selection, and shared protocol prompt templating. |
+| - `backend.rs` | `AgentBackend` trait, provider capability descriptors, transport selection, and shared final-response policy. |
 | - `claude.rs` | Claude backend implementation. |
 | - `codex.rs` | Codex backend implementation. |
 | - `gemini.rs` | Gemini backend implementation. |
-| - `protocol.rs` | Structured response contract (`AgentResponse`, `QuestionItem`, `AgentResponseSummary`), prompt/transport JSON-schema generation, parsing, and stream normalization. |
+| - `prompt.rs` | Shared prompt preparation (`prepare_prompt_text`) for transcript replay and protocol preamble injection. |
+| - `protocol.rs` + `infra/agent/protocol/` | Router plus focused protocol submodules: `model.rs` for the wire contract, `schema.rs` for prompt/transport schema generation, and `parse.rs` for final/stream parsing helpers. |
 | - `response_parser.rs` | Provider-specific final/stream output parsing and usage extraction for Claude, Gemini, and Codex. |
 | - `submission.rs` | Shared one-shot prompt execution and strict protocol validation for generated titles, session commit messages, assist prompts, and review text. |
 | `crates/agentty/src/infra/app_server.rs` | `AppServerClient` trait and shared request/response stream types. |

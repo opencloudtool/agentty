@@ -544,102 +544,8 @@ async fn apply_turn_result(
 ) -> Result<Status, String> {
     match turn_result {
         Ok(result) => {
-            let TurnResult {
-                assistant_message,
-                input_tokens,
-                output_tokens,
-                provider_conversation_id,
-                ..
-            } = result;
-
-            if let Some(message) =
-                build_assistant_transcript_output(&assistant_message, streamed_assistant_content)
-            {
-                SessionTaskService::append_session_output(
-                    &context.output,
-                    &context.db,
-                    &context.app_event_tx,
-                    &context.session_id,
-                    message.as_str(),
-                )
-                .await;
-            }
-
-            let summary_text = persisted_session_summary_payload(&assistant_message);
-            let _ = context
-                .db
-                .update_session_summary(&context.session_id, &summary_text)
-                .await;
-
-            if let Some(summary_output) = build_summary_transcript_output(&assistant_message) {
-                SessionTaskService::append_session_output(
-                    &context.output,
-                    &context.db,
-                    &context.app_event_tx,
-                    &context.session_id,
-                    &summary_output,
-                )
-                .await;
-            }
-
-            let _ = context.app_event_tx.send(AppEvent::RefreshSessions);
-
-            let question_items = assistant_message.question_items();
-            let target_status = if question_items.is_empty() {
-                let _ = context
-                    .db
-                    .update_session_questions(&context.session_id, "")
-                    .await;
-
-                Status::Review
-            } else {
-                if let Ok(questions_json) = serde_json::to_string(&question_items) {
-                    let _ = context
-                        .db
-                        .update_session_questions(&context.session_id, &questions_json)
-                        .await;
-                }
-
-                Status::Question
-            };
-            let _ = context.app_event_tx.send(AppEvent::AgentResponseReceived {
-                response: assistant_message,
-                session_id: context.session_id.clone(),
-            });
-
-            let stats = SessionStats {
-                input_tokens,
-                output_tokens,
-            };
-            let _ = context
-                .db
-                .update_session_stats(&context.session_id, &stats)
-                .await;
-            let _ = context
-                .db
-                .upsert_session_usage(&context.session_id, session_model.as_str(), &stats)
-                .await;
-            let _ = context
-                .db
-                .update_session_provider_conversation_id(
-                    &context.session_id,
-                    provider_conversation_id.as_deref(),
-                )
-                .await;
-
-            SessionTaskService::handle_auto_commit(AssistContext {
-                app_event_tx: context.app_event_tx.clone(),
-                child_pid: Arc::clone(&context.child_pid),
-                db: context.db.clone(),
-                folder: context.folder.clone(),
-                git_client: Arc::clone(&context.git_client),
-                id: context.session_id.clone(),
-                output: Arc::clone(&context.output),
-                session_model,
-            })
-            .await;
-
-            Ok(target_status)
+            apply_successful_turn_result(context, session_model, result, streamed_assistant_content)
+                .await
         }
         Err(error) => {
             let message = format!("\n{}\n", error.0.trim());
@@ -655,6 +561,112 @@ async fn apply_turn_result(
             Err(error.0)
         }
     }
+}
+
+/// Persists the successful turn payload, emits reducer events, and runs the
+/// auto-commit workflow before returning the next session status.
+async fn apply_successful_turn_result(
+    context: &SessionWorkerContext,
+    session_model: AgentModel,
+    result: TurnResult,
+    streamed_assistant_content: bool,
+) -> Result<Status, String> {
+    let TurnResult {
+        assistant_message,
+        input_tokens,
+        output_tokens,
+        provider_conversation_id,
+        ..
+    } = result;
+
+    if let Some(message) =
+        build_assistant_transcript_output(&assistant_message, streamed_assistant_content)
+    {
+        SessionTaskService::append_session_output(
+            &context.output,
+            &context.db,
+            &context.app_event_tx,
+            &context.session_id,
+            message.as_str(),
+        )
+        .await;
+    }
+
+    let summary_text = persisted_session_summary_payload(&assistant_message);
+    let _ = context
+        .db
+        .update_session_summary(&context.session_id, &summary_text)
+        .await;
+
+    if let Some(summary_output) = build_summary_transcript_output(&assistant_message) {
+        SessionTaskService::append_session_output(
+            &context.output,
+            &context.db,
+            &context.app_event_tx,
+            &context.session_id,
+            &summary_output,
+        )
+        .await;
+    }
+
+    let _ = context.app_event_tx.send(AppEvent::RefreshSessions);
+
+    let question_items = assistant_message.question_items();
+    let target_status = if question_items.is_empty() {
+        let _ = context
+            .db
+            .update_session_questions(&context.session_id, "")
+            .await;
+
+        Status::Review
+    } else {
+        if let Ok(questions_json) = serde_json::to_string(&question_items) {
+            let _ = context
+                .db
+                .update_session_questions(&context.session_id, &questions_json)
+                .await;
+        }
+
+        Status::Question
+    };
+    let _ = context.app_event_tx.send(AppEvent::AgentResponseReceived {
+        response: assistant_message,
+        session_id: context.session_id.clone(),
+    });
+
+    let stats = SessionStats {
+        input_tokens,
+        output_tokens,
+    };
+    let _ = context
+        .db
+        .update_session_stats(&context.session_id, &stats)
+        .await;
+    let _ = context
+        .db
+        .upsert_session_usage(&context.session_id, session_model.as_str(), &stats)
+        .await;
+    let _ = context
+        .db
+        .update_session_provider_conversation_id(
+            &context.session_id,
+            provider_conversation_id.as_deref(),
+        )
+        .await;
+
+    SessionTaskService::handle_auto_commit(AssistContext {
+        app_event_tx: context.app_event_tx.clone(),
+        child_pid: Arc::clone(&context.child_pid),
+        db: context.db.clone(),
+        folder: context.folder.clone(),
+        git_client: Arc::clone(&context.git_client),
+        id: context.session_id.clone(),
+        output: Arc::clone(&context.output),
+        session_model,
+    })
+    .await;
+
+    Ok(target_status)
 }
 
 /// Spawns first-turn session title generation from the initial user prompt.
@@ -1086,9 +1098,15 @@ mod tests {
         let persisted_summary = persisted_session_summary_payload(&response);
 
         // Assert
+        let summary = serde_json::from_str::<AgentResponseSummary>(&persisted_summary)
+            .expect("summary should deserialize");
+
         assert_eq!(
-            persisted_summary,
-            r#"{"turn":"Updated the greeting flow.","session":"Session now greets users on startup."}"#
+            summary,
+            AgentResponseSummary {
+                session: "Session now greets users on startup.".to_string(),
+                turn: "Updated the greeting flow.".to_string(),
+            }
         );
     }
 
@@ -1363,11 +1381,16 @@ mod tests {
 
         // Assert
         assert_eq!(status, Status::Review);
+        let summary = sessions[0].summary.as_deref().map(|raw| {
+            serde_json::from_str::<AgentResponseSummary>(raw)
+                .expect("stored summary should deserialize")
+        });
         assert_eq!(
-            sessions[0].summary.as_deref(),
-            Some(
-                r#"{"turn":"- Updated the worker flow.","session":"- Active review now reloads summary from persistence."}"#
-            )
+            summary,
+            Some(AgentResponseSummary {
+                session: "- Active review now reloads summary from persistence.".to_string(),
+                turn: "- Updated the worker flow.".to_string(),
+            })
         );
         let output = context.output.lock().expect("output lock poisoned");
         assert!(output.contains("## Change Summary"));

@@ -9,13 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::domain::agent::AgentKind;
 use crate::infra::agent;
-use crate::infra::agent::protocol::{
-    normalize_stream_assistant_chunk, normalize_turn_response, parse_agent_response,
-    parse_agent_response_strict,
-};
-use crate::infra::app_server::{
-    AppServerClient, AppServerStreamEvent, AppServerTurnRequest, AppServerTurnResponse,
-};
+use crate::infra::app_server::{AppServerClient, AppServerStreamEvent, AppServerTurnRequest};
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnRequest,
     TurnResult,
@@ -78,7 +72,8 @@ impl AgentChannel for AppServerAgentChannel {
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
         let client = Arc::clone(&self.client);
         let kind = self.kind;
-        let should_stream_assistant_messages = !requires_strict_structured_output(kind);
+        let should_stream_assistant_messages =
+            agent::should_stream_app_server_assistant_messages(kind);
 
         Box::pin(async move {
             let request = AppServerTurnRequest {
@@ -114,7 +109,11 @@ impl AgentChannel for AppServerAgentChannel {
                                     continue;
                                 }
 
-                                if is_streamed_thought_message(kind, is_delta, phase.as_deref()) {
+                                if agent::is_app_server_thought_chunk(
+                                    kind,
+                                    is_delta,
+                                    phase.as_deref(),
+                                ) {
                                     let _ =
                                         events.send(TurnEvent::ThoughtDelta(trimmed.to_string()));
 
@@ -149,10 +148,12 @@ impl AgentChannel for AppServerAgentChannel {
             match turn_result {
                 Ok(response) => {
                     let _ = events.send(TurnEvent::PidUpdate(response.pid));
-                    let assistant_message = normalize_turn_response(
-                        parse_strict_structured_response(kind, &response)?,
+                    let assistant_message = agent::parse_turn_response(
+                        kind,
+                        &response.assistant_message,
                         protocol_profile,
-                    );
+                    )
+                    .map_err(AgentError)?;
 
                     Ok(TurnResult {
                         assistant_message,
@@ -184,7 +185,7 @@ impl AgentChannel for AppServerAgentChannel {
 /// For protocol JSON fragments, returns [`None`] so partial JSON is not
 /// appended to session output.
 fn normalize_delta_assistant_message(message: &str) -> Option<String> {
-    normalize_stream_assistant_chunk(message)
+    agent::protocol::normalize_stream_assistant_chunk(message)
 }
 
 /// Normalizes one complete non-delta assistant message.
@@ -195,61 +196,10 @@ fn normalize_delta_assistant_message(message: &str) -> Option<String> {
 ///
 /// Returns [`None`] when the payload is only a suppressed protocol fragment.
 fn format_non_delta_assistant_message(message: &str) -> Option<String> {
-    let normalized = normalize_stream_assistant_chunk(message)?;
+    let normalized = agent::protocol::normalize_stream_assistant_chunk(message)?;
     let normalized = normalized.trim_end();
 
     Some(format!("{normalized}\n\n"))
-}
-
-/// Returns whether one streamed assistant chunk should be treated as thought
-/// text.
-///
-/// Codex app-server emits thought/planning deltas with `phase` values such as
-/// `thinking` and `plan`. These are surfaced as [`TurnEvent::ThoughtDelta`] so
-/// worker transcript output only contains final assistant answers.
-fn is_streamed_thought_message(kind: AgentKind, is_delta: bool, phase: Option<&str>) -> bool {
-    if kind != AgentKind::Codex || !is_delta {
-        return false;
-    }
-
-    phase.is_some_and(is_codex_thought_phase_label)
-}
-
-/// Returns whether one Codex phase label denotes thought/planning text.
-///
-/// Phase matching is case-insensitive so provider variants such as `Thinking`
-/// and `PLAN` continue to route to [`TurnEvent::ThoughtDelta`].
-fn is_codex_thought_phase_label(phase: &str) -> bool {
-    let normalized_phase = phase.trim();
-
-    normalized_phase.eq_ignore_ascii_case("thinking")
-        || normalized_phase.eq_ignore_ascii_case("plan")
-        || normalized_phase.eq_ignore_ascii_case("reasoning")
-        || normalized_phase.eq_ignore_ascii_case("thought")
-}
-
-/// Parses one final assistant payload for providers that require strict
-/// structured output.
-fn parse_strict_structured_response(
-    kind: AgentKind,
-    response: &AppServerTurnResponse,
-) -> Result<agent::AgentResponse, AgentError> {
-    if !requires_strict_structured_output(kind) {
-        return Ok(parse_agent_response(&response.assistant_message));
-    }
-
-    parse_agent_response_strict(&response.assistant_message).map_err(|error| {
-        AgentError(format!(
-            "Agent output did not match the required JSON schema: {error}\nresponse:\n{}",
-            response.assistant_message
-        ))
-    })
-}
-
-/// Returns whether the provider should fail closed on invalid structured
-/// output instead of falling back to plain text.
-fn requires_strict_structured_output(kind: AgentKind) -> bool {
-    matches!(kind, AgentKind::Claude | AgentKind::Gemini)
 }
 
 #[cfg(test)]

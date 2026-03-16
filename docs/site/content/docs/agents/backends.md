@@ -69,7 +69,7 @@ The rule is carried by the shared prompt preamble in
 `crates/agentty/resources/protocol_instruction_prompt.md`.
 
 - Allowed forms: `path`, `path:line`, `path:line:column`
-- Example: `crates/agentty/src/infra/agent/backend.rs:151`
+- Example: `crates/agentty/src/infra/agent/prompt.rs:48`
 - Not allowed: absolute paths, `file://` URIs, or `../`-prefixed paths
 
 ## Structured Response Protocol
@@ -79,10 +79,11 @@ Agentty prepends one shared protocol preamble from
 `crates/agentty/resources/protocol_instruction_prompt.md`. That template
 contains the repository-root-relative file path rules, the structured response
 instructions, the explicit `---` separator that separates the task body, and
-the full self-descriptive JSON Schema generated from
-`crates/agentty/src/infra/agent/protocol.rs`. `protocol.rs` remains the single
-source of truth for the dynamic response shape, field descriptions, parsing,
-and transport-oriented schema generation.
+the full self-descriptive JSON Schema generated from the protocol subsystem in
+`crates/agentty/src/infra/agent/protocol.rs`. The router delegates to
+`protocol/model.rs`, `protocol/schema.rs`, and `protocol/parse.rs`, while
+`crates/agentty/src/infra/agent/prompt.rs` owns the shared prompt-preparation
+path used by CLI and app-server turns.
 
 Each request path now selects one canonical `AgentRequestKind` before the
 backend sees the prompt, and the backend derives the protocol-owned
@@ -143,6 +144,9 @@ Agentty validates final agent output against the structured response protocol.
   output does not match the protocol schema.
 - One-shot utility prompts also fail with a schema error when provider output
   does not match the required protocol JSON.
+- Provider-specific transport, stdin-vs-argv prompt delivery, strict-vs-best-effort
+  final parsing, and app-server thought-phase handling are centralized in the
+  shared provider descriptor in `crates/agentty/src/infra/agent/backend.rs`.
 - Claude turns use native schema validation via `claude --json-schema` and
   `--output-format json` (no Claude `stream-json` mode).
 - Prompt-side protocol instructions rely on the raw self-descriptive

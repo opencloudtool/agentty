@@ -422,16 +422,13 @@ pub fn turn_prompt_for_runtime(
     context_reset: bool,
 ) -> Result<TurnPrompt, String> {
     let prompt = prompt.into();
-    let turn_prompt = if context_reset {
-        agent::build_resume_prompt(&prompt.text, replay_session_output)
-            .map_err(|error| error.to_string())?
-    } else {
-        prompt.text.clone()
-    };
-
-    let turn_prompt =
-        agent::prepend_protocol_instructions(&turn_prompt, request_kind.protocol_profile())
-            .map_err(|error| error.to_string())?;
+    let turn_prompt = agent::prepare_prompt_text(agent::PromptPreparationRequest {
+        prompt: &prompt.text,
+        protocol_profile: request_kind.protocol_profile(),
+        replay_session_output,
+        should_replay_session_output: context_reset,
+    })
+    .map_err(|error| error.to_string())?;
 
     Ok(TurnPrompt {
         attachments: prompt.attachments,

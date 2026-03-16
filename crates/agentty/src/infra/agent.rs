@@ -8,6 +8,7 @@ mod backend;
 mod claude;
 mod codex;
 mod gemini;
+mod prompt;
 pub(crate) mod protocol;
 mod response_parser;
 mod submission;
@@ -17,9 +18,10 @@ pub use backend::{
     parse_response, transport_mode,
 };
 pub(crate) use backend::{
-    build_command_stdin_payload, build_resume_prompt, parse_stream_output_line,
-    prepend_protocol_instructions,
+    build_command_stdin_payload, is_app_server_thought_chunk, parse_stream_output_line,
+    parse_turn_response, should_stream_app_server_assistant_messages,
 };
+pub(crate) use prompt::{PromptPreparationRequest, prepare_prompt_text};
 pub(crate) use protocol::AgentResponse;
 pub use protocol::ProtocolRequestProfile;
 pub use response_parser::ParsedResponse;

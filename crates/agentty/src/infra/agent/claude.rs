@@ -1,10 +1,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::backend::{
-    AgentBackend, AgentBackendError, BuildCommandRequest, build_resume_prompt,
-    prepend_protocol_instructions,
-};
+use super::backend::{AgentBackend, AgentBackendError, BuildCommandRequest};
+use super::prompt::{PromptPreparationRequest, prepare_prompt_text};
 use crate::infra::agent::protocol::agent_response_output_schema_json;
 use crate::infra::channel::{
     TurnPromptAttachment, TurnPromptContentPart, split_turn_prompt_content,
@@ -74,15 +72,13 @@ impl AgentBackend for ClaudeBackend {
 pub(super) fn build_prompt_stdin_payload(
     request: BuildCommandRequest<'_>,
 ) -> Result<Vec<u8>, AgentBackendError> {
-    let prompt = if request.request_kind.is_resume() {
-        build_resume_prompt(
-            &render_prompt_with_local_images(request.prompt, request.attachments)?,
-            request.request_kind.session_output(),
-        )?
-    } else {
-        render_prompt_with_local_images(request.prompt, request.attachments)?
-    };
-    let prompt = prepend_protocol_instructions(&prompt, request.request_kind.protocol_profile())?;
+    let prompt = render_prompt_with_local_images(request.prompt, request.attachments)?;
+    let prompt = prepare_prompt_text(PromptPreparationRequest {
+        prompt: &prompt,
+        protocol_profile: request.request_kind.protocol_profile(),
+        replay_session_output: request.request_kind.session_output(),
+        should_replay_session_output: request.request_kind.is_resume(),
+    })?;
 
     Ok(prompt.into_bytes())
 }

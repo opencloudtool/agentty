@@ -177,7 +177,7 @@ Provider conversation id flow:
 Provider output is normalized to one structured response protocol:
 
 1. Prompt builders prepend the shared protocol preamble template and the self-descriptive `schemars` document, so every provider sees the same `answer`/`questions`/optional-`summary` schema and transport-enforced `outputSchema` paths can normalize that same contract separately.
-   `crates/agentty/resources/protocol_instruction_prompt.md` owns the normal request wrapper, while `crates/agentty/src/infra/agent/protocol.rs` remains the authoritative source for dynamic schema titles, descriptions, response shape metadata, and parsing.
+   `crates/agentty/resources/protocol_instruction_prompt.md` owns the normal request wrapper, `crates/agentty/src/infra/agent/prompt.rs` owns shared prompt preparation, and `crates/agentty/src/infra/agent/protocol.rs` routes to the authoritative protocol model/schema/parse submodules.
 1. The caller selects one canonical `AgentRequestKind` before transport handoff, and the transport derives the matching `ProtocolRequestProfile` from it. Session turns use `SessionStart` or `SessionResume`, while isolated utility prompts use `UtilityPrompt`.
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts may leave `summary` unused.
 1. Channels stream deltas/progress as `TurnEvent`.
@@ -193,6 +193,7 @@ Streaming behavior differs by transport/provider:
   utility prompts.
 - App-server channel (`AppServerAgentChannel`): bridges `AppServerStreamEvent` to `TurnEvent`.
 - Codex thought phases (`thinking`/`plan`/`reasoning`/`thought`) stream as `ThoughtDelta`.
+- Provider capabilities in `crates/agentty/src/infra/agent/backend.rs` now centralize whether transports stream assistant chunks live, require strict final protocol validation, or classify app-server phase labels as thought output.
 - Strict providers suppress streamed assistant chunks when needed so malformed first-pass protocol JSON is not persisted.
 - Worker persistence behavior: streamed `ThoughtDelta` and `Progress` updates drive transient progress badges and are not appended to session transcript output.
 

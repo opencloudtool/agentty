@@ -12,10 +12,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::domain::agent::AgentKind;
-use crate::infra::agent::protocol::{
-    normalize_stream_assistant_chunk, normalize_turn_response, parse_agent_response,
-    parse_agent_response_strict,
-};
 use crate::infra::agent::{self as agent, AgentBackend, BuildCommandRequest};
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentFuture, SessionRef, StartSessionRequest, TurnEvent, TurnRequest,
@@ -188,10 +184,12 @@ impl AgentChannel for CliAgentChannel {
             }
 
             let parsed = agent::parse_response(kind, &stdout_text, &stderr_text);
-            let assistant_message = normalize_turn_response(
-                parse_strict_structured_response(kind, &parsed.content)?,
+            let assistant_message = agent::parse_turn_response(
+                kind,
+                &parsed.content,
                 req.request_kind.protocol_profile(),
-            );
+            )
+            .map_err(AgentError)?;
 
             Ok(TurnResult {
                 assistant_message,
@@ -329,25 +327,7 @@ async fn stream_stdout(
 /// Partial protocol JSON fragments are suppressed so raw JSON does not leak
 /// into session output while streaming.
 fn normalize_stream_response_content(text: &str) -> Option<String> {
-    normalize_stream_assistant_chunk(text)
-}
-
-/// Parses one final assistant payload for providers that require strict
-/// structured output.
-fn parse_strict_structured_response(
-    kind: AgentKind,
-    response_text: &str,
-) -> Result<agent::AgentResponse, AgentError> {
-    if !requires_strict_structured_output(kind) {
-        return Ok(parse_agent_response(response_text));
-    }
-
-    parse_agent_response_strict(response_text).map_err(|error| {
-        AgentError(format!(
-            "Agent output did not match the required JSON schema: \
-             {error}\nresponse:\n{response_text}"
-        ))
-    })
+    agent::protocol::normalize_stream_assistant_chunk(text)
 }
 
 /// Formats one failed CLI turn into a user-facing error.
@@ -406,12 +386,6 @@ fn cli_turn_output_detail(stdout: &str, stderr: &str) -> String {
         (true, false) => format!("stderr: {trimmed_stderr}"),
         (true, true) => "no output".to_string(),
     }
-}
-
-/// Returns whether the provider should fail closed on invalid structured
-/// output instead of falling back to plain text.
-fn requires_strict_structured_output(kind: AgentKind) -> bool {
-    matches!(kind, AgentKind::Claude | AgentKind::Gemini)
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 Generate the canonical session commit message using the cumulative session diff below.
-Return one plain-text commit message in the protocol `answer` message text.
+Return the full response as the required protocol JSON object and put the plain-text commit message in the `answer` field only.
 Use repository default commit format unless explicit user instructions in the diff request a different format.
 
 Rules:

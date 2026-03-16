@@ -15,6 +15,8 @@ Structured response protocol:
 
 - Treat the JSON Schema titles and descriptions as the authoritative field-level instructions and guidelines.
 
+- {{ protocol_usage_instructions }}
+
 Authoritative JSON Schema:
 {{ response_json_schema }}
 

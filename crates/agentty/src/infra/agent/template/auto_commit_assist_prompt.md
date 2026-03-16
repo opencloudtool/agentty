@@ -9,4 +9,4 @@ Requirements:
 - Do not run git commands.
 - Do not create commits.
 - Keep changes minimal and preserve intended behavior.
-- After editing, provide a short summary of what was fixed.
+- After editing, return the required protocol JSON object and put a short summary of what was fixed in the `answer` field only.

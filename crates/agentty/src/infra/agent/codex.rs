@@ -1,10 +1,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::backend::{
-    AgentBackend, AgentBackendError, BuildCommandRequest, build_resume_prompt,
-    prepend_protocol_instructions,
-};
+use super::backend::{AgentBackend, AgentBackendError, BuildCommandRequest};
+use super::prompt::{PromptPreparationRequest, prepare_prompt_text};
 use crate::domain::agent::ReasoningLevel;
 
 /// Uses non-interactive Codex commands so Agentty can capture piped output.
@@ -38,12 +36,12 @@ impl AgentBackend for CodexBackend {
         let has_history_replay = request_kind
             .session_output()
             .is_some_and(|session_output| !session_output.trim().is_empty());
-        let prompt = if request_kind.is_resume() {
-            build_resume_prompt(prompt, request_kind.session_output())?
-        } else {
-            prompt.to_string()
-        };
-        let prompt = prepend_protocol_instructions(&prompt, request_kind.protocol_profile())?;
+        let prompt = prepare_prompt_text(PromptPreparationRequest {
+            prompt,
+            protocol_profile: request_kind.protocol_profile(),
+            replay_session_output: request_kind.session_output(),
+            should_replay_session_output: request_kind.is_resume(),
+        })?;
 
         let mut command = Command::new("codex");
         command.arg("exec");

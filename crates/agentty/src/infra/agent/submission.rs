@@ -1,7 +1,9 @@
 //! One-shot agent prompt execution helpers.
 //!
 //! These helpers run isolated utility prompts outside the long-lived session
-//! turn flow while still enforcing the shared structured response protocol.
+//! turn flow. They prefer the shared structured response protocol, while
+//! still accepting non-empty plain-text utility responses as compatibility
+//! fallback answer text.
 
 use std::io;
 use std::os::unix::process::ExitStatusExt as _;
@@ -12,14 +14,14 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::task::JoinHandle;
 
 use super::backend::{AgentBackend, BuildCommandRequest};
-use super::protocol::{AgentResponse, parse_agent_response_strict};
+use super::protocol::{AgentResponse, ProtocolRequestProfile, parse_agent_response_strict};
 use super::{ParsedResponse, create_backend, parse_response};
 use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::domain::session::SessionStats;
 use crate::infra::channel::AgentRequestKind;
 
-/// Input payload for one isolated prompt that must still return structured
-/// protocol output.
+/// Input payload for one isolated prompt that prefers structured protocol
+/// output.
 #[derive(Clone, Debug)]
 pub(crate) struct OneShotRequest<'a> {
     /// Optional PID slot used by cancel/stop flows to terminate the spawned
@@ -46,23 +48,23 @@ pub(crate) struct OneShotSubmission {
     pub(crate) stats: SessionStats,
 }
 
-/// Executes one isolated prompt and returns the parsed structured response.
+/// Executes one isolated prompt and returns the parsed response.
 ///
 /// # Errors
 /// Returns an error when command construction fails, process execution fails,
-/// or the final output does not match the required protocol JSON.
+/// or the final output is empty or otherwise unusable.
 pub(crate) async fn submit_one_shot(request: OneShotRequest<'_>) -> Result<AgentResponse, String> {
     let submission = submit_one_shot_with_stats(request).await?;
 
     Ok(submission.response)
 }
 
-/// Executes one isolated prompt and returns the parsed structured response
-/// plus aggregated usage statistics.
+/// Executes one isolated prompt and returns the parsed response plus
+/// aggregated usage statistics.
 ///
 /// # Errors
 /// Returns an error when command construction fails, process execution fails,
-/// or the final output does not match the required protocol JSON.
+/// or the final output is empty or otherwise unusable.
 pub(crate) async fn submit_one_shot_with_stats(
     request: OneShotRequest<'_>,
 ) -> Result<OneShotSubmission, String> {
@@ -75,29 +77,51 @@ pub(crate) async fn submit_one_shot_with_stats(
 ///
 /// This shared helper keeps process execution behind the existing
 /// `AgentBackend` trait boundary so production callers and tests can reuse
-/// the same one-shot protocol validation path.
+/// the same one-shot parsing path.
 ///
 /// # Errors
 /// Returns an error when command construction fails, process execution fails,
-/// or the final output does not match the required protocol JSON.
+/// or the final output is empty or otherwise unusable.
 pub(crate) async fn submit_one_shot_with_backend(
     backend: &dyn AgentBackend,
     request: OneShotRequest<'_>,
 ) -> Result<OneShotSubmission, String> {
+    let protocol_profile = request.request_kind.protocol_profile();
     let parsed_response = execute_one_shot_command(backend, request.prompt, request).await?;
-    let agent_response =
-        parse_agent_response_strict(&parsed_response.content).map_err(|error| {
-            format!(
-                "One-shot agent output did not match the required JSON schema: \
-                 {error}\nresponse:\n{}",
-                parsed_response.content
-            )
-        })?;
+    let agent_response = parse_one_shot_response(&parsed_response.content, protocol_profile)?;
 
     Ok(OneShotSubmission {
         response: agent_response,
         stats: parsed_response.stats,
     })
+}
+
+/// Parses one one-shot response, preferring protocol JSON and falling back to
+/// plain-text utility answers when providers return legacy output.
+///
+/// # Errors
+/// Returns an error when the response is empty or when a non-utility one-shot
+/// payload is not valid protocol JSON.
+fn parse_one_shot_response(
+    content: &str,
+    protocol_profile: ProtocolRequestProfile,
+) -> Result<AgentResponse, String> {
+    match parse_agent_response_strict(content) {
+        Ok(agent_response) => Ok(agent_response),
+        Err(error) => {
+            let trimmed_content = content.trim();
+            if matches!(protocol_profile, ProtocolRequestProfile::UtilityPrompt)
+                && !trimmed_content.is_empty()
+            {
+                return Ok(AgentResponse::plain(trimmed_content.to_string()));
+            }
+
+            Err(format!(
+                "One-shot agent output did not match the required JSON schema: \
+                 {error}\nresponse:\n{content}"
+            ))
+        }
+    }
 }
 
 /// Runs one one-shot backend command and returns the parsed provider content.
@@ -408,9 +432,9 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies one-shot execution surfaces a schema error immediately when
-    /// the response is not valid protocol JSON.
-    async fn test_submit_one_shot_with_backend_returns_error_for_invalid_protocol_output() {
+    /// Verifies one-shot execution falls back to plain-text answers for
+    /// utility prompts when the response is not valid protocol JSON.
+    async fn test_submit_one_shot_with_backend_accepts_plain_text_utility_output() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let mut backend = MockAgentBackend::new();
@@ -428,7 +452,7 @@ mod tests {
             });
 
         // Act
-        let error = submit_one_shot_with_backend(
+        let response = submit_one_shot_with_backend(
             &backend,
             OneShotRequest {
                 child_pid: None,
@@ -440,17 +464,16 @@ mod tests {
             },
         )
         .await
-        .expect_err("invalid protocol output should fail");
+        .expect("plain-text utility output should succeed");
 
         // Assert
-        assert!(error.contains("did not match the required JSON schema"));
-        assert!(error.contains("response:\nplain text"));
+        assert_eq!(response.response.answers(), vec!["plain text".to_string()]);
     }
 
     #[tokio::test]
-    /// Verifies wrapped provider output that still fails protocol parsing is
-    /// surfaced as an error without extra retries.
-    async fn test_submit_one_shot_with_backend_returns_error_for_wrapped_invalid_protocol_output() {
+    /// Verifies wrapped provider output still falls back to the extracted
+    /// plain-text utility answer when protocol parsing fails.
+    async fn test_submit_one_shot_with_backend_accepts_wrapped_plain_text_utility_output() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let mut backend = MockAgentBackend::new();
@@ -472,7 +495,7 @@ mod tests {
             });
 
         // Act
-        let error = submit_one_shot_with_backend(
+        let response = submit_one_shot_with_backend(
             &backend,
             OneShotRequest {
                 child_pid: None,
@@ -484,11 +507,46 @@ mod tests {
             },
         )
         .await
-        .expect_err("wrapped invalid protocol output should fail");
+        .expect("wrapped plain-text utility output should succeed");
+
+        // Assert
+        assert_eq!(response.response.answers(), vec!["plain text".to_string()]);
+    }
+
+    #[tokio::test]
+    /// Verifies one-shot execution still rejects blank utility responses.
+    async fn test_submit_one_shot_with_backend_rejects_blank_utility_output() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let mut backend = MockAgentBackend::new();
+        backend.expect_build_command().returning(|request| {
+            assert!(matches!(
+                request.request_kind,
+                AgentRequestKind::UtilityPrompt
+            ));
+            assert_eq!(request.prompt, "Generate title");
+
+            Ok(mock_shell_command("   ", "", 0))
+        });
+
+        // Act
+        let error = submit_one_shot_with_backend(
+            &backend,
+            OneShotRequest {
+                child_pid: None,
+                folder: temp_directory.path(),
+                model: AgentModel::Gpt54,
+                prompt: "Generate title",
+                request_kind: AgentRequestKind::UtilityPrompt,
+                reasoning_level: ReasoningLevel::default(),
+            },
+        )
+        .await
+        .expect_err("blank utility output should fail");
 
         // Assert
         assert!(error.contains("did not match the required JSON schema"));
-        assert!(error.contains("response:\nplain text"));
+        assert!(error.contains("response:\n"));
     }
 
     #[tokio::test]

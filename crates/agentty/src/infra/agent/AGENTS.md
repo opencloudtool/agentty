@@ -16,7 +16,9 @@ When backend protocol or provider parsing behavior changes, update:
 - [`claude.rs`](claude.rs) - Claude CLI backend command construction.
 - [`codex.rs`](codex.rs) - Codex CLI backend command construction.
 - [`gemini.rs`](gemini.rs) - Gemini CLI backend command construction.
-- [`protocol.rs`](protocol.rs) - Structured response contract (`AgentResponse`, `AgentResponseMessage`, `AgentResponseMessageKind`), schema generation, parsing, and stream normalization helpers.
+- [`prompt.rs`](prompt.rs) - Shared prompt preparation helpers for transcript replay and protocol instruction injection.
+- [`protocol/`](protocol/) - Structured response protocol subsystem split into model, schema, and parse modules.
+- [`protocol.rs`](protocol.rs) - Protocol module router and public re-exports for structured response handling.
 - [`response_parser.rs`](response_parser.rs) - Provider-specific parsing for final and streaming output.
 - [`submission.rs`](submission.rs) - Shared one-shot prompt execution with strict protocol parsing and direct schema-error surfacing.
 - [`template/`](template/) - Shared Askama template files used by agent-backed prompts.
