@@ -17,8 +17,6 @@ Keep size budgeting in the skill workflow only; do not render `### Size` section
 
 - [`local_agent_availability.md`](local_agent_availability.md) - Implementation plan for startup-time agent CLI discovery and filtering settings plus `/model` choices to locally available backends.
 
-- [`meta_agent_prompt_templates.md`](meta_agent_prompt_templates.md) - Implementation plan for analysis-focused meta-agent skills (Tech Debt, Security Audit) discovered organically via `AGENTS.md` and returning formatted task lists in the existing `answer` protocol field.
-
 - [`multi_method_auto_update.md`](multi_method_auto_update.md) - Implementation plan for detecting the installation method and running the appropriate auto-update command for npm, cargo, sh, and npx.
 
 - [`session_in_progress_timer.md`](session_in_progress_timer.md) - Implementation plan for persisting and rendering cumulative session `InProgress` time in chat and list views.
