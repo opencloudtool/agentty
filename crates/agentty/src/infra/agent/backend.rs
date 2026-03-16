@@ -367,7 +367,8 @@ mod tests {
         assert!(rendered_prompt.contains("summary"));
         assert!(rendered_prompt.contains("turn"));
         assert!(rendered_prompt.contains("session"));
-        assert!(rendered_prompt.contains("\"messages\""));
+        assert!(rendered_prompt.contains("\"answer\""));
+        assert!(rendered_prompt.contains("\"questions\""));
         assert!(rendered_prompt.contains("\"title\""));
         assert!(rendered_prompt.contains("\"description\""));
         assert!(rendered_prompt.contains("summary"));

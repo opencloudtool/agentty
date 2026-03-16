@@ -364,14 +364,14 @@ mod tests {
             .expect_run_turn()
             .returning(|_request, stream_tx| {
                 let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
-                    message: r#"{"messages":[{"type":"answer","text":"Done."},{"type":"question","text":"Need clarification."}]}"#.to_string(),
+                    message: r#"{"answer":"Done.","questions":[{"text":"Need clarification.","options":[]}],"summary":null}"#.to_string(),
                     phase: None,
                     is_delta: false,
                 });
 
                 Box::pin(async {
                     Ok(make_ok_response(
-                        r#"{"messages":[{"type":"answer","text":"Done."},{"type":"question","text":"Need clarification."}]}"#,
+                        r#"{"answer":"Done.","questions":[{"text":"Need clarification.","options":[]}],"summary":null}"#,
                     ))
                 })
             });
@@ -405,7 +405,7 @@ mod tests {
 
                 Box::pin(async {
                     Ok(make_ok_response(
-                        r#"{"messages":[{"type":"answer","text":"Done."}]}"#,
+                        r#"{"answer":"Done.","questions":[],"summary":null}"#,
                     ))
                 })
             });
@@ -443,7 +443,7 @@ mod tests {
 
                 Box::pin(async {
                     Ok(make_ok_response(
-                        r#"{"messages":[{"type":"answer","text":"Done."}]}"#,
+                        r#"{"answer":"Done.","questions":[],"summary":null}"#,
                     ))
                 })
             });
@@ -537,14 +537,14 @@ mod tests {
             .expect_run_turn()
             .returning(|_request, stream_tx| {
                 let _ = stream_tx.send(AppServerStreamEvent::AssistantMessage {
-                    message: r#"{"messages":[{"type":"answer","#.to_string(),
+                    message: r#"{"answer":"#.to_string(),
                     phase: None,
                     is_delta: true,
                 });
 
                 Box::pin(async {
                     Ok(make_ok_response(
-                        r#"{"messages":[{"type":"answer","text":"Final answer."}]}"#,
+                        r#"{"answer":"Final answer.","questions":[],"summary":null}"#,
                     ))
                 })
             });
@@ -584,7 +584,7 @@ mod tests {
 
                 Box::pin(async {
                     Ok(make_ok_response(
-                        r#"{"messages":[{"type":"answer","text":"Final structured output."}]}"#,
+                        r#"{"answer":"Final structured output.","questions":[],"summary":null}"#,
                     ))
                 })
             });
@@ -656,7 +656,7 @@ mod tests {
 
                 Box::pin(async {
                     Ok(make_ok_response(
-                        r#"{"messages":[{"type":"answer","text":"gemini ok"}]}"#,
+                        r#"{"answer":"gemini ok","questions":[],"summary":null}"#,
                     ))
                 })
             });

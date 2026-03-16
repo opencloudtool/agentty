@@ -2546,7 +2546,7 @@ sleep 5
         let response_value = serde_json::json!({
             "method": "item/agentMessage/delta",
             "params": {
-                "delta": "{\"messages\":[{\"type\":\"answer\",\"text\":\"partial\"",
+                "delta": "{\"answer\":\"partial\"",
                 "itemId": "item-1",
                 "threadId": "thread-1",
                 "turnId": "turn-1"
@@ -2832,7 +2832,8 @@ sleep 5
             output_schema.get("type").and_then(Value::as_str),
             Some("object")
         );
-        assert!(output_schema_properties.contains_key("messages"));
+        assert!(output_schema_properties.contains_key("answer"));
+        assert!(output_schema_properties.contains_key("questions"));
         assert!(output_schema_properties.contains_key("summary"));
     }
 

@@ -4,12 +4,12 @@
 //! Defines the [`AgentResponse`] payload returned by agent turns, the
 //! prompt-facing and transport-facing JSON Schema renderings derived from that
 //! model, and [`parse_agent_response`] which deserializes raw provider output
-//! into structured messages plus the optional structured session summary
-//! block.
+//! into one markdown answer, a bounded list of clarification questions, and
+//! the optional structured session summary block.
 //!
 //! Parsing first attempts strict whole-response JSON decoding that matches the
 //! schema. When parsing fails, the raw payload is preserved as a single
-//! `answer` message for display continuity.
+//! `answer` string for display continuity.
 
 use std::fmt;
 
@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Hard cap on the number of question messages extracted from one agent
+/// Hard cap on the number of clarification questions extracted from one agent
 /// response. Prevents runaway output from flooding the question UI even when
 /// the agent ignores the prompt-level limit.
 ///
@@ -43,113 +43,53 @@ pub enum ProtocolRequestProfile {
     UtilityPrompt,
 }
 
-/// Message type tag used by one [`AgentResponseMessage`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentResponseMessageType {
-    /// Standard answer text.
-    Answer,
-    /// Clarification request text.
-    Question,
-}
-
-/// One structured message emitted by the assistant protocol payload.
+/// One extracted question with predefined answer choices.
+///
+/// The UI and persistence layers use this as the canonical clarification
+/// question representation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(
-    title = "AgentResponseMessage",
-    description = "One structured message emitted by the assistant protocol payload. Use `answer` \
-                   for delivered work or status updates, and use `question` only when user input, \
-                   approval, or a mutually exclusive decision is required before continuing."
+    title = "QuestionItem",
+    description = "One clarification question emitted by the assistant protocol payload. Keep \
+                   each item focused to one actionable decision."
 )]
-pub struct AgentResponseMessage {
-    /// Message type selector.
-    #[schemars(
-        title = "type",
-        description = "Message type tag used by one AgentResponseMessage. Use `question` only \
-                       when user input, approval, or a mutually exclusive decision is required \
-                       before continuing; otherwise use `answer`."
-    )]
-    pub r#type: AgentResponseMessageType,
-    /// Predefined answer choices for `question` messages.
-    ///
-    /// The protocol instructs agents to always include options, and the UI
-    /// renders a selectable option list with a virtual "Type custom answer"
-    /// entry appended. The Rust type remains `Option` so non-compliant agent
-    /// output (missing or null `options`) deserializes gracefully instead of
-    /// failing the entire response.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(
-        title = "options",
-        description = "Predefined answer choices for `question` messages. The protocol instructs \
-                       agents to always include options, keep them focused to 1-3 likely answers, \
-                       put the recommended choice first, and omit deferral or non-answer choices. \
-                       The UI renders a selectable option list with a virtual \"Type custom \
-                       answer\" entry appended. The Rust type remains `Option` so non-compliant \
-                       agent output (missing or null `options`) deserializes gracefully instead \
-                       of failing the entire response."
-    )]
-    pub options: Option<Vec<String>>,
-    /// Human-readable markdown text for this message.
-    #[schemars(
-        title = "text",
-        description = "Human-readable markdown text for this message. For `question`, ask one \
-                       specific actionable question instead of bundling multiple decisions into \
-                       one message."
-    )]
-    pub text: String,
-}
-
-impl AgentResponseMessage {
-    /// Constructs one `answer` protocol message.
-    pub fn answer(text: impl Into<String>) -> Self {
-        Self {
-            r#type: AgentResponseMessageType::Answer,
-            options: None,
-            text: text.into(),
-        }
-    }
-
-    /// Constructs one `question` protocol message without predefined options.
-    ///
-    /// The structured response protocol requires agents to include `options`,
-    /// but not all providers comply. This constructor handles non-compliant
-    /// agent output and provides test convenience for option-independent
-    /// scenarios.
-    pub fn question(text: impl Into<String>) -> Self {
-        Self {
-            r#type: AgentResponseMessageType::Question,
-            options: None,
-            text: text.into(),
-        }
-    }
-
-    /// Constructs one `question` protocol message with predefined answer
-    /// options.
-    pub fn question_with_options(text: impl Into<String>, options: Vec<String>) -> Self {
-        Self {
-            r#type: AgentResponseMessageType::Question,
-            options: if options.is_empty() {
-                None
-            } else {
-                Some(options)
-            },
-            text: text.into(),
-        }
-    }
-}
-
-/// One extracted question with predefined answer choices.
-///
-/// Produced by [`AgentResponse::question_items`] from the raw protocol
-/// messages. The UI and persistence layers use this as the canonical question
-/// representation. Options may be empty when a non-compliant agent omits them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionItem {
     /// Predefined answer choices the user can select from.
+    #[serde(default)]
+    #[schemars(
+        title = "options",
+        description = "Predefined answer choices the user can select from. Keep this list focused \
+                       to 1-3 likely answers, put the recommended choice first, and omit deferral \
+                       or non-answer choices. Defaults to an empty list when omitted."
+    )]
     pub options: Vec<String>,
     /// The clarification question text.
+    #[schemars(
+        title = "text",
+        description = "Human-readable markdown text for this question. Ask one specific \
+                       actionable question instead of bundling multiple decisions into one item."
+    )]
     pub text: String,
+}
+
+impl QuestionItem {
+    /// Constructs one clarification question without predefined answer
+    /// options.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            options: Vec::new(),
+            text: text.into(),
+        }
+    }
+
+    /// Constructs one clarification question with predefined answer options.
+    pub fn with_options(text: impl Into<String>, options: Vec<String>) -> Self {
+        Self {
+            options,
+            text: text.into(),
+        }
+    }
 }
 
 /// Structured session summary block emitted alongside protocol messages.
@@ -194,17 +134,27 @@ pub struct AgentResponseSummary {
                    directly."
 )]
 pub struct AgentResponse {
-    /// Ordered response messages emitted for this turn.
+    /// Markdown answer text emitted for this turn.
+    #[serde(default)]
     #[schemars(
-        title = "messages",
-        description = "Ordered response messages emitted for this turn. Multiple messages are \
-                       allowed. Keep user-directed clarification requests as separate `question` \
-                       messages instead of embedding them inside `answer` text."
+        title = "answer",
+        description = "Markdown answer text for delivered work, status updates, or concise \
+                       completion notes. Keep clarification requests out of this field and emit \
+                       them through `questions` instead. Defaults to an empty string when omitted."
     )]
-    pub messages: Vec<AgentResponseMessage>,
+    pub answer: String,
+    /// Ordered clarification questions emitted for this turn.
+    #[serde(default)]
+    #[schemars(
+        title = "questions",
+        description = "Ordered clarification questions emitted for this turn. Emit at most \
+                       `MAX_QUESTIONS` items, and use an empty array when no user input is \
+                       required. Defaults to an empty array when omitted."
+    )]
+    pub questions: Vec<QuestionItem>,
     /// Structured summary for session-discussion turns, or `None` for legacy
     /// payloads and one-shot prompts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[schemars(
         title = "summary",
         description = "Structured summary for session-discussion turns, kept outside `answer` \
@@ -232,74 +182,50 @@ impl fmt::Display for AgentResponseParseError {
 }
 
 impl AgentResponse {
-    /// Creates a plain response from raw text as one `answer` message.
+    /// Creates a plain response from raw text as one `answer` string.
     ///
     /// Used as a safe fallback when provider output is not schema-compliant.
     pub fn plain(text: impl Into<String>) -> Self {
         Self {
-            messages: vec![AgentResponseMessage::answer(text)],
+            answer: text.into(),
+            questions: Vec::new(),
             summary: None,
         }
     }
 
-    /// Returns display text by joining all non-empty messages with blank lines.
+    /// Returns display text by joining non-empty answer and question text with
+    /// blank lines.
     pub fn to_display_text(&self) -> String {
         let mut display_messages = Vec::new();
-        for message in &self.messages {
-            push_display_message(&mut display_messages, &message.text);
-        }
+        push_display_message(&mut display_messages, &self.answer);
+        push_question_display_messages(&mut display_messages, &self.questions);
 
         display_messages.join("\n\n")
     }
 
     /// Returns transcript text for session output by joining non-empty
-    /// `answer` messages with blank lines.
-    ///
-    /// `question` messages remain available in `messages` for dedicated UX
-    /// flows and are intentionally excluded from regular session transcript
-    /// output.
+    /// `answer` content with blank lines.
     pub fn to_answer_display_text(&self) -> String {
         let mut display_messages = Vec::new();
-        for message in &self.messages {
-            if message.r#type != AgentResponseMessageType::Answer {
-                continue;
-            }
-
-            push_display_message(&mut display_messages, &message.text);
-        }
+        push_display_message(&mut display_messages, &self.answer);
 
         display_messages.join("\n\n")
     }
 
-    /// Returns all `answer` messages in response order.
+    /// Returns the answer as one single-item vector when it is non-empty.
     pub fn answers(&self) -> Vec<String> {
-        self.messages_by_type(AgentResponseMessageType::Answer)
+        let answer = self.to_answer_display_text();
+        if answer.is_empty() {
+            return Vec::new();
+        }
+
+        vec![answer]
     }
 
-    /// Returns up to [`MAX_QUESTIONS`] `question` messages as [`QuestionItem`]
-    /// values in response order.
-    ///
-    /// Enforces a server-side cap so runaway agent output cannot flood the
-    /// question UI regardless of prompt compliance.
+    /// Returns up to [`MAX_QUESTIONS`] clarification questions in response
+    /// order.
     pub fn question_items(&self) -> Vec<QuestionItem> {
-        self.messages
-            .iter()
-            .filter(|message| message.r#type == AgentResponseMessageType::Question)
-            .take(MAX_QUESTIONS)
-            .map(|message| QuestionItem {
-                options: message.options.clone().unwrap_or_default(),
-                text: message.text.clone(),
-            })
-            .collect()
-    }
-
-    /// Collects all messages matching one type while preserving order.
-    fn messages_by_type(&self, message_type: AgentResponseMessageType) -> Vec<String> {
-        self.messages
-            .iter()
-            .filter(|message| message.r#type == message_type)
-            .map(|message| message.text.clone())
-            .collect()
+        self.questions.iter().take(MAX_QUESTIONS).cloned().collect()
     }
 }
 
@@ -310,6 +236,13 @@ fn push_display_message(display_messages: &mut Vec<String>, text: &str) {
     }
 
     display_messages.push(text.to_string());
+}
+
+/// Appends non-empty clarification question text in order.
+fn push_question_display_messages(display_messages: &mut Vec<String>, questions: &[QuestionItem]) {
+    for question in questions {
+        push_display_message(display_messages, &question.text);
+    }
 }
 
 /// Returns the self-descriptive JSON Schema for the response payload.
@@ -332,20 +265,19 @@ fn inject_dynamic_schema_guidance(schema: &mut Value) {
     let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
         return;
     };
-    let Some(messages_property) = properties
-        .get_mut("messages")
+    let Some(questions_property) = properties
+        .get_mut("questions")
         .and_then(Value::as_object_mut)
     else {
         return;
     };
 
-    messages_property.insert(
+    questions_property.insert(
         "description".to_string(),
         Value::String(format!(
-            "Ordered response messages emitted for this turn. Multiple messages are allowed. Keep \
-             user-directed clarification requests as separate `question` messages instead of \
-             embedding them inside `answer` text. Emit at most {MAX_QUESTIONS} `question` \
-             messages in one response."
+            "Ordered clarification questions emitted for this turn. Emit at most {MAX_QUESTIONS} \
+             items, and use an empty array when no user input is required. Defaults to an empty \
+             array when omitted."
         )),
     );
 }
@@ -398,7 +330,7 @@ fn stringify_schema_json(schema: &Value) -> String {
 ///
 /// Parsing order:
 /// 1. Whole-response JSON that matches [`AgentResponse`].
-/// 2. Plain-text fallback (`answer` message preserving the original payload).
+/// 2. Plain-text fallback (`answer` string preserving the original payload).
 pub(crate) fn parse_agent_response(raw: &str) -> AgentResponse {
     parse_agent_response_strict(raw).unwrap_or_else(|_| AgentResponse::plain(raw))
 }
@@ -430,7 +362,7 @@ pub(crate) fn parse_agent_response_strict(
 ///
 /// Returns:
 /// - `Some(display_text)` for plain text chunks or complete structured JSON
-///   payloads containing at least one non-empty `answer` message.
+///   payloads containing non-empty `answer` text.
 /// - `None` for protocol JSON fragments that should be suppressed until the
 ///   final assembled response arrives.
 pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
@@ -462,7 +394,7 @@ fn parse_structured_json_response(raw: &str) -> Option<AgentResponse> {
     }
 
     let payload = serde_json::from_str::<AgentResponse>(trimmed).ok()?;
-    if payload.messages.is_empty() {
+    if payload.answer.trim().is_empty() && payload.questions.is_empty() {
         return None;
     }
 
@@ -532,10 +464,11 @@ fn is_likely_protocol_json_fragment(raw: &str) -> bool {
         return true;
     }
 
-    let has_protocol_key = trimmed.contains("\"messages\"")
-        || trimmed.contains("\"type\"")
+    let has_protocol_key = trimmed.contains("\"answer\"")
+        || trimmed.contains("\"questions\"")
         || trimmed.contains("\"text\"")
-        || trimmed.contains("\"options\"");
+        || trimmed.contains("\"options\"")
+        || trimmed.contains("\"summary\"");
     if !has_protocol_key {
         return false;
     }
@@ -684,10 +617,11 @@ mod tests {
     use super::*;
 
     #[test]
-    /// Parses a full JSON response object into structured messages.
+    /// Parses a full JSON response object into the top-level answer and
+    /// question fields.
     fn test_parse_agent_response_structured_json_payload() {
         // Arrange
-        let raw = r#"{"messages":[{"type":"answer","text":"Here is my analysis."}]}"#;
+        let raw = r#"{"answer":"Here is my analysis.","questions":[],"summary":null}"#;
 
         // Act
         let response = parse_agent_response(raw);
@@ -696,7 +630,8 @@ mod tests {
         assert_eq!(
             response,
             AgentResponse {
-                messages: vec![AgentResponseMessage::answer("Here is my analysis.")],
+                answer: "Here is my analysis.".to_string(),
+                questions: Vec::new(),
                 summary: None,
             }
         );
@@ -707,7 +642,7 @@ mod tests {
     /// Strict parsing accepts a complete schema payload.
     fn test_parse_agent_response_strict_structured_json_payload() {
         // Arrange
-        let raw = r#"{"messages":[{"type":"answer","text":"Here is my analysis."}]}"#;
+        let raw = r#"{"answer":"Here is my analysis.","questions":[],"summary":null}"#;
 
         // Act
         let response = parse_agent_response_strict(raw);
@@ -716,7 +651,8 @@ mod tests {
         assert_eq!(
             response,
             Ok(AgentResponse {
-                messages: vec![AgentResponseMessage::answer("Here is my analysis.")],
+                answer: "Here is my analysis.".to_string(),
+                questions: Vec::new(),
                 summary: None,
             })
         );
@@ -727,7 +663,7 @@ mod tests {
     fn test_parse_agent_response_strict_extracts_json_object_from_wrapped_text() {
         // Arrange
         let raw =
-            "Header text\n{\"messages\":[{\"type\":\"answer\",\"text\":\"Done.\"}]}\nFooter text";
+            "Header text\n{\"answer\":\"Done.\",\"questions\":[],\"summary\":null}\nFooter text";
 
         // Act
         let response = parse_agent_response_strict(raw);
@@ -736,7 +672,8 @@ mod tests {
         assert_eq!(
             response,
             Ok(AgentResponse {
-                messages: vec![AgentResponseMessage::answer("Done.")],
+                answer: "Done.".to_string(),
+                questions: Vec::new(),
                 summary: None,
             })
         );
@@ -748,9 +685,9 @@ mod tests {
         // Arrange
         let raw = concat!(
             "Pseudo schema\n",
-            "{\"messages\":[{\"type\":\"answer\" | \"question\",\"text\":\"bad\"}]}\n",
+            "{\"answer\":42,\"questions\":\"bad\"}\n",
             "Actual payload\n",
-            "{\"messages\":[{\"type\":\"answer\",\"text\":\"Recovered.\"}]}"
+            "{\"answer\":\"Recovered.\",\"questions\":[],\"summary\":null}"
         );
 
         // Act
@@ -760,7 +697,8 @@ mod tests {
         assert_eq!(
             response,
             Ok(AgentResponse {
-                messages: vec![AgentResponseMessage::answer("Recovered.")],
+                answer: "Recovered.".to_string(),
+                questions: Vec::new(),
                 summary: None,
             })
         );
@@ -783,7 +721,7 @@ mod tests {
     /// Converts complete structured stream payloads into display text.
     fn test_normalize_stream_assistant_chunk_structured_payload() {
         // Arrange
-        let raw = r#"{"messages":[{"type":"answer","text":"Done."}]}"#;
+        let raw = r#"{"answer":"Done.","questions":[],"summary":null}"#;
 
         // Act
         let normalized = normalize_stream_assistant_chunk(raw);
@@ -796,7 +734,8 @@ mod tests {
     /// Suppresses complete structured payloads that contain only questions.
     fn test_normalize_stream_assistant_chunk_question_only_payload() {
         // Arrange
-        let raw = r#"{"messages":[{"type":"question","text":"Need details?"}]}"#;
+        let raw =
+            r#"{"answer":"","questions":[{"text":"Need details?","options":[]}],"summary":null}"#;
 
         // Act
         let normalized = normalize_stream_assistant_chunk(raw);
@@ -809,7 +748,7 @@ mod tests {
     /// Suppresses partial protocol JSON fragments from streamed output.
     fn test_normalize_stream_assistant_chunk_protocol_fragment() {
         // Arrange
-        let raw = r#"{"messages":[{"type":"answer","#;
+        let raw = r#"{"answer":"partial","#;
 
         // Act
         let normalized = normalize_stream_assistant_chunk(raw);
@@ -832,16 +771,15 @@ mod tests {
     }
 
     #[test]
-    /// Parses mixed message arrays and preserves all text in display order.
-    fn test_parse_agent_response_structured_json_with_mixed_messages() {
+    /// Preserves answer and question text in display order.
+    fn test_parse_agent_response_structured_json_with_questions() {
         // Arrange
-        let raw = r#"{"messages":[{"type":"answer","text":"Completed implementation."},{"type":"question","text":"Need one decision."}]}"#;
+        let raw = r#"{"answer":"Completed implementation.","questions":[{"text":"Need one decision.","options":[]}],"summary":null}"#;
 
         // Act
         let response = parse_agent_response(raw);
 
         // Assert
-        assert_eq!(response.messages.len(), 2);
         assert_eq!(
             response.to_display_text(),
             "Completed implementation.\n\nNeed one decision."
@@ -849,15 +787,12 @@ mod tests {
     }
 
     #[test]
-    /// Builds transcript text from only `answer` messages.
-    fn test_to_answer_display_text_uses_only_answer_messages() {
+    /// Builds transcript text from only the top-level answer field.
+    fn test_to_answer_display_text_uses_only_answer_field() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::answer("Completed implementation."),
-                AgentResponseMessage::question("Need one decision."),
-                AgentResponseMessage::answer("Applied updates."),
-            ],
+            answer: "Completed implementation.".to_string(),
+            questions: vec![QuestionItem::new("Need one decision.")],
             summary: None,
         };
 
@@ -865,22 +800,16 @@ mod tests {
         let display_text = response.to_answer_display_text();
 
         // Assert
-        assert_eq!(
-            display_text,
-            "Completed implementation.\n\nApplied updates."
-        );
+        assert_eq!(display_text, "Completed implementation.");
     }
 
     #[test]
-    /// Returns ordered `answer` messages for routing to session output.
-    fn test_answers_returns_only_answer_messages_in_order() {
+    /// Returns the answer as one single ordered transcript item.
+    fn test_answers_returns_single_answer_item() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::question("Need one decision."),
-                AgentResponseMessage::answer("Completed implementation."),
-                AgentResponseMessage::answer("Applied updates."),
-            ],
+            answer: "Completed implementation.".to_string(),
+            questions: vec![QuestionItem::new("Need one decision.")],
             summary: None,
         };
 
@@ -888,24 +817,18 @@ mod tests {
         let answers = response.answers();
 
         // Assert
-        assert_eq!(
-            answers,
-            vec![
-                "Completed implementation.".to_string(),
-                "Applied updates.".to_string(),
-            ]
-        );
+        assert_eq!(answers, vec!["Completed implementation.".to_string()]);
     }
 
     #[test]
-    /// Returns ordered `question` items for question-mode routing.
-    fn test_question_items_returns_only_question_messages_in_order() {
+    /// Returns ordered clarification questions for question-mode routing.
+    fn test_question_items_returns_only_question_items_in_order() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::answer("Completed implementation."),
-                AgentResponseMessage::question("Need one decision."),
-                AgentResponseMessage::question("Need migration details?"),
+            answer: "Completed implementation.".to_string(),
+            questions: vec![
+                QuestionItem::new("Need one decision."),
+                QuestionItem::new("Need migration details?"),
             ],
             summary: None,
         };
@@ -933,11 +856,12 @@ mod tests {
     /// Caps extracted question items at [`MAX_QUESTIONS`].
     fn test_question_items_caps_at_max_questions() {
         // Arrange
-        let messages: Vec<AgentResponseMessage> = (0..20)
-            .map(|index| AgentResponseMessage::question(format!("Question {index}?")))
+        let questions: Vec<QuestionItem> = (0..20)
+            .map(|index| QuestionItem::new(format!("Question {index}?")))
             .collect();
         let response = AgentResponse {
-            messages,
+            answer: String::new(),
+            questions,
             summary: None,
         };
 
@@ -958,7 +882,8 @@ mod tests {
     fn test_question_items_preserves_options() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![AgentResponseMessage::question_with_options(
+            answer: String::new(),
+            questions: vec![QuestionItem::with_options(
                 "Which approach?",
                 vec!["Option A".to_string(), "Option B".to_string()],
             )],
@@ -978,7 +903,7 @@ mod tests {
     /// Parses a structured response summary from JSON.
     fn test_parse_agent_response_preserves_summary_field() {
         // Arrange
-        let raw = r#"{"messages":[{"type":"answer","text":"Done."}],"summary":{"turn":"- Updated the protocol payload.","session":"- Session branch now uses structured summaries."}}"#;
+        let raw = r#"{"answer":"Done.","questions":[],"summary":{"turn":"- Updated the protocol payload.","session":"- Session branch now uses structured summaries."}}"#;
 
         // Act
         let response = parse_agent_response(raw);
@@ -994,51 +919,68 @@ mod tests {
     }
 
     #[test]
-    /// Parses a question message with `options` from JSON.
+    /// Parses question options from JSON.
     fn test_parse_agent_response_question_with_options() {
         // Arrange
-        let raw =
-            r#"{"messages":[{"type":"question","text":"Pick one:","options":["A","B","C"]}]}"#;
+        let raw = r#"{"answer":"","questions":[{"text":"Pick one:","options":["A","B","C"]}],"summary":null}"#;
 
         // Act
         let response = parse_agent_response(raw);
 
         // Assert
-        assert_eq!(response.messages.len(), 1);
-        assert_eq!(
-            response.messages[0].options,
-            Some(vec!["A".to_string(), "B".to_string(), "C".to_string()])
-        );
+        assert_eq!(response.questions.len(), 1);
+        assert_eq!(response.questions[0].options, vec!["A", "B", "C"]);
     }
 
     #[test]
-    /// Omits `options` key when serializing messages without options.
-    fn test_agent_response_message_serialization_omits_null_options() {
+    /// Parses a response when `questions` is omitted and defaults it to an
+    /// empty array.
+    fn test_parse_agent_response_defaults_missing_questions_field() {
         // Arrange
-        let message = AgentResponseMessage::question("Need details?");
+        let raw = r#"{"answer":"Done.","summary":null}"#;
 
         // Act
-        let json = serde_json::to_string(&message).expect("serialization should succeed");
+        let response = parse_agent_response(raw);
 
         // Assert
-        assert!(!json.contains("options"));
+        assert_eq!(response.answer, "Done.");
+        assert!(response.questions.is_empty());
     }
 
     #[test]
-    /// Constructs question with empty options vec as `None`.
-    fn test_question_with_options_empty_vec_stores_none() {
-        // Arrange / Act
-        let message = AgentResponseMessage::question_with_options("Q?", Vec::new());
-
-        // Assert
-        assert_eq!(message.options, None);
-    }
-
-    #[test]
-    /// Falls back to plain text for payloads with an empty `messages` array.
-    fn test_parse_agent_response_empty_messages_falls_back_to_plain_text() {
+    /// Parses a response when `answer` is omitted and defaults it to an empty
+    /// string.
+    fn test_parse_agent_response_defaults_missing_answer_field() {
         // Arrange
-        let raw = r#"{"messages":[]}"#;
+        let raw = r#"{"questions":[{"text":"Need details?","options":[]}],"summary":null}"#;
+
+        // Act
+        let response = parse_agent_response(raw);
+
+        // Assert
+        assert_eq!(response.answer, "");
+        assert_eq!(response.questions, vec![QuestionItem::new("Need details?")]);
+    }
+
+    #[test]
+    /// Parses question items when `options` is omitted and defaults it to an
+    /// empty array.
+    fn test_parse_agent_response_defaults_missing_question_options_field() {
+        // Arrange
+        let raw = r#"{"answer":"","questions":[{"text":"Need details?"}],"summary":null}"#;
+
+        // Act
+        let response = parse_agent_response(raw);
+
+        // Assert
+        assert_eq!(response.questions, vec![QuestionItem::new("Need details?")]);
+    }
+
+    #[test]
+    /// Falls back to plain text for payloads with no answer and no questions.
+    fn test_parse_agent_response_empty_payload_falls_back_to_plain_text() {
+        // Arrange
+        let raw = r#"{"answer":"","questions":[],"summary":null}"#;
 
         // Act
         let response = parse_agent_response(raw);
@@ -1052,8 +994,8 @@ mod tests {
     /// Extracts and parses structured JSON wrapped in markdown code fences.
     fn test_parse_agent_response_structured_json_in_code_fence_extracts_payload() {
         // Arrange
-        let raw =
-            "```json\n{\"messages\":[{\"type\":\"question\",\"text\":\"Need details.\"}]}\n```";
+        let raw = "```json\n{\"answer\":\"\",\"questions\":[{\"text\":\"Need \
+                   details.\",\"options\":[]}],\"summary\":null}\n```";
 
         // Act
         let response = parse_agent_response(raw);
@@ -1062,7 +1004,8 @@ mod tests {
         assert_eq!(
             response,
             AgentResponse {
-                messages: vec![AgentResponseMessage::question("Need details.")],
+                answer: String::new(),
+                questions: vec![QuestionItem::new("Need details.")],
                 summary: None,
             }
         );
@@ -1115,7 +1058,7 @@ mod tests {
     /// Falls back to plain text when structured payload has unknown fields.
     fn test_parse_agent_response_unknown_top_level_fields_fallback() {
         // Arrange
-        let raw = r#"{"messages":[{"type":"answer","text":"Response text."}],"future_field":true,"extra":42}"#;
+        let raw = r#"{"answer":"Response text.","questions":[],"summary":null,"future_field":true,"extra":42}"#;
 
         // Act
         let response = parse_agent_response(raw);
@@ -1126,11 +1069,10 @@ mod tests {
     }
 
     #[test]
-    /// Falls back to plain text when message entries include unknown fields.
-    fn test_parse_agent_response_unknown_message_fields_fallback() {
+    /// Falls back to plain text when question entries include unknown fields.
+    fn test_parse_agent_response_unknown_question_fields_fallback() {
         // Arrange
-        let raw =
-            r#"{"messages":[{"type":"question","text":"Need details","variants":["A","B"]}]}"#;
+        let raw = r#"{"answer":"","questions":[{"text":"Need details","options":[],"variants":["A","B"]}],"summary":null}"#;
 
         // Act
         let response = parse_agent_response(raw);
@@ -1160,10 +1102,8 @@ mod tests {
     fn test_agent_response_serde_round_trip() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::answer("Step 1"),
-                AgentResponseMessage::question("Need one decision"),
-            ],
+            answer: "Step 1".to_string(),
+            questions: vec![QuestionItem::new("Need one decision")],
             summary: Some(AgentResponseSummary {
                 turn: "- Added the protocol summary field.".to_string(),
                 session: "- Session changes remain pending.".to_string(),
@@ -1190,14 +1130,15 @@ mod tests {
         assert_eq!(
             response,
             AgentResponse {
-                messages: vec![AgentResponseMessage::answer("Hello")],
+                answer: "Hello".to_string(),
+                questions: Vec::new(),
                 summary: None,
             }
         );
     }
 
     #[test]
-    /// Builds a schema object with required `messages` field.
+    /// Builds a schema object with required top-level response fields.
     fn test_agent_response_output_schema_contains_required_fields() {
         // Arrange / Act
         let schema = agent_response_output_schema();
@@ -1214,9 +1155,10 @@ mod tests {
         assert!(
             required_fields
                 .iter()
-                .any(|field| field.as_str() == Some("messages"))
+                .any(|field| field.as_str() == Some("answer"))
         );
-        assert!(properties.contains_key("messages"));
+        assert!(properties.contains_key("answer"));
+        assert!(properties.contains_key("questions"));
         assert!(properties.contains_key("summary"));
     }
 
@@ -1242,19 +1184,6 @@ mod tests {
 
         // Assert
         assert!(!contains_schema_key(&schema, "oneOf"));
-    }
-
-    #[test]
-    /// Preserves message type enum values after `oneOf` normalization.
-    fn test_agent_response_output_schema_contains_message_type_enum_values() {
-        // Arrange / Act
-        let schema = agent_response_output_schema();
-
-        // Assert
-        assert!(
-            contains_schema_enum_values(&schema, &["answer", "question"]),
-            "message type enum values should exist in schema"
-        );
     }
 
     #[test]
@@ -1304,14 +1233,14 @@ mod tests {
 
     #[test]
     /// Keeps nested response-schema models self-descriptive for inline docs.
-    fn test_agent_response_json_schema_preserves_message_metadata() {
+    fn test_agent_response_json_schema_preserves_nested_metadata() {
         // Arrange / Act
         let schema = agent_response_json_schema();
-        let message_definition = schema
+        let question_definition = schema
             .get("$defs")
-            .and_then(|value| value.get("AgentResponseMessage"))
+            .and_then(|value| value.get("QuestionItem"))
             .and_then(Value::as_object)
-            .expect("message definition should exist");
+            .expect("question definition should exist");
         let summary_definition = schema
             .get("$defs")
             .and_then(|value| value.get("AgentResponseSummary"))
@@ -1320,17 +1249,16 @@ mod tests {
 
         // Assert
         assert_eq!(
-            message_definition.get("title").and_then(Value::as_str),
-            Some("AgentResponseMessage")
+            question_definition.get("title").and_then(Value::as_str),
+            Some("QuestionItem")
         );
         assert_eq!(
-            message_definition
+            question_definition
                 .get("description")
                 .and_then(Value::as_str),
             Some(
-                "One structured message emitted by the assistant protocol payload. Use `answer` \
-                 for delivered work or status updates, and use `question` only when user input, \
-                 approval, or a mutually exclusive decision is required before continuing."
+                "One clarification question emitted by the assistant protocol payload. Keep each \
+                 item focused to one actionable decision."
             )
         );
         assert_eq!(
@@ -1358,39 +1286,45 @@ mod tests {
             .get("properties")
             .and_then(Value::as_object)
             .expect("response properties should exist");
-        let message_definition = schema
+        let question_definition = schema
             .get("$defs")
-            .and_then(|value| value.get("AgentResponseMessage"))
+            .and_then(|value| value.get("QuestionItem"))
             .and_then(Value::as_object)
-            .expect("message definition should exist");
+            .expect("question definition should exist");
         let summary_definition = schema
             .get("$defs")
             .and_then(|value| value.get("AgentResponseSummary"))
             .and_then(Value::as_object)
             .expect("summary definition should exist");
-        let message_properties = message_definition
+        let question_properties = question_definition
             .get("properties")
             .and_then(Value::as_object)
-            .expect("message properties should exist");
+            .expect("question properties should exist");
         let summary_properties = summary_definition
             .get("properties")
             .and_then(Value::as_object)
             .expect("summary properties should exist");
-        let expected_messages_description = format!(
-            "Ordered response messages emitted for this turn. Multiple messages are allowed. Keep \
-             user-directed clarification requests as separate `question` messages instead of \
-             embedding them inside `answer` text. Emit at most {MAX_QUESTIONS} `question` \
-             messages in one response."
+        let expected_questions_description = format!(
+            "Ordered clarification questions emitted for this turn. Emit at most {MAX_QUESTIONS} \
+             items, and use an empty array when no user input is required. Defaults to an empty \
+             array when omitted."
         );
 
         // Assert
-        assert_schema_property_title(response_properties, "messages", "messages");
+        assert_schema_property_title_and_description(
+            response_properties,
+            "answer",
+            "answer",
+            "Markdown answer text for delivered work, status updates, or concise completion \
+             notes. Keep clarification requests out of this field and emit them through \
+             `questions` instead. Defaults to an empty string when omitted.",
+        );
         assert_eq!(
             response_properties
-                .get("messages")
+                .get("questions")
                 .and_then(|value| value.get("description"))
                 .and_then(Value::as_str),
-            Some(expected_messages_description.as_str())
+            Some(expected_questions_description.as_str())
         );
         assert_schema_property_title_and_description(
             response_properties,
@@ -1400,13 +1334,13 @@ mod tests {
              `null` for one-shot prompts and legacy payloads.",
         );
         assert_schema_property_title_and_description(
-            message_properties,
+            question_properties,
             "text",
             "text",
-            "Human-readable markdown text for this message. For `question`, ask one specific \
-             actionable question instead of bundling multiple decisions into one message.",
+            "Human-readable markdown text for this question. Ask one specific actionable question \
+             instead of bundling multiple decisions into one item.",
         );
-        assert_schema_property_title(message_properties, "options", "options");
+        assert_schema_property_title(question_properties, "options", "options");
         assert_schema_property_title_and_description(
             summary_properties,
             "turn",
@@ -1424,25 +1358,37 @@ mod tests {
     #[test]
     /// Preserves optional prompt fields in the raw schema instead of forcing
     /// transport-only requirements into prompt docs.
-    fn test_agent_response_json_schema_keeps_optional_options_field() {
+    fn test_agent_response_json_schema_keeps_optional_summary_field() {
         // Arrange / Act
         let schema = agent_response_json_schema();
-        let message_definition = schema
-            .get("$defs")
-            .and_then(|value| value.get("AgentResponseMessage"))
-            .and_then(Value::as_object)
-            .expect("message definition should exist");
-        let required_fields = message_definition
+        let response_required_fields = schema
             .get("required")
             .and_then(Value::as_array)
-            .expect("message definition should have required fields");
+            .cloned()
+            .unwrap_or_default();
+        let question_definition = schema
+            .get("$defs")
+            .and_then(|value| value.get("QuestionItem"))
+            .and_then(Value::as_object)
+            .expect("question definition should exist");
+        let question_required_fields = question_definition
+            .get("required")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
 
         // Assert
         assert!(
-            required_fields
+            response_required_fields
+                .iter()
+                .all(|field| field.as_str() != Some("summary")),
+            "raw prompt schema should keep optional summary fields optional"
+        );
+        assert!(
+            question_required_fields
                 .iter()
                 .all(|field| field.as_str() != Some("options")),
-            "response schema should keep optional fields optional"
+            "question schema should keep `options` optional for omitted empty lists"
         );
     }
 
@@ -1475,37 +1421,6 @@ mod tests {
             Value::Array(array) => array
                 .iter()
                 .any(|nested_value| contains_schema_key(nested_value, key)),
-            _ => false,
-        }
-    }
-
-    /// Recursively checks whether one schema tree contains an `enum` array
-    /// with the exact ordered values.
-    fn contains_schema_enum_values(value: &Value, expected_values: &[&str]) -> bool {
-        match value {
-            Value::Object(object) => {
-                let has_expected_enum =
-                    object
-                        .get("enum")
-                        .and_then(Value::as_array)
-                        .is_some_and(|enum_values| {
-                            enum_values
-                                .iter()
-                                .map(Value::as_str)
-                                .collect::<Option<Vec<_>>>()
-                                .is_some_and(|values| values == expected_values)
-                        });
-                if has_expected_enum {
-                    return true;
-                }
-
-                object
-                    .values()
-                    .any(|nested_value| contains_schema_enum_values(nested_value, expected_values))
-            }
-            Value::Array(array) => array
-                .iter()
-                .any(|nested_value| contains_schema_enum_values(nested_value, expected_values)),
             _ => false,
         }
     }

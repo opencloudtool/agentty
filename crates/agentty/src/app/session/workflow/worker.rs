@@ -511,25 +511,26 @@ impl SessionManager {
     }
 }
 
-/// Applies the turn result: appends the final response, persists the agent
-/// `summary.session` text, updates stats, and runs auto-commit.
-/// Returns `Ok(Status)` on success or `Err(description)` on turn failure after
+/// Applies the turn result: appends the final response, persists the raw agent
+/// summary payload, updates stats, and runs auto-commit. Returns
+/// `Ok(Status)` on success or `Err(description)` on turn failure after
 /// appending the error to session output.
 ///
 /// The final parsed response appends non-empty protocol `answer` text only
 /// when no assistant stream chunks were already appended for this turn. This
 /// avoids duplicate assistant output while preserving streamed answers.
 ///
-/// When no `answer` messages exist, worker output falls back to joined
-/// `question` text so clarification prompts remain visible while thought-only
+/// When no `answer` text exists, worker output falls back to joined
+/// question text so clarification prompts remain visible while thought-only
 /// responses are not persisted as final transcript output.
 ///
-/// The agent `summary.session` field is persisted here so refresh-driven UI
-/// rendering can read the database-backed value. When the session later
-/// reaches `Done`, the merge path rewrites the persisted value into markdown
-/// with `# Summary` and `# Commit` sections.
+/// The raw agent `summary` payload is persisted here so refresh-driven UI
+/// rendering can reload it from the database and show separate `Current Turn`
+/// and `Session Changes` blocks. When the session later reaches `Done`, the
+/// merge path rewrites the persisted value into markdown with `# Summary` and
+/// `# Commit` sections.
 ///
-/// `question` messages are persisted to the session row and trigger
+/// Clarification questions are persisted to the session row and trigger
 /// `Status::Question`; all responses are emitted through
 /// `AppEvent::AgentResponseReceived` for reducer-level routing.
 async fn apply_turn_result(
@@ -561,15 +562,10 @@ async fn apply_turn_result(
                 .await;
             }
 
-            let summary_text = assistant_message
-                .summary
-                .as_ref()
-                .map(|summary| summary.session.trim())
-                .filter(|summary| !summary.is_empty())
-                .unwrap_or_default();
+            let summary_text = persisted_session_summary_payload(&assistant_message);
             let _ = context
                 .db
-                .update_session_summary(&context.session_id, summary_text)
+                .update_session_summary(&context.session_id, &summary_text)
                 .await;
             let _ = context.app_event_tx.send(AppEvent::RefreshSessions);
 
@@ -709,12 +705,12 @@ async fn load_project_model_setting(
 
 /// Builds the persisted transcript chunk for one parsed assistant response.
 ///
-/// Prefers joined `answer` messages so normal chat output stays concise.
+/// Prefers the top-level `answer` text so normal chat output stays concise.
 ///
 /// When `streamed_assistant_content` is `true`, non-empty `answer` text is not
 /// appended again to avoid duplicate output in the transcript.
 ///
-/// Falls back to joined `question` text when no answers are present so
+/// Falls back to joined question text when no answer is present so
 /// clarification prompts stay visible while thought-only responses are not
 /// persisted as final transcript output.
 fn build_assistant_transcript_output(
@@ -748,6 +744,19 @@ fn build_assistant_transcript_output(
     }
 
     Some(format!("{question_text}\n\n"))
+}
+
+/// Serializes one assistant summary payload for session persistence.
+///
+/// Review-mode rendering uses the raw JSON object so it can display separate
+/// `Current Turn` and `Session Changes` sections without reparsing answer
+/// markdown.
+fn persisted_session_summary_payload(assistant_message: &agent::AgentResponse) -> String {
+    assistant_message
+        .summary
+        .as_ref()
+        .and_then(|summary| serde_json::to_string(summary).ok())
+        .unwrap_or_default()
 }
 
 /// Consumes [`TurnEvent`]s from `event_rx` and applies their side effects.
@@ -864,7 +873,7 @@ mod tests {
 
     use super::*;
     use crate::infra::agent::AgentResponse;
-    use crate::infra::agent::protocol::{AgentResponseMessage, AgentResponseSummary};
+    use crate::infra::agent::protocol::{AgentResponseSummary, QuestionItem};
     use crate::infra::channel::MockAgentChannel;
     use crate::infra::db::Database;
     use crate::infra::fs;
@@ -903,10 +912,10 @@ mod tests {
     fn test_agent_response_questions_returns_only_question_messages() {
         // Arrange
         let agent_response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::answer("Implemented the feature."),
-                AgentResponseMessage::question("Need a target branch?"),
-                AgentResponseMessage::question("Need migration notes?"),
+            answer: "Implemented the feature.".to_string(),
+            questions: vec![
+                QuestionItem::new("Need a target branch?"),
+                QuestionItem::new("Need migration notes?"),
             ],
             summary: None,
         };
@@ -931,7 +940,8 @@ mod tests {
              instructions rewritten to the safer `/etc/keyd/default.conf` path with existence \
              checks and\nrollback notes?";
         let agent_response = AgentResponse {
-            messages: vec![AgentResponseMessage::question(numbered_questions)],
+            answer: String::new(),
+            questions: vec![QuestionItem::new(numbered_questions)],
             summary: None,
         };
 
@@ -948,10 +958,8 @@ mod tests {
     fn test_build_assistant_transcript_output_prefers_answer_messages() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::answer("Implemented the fix."),
-                AgentResponseMessage::question("Need me to run tests?"),
-            ],
+            answer: "Implemented the fix.".to_string(),
+            questions: vec![QuestionItem::new("Need me to run tests?")],
             summary: None,
         };
 
@@ -971,7 +979,8 @@ mod tests {
     fn test_build_assistant_transcript_output_skips_answer_when_assistant_streamed() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![AgentResponseMessage::answer("Implemented the fix.")],
+            answer: "Implemented the fix.".to_string(),
+            questions: Vec::new(),
             summary: None,
         };
 
@@ -988,7 +997,8 @@ mod tests {
     fn test_build_assistant_transcript_output_falls_back_to_question_text() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![AgentResponseMessage::question("Should I apply the patch?")],
+            answer: String::new(),
+            questions: vec![QuestionItem::new("Should I apply the patch?")],
             summary: None,
         };
 
@@ -1007,10 +1017,8 @@ mod tests {
     fn test_build_assistant_transcript_output_returns_none_for_blank_messages() {
         // Arrange
         let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::answer(""),
-                AgentResponseMessage::question("\n"),
-            ],
+            answer: String::new(),
+            questions: vec![QuestionItem::new("\n")],
             summary: None,
         };
 
@@ -1019,6 +1027,30 @@ mod tests {
 
         // Assert
         assert_eq!(transcript_output, None);
+    }
+
+    #[test]
+    /// Ensures persisted summaries keep the raw turn/session payload for
+    /// review-mode rendering.
+    fn test_persisted_session_summary_payload_serializes_structured_summary() {
+        // Arrange
+        let response = AgentResponse {
+            answer: "Implemented the fix.".to_string(),
+            questions: Vec::new(),
+            summary: Some(AgentResponseSummary {
+                turn: "Updated the greeting flow.".to_string(),
+                session: "Session now greets users on startup.".to_string(),
+            }),
+        };
+
+        // Act
+        let persisted_summary = persisted_session_summary_payload(&response);
+
+        // Assert
+        assert_eq!(
+            persisted_summary,
+            r#"{"turn":"Updated the greeting flow.","session":"Session now greets users on startup."}"#
+        );
     }
 
     #[tokio::test]
@@ -1266,10 +1298,11 @@ mod tests {
         };
         let turn_result = Ok(TurnResult {
             assistant_message: AgentResponse {
-                messages: vec![AgentResponseMessage::answer("Implemented the change.")],
+                answer: "Implemented the change.".to_string(),
+                questions: Vec::new(),
                 summary: Some(AgentResponseSummary {
                     turn: "- Updated the worker flow.".to_string(),
-                    session: "- Active review now keeps summary in memory.".to_string(),
+                    session: "- Active review now reloads summary from persistence.".to_string(),
                 }),
             },
             context_reset: false,
@@ -1293,7 +1326,9 @@ mod tests {
         assert_eq!(status, Status::Review);
         assert_eq!(
             sessions[0].summary.as_deref(),
-            Some("- Active review now keeps summary in memory.")
+            Some(
+                r#"{"turn":"- Updated the worker flow.","session":"- Active review now reloads summary from persistence."}"#
+            )
         );
     }
 

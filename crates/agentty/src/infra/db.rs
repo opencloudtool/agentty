@@ -994,9 +994,10 @@ WHERE id = ?
 
     /// Updates the persisted session summary text for a session row.
     ///
-    /// This field stores the agent `summary.session` section and, once the
-    /// session reaches `Done`, the merge workflow rewrites it into markdown
-    /// with `# Summary` and `# Commit` sections.
+    /// This field stores the raw agent `summary` payload during
+    /// review/question states and, once the session reaches `Done`, the merge
+    /// workflow rewrites it into markdown with `# Summary` and `# Commit`
+    /// sections.
     ///
     /// # Errors
     /// Returns an error if the summary update fails.

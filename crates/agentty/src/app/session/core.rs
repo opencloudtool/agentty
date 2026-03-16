@@ -306,7 +306,7 @@ mod tests {
         mock.expect_build_command().returning(|request| {
             let mut cmd = Command::new("sh");
             cmd.arg("-c")
-                .arg("printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"mock-start\"}]}'")
+                .arg("printf '{\"answer\":\"mock-start\",\"questions\":[],\"summary\":null}'")
                 .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -2514,8 +2514,8 @@ mod tests {
             let mut cmd = Command::new("sh");
             cmd.arg("-c")
                 .arg(
-                    "printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"\
-                     replayed-after-restart\"}]}'",
+                    "printf '{\"answer\":\"replayed-after-restart\",\"questions\":[],\"summary\":\
+                     null}'",
                 )
                 .current_dir(request.folder)
                 .stdout(Stdio::piped())
@@ -2597,8 +2597,8 @@ mod tests {
             let mut cmd = Command::new("bash");
             cmd.arg("-c")
                 .arg(
-                    "echo auto-content > auto-committed.txt; printf \
-                     '{\"messages\":[{\"type\":\"answer\",\"text\":\"Auto commit done\"}]}'",
+                    "echo auto-content > auto-committed.txt; printf '{\"answer\":\"Auto commit \
+                     done\",\"questions\":[],\"summary\":null}'",
                 )
                 .current_dir(request.folder)
                 .stdout(Stdio::piped())
@@ -2735,7 +2735,7 @@ mod tests {
         mock.expect_build_command().returning(|request| {
             let mut cmd = Command::new("sh");
             cmd.arg("-c")
-                .arg("printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"no-changes\"}]}'")
+                .arg("printf '{\"answer\":\"no-changes\",\"questions\":[],\"summary\":null}'")
                 .current_dir(request.folder)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -3519,7 +3519,7 @@ mod tests {
             .returning(|_, _| {
                 Box::pin(async {
                     Ok(AppServerTurnResponse {
-                        assistant_message: r#"{"messages":[{"type":"answer","text":"ready"}]}"#
+                        assistant_message: r#"{"answer":"ready","questions":[],"summary":null}"#
                             .to_string(),
                         context_reset: false,
                         input_tokens: 0,
@@ -3589,7 +3589,7 @@ mod tests {
             .returning(|_, _| {
                 Box::pin(async {
                     Ok(AppServerTurnResponse {
-                        assistant_message: r#"{"messages":[{"type":"answer","text":"ready"}]}"#
+                        assistant_message: r#"{"answer":"ready","questions":[],"summary":null}"#
                             .to_string(),
                         context_reset: false,
                         input_tokens: 0,
@@ -3804,7 +3804,7 @@ mod tests {
     #[test]
     fn test_parse_merge_commit_message_response_with_protocol_message() {
         // Arrange
-        let content = r#"{"messages":[{"type":"answer","text":"Title\n\n- Detail"}]}"#;
+        let content = r#"{"answer":"Title\n\n- Detail","questions":[],"summary":null}"#;
 
         // Act
         let parsed = crate::infra::agent::protocol::parse_agent_response_strict(content)

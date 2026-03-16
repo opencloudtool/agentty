@@ -1389,10 +1389,11 @@ impl App {
     /// Routes one structured agent response to the currently focused session
     /// UI.
     ///
-    /// At the app layer, only `question` messages require explicit mode
-    /// routing. `answer` messages are already appended to transcript output by
-    /// the session worker before this event is handled. Session summaries are
-    /// rendered from persisted database state after refresh.
+    /// At the app layer, only clarification questions require explicit mode
+    /// routing. The top-level `answer` text is already appended to transcript
+    /// output by the session worker before this event is handled. Session
+    /// summaries are persisted as raw `summary` payloads by the worker and
+    /// rendered from refresh-driven database state.
     fn apply_agent_response_received(&mut self, session_id: &str, response: &AgentResponse) {
         let Some(session_index) = self
             .sessions
@@ -2756,7 +2757,7 @@ mod tests {
         SESSION_DATA_DIR, Session, SessionHandles, SessionSize, SessionStats, Status,
     };
     use crate::domain::setting::SettingName;
-    use crate::infra::agent::protocol::{AgentResponseMessage, AgentResponseSummary};
+    use crate::infra::agent::protocol::{AgentResponseSummary, QuestionItem};
     use crate::infra::db::Database;
     use crate::infra::file_index::FileEntry;
     use crate::infra::tmux::{MockTmuxClient, TmuxClient};
@@ -3738,9 +3739,10 @@ mod tests {
         // Arrange
         let mut event_batch = AppEventBatch::default();
         let latest_response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::question("Need branch?"),
-                AgentResponseMessage::question("Need tests?"),
+            answer: String::new(),
+            questions: vec![
+                QuestionItem::new("Need branch?"),
+                QuestionItem::new("Need tests?"),
             ],
             summary: None,
         };
@@ -3748,7 +3750,8 @@ mod tests {
         // Act
         event_batch.collect_event(AppEvent::AgentResponseReceived {
             response: AgentResponse {
-                messages: vec![AgentResponseMessage::question("Old question")],
+                answer: String::new(),
+                questions: vec![QuestionItem::new("Old question")],
                 summary: None,
             },
             session_id: "session-1".to_string(),
@@ -3832,12 +3835,13 @@ mod tests {
             scroll_offset: None,
         };
         let response = AgentResponse {
-            messages: vec![
-                AgentResponseMessage::question_with_options(
+            answer: String::new(),
+            questions: vec![
+                QuestionItem::with_options(
                     "Need a target branch?",
                     vec!["main".to_string(), "develop".to_string()],
                 ),
-                AgentResponseMessage::question_with_options(
+                QuestionItem::with_options(
                     "Need integration tests?",
                     vec!["Yes".to_string(), "No".to_string()],
                 ),
@@ -3877,7 +3881,8 @@ mod tests {
         let mut app = new_test_app().await;
         app.mode = AppMode::List;
         let response = AgentResponse {
-            messages: vec![AgentResponseMessage::question("Need context?")],
+            answer: String::new(),
+            questions: vec![QuestionItem::new("Need context?")],
             summary: None,
         };
 
@@ -3893,7 +3898,7 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies agent response handling leaves session summaries to
+    /// Verifies agent response handling leaves cached session summaries to
     /// refresh-driven database reloads.
     async fn apply_app_events_agent_response_does_not_mutate_session_summary() {
         // Arrange
@@ -3902,9 +3907,8 @@ mod tests {
             .sessions
             .push(test_session(PathBuf::from("/tmp/session-summary-view")));
         let response = AgentResponse {
-            messages: vec![AgentResponseMessage::answer(
-                "Implemented the protocol update.",
-            )],
+            answer: "Implemented the protocol update.".to_string(),
+            questions: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: "- Added structured protocol summary fields.".to_string(),
                 session: "- Session output now renders summary markdown separately.".to_string(),

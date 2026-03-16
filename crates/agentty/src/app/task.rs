@@ -528,7 +528,7 @@ mod tests {
     /// display text for focused review rendering.
     fn test_structured_agent_response_is_unwrapped_to_display_text() {
         // Arrange
-        let structured_json = r#"{"messages":[{"type":"answer","text":"Review looks good."}]}"#;
+        let structured_json = r#"{"answer":"Review looks good.","questions":[],"summary":null}"#;
 
         // Act
         let agent_response = agent::protocol::parse_agent_response(structured_json);

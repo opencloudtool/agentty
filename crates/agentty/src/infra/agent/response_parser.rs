@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn test_claude_parse_response_reads_result_from_json_array_payload() {
         // Arrange
-        let stdout = r#"[{"type":"system","subtype":"init"},{"type":"result","subtype":"success","result":"{\"messages\":[{\"type\":\"answer\",\"text\":\"Recovered payload\"}]}","usage":{"input_tokens":5,"output_tokens":3}}]"#;
+        let stdout = r#"[{"type":"system","subtype":"init"},{"type":"result","subtype":"success","result":"{\"answer\":\"Recovered payload\",\"questions\":[],\"summary\":null}","usage":{"input_tokens":5,"output_tokens":3}}]"#;
 
         // Act
         let parsed = parse_claude_response_with_fallback(stdout, "");
@@ -829,7 +829,7 @@ mod tests {
         // Assert
         assert_eq!(
             parsed.content,
-            r#"{"messages":[{"type":"answer","text":"Recovered payload"}]}"#
+            r#"{"answer":"Recovered payload","questions":[],"summary":null}"#
         );
         assert_eq!(parsed.stats.input_tokens, 5);
         assert_eq!(parsed.stats.output_tokens, 3);

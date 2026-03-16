@@ -20,6 +20,7 @@ use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::Status;
 use crate::infra::agent;
+use crate::infra::agent::protocol::AgentResponseSummary;
 use crate::infra::db::Database;
 use crate::infra::fs::{self as fs, FsClient};
 use crate::infra::git::{self as git, GitClient};
@@ -1199,8 +1200,9 @@ impl SessionManager {
     }
 
     /// Updates the persisted done-session summary by formatting the latest
-    /// persisted agent `summary.session` text and canonical commit message
-    /// into markdown sections.
+    /// persisted agent session-summary text, extracting `summary.session`
+    /// from raw JSON payloads when needed, and canonical commit message into
+    /// markdown sections.
     async fn update_done_session_summary_from_commit_message(
         db: &Database,
         session_id: &str,
@@ -1239,16 +1241,20 @@ impl SessionManager {
 
     /// Builds the persisted done-session summary with markdown sections.
     ///
-    /// Includes `# Summary` from the final agent response and `# Commit` from
-    /// the canonical session commit message.
+    /// Includes `# Summary` from the final agent session-summary text,
+    /// extracting `summary.session` from persisted JSON payloads when needed,
+    /// and `# Commit` from the canonical session commit message.
     fn session_summary_with_commit_message(
         session_summary: Option<&str>,
         commit_message: &str,
     ) -> String {
         let trimmed_summary = session_summary.map(str::trim).unwrap_or_default();
+        let summary_text = serde_json::from_str::<AgentResponseSummary>(trimmed_summary)
+            .map(|summary_payload| summary_payload.session)
+            .unwrap_or_else(|_| trimmed_summary.to_string());
         let trimmed_commit_message = commit_message.trim();
 
-        format!("# Summary\n\n{trimmed_summary}\n\n# Commit\n\n{trimmed_commit_message}")
+        format!("# Summary\n\n{summary_text}\n\n# Commit\n\n{trimmed_commit_message}")
     }
 
     /// Runs a bounded rebase-assistance loop until conflicts are resolved.
@@ -1900,6 +1906,26 @@ mod tests {
         assert_eq!(
             summary,
             "# Summary\n\n\n\n# Commit\n\nRefine session summary"
+        );
+    }
+
+    #[test]
+    fn test_session_summary_with_commit_message_extracts_session_text_from_json_payload() {
+        // Arrange
+        let session_summary = Some(
+            r#"{"turn":"Updated the greeting flow.","session":"Session now greets users on startup."}"#,
+        );
+        let commit_message = "Refine session summary";
+
+        // Act
+        let summary =
+            SessionManager::session_summary_with_commit_message(session_summary, commit_message);
+
+        // Assert
+        assert_eq!(
+            summary,
+            "# Summary\n\nSession now greets users on startup.\n\n# Commit\n\nRefine session \
+             summary"
         );
     }
 

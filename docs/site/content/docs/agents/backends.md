@@ -92,8 +92,9 @@ before the backend sees the prompt:
 - Strict and permissive request paths still select explicit profiles at the
   transport boundary.
 
-The shared schema defines a top-level `messages` array plus the optional
-top-level `summary` object. Session turns typically populate:
+The shared schema defines a top-level `answer` markdown string, a `questions`
+array, and the optional top-level `summary` object. Session turns typically
+populate:
 
 - `summary.turn` describes only the work completed in the current turn
 - `summary.session` describes the cumulative session-branch diff that still
@@ -108,12 +109,12 @@ Example payload:
 
 ```json
 {
-  "messages": [
+  "answer": "Implemented the change.",
+  "questions": [
     {
-      "type": "answer",
-      "text": "Implemented the change."
-    },
-    { "type": "question", "text": "Should I run the full test suite?", "options": ["Yes", "No", "Only changed files"] }
+      "text": "Should I run the full test suite?",
+      "options": ["Yes", "No", "Only changed files"]
+    }
   ],
   "summary": {
     "turn": "- Updated the protocol prompt templates.",
@@ -123,11 +124,11 @@ Example payload:
 ```
 
 <a id="backends-structured-response-routing"></a>
-`answer` messages are appended to the normal session transcript. `question`
-messages are persisted separately and move the session to **Question** status
-so Agentty can collect clarifications in question input mode. The top-level
-`summary` object is persisted separately and rendered in the session summary
-panel instead of being parsed back out of answer markdown.
+Top-level `answer` text is appended to the normal session transcript.
+Structured `questions` are persisted separately and move the session to
+**Question** status so Agentty can collect clarifications in question input
+mode. The top-level `summary` object is persisted separately and rendered in
+the session summary panel instead of being parsed back out of answer markdown.
 
 ## Protocol Validation
 

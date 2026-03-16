@@ -449,7 +449,7 @@ mod tests {
         let mut command = std::process::Command::new("sh");
         command.arg("-c").arg(
             "cat > \"$CLI_CAPTURE_PATH\"; printf '%s' \
-             '{\"messages\":[{\"type\":\"answer\",\"text\":\"ok\"}]}'",
+             '{\"answer\":\"ok\",\"questions\":[],\"summary\":null}'",
         );
         command.env("CLI_CAPTURE_PATH", capture_path);
 
@@ -540,7 +540,7 @@ mod tests {
             let mut command = std::process::Command::new("sh");
             command
                 .arg("-c")
-                .arg("printf '{\"messages\":[{\"type\":\"answer\",\"text\":\"ok\"}]}'");
+                .arg("printf '{\"answer\":\"ok\",\"questions\":[],\"summary\":null}'");
 
             Ok(command)
         });
@@ -570,7 +570,7 @@ mod tests {
             let mut command = std::process::Command::new("sh");
             command.arg("-c").arg(
                 "printf 'warming up\\n' >&2; sleep 0.1; cat >/dev/null; printf '%s' \
-                 '{\"messages\":[{\"type\":\"answer\",\"text\":\"ok\"}]}'",
+                 '{\"answer\":\"ok\",\"questions\":[],\"summary\":null}'",
             );
 
             Ok(command)
@@ -797,7 +797,7 @@ mod tests {
             command.arg("-c").arg(concat!(
                 r#"echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]}}';"#,
                 r#"echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"streamed fragment"}]}}';"#,
-                r#"echo '{"result":"{\"messages\":[{\"type\":\"answer\",\"text\":\"final answer\"}]}","usage":{"input_tokens":5,"output_tokens":3}}'"#,
+                r#"echo '{"result":"{\"answer\":\"final answer\",\"questions\":[],\"summary\":null}","usage":{"input_tokens":5,"output_tokens":3}}'"#,
             ));
 
             Ok(command)
@@ -850,7 +850,7 @@ mod tests {
     /// Verifies structured JSON stream chunks keep only `answer` text.
     fn test_normalize_stream_response_content_keeps_answer_text_only() {
         // Arrange
-        let text = r#"{"messages":[{"type":"answer","text":"Done."},{"type":"question","text":"Need clarification."}]}"#;
+        let text = r#"{"answer":"Done.","questions":[{"text":"Need clarification.","options":[]}],"summary":null}"#;
 
         // Act
         let normalized_text = normalize_stream_response_content(text);
@@ -863,7 +863,7 @@ mod tests {
     /// Verifies structured JSON chunks without `answer` text are suppressed.
     fn test_normalize_stream_response_content_suppresses_question_only_payload() {
         // Arrange
-        let text = r#"{"messages":[{"type":"question","text":"Need clarification."}]}"#;
+        let text = r#"{"answer":"","questions":[{"text":"Need clarification.","options":[]}],"summary":null}"#;
 
         // Act
         let normalized_text = normalize_stream_response_content(text);
@@ -876,7 +876,7 @@ mod tests {
     /// Verifies partial protocol JSON chunks are suppressed during streaming.
     fn test_normalize_stream_response_content_suppresses_json_fragment() {
         // Arrange
-        let text = r#"{"messages":[{"type":"answer","#;
+        let text = r#"{"answer":"#;
 
         // Act
         let normalized_text = normalize_stream_response_content(text);

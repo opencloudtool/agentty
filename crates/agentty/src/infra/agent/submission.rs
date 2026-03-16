@@ -356,7 +356,7 @@ mod tests {
         let mut command = Command::new("sh");
         command.arg("-c").arg(
             "cat > \"$ONE_SHOT_CAPTURE_PATH\"; printf '%s' \
-             '{\"messages\":[{\"type\":\"answer\",\"text\":\"captured\"}]}'",
+             '{\"answer\":\"captured\",\"questions\":[],\"summary\":null}'",
         );
         command.env("ONE_SHOT_CAPTURE_PATH", capture_path);
         command.stdout(std::process::Stdio::piped());
@@ -384,7 +384,7 @@ mod tests {
             );
 
             Ok(mock_shell_command(
-                r#"{"messages":[{"type":"answer","text":"Generated title"}]}"#,
+                r#"{"answer":"Generated title","questions":[],"summary":null}"#,
                 "",
                 0,
             ))
@@ -510,7 +510,7 @@ mod tests {
             let mut command = Command::new("sh");
             command.arg("-c").arg(
                 "printf 'warming up\\n' >&2; sleep 0.1; cat >/dev/null; printf '%s' \
-                 '{\"messages\":[{\"type\":\"answer\",\"text\":\"done\"}]}'",
+                 '{\"answer\":\"done\",\"questions\":[],\"summary\":null}'",
             );
             command.stdout(std::process::Stdio::piped());
             command.stderr(std::process::Stdio::piped());

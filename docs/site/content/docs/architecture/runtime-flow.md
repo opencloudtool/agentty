@@ -176,12 +176,12 @@ Provider conversation id flow:
 <a id="architecture-agent-interaction-protocol"></a>
 Provider output is normalized to one structured response protocol:
 
-1. Prompt builders prepend the shared protocol preamble template and the self-descriptive `schemars` document, so every provider sees the same `messages`/optional-`summary` schema and transport-enforced `outputSchema` paths can normalize that same contract separately.
+1. Prompt builders prepend the shared protocol preamble template and the self-descriptive `schemars` document, so every provider sees the same `answer`/`questions`/optional-`summary` schema and transport-enforced `outputSchema` paths can normalize that same contract separately.
    `crates/agentty/resources/protocol_instruction_prompt.md` owns the normal request wrapper, while `crates/agentty/src/infra/agent/protocol.rs` remains the authoritative source for dynamic schema titles, descriptions, response shape metadata, and parsing.
 1. The caller selects one `ProtocolRequestProfile` before transport handoff. Session turns use `SessionTurn`, while isolated utility prompts use `UtilityPrompt`.
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts may leave `summary` unused.
 1. Channels stream deltas/progress as `TurnEvent`.
-1. Final output is parsed to protocol `messages` plus the optional structured summary.
+1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary.
 1. Worker persists final display text, raw summary payload, and question payloads, then emits `AgentResponseReceived`.
 
 <a id="architecture-agent-interaction-streaming"></a>
@@ -209,7 +209,7 @@ Final-output validation:
 <a id="architecture-agent-question-loop"></a>
 Question-mode loop:
 
-1. Worker receives final parsed response containing `question` messages.
+1. Worker receives final parsed response containing clarification questions in `questions`.
 1. Worker persists question list and sets session status `Question`.
 1. Reducer switches active view to `AppMode::Question` when that session is focused.
 1. User answers each question.

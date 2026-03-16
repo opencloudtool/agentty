@@ -1045,7 +1045,7 @@ mod tests {
             ));
 
             Ok(mock_shell_command(
-                r#"{"result":"{\"messages\":[{\"type\":\"answer\",\"text\":\"Resolved the rebase conflict.\"}]}","usage":{"input_tokens":11,"output_tokens":7}}"#,
+                r#"{"result":"{\"answer\":\"Resolved the rebase conflict.\",\"questions\":[],\"summary\":null}","usage":{"input_tokens":11,"output_tokens":7}}"#,
                 "",
                 0,
             ))
@@ -1075,7 +1075,7 @@ mod tests {
         );
         let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
         assert!(output_text.contains("Resolved the rebase conflict."));
-        assert!(!output_text.contains(r#"{"messages""#));
+        assert!(!output_text.contains(r#"{"answer""#));
         assert_eq!(*child_pid.lock().expect("failed to lock child pid"), None);
         let sessions = database
             .load_sessions()

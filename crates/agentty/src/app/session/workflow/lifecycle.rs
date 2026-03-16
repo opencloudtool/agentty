@@ -1135,7 +1135,7 @@ impl SessionManager {
     /// Parses model output into a normalized one-line session title.
     ///
     /// Accepts either a plain-text title line or a protocol-wrapped response
-    /// (`{"messages":[...]}`) whose first `answer` line contains the title.
+    /// (`{"answer":"..."}`) whose first answer line contains the title.
     ///
     /// Returns [`None`] when no usable title line is present.
     fn parse_generated_session_title(content: &str) -> Option<String> {
@@ -1154,7 +1154,7 @@ impl SessionManager {
     }
 
     /// Extracts the first usable title candidate from protocol `answer`
-    /// messages.
+    /// content.
     fn parse_generated_session_title_from_protocol_response(
         protocol_response: &agent::protocol::AgentResponse,
     ) -> Option<String> {
@@ -2123,7 +2123,7 @@ mod tests {
     fn test_parse_generated_session_title_accepts_protocol_answer_plain_text() {
         // Arrange
         let response_content =
-            r#"{"messages":[{"type":"answer","text":"Polish Gemini title parsing"}]}"#;
+            r#"{"answer":"Polish Gemini title parsing","questions":[],"summary":null}"#;
 
         // Act
         let parsed_title = SessionManager::parse_generated_session_title(response_content);
@@ -2153,11 +2153,11 @@ mod tests {
     }
 
     #[test]
-    /// Ensures protocol payloads without `answer` messages do not update
+    /// Ensures protocol payloads without `answer` text do not update
     /// titles.
     fn test_parse_generated_session_title_returns_none_for_question_only_protocol_payload() {
         // Arrange
-        let response_content = r#"{"messages":[{"type":"question","text":"Need confirmation?"}]}"#;
+        let response_content = r#"{"answer":"","questions":[{"text":"Need confirmation?","options":[]}],"summary":null}"#;
 
         // Act
         let parsed_title = SessionManager::parse_generated_session_title(response_content);
