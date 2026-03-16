@@ -153,7 +153,7 @@ pub fn wrap_diff_content(content: &str, max_width: usize) -> Vec<&str> {
 }
 
 const DEFAULT_REVIEW_COMMENT: &str = "Agent summary unavailable; review the highlighted changes.";
-const MAX_AGENT_COMMENT_COUNT: usize = 3;
+const MAX_AGENT_COMMENT_COUNT: usize = 4;
 const MAX_REVIEW_HIGHLIGHT_COUNT: usize = 8;
 const MAX_REVIEW_FALLBACK_COUNT: usize = 5;
 const MAX_REVIEW_SNIPPET_WIDTH: usize = 96;
@@ -203,6 +203,10 @@ pub fn build_focused_review_text(diff: &str, summary: Option<&str>) -> String {
 }
 
 /// Extracts concise one-line agent comments from session summary text.
+///
+/// Protocol summary headings are removed, but the content that follows those
+/// headings is retained so user-facing notes such as canonical commit text
+/// still appear in the focused review.
 fn focused_review_agent_comments(summary: Option<&str>) -> Vec<String> {
     let summary_text = summary.unwrap_or_default().trim();
     let structured_summary_lines = serde_json::from_str::<AgentResponseSummary>(summary_text)
@@ -218,17 +222,33 @@ fn focused_review_agent_comments(summary: Option<&str>) -> Vec<String> {
     } else {
         structured_summary_lines
     };
-    let mut comments = summary_lines
+    let mut comments = Vec::new();
+
+    for summary_line in summary_lines
         .into_iter()
         .flat_map(|line| line.lines().map(ToString::to_string).collect::<Vec<_>>())
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
-        .map(|line| strip_markdown_list_prefix(line.trim()).to_string())
-        .map(|line| strip_markdown_heading_prefix(&line).to_string())
-        .filter(|line| !is_protocol_summary_heading(line))
-        .filter(|line| !line.is_empty())
-        .take(MAX_AGENT_COMMENT_COUNT)
-        .collect::<Vec<_>>();
+    {
+        let trimmed_line = summary_line.trim();
+
+        if trimmed_line.is_empty() {
+            continue;
+        }
+
+        let list_stripped = strip_markdown_list_prefix(trimmed_line);
+        let heading_stripped = strip_markdown_heading_prefix(&list_stripped).to_string();
+
+        if is_protocol_summary_heading(&heading_stripped) {
+            continue;
+        }
+
+        if !heading_stripped.is_empty() {
+            comments.push(heading_stripped);
+        }
+
+        if comments.len() >= MAX_AGENT_COMMENT_COUNT {
+            break;
+        }
+    }
 
     if comments.is_empty() {
         comments.push(DEFAULT_REVIEW_COMMENT.to_string());
