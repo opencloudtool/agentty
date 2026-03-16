@@ -362,7 +362,7 @@ mod tests {
             Arc::new(create_passthrough_mock_fs_client()),
             git_client,
             review_request_client,
-            mock_app_server(),
+            Some(mock_app_server()),
         )
     }
 

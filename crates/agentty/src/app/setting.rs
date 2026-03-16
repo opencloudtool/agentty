@@ -834,7 +834,7 @@ mod tests {
             Arc::new(fs::MockFsClient::new()),
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
-            Arc::new(app_server::MockAppServerClient::new()),
+            Some(Arc::new(app_server::MockAppServerClient::new())),
         );
 
         (services, project_id)

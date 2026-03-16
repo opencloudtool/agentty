@@ -42,10 +42,10 @@ impl CliAgentChannel {
 
     /// Creates a CLI channel backed by the given pre-built backend.
     ///
-    /// Used in tests to inject a [`MockAgentBackend`] that controls command
-    /// construction and process spawning without relying on a real provider
-    /// binary.
-    #[cfg(test)]
+    /// Channel factories use this helper so transport selection can be done
+    /// once before constructing the concrete channel. Tests also use it to
+    /// inject a [`MockAgentBackend`] that controls command construction and
+    /// process spawning without relying on a real provider binary.
     pub(crate) fn with_backend(backend: Arc<dyn agent::AgentBackend>, kind: AgentKind) -> Self {
         Self { backend, kind }
     }

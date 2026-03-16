@@ -1,9 +1,11 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
-use super::backend::{AgentBackend, AgentBackendError, BuildCommandRequest};
+use super::backend::{AgentBackend, AgentBackendError, AgentTransport, BuildCommandRequest};
 use super::prompt::{PromptPreparationRequest, prepare_prompt_text};
 use crate::infra::agent::protocol::agent_response_output_schema_json;
+use crate::infra::app_server::AppServerClient;
 use crate::infra::channel::{
     TurnPromptAttachment, TurnPromptContentPart, split_turn_prompt_content,
 };
@@ -23,6 +25,17 @@ impl AgentBackend for ClaudeBackend {
     fn setup(&self, _folder: &Path) -> Result<(), AgentBackendError> {
         // Claude Code needs no config files
         Ok(())
+    }
+
+    fn transport(&self) -> AgentTransport {
+        AgentTransport::Cli
+    }
+
+    fn app_server_client(
+        &self,
+        _default_client: Option<Arc<dyn AppServerClient>>,
+    ) -> Option<Arc<dyn AppServerClient>> {
+        None
     }
 
     fn build_command<'request>(

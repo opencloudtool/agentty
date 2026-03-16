@@ -550,7 +550,9 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let clients = AppClients::new(mock_app_server()).with_tmux_client(tmux_client);
+        let clients = AppClients::new()
+            .with_app_server_client_override(mock_app_server())
+            .with_tmux_client(tmux_client);
         let app = App::new_with_clients(base_path.clone(), base_path, None, database, clients)
             .await
             .expect("failed to build app");
@@ -573,7 +575,9 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let clients = AppClients::new(mock_app_server()).with_tmux_client(tmux_client);
+        let clients = AppClients::new()
+            .with_app_server_client_override(mock_app_server())
+            .with_tmux_client(tmux_client);
         let app = App::new_with_clients(
             base_path.clone(),
             base_path,

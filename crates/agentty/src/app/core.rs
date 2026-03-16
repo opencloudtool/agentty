@@ -339,7 +339,7 @@ impl SyncMainRunner for TokioSyncMainRunner {
 
 /// External clients used to compose [`App`] startup dependencies.
 pub(crate) struct AppClients {
-    app_server_client: Arc<dyn app_server::AppServerClient>,
+    app_server_client_override: Option<Arc<dyn app_server::AppServerClient>>,
     fs_client: Arc<dyn FsClient>,
     git_client: Arc<dyn GitClient>,
     review_request_client: Arc<dyn ReviewRequestClient>,
@@ -349,16 +349,29 @@ pub(crate) struct AppClients {
 
 impl AppClients {
     /// Builds one client bundle with real implementations for each external
-    /// boundary except the required app-server client.
-    pub(crate) fn new(app_server_client: Arc<dyn app_server::AppServerClient>) -> Self {
+    /// boundary.
+    pub(crate) fn new() -> Self {
         Self {
-            app_server_client,
+            app_server_client_override: None,
             fs_client: Arc::new(RealFsClient),
             git_client: Arc::new(RealGitClient),
             review_request_client: Arc::new(RealReviewRequestClient::default()),
             sync_main_runner: Arc::new(TokioSyncMainRunner),
             tmux_client: Arc::new(RealTmuxClient),
         }
+    }
+
+    /// Replaces the default provider-owned app-server clients with one shared
+    /// override.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_app_server_client_override(
+        mut self,
+        app_server_client_override: Arc<dyn app_server::AppServerClient>,
+    ) -> Self {
+        self.app_server_client_override = Some(app_server_client_override);
+
+        self
     }
 
     /// Replaces the tmux boundary while preserving the remaining clients.
@@ -488,9 +501,8 @@ impl App {
         working_dir: PathBuf,
         git_branch: Option<String>,
         db: Database,
-        app_server_client: Arc<dyn app_server::AppServerClient>,
     ) -> Result<Self, String> {
-        let clients = AppClients::new(app_server_client);
+        let clients = AppClients::new();
 
         Self::new_with_options(auto_update, base_path, working_dir, git_branch, db, clients).await
     }
@@ -557,7 +569,7 @@ impl App {
             Arc::clone(&clients.fs_client),
             Arc::clone(&clients.git_client),
             Arc::clone(&clients.review_request_client),
-            Arc::clone(&clients.app_server_client),
+            clients.app_server_client_override.as_ref().map(Arc::clone),
         );
         let projects = ProjectManager::new(
             active_project_id,
@@ -2805,7 +2817,9 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let clients = AppClients::new(mock_app_server()).with_tmux_client(tmux_client);
+        let clients = AppClients::new()
+            .with_app_server_client_override(mock_app_server())
+            .with_tmux_client(tmux_client);
 
         App::new_with_clients(base_path.clone(), base_path, None, database, clients)
             .await
@@ -2871,16 +2885,9 @@ mod tests {
             .set_active_project_id(first_project_id)
             .await
             .expect("failed to persist initial active project");
-        let mut app = App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .expect("failed to build app");
+        let mut app = App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .expect("failed to build app");
 
         // Act
         app.switch_project(second_project_id)
@@ -2933,16 +2940,9 @@ mod tests {
         fs::create_dir_all(active_session_data_dir).expect("failed to create active session dir");
 
         // Act
-        let app = App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .expect("failed to build app");
+        let app = App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .expect("failed to build app");
 
         // Assert
         assert_eq!(
@@ -2965,17 +2965,10 @@ mod tests {
             .expect("failed to drop project table");
 
         // Act
-        let error = App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .err()
-        .expect("expected startup project upsert failure");
+        let error = App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .err()
+            .expect("expected startup project upsert failure");
 
         // Assert
         assert!(error.contains("Failed to persist startup project"));
@@ -2995,17 +2988,10 @@ mod tests {
             .expect("failed to drop setting table");
 
         // Act
-        let error = App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .err()
-        .expect("expected startup active project persistence failure");
+        let error = App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .err()
+            .expect("expected startup active project persistence failure");
 
         // Assert
         assert!(error.contains("Failed to store active startup project"));
@@ -3995,16 +3981,9 @@ mod tests {
             .await
             .expect("failed to insert merging session");
 
-        let mut app = App::new(
-            true,
-            base_path.clone(),
-            base_path.clone(),
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .expect("failed to build app");
+        let mut app = App::new(true, base_path.clone(), base_path.clone(), None, database)
+            .await
+            .expect("failed to build app");
         let session_folder = base_path.join("session-1");
         let mut viewed_session = test_session(session_folder);
         viewed_session.status = Status::Merging;
@@ -4279,16 +4258,9 @@ mod tests {
         let session_data_dir = base_path.join(session_folder_name).join(SESSION_DATA_DIR);
         fs::create_dir_all(session_data_dir).expect("failed to create session dir");
 
-        let mut app = App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .expect("failed to build app");
+        let mut app = App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .expect("failed to build app");
 
         let initial_active_count = app
             .projects
@@ -4347,7 +4319,7 @@ mod tests {
         let base_path = app.services.base_path().to_path_buf();
         let db = app.services.db().clone();
         let event_sender = app.services.event_sender();
-        let app_server_client = app.services.app_server_client();
+        let app_server_client_override = app.services.app_server_client_override();
         let fs_client = app.services.fs_client();
         let review_request_client = app.services.review_request_client();
 
@@ -4358,7 +4330,7 @@ mod tests {
             fs_client,
             Arc::clone(&mock_git_client),
             review_request_client,
-            app_server_client,
+            app_server_client_override,
         );
     }
     #[tokio::test]

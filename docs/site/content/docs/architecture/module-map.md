@@ -22,7 +22,7 @@ choose the correct module when implementing changes.
 
 | Path | What lives here |
 |------|------------------|
-| `crates/agentty/src/main.rs` | Binary entry point: database bootstrap, `RoutingAppServerClient` creation, `App` construction, runtime launch. |
+| `crates/agentty/src/main.rs` | Binary entry point: database bootstrap, `App` construction, and runtime launch. |
 | `crates/agentty/src/lib.rs` | Public module exports and crate-level re-exports. |
 | `crates/ag-forge/src/lib.rs` | Shared workspace crate for forge review-request types, CLI boundaries, remote detection, and GitHub/GitLab adapters. |
 
@@ -35,7 +35,7 @@ choose the correct module when implementing changes.
 | `crates/agentty/src/app/assist.rs` | Shared assistance helpers for commit and rebase recovery loops. |
 | `crates/agentty/src/app/merge_queue.rs` | Merge queue state machine (`Queued`/`Merging` progression rules). |
 | `crates/agentty/src/app/project.rs` | `ProjectManager` - project CRUD and selection orchestration. |
-| `crates/agentty/src/app/service.rs` | `AppServices` dependency container (`Database`, `FsClient`, `GitClient`, `ReviewRequestClient`, app-server client, event sender). |
+| `crates/agentty/src/app/service.rs` | `AppServices` dependency container (`Database`, `FsClient`, `GitClient`, `ReviewRequestClient`, optional app-server test override, event sender). |
 | `crates/agentty/src/app/session_state.rs` | `SessionState` - per-session runtime state container. |
 | `crates/agentty/src/app/setting.rs` | `SettingsManager` - settings management and persistence. |
 | `crates/agentty/src/app/tab.rs` | `TabManager` - top-level tab definitions and tab selection state. |
@@ -74,16 +74,16 @@ choose the correct module when implementing changes.
 | - `cli.rs` | `CliAgentChannel` - CLI subprocess adapter (Claude). |
 | - `app_server.rs` | `AppServerAgentChannel` - app-server RPC adapter (Codex/Gemini). |
 | `crates/agentty/src/infra/agent/` | Per-provider backend command builders and response parsing: |
-| - `backend.rs` | `AgentBackend` trait, provider capability descriptors, transport selection, and shared final-response policy. |
+| - `backend.rs` | `AgentBackend` trait, provider capability descriptors, backend-owned transport selection, and shared final-response policy. |
 | - `claude.rs` | Claude backend implementation. |
-| - `codex.rs` | Codex backend guard that preserves setup wiring and rejects direct CLI execution so Codex always stays on app-server transport. |
-| - `gemini.rs` | Gemini backend implementation. |
+| - `codex.rs` | Codex backend implementation that owns Codex app-server client selection and rejects direct CLI execution so Codex always stays on app-server transport. |
+| - `gemini.rs` | Gemini backend implementation that owns Gemini ACP client selection for app-server turns and one-shot prompts. |
 | - `prompt.rs` | Shared prompt preparation (`prepare_prompt_text`) for transcript replay and protocol preamble injection. |
 | - `protocol.rs` + `infra/agent/protocol/` | Router plus focused protocol submodules: `model.rs` for the wire contract, `schema.rs` for prompt/transport schema generation, and `parse.rs` for final/stream parsing helpers. |
 | - `response_parser.rs` | Provider-specific final/stream output parsing and usage extraction for Claude, Gemini, and Codex. |
-| - `submission.rs` | Shared one-shot prompt execution and strict protocol validation for generated titles, session commit messages, assist prompts, and review text, routing Codex/Gemini through app-server transport and Claude through direct CLI execution. |
+| - `submission.rs` | Shared one-shot prompt execution and strict protocol validation for generated titles, session commit messages, assist prompts, and review text, asking each concrete backend to provide either an app-server client or direct CLI execution path. |
 | `crates/agentty/src/infra/app_server.rs` | `AppServerClient` trait and shared request/response stream types. |
-| `crates/agentty/src/infra/app_server_router.rs` | `RoutingAppServerClient` - provider routing for app-server models (Codex/Gemini). |
+| `crates/agentty/src/infra/app_server_router.rs` | `RoutingAppServerClient` - reusable app-server router kept for tests and integration entry points that want one shared client across providers. |
 | `crates/agentty/src/infra/app_server_transport.rs` | Shared stdio JSON-RPC transport utilities for app-server processes. |
 | `crates/agentty/src/infra/codex_app_server.rs` | Codex app-server transport/session integration. |
 | `crates/agentty/src/infra/gemini_acp.rs` | Gemini ACP transport/session integration. |

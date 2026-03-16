@@ -14,7 +14,7 @@ use crate::infra::git::GitClient;
 
 /// Shared app dependencies used by managers and background workflows.
 pub struct AppServices {
-    app_server_client: Arc<dyn AppServerClient>,
+    app_server_client_override: Option<Arc<dyn AppServerClient>>,
     base_path: PathBuf,
     db: Database,
     event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -33,10 +33,10 @@ impl AppServices {
         fs_client: Arc<dyn FsClient>,
         git_client: Arc<dyn GitClient>,
         review_request_client: Arc<dyn ReviewRequestClient>,
-        app_server_client: Arc<dyn AppServerClient>,
+        app_server_client_override: Option<Arc<dyn AppServerClient>>,
     ) -> Self {
         Self {
-            app_server_client,
+            app_server_client_override,
             base_path,
             db,
             event_tx,
@@ -81,8 +81,9 @@ impl AppServices {
         Arc::clone(&self.review_request_client)
     }
 
-    /// Returns the shared app-server client used by session workers.
-    pub(crate) fn app_server_client(&self) -> Arc<dyn AppServerClient> {
-        Arc::clone(&self.app_server_client)
+    /// Returns the optional app-server client override used by tests and
+    /// injected environments.
+    pub(crate) fn app_server_client_override(&self) -> Option<Arc<dyn AppServerClient>> {
+        self.app_server_client_override.as_ref().map(Arc::clone)
     }
 }

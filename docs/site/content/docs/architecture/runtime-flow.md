@@ -37,7 +37,6 @@ Primary foreground path from process start to one event-loop cycle:
 ```text
 main.rs
   ├─ Database::open(...)                    // sqlite open + WAL + FK + migrations
-  ├─ RoutingAppServerClient::new()          // Codex/Gemini router
   ├─ App::new(...)
   │    ├─ load startup project/session snapshots
   │    ├─ fail unfinished operations from previous run
@@ -145,13 +144,16 @@ Session workers are transport-agnostic through `AgentChannel`:
 
 ```text
 app/session/workflow/worker.rs
-  └─ AgentChannel::run_turn(session_id, TurnRequest, event_tx)
-       ├─ CliAgentChannel        (Claude; subprocess per turn)
-       └─ AppServerAgentChannel  (Codex/Gemini; persistent runtime per session)
-            └─ AppServerClient
-                 └─ RoutingAppServerClient
-                      ├─ RealCodexAppServerClient
-                      └─ RealGeminiAcpClient
+  └─ create_agent_channel(kind, override)
+       └─ AgentBackend
+            ├─ transport() -> Cli
+            │    └─ CliAgentChannel        (Claude; subprocess per turn)
+            └─ transport() -> AppServer
+                 ├─ app_server_client()
+                 └─ AppServerAgentChannel  (Codex/Gemini; persistent runtime per session)
+                      └─ AppServerClient
+                           ├─ RealCodexAppServerClient
+                           └─ RealGeminiAcpClient
 ```
 
 <a id="architecture-key-types"></a>
@@ -192,11 +194,11 @@ Streaming behavior differs by transport/provider:
   providers that would otherwise exceed argv limits on large diffs or one-shot
   utility prompts.
 - App-server channel (`AppServerAgentChannel`): bridges `AppServerStreamEvent` to `TurnEvent`.
-- One-shot prompt submission reuses app-server transport for app-server
-  providers (Codex and Gemini) and only uses direct CLI subprocess execution
-  for Claude utility prompts.
+- One-shot prompt submission asks the concrete backend for its transport path,
+  so app-server providers (Codex and Gemini) resolve their own runtime client
+  and Claude stays on direct CLI subprocess execution.
 - Codex thought phases (`thinking`/`plan`/`reasoning`/`thought`) stream as `ThoughtDelta`.
-- Provider capabilities in `crates/agentty/src/infra/agent/backend.rs` now centralize whether transports stream assistant chunks live, require strict final protocol validation, or classify app-server phase labels as thought output.
+- Provider capabilities in `crates/agentty/src/infra/agent/backend.rs` centralize whether transports stream assistant chunks live, require strict final protocol validation, or classify app-server phase labels as thought output, while concrete backends now own the actual app-server client selection.
 - Strict providers suppress streamed assistant chunks when needed so malformed first-pass protocol JSON is not persisted.
 - Worker persistence behavior: streamed `ThoughtDelta` and `Progress` updates drive transient progress badges and are not appended to session transcript output.
 

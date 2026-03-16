@@ -37,15 +37,7 @@ async fn run() -> Result<(), String> {
     let db_path = home.join(DB_DIR).join(DB_FILE);
     let db = Database::open(&db_path).await?;
 
-    let mut app = App::new(
-        auto_update,
-        base_path,
-        working_dir,
-        git_branch,
-        db,
-        std::sync::Arc::new(agentty::infra::app_server_router::RoutingAppServerClient::new()),
-    )
-    .await?;
+    let mut app = App::new(auto_update, base_path, working_dir, git_branch, db).await?;
 
     agentty::runtime::run(&mut app)
         .await

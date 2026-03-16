@@ -1425,7 +1425,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::infra::app_server;
     use crate::infra::db::Database;
     use crate::infra::file_index::FileEntry;
     use crate::ui::state::prompt::{
@@ -1476,15 +1475,12 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let mock_app_server: std::sync::Arc<dyn app_server::AppServerClient> =
-            std::sync::Arc::new(app_server::MockAppServerClient::new());
         let mut app = App::new(
             true,
             base_path.clone(),
             base_path,
             Some("main".to_string()),
             database,
-            mock_app_server,
         )
         .await
         .expect("failed to build app");

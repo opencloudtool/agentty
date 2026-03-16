@@ -152,7 +152,7 @@ async fn assert_provider_protocol_compliance(
     let folder = resolve_workspace_folder()?;
     let session_id = format!("protocol-e2e-{}", model.as_str());
     let app_server_client = Arc::new(RoutingAppServerClient::new());
-    let channel = create_agent_channel(kind, app_server_client);
+    let channel = create_agent_channel(kind, Some(app_server_client));
     let start_request = StartSessionRequest {
         folder: folder.clone(),
         session_id: session_id.clone(),

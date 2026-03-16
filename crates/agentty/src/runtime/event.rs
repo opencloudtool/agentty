@@ -233,14 +233,8 @@ mod tests {
     use crate::domain::input::InputState;
     use crate::domain::session::{Session, SessionSize, SessionStats, Status};
     use crate::infra::agent::protocol::QuestionItem;
-    use crate::infra::app_server;
     use crate::ui::state::app_mode::{AppMode, QuestionFocus};
     use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState, PromptSlashState};
-
-    /// Returns a mock app-server client wrapped in `Arc` for runtime tests.
-    fn mock_app_server() -> Arc<dyn app_server::AppServerClient> {
-        Arc::new(app_server::MockAppServerClient::new())
-    }
 
     /// Builds one test app rooted at a temporary directory.
     async fn new_test_app() -> App {
@@ -250,16 +244,9 @@ mod tests {
             .await
             .expect("failed to open in-memory db");
 
-        App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .expect("failed to build app")
+        App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .expect("failed to build app")
     }
 
     /// Verifies the event reader forwards one queued event before stopping on

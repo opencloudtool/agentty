@@ -564,7 +564,7 @@ mod tests {
         let base_path = app.services.base_path().to_path_buf();
         let db = app.services.db().clone();
         let event_sender = app.services.event_sender();
-        let app_server_client = app.services.app_server_client();
+        let app_server_client_override = app.services.app_server_client_override();
         let fs_client = app.services.fs_client();
         let review_request_client = app.services.review_request_client();
 
@@ -575,7 +575,7 @@ mod tests {
             fs_client,
             Arc::clone(&mock_git_client),
             review_request_client,
-            app_server_client,
+            app_server_client_override,
         );
         app.sessions.git_client = mock_git_client;
     }
@@ -589,16 +589,11 @@ mod tests {
         db: Database,
         app_server_client: Arc<dyn app_server::AppServerClient>,
     ) -> App {
-        let mut app = App::new(
-            true,
-            path,
-            working_dir.clone(),
-            git_branch,
-            db,
-            app_server_client,
-        )
-        .await
-        .expect("failed to build app");
+        let clients =
+            crate::app::core::AppClients::new().with_app_server_client_override(app_server_client);
+        let mut app = App::new_with_clients(path, working_dir.clone(), git_branch, db, clients)
+            .await
+            .expect("failed to build app");
         let mock_git_client = create_default_mock_git_client(working_dir);
         install_mock_git_client(&mut app, mock_git_client);
 

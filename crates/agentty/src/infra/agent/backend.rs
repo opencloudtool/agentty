@@ -2,10 +2,12 @@ use std::error::Error;
 use std::fmt;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 use super::protocol;
 use super::response_parser::ParsedResponse;
 use crate::domain::agent::{AgentKind, ReasoningLevel};
+use crate::infra::app_server::AppServerClient;
 use crate::infra::channel::{AgentRequestKind, TurnPromptAttachment};
 
 /// Transport runtime used to execute turns for one backend.
@@ -100,6 +102,19 @@ pub trait AgentBackend: Send + Sync {
     /// Returns an error when one-time backend setup cannot be completed.
     fn setup(&self, folder: &Path) -> Result<(), AgentBackendError>;
 
+    /// Returns the transport mode owned by this backend implementation.
+    fn transport(&self) -> AgentTransport;
+
+    /// Returns the app-server client used by this backend when it executes
+    /// turns through a persistent runtime.
+    ///
+    /// `default_client` acts as an optional override for tests or injected
+    /// environments. CLI-only backends return `None`.
+    fn app_server_client(
+        &self,
+        default_client: Option<Arc<dyn AppServerClient>>,
+    ) -> Option<Arc<dyn AppServerClient>>;
+
     /// Builds one command for a start, resume, or one-shot interaction.
     ///
     /// # Errors
@@ -134,7 +149,7 @@ pub(crate) fn parse_stream_output_line(
 
 /// Returns transport mode for the selected provider.
 pub fn transport_mode(kind: AgentKind) -> AgentTransport {
-    provider_descriptor(kind).transport
+    create_backend(kind).transport()
 }
 
 /// Returns whether the provider expects prompts through stdin.
@@ -223,7 +238,6 @@ struct AgentProviderDescriptor {
     parse_stream_output_line: fn(&str) -> Option<(String, bool)>,
     response_policy: AgentResponsePolicy,
     app_server_thought_policy: AppServerThoughtPolicy,
-    transport: AgentTransport,
 }
 
 fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
@@ -235,7 +249,6 @@ fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
             parse_stream_output_line: super::response_parser::parse_gemini_stream_output_line,
             response_policy: AgentResponsePolicy::Strict,
             app_server_thought_policy: AppServerThoughtPolicy::None,
-            transport: AgentTransport::AppServer,
         },
         AgentKind::Claude => AgentProviderDescriptor {
             backend_factory: || Box::new(super::claude::ClaudeBackend),
@@ -244,7 +257,6 @@ fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
             parse_stream_output_line: super::response_parser::parse_claude_stream_output_line,
             response_policy: AgentResponsePolicy::Strict,
             app_server_thought_policy: AppServerThoughtPolicy::None,
-            transport: AgentTransport::Cli,
         },
         AgentKind::Codex => AgentProviderDescriptor {
             backend_factory: || Box::new(super::codex::CodexBackend),
@@ -253,7 +265,6 @@ fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
             parse_stream_output_line: super::response_parser::parse_codex_stream_output_line,
             response_policy: AgentResponsePolicy::BestEffort,
             app_server_thought_policy: AppServerThoughtPolicy::PhaseLabel,
-            transport: AgentTransport::AppServer,
         },
     }
 }

@@ -766,23 +766,15 @@ fn build_question_reply_prompt(questions: &[QuestionItem], responses: &[String])
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use crossterm::event::KeyModifiers;
     use tempfile::tempdir;
 
     use super::*;
-    use crate::infra::app_server;
     use crate::infra::db::Database;
     use crate::ui::state::app_mode::QuestionFocus;
 
     /// Fake terminal size used by tests that don't exercise scrolling.
     const TEST_TERMINAL_SIZE: Rect = Rect::new(0, 0, 80, 24);
-
-    /// Builds one mock app-server client wrapped in `Arc`.
-    fn mock_app_server() -> Arc<dyn app_server::AppServerClient> {
-        Arc::new(app_server::MockAppServerClient::new())
-    }
 
     /// Creates one test app with in-memory persistence.
     async fn new_test_app() -> App {
@@ -792,16 +784,9 @@ mod tests {
             .await
             .expect("failed to open in-memory db");
 
-        App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .expect("failed to build app")
+        App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .expect("failed to build app")
     }
 
     #[tokio::test]

@@ -27,8 +27,8 @@ The traits below are mocked with `mockall`. Most use
 | `TmuxClient` | `infra/tmux.rs` | Tmux subprocess operations for opening session worktrees and dispatching open commands. |
 | `TmuxCommandRunner` | `infra/tmux.rs` | Internal tmux command boundary that keeps multi-command `send-keys` flows deterministic in unit tests. |
 | `AgentChannel` | `infra/channel.rs` | Provider-agnostic turn execution (session init, run turn, shutdown). |
-| `AgentBackend` | `infra/agent/backend.rs` | Per-provider CLI command construction and one-time setup. |
-| `AppServerClient` | `infra/app_server.rs` | App-server RPC execution (provider routing, JSON-RPC transport). |
+| `AgentBackend` | `infra/agent/backend.rs` | Per-provider setup, transport ownership, CLI command construction, and app-server client selection. |
+| `AppServerClient` | `infra/app_server.rs` | Provider-specific app-server RPC execution and session runtime lifecycle. |
 | `EventSource` | `runtime/event.rs` | Terminal event polling for deterministic event-loop tests. |
 | `Clock` | `app/session/core.rs` | Shared wall-clock and monotonic time boundary used by session orchestration and runtime helpers such as pasted-image file naming. |
 | `Backend` (generic) | `runtime/core.rs` | Runtime accepts `Terminal<B: Backend>` via `run_with_backend`, enabling in-process TUI tests with `TestBackend` without a real terminal. |

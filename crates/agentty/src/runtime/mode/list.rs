@@ -307,12 +307,6 @@ mod tests {
     use crate::app::{AppEvent, MockSyncMainRunner, SyncMainOutcome, SyncSessionStartError};
     use crate::db::Database;
     use crate::infra::agent::protocol::QuestionItem;
-    use crate::infra::app_server;
-
-    /// Returns a mock app-server client wrapped in `Arc` for test injection.
-    fn mock_app_server() -> std::sync::Arc<dyn app_server::AppServerClient> {
-        std::sync::Arc::new(app_server::MockAppServerClient::new())
-    }
 
     async fn new_test_app() -> (App, tempfile::TempDir) {
         let base_dir = tempdir().expect("failed to create temp dir");
@@ -320,16 +314,9 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let app = App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            mock_app_server(),
-        )
-        .await
-        .expect("failed to build app");
+        let app = App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .expect("failed to build app");
 
         (app, base_dir)
     }
@@ -381,7 +368,6 @@ mod tests {
             base_path,
             Some("main".to_string()),
             database,
-            mock_app_server(),
         )
         .await
         .expect("failed to build app");

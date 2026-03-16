@@ -8,18 +8,17 @@
 use std::io;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tokio::io::AsyncWriteExt as _;
 use tokio::task::JoinHandle;
 
 use super::backend::{AgentBackend, BuildCommandRequest};
 use super::protocol::{AgentResponse, ProtocolRequestProfile, parse_agent_response_strict};
-use super::{ParsedResponse, create_backend, parse_response, transport_mode};
+use super::{ParsedResponse, create_backend, parse_response};
 use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::domain::session::SessionStats;
 use crate::infra::app_server::{AppServerClient, AppServerTurnRequest};
-use crate::infra::app_server_router::RoutingAppServerClient;
 use crate::infra::channel::AgentRequestKind;
 
 /// Input payload for one isolated prompt that prefers structured protocol
@@ -70,13 +69,34 @@ pub(crate) async fn submit_one_shot(request: OneShotRequest<'_>) -> Result<Agent
 pub(crate) async fn submit_one_shot_with_stats(
     request: OneShotRequest<'_>,
 ) -> Result<OneShotSubmission, String> {
-    if transport_mode(request.model.kind()).uses_app_server() {
-        let app_server_client = RoutingAppServerClient::new();
+    submit_one_shot_with_stats_and_app_server_client(request, None).await
+}
 
-        return submit_one_shot_with_app_server_client(&app_server_client, request).await;
-    }
-
+/// Executes one isolated prompt and returns the parsed response plus
+/// aggregated usage statistics, optionally overriding the backend-owned
+/// app-server client.
+///
+/// # Errors
+/// Returns an error when command construction fails, process execution fails,
+/// or the final output is empty or otherwise unusable.
+pub(crate) async fn submit_one_shot_with_stats_and_app_server_client(
+    request: OneShotRequest<'_>,
+    app_server_client_override: Option<Arc<dyn AppServerClient>>,
+) -> Result<OneShotSubmission, String> {
     let backend = create_backend(request.model.kind());
+
+    if backend.transport().uses_app_server() {
+        let app_server_client = backend
+            .app_server_client(app_server_client_override)
+            .ok_or_else(|| {
+                format!(
+                    "{} backend did not provide an app-server client",
+                    request.model.kind()
+                )
+            })?;
+
+        return submit_one_shot_with_app_server_client(app_server_client.as_ref(), request).await;
+    }
 
     submit_one_shot_with_backend(backend.as_ref(), request).await
 }

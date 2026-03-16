@@ -197,7 +197,10 @@ impl SessionWorkerService {
             .test_agent_channels
             .remove(&runtime.session_id)
             .unwrap_or_else(|| {
-                create_agent_channel(runtime.session_model.kind(), services.app_server_client())
+                create_agent_channel(
+                    runtime.session_model.kind(),
+                    services.app_server_client_override(),
+                )
             });
 
         let context = SessionWorkerContext {

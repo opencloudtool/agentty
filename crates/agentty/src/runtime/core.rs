@@ -154,7 +154,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::Arc;
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
@@ -162,7 +161,6 @@ mod tests {
 
     use super::*;
     use crate::db::Database;
-    use crate::infra::app_server;
 
     /// Test-only loop state that records call counts and scripted outcomes.
     struct TestLoopState {
@@ -234,19 +232,10 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        let app_server_client: Arc<dyn app_server::AppServerClient> =
-            Arc::new(app_server::MockAppServerClient::new());
 
-        let app = App::new(
-            true,
-            base_path.clone(),
-            base_path,
-            None,
-            database,
-            app_server_client,
-        )
-        .await
-        .expect("failed to build test app");
+        let app = App::new(true, base_path.clone(), base_path, None, database)
+            .await
+            .expect("failed to build test app");
 
         (app, base_dir)
     }

@@ -15,11 +15,18 @@ use crate::infra::channel::contract::AgentChannel;
 /// (Gemini, Codex) use [`AppServerAgentChannel`].
 pub fn create_agent_channel(
     kind: AgentKind,
-    app_server_client: Arc<dyn AppServerClient>,
+    app_server_client_override: Option<Arc<dyn AppServerClient>>,
 ) -> Arc<dyn AgentChannel> {
-    if agent::transport_mode(kind).uses_app_server() {
+    let backend = agent::create_backend(kind);
+    let transport = backend.transport();
+
+    if transport.uses_app_server() {
+        let app_server_client = backend
+            .app_server_client(app_server_client_override)
+            .expect("app-server backend should provide an app-server client");
+
         Arc::new(AppServerAgentChannel::new(app_server_client, kind))
     } else {
-        Arc::new(CliAgentChannel::new(kind))
+        Arc::new(CliAgentChannel::with_backend(Arc::from(backend), kind))
     }
 }
