@@ -274,6 +274,28 @@ pub(crate) fn parse_agent_response(raw: &str) -> AgentResponse {
     parse_agent_response_strict(raw).unwrap_or_else(|_| AgentResponse::plain(raw))
 }
 
+/// Normalizes one parsed turn response according to the request profile.
+///
+/// Interactive session turns expect a summary block on every response so the
+/// worker can persist and render a `Change Summary` section even when no
+/// change text exists. Some providers still emit `summary: null` for compliant
+/// session-turn JSON, so this fills in an empty summary object that downstream
+/// rendering already maps to `No changes`.
+pub(crate) fn normalize_turn_response(
+    mut response: AgentResponse,
+    protocol_profile: ProtocolRequestProfile,
+) -> AgentResponse {
+    if matches!(protocol_profile, ProtocolRequestProfile::SessionTurn) && response.summary.is_none()
+    {
+        response.summary = Some(AgentResponseSummary {
+            turn: String::new(),
+            session: String::new(),
+        });
+    }
+
+    response
+}
+
 /// Parses one raw assistant message strictly as protocol payload.
 ///
 /// Parsing order:
@@ -916,6 +938,47 @@ mod tests {
                 turn: "- Updated the protocol payload.".to_string(),
             })
         );
+    }
+
+    #[test]
+    /// Verifies session-turn responses synthesize an empty summary when the
+    /// provider returns `summary: null`.
+    fn test_normalize_turn_response_fills_missing_summary_for_session_turn() {
+        // Arrange
+        let response = AgentResponse {
+            answer: "Done.".to_string(),
+            questions: Vec::new(),
+            summary: None,
+        };
+
+        // Act
+        let normalized = normalize_turn_response(response, ProtocolRequestProfile::SessionTurn);
+
+        // Assert
+        assert_eq!(
+            normalized.summary,
+            Some(AgentResponseSummary {
+                turn: String::new(),
+                session: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    /// Verifies utility-prompt responses keep `summary: null`.
+    fn test_normalize_turn_response_keeps_missing_summary_for_utility_prompt() {
+        // Arrange
+        let response = AgentResponse {
+            answer: "Done.".to_string(),
+            questions: Vec::new(),
+            summary: None,
+        };
+
+        // Act
+        let normalized = normalize_turn_response(response, ProtocolRequestProfile::UtilityPrompt);
+
+        // Assert
+        assert_eq!(normalized.summary, None);
     }
 
     #[test]

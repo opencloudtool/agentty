@@ -13,7 +13,8 @@ use tokio::task::JoinHandle;
 
 use crate::domain::agent::AgentKind;
 use crate::infra::agent::protocol::{
-    normalize_stream_assistant_chunk, parse_agent_response, parse_agent_response_strict,
+    normalize_stream_assistant_chunk, normalize_turn_response, parse_agent_response,
+    parse_agent_response_strict,
 };
 use crate::infra::agent::{self as agent, AgentBackend, AgentCommandMode, BuildCommandRequest};
 use crate::infra::channel::{
@@ -195,7 +196,10 @@ impl AgentChannel for CliAgentChannel {
             }
 
             let parsed = agent::parse_response(kind, &stdout_text, &stderr_text);
-            let assistant_message = parse_strict_structured_response(kind, &parsed.content)?;
+            let assistant_message = normalize_turn_response(
+                parse_strict_structured_response(kind, &parsed.content)?,
+                req.protocol_profile,
+            );
 
             Ok(TurnResult {
                 assistant_message,
@@ -557,6 +561,44 @@ mod tests {
         // Assert
         let turn_result = result.expect("expected Ok for clean exit");
         assert!(!turn_result.context_reset);
+    }
+
+    #[tokio::test]
+    /// Verifies session-turn Claude responses synthesize an empty summary when
+    /// the provider returns `summary: null`.
+    async fn test_run_turn_fills_missing_summary_for_session_turn() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut mock_backend = MockAgentBackend::new();
+        mock_backend.expect_build_command().returning(|_| {
+            let mut command = std::process::Command::new("sh");
+            command
+                .arg("-c")
+                .arg("printf '{\"answer\":\"ok\",\"questions\":[],\"summary\":null}'");
+
+            Ok(command)
+        });
+        let channel = CliAgentChannel {
+            backend: Arc::new(mock_backend),
+            kind: AgentKind::Claude,
+        };
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let req = make_turn_request(dir.path().to_path_buf());
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), req, events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(
+            result.assistant_message.summary,
+            Some(agent::protocol::AgentResponseSummary {
+                turn: String::new(),
+                session: String::new(),
+            })
+        );
     }
 
     #[tokio::test]

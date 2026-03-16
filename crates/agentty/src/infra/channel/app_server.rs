@@ -10,7 +10,8 @@ use tokio::sync::mpsc;
 use crate::domain::agent::AgentKind;
 use crate::infra::agent;
 use crate::infra::agent::protocol::{
-    normalize_stream_assistant_chunk, parse_agent_response, parse_agent_response_strict,
+    normalize_stream_assistant_chunk, normalize_turn_response, parse_agent_response,
+    parse_agent_response_strict,
 };
 use crate::infra::app_server::{
     AppServerClient, AppServerStreamEvent, AppServerTurnRequest, AppServerTurnResponse,
@@ -96,6 +97,7 @@ impl AgentChannel for AppServerAgentChannel {
                 session_id,
                 session_output,
             };
+            let protocol_profile = request.protocol_profile;
             let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<AppServerStreamEvent>();
 
             let bridge_handle = {
@@ -153,7 +155,10 @@ impl AgentChannel for AppServerAgentChannel {
             match turn_result {
                 Ok(response) => {
                     let _ = events.send(TurnEvent::PidUpdate(response.pid));
-                    let assistant_message = parse_strict_structured_response(kind, &response)?;
+                    let assistant_message = normalize_turn_response(
+                        parse_strict_structured_response(kind, &response)?,
+                        protocol_profile,
+                    );
 
                     Ok(TurnResult {
                         assistant_message,
@@ -490,6 +495,40 @@ mod tests {
         assert!(result.is_ok());
         let event = events_rx.try_recv().expect("should have received an event");
         assert_eq!(event, TurnEvent::Progress("Running tool".to_string()));
+    }
+
+    #[tokio::test]
+    /// Verifies strict session-turn responses synthesize an empty summary when
+    /// the provider returns `summary: null`.
+    async fn test_run_turn_fills_missing_summary_for_session_turn() {
+        // Arrange
+        let mut mock_client = MockAppServerClient::new();
+        mock_client
+            .expect_run_turn()
+            .returning(|_request, _stream_tx| {
+                Box::pin(async {
+                    Ok(make_ok_response(
+                        r#"{"answer":"Done.","questions":[],"summary":null}"#,
+                    ))
+                })
+            });
+        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Gemini);
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(
+            result.assistant_message.summary,
+            Some(agent::protocol::AgentResponseSummary {
+                turn: String::new(),
+                session: String::new(),
+            })
+        );
     }
 
     #[tokio::test]

@@ -567,6 +567,18 @@ async fn apply_turn_result(
                 .db
                 .update_session_summary(&context.session_id, &summary_text)
                 .await;
+
+            if let Some(summary_output) = build_summary_transcript_output(&assistant_message) {
+                SessionTaskService::append_session_output(
+                    &context.output,
+                    &context.db,
+                    &context.app_event_tx,
+                    &context.session_id,
+                    &summary_output,
+                )
+                .await;
+            }
+
             let _ = context.app_event_tx.send(AppEvent::RefreshSessions);
 
             let question_items = assistant_message.question_items();
@@ -757,6 +769,25 @@ fn persisted_session_summary_payload(assistant_message: &agent::AgentResponse) -
         .as_ref()
         .and_then(|summary| serde_json::to_string(summary).ok())
         .unwrap_or_default()
+}
+
+/// Formats one assistant summary payload as a markdown transcript block for
+/// inline output display.
+///
+/// Returns `None` only when no summary struct is present on the response.
+/// Empty fields fall back to `"No changes"` so sections stay visually
+/// consistent even when both fields are empty.
+fn build_summary_transcript_output(assistant_message: &agent::AgentResponse) -> Option<String> {
+    let summary = assistant_message.summary.as_ref()?;
+    let turn = summary.turn.trim();
+    let session = summary.session.trim();
+
+    let turn_text = if turn.is_empty() { "No changes" } else { turn };
+    let session_text = if session.is_empty() { "No changes" } else { session };
+
+    Some(format!(
+        "## Change Summary\n### Current Turn\n{turn_text}\n\n### Session Changes\n{session_text}\n\n"
+    ))
 }
 
 /// Consumes [`TurnEvent`]s from `event_rx` and applies their side effects.
@@ -1330,6 +1361,121 @@ mod tests {
                 r#"{"turn":"- Updated the worker flow.","session":"- Active review now reloads summary from persistence."}"#
             )
         );
+        let output = context.output.lock().expect("output lock poisoned");
+        assert!(output.contains("## Change Summary"));
+        assert!(output.contains("### Current Turn"));
+        assert!(output.contains("- Updated the worker flow."));
+        assert!(output.contains("### Session Changes"));
+        assert!(output.contains("- Active review now reloads summary from persistence."));
+    }
+
+    #[test]
+    /// Formats a populated summary payload as a markdown transcript block.
+    fn test_build_summary_transcript_output_returns_formatted_markdown() {
+        // Arrange
+        let assistant_message = AgentResponse {
+            answer: String::new(),
+            questions: Vec::new(),
+            summary: Some(AgentResponseSummary {
+                turn: "- Added feature X.".to_string(),
+                session: "- Feature X now live on branch.".to_string(),
+            }),
+        };
+
+        // Act
+        let output = build_summary_transcript_output(&assistant_message);
+
+        // Assert
+        assert_eq!(
+            output,
+            Some(
+                "## Change Summary\n### Current Turn\n- Added feature X.\n\n### Session Changes\n- Feature X now live on branch.\n\n"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    /// Returns `None` when the assistant response has no summary.
+    fn test_build_summary_transcript_output_returns_none_without_summary() {
+        // Arrange
+        let assistant_message = AgentResponse {
+            answer: "Done.".to_string(),
+            questions: Vec::new(),
+            summary: None,
+        };
+
+        // Act
+        let output = build_summary_transcript_output(&assistant_message);
+
+        // Assert
+        assert_eq!(output, None);
+    }
+
+    #[test]
+    /// Falls back to "No changes" for both fields when the summary struct is present but empty.
+    fn test_build_summary_transcript_output_falls_back_for_both_empty_fields() {
+        // Arrange
+        let assistant_message = AgentResponse {
+            answer: String::new(),
+            questions: Vec::new(),
+            summary: Some(AgentResponseSummary {
+                turn: String::new(),
+                session: String::new(),
+            }),
+        };
+
+        // Act
+        let output = build_summary_transcript_output(&assistant_message);
+
+        // Assert
+        let text = output.expect("should return some output when summary struct is present");
+        assert!(text.contains("## Change Summary"));
+        assert_eq!(text.matches("No changes").count(), 2);
+    }
+
+    #[test]
+    /// Falls back to "No changes" for an empty `turn` field.
+    fn test_build_summary_transcript_output_falls_back_for_empty_turn() {
+        // Arrange
+        let assistant_message = AgentResponse {
+            answer: String::new(),
+            questions: Vec::new(),
+            summary: Some(AgentResponseSummary {
+                turn: String::new(),
+                session: "- Branch has ongoing changes.".to_string(),
+            }),
+        };
+
+        // Act
+        let output = build_summary_transcript_output(&assistant_message);
+
+        // Assert
+        let text = output.expect("should return some output");
+        assert!(text.contains("No changes"));
+        assert!(text.contains("- Branch has ongoing changes."));
+    }
+
+    #[test]
+    /// Falls back to "No changes" for an empty `session` field.
+    fn test_build_summary_transcript_output_falls_back_for_empty_session() {
+        // Arrange
+        let assistant_message = AgentResponse {
+            answer: String::new(),
+            questions: Vec::new(),
+            summary: Some(AgentResponseSummary {
+                turn: "- Fixed the bug.".to_string(),
+                session: String::new(),
+            }),
+        };
+
+        // Act
+        let output = build_summary_transcript_output(&assistant_message);
+
+        // Assert
+        let text = output.expect("should return some output");
+        assert!(text.contains("- Fixed the bug."));
+        assert!(text.contains("No changes"));
     }
 
     #[tokio::test]

@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::domain::permission::PermissionMode;
 use crate::infra::agent;
-use crate::infra::agent::protocol::agent_response_output_schema;
+use crate::infra::agent::protocol::{agent_response_output_schema, parse_agent_response_strict};
 use crate::infra::app_server::{
     self, AppServerClient, AppServerFuture, AppServerSessionRegistry, AppServerStreamEvent,
     AppServerTurnRequest, AppServerTurnResponse,
@@ -840,9 +840,14 @@ impl RealCodexAppServerClient {
     /// Finalizes one parsed `turn/completed` result into the normalized turn
     /// response tuple.
     ///
-    /// Successful completions return the latest non-empty completed assistant
-    /// message. This avoids replaying stale drafts when Codex emits multiple
-    /// assistant message items in one turn.
+    /// Successful completions prefer the latest structured protocol payload
+    /// when one was emitted, then fall back to the latest non-empty completed
+    /// assistant message.
+    ///
+    /// Codex can emit multiple assistant items in one turn, including a plain
+    /// text echo after an earlier JSON payload that still carries `summary`
+    /// data. Preferring the newest valid protocol payload preserves summary
+    /// persistence without replaying stale drafts when only plain text exists.
     ///
     /// Non-completed terminal statuses are surfaced as visible assistant
     /// output so the session never lands in `Review` silently.
@@ -855,18 +860,7 @@ impl RealCodexAppServerClient {
     ) -> Result<(String, u64, u64), String> {
         match turn_result {
             Ok(()) => {
-                let assistant_message = assistant_messages
-                    .iter()
-                    .rev()
-                    .find_map(|message| {
-                        let trimmed_message = message.trim();
-                        if trimmed_message.is_empty() {
-                            return None;
-                        }
-
-                        Some(trimmed_message.to_string())
-                    })
-                    .unwrap_or_default();
+                let assistant_message = preferred_completed_assistant_message(assistant_messages);
 
                 Ok((assistant_message, input_tokens, output_tokens))
             }
@@ -1024,6 +1018,63 @@ impl RealCodexAppServerClient {
         drop(session.stdin.take());
         app_server_transport::shutdown_child(&mut session.child).await;
     }
+}
+
+/// Returns the completed assistant message that should back the final turn
+/// result.
+///
+/// Preference order is:
+/// 1. Latest valid protocol payload that includes `summary`
+/// 2. Latest valid protocol payload without `summary`
+/// 3. Latest non-empty plain-text assistant message
+fn preferred_completed_assistant_message(assistant_messages: &[String]) -> String {
+    if let Some(protocol_with_summary) = assistant_messages.iter().rev().find_map(|message| {
+        let trimmed_message = message.trim();
+        if trimmed_message.is_empty() {
+            return None;
+        }
+
+        let response = parse_agent_response_strict(trimmed_message).ok()?;
+        if response.summary.is_none() {
+            return None;
+        }
+
+        Some(trimmed_message.to_string())
+    }) {
+        return protocol_with_summary;
+    }
+
+    if let Some(protocol_payload) = assistant_messages.iter().rev().find_map(|message| {
+        let trimmed_message = message.trim();
+        if trimmed_message.is_empty() {
+            return None;
+        }
+
+        let response = parse_agent_response_strict(trimmed_message).ok()?;
+        if response.answer.trim().is_empty()
+            && response.questions.is_empty()
+            && response.summary.is_none()
+        {
+            return None;
+        }
+
+        Some(trimmed_message.to_string())
+    }) {
+        return protocol_payload;
+    }
+
+    assistant_messages
+        .iter()
+        .rev()
+        .find_map(|message| {
+            let trimmed_message = message.trim();
+            if trimmed_message.is_empty() {
+                return None;
+            }
+
+            Some(trimmed_message.to_string())
+        })
+        .unwrap_or_default()
 }
 
 impl Default for RealCodexAppServerClient {
@@ -2458,6 +2509,59 @@ sleep 5
 
         // Assert
         assert_eq!(result, Ok(("Final response".to_string(), 7, 3)));
+        assert!(stream_rx.try_recv().is_err());
+    }
+
+    #[test]
+    /// Verifies completed turns keep the latest protocol payload carrying
+    /// `summary` instead of a later plain-text echo.
+    fn finalize_turn_completion_prefers_protocol_payload_with_summary() {
+        // Arrange
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+        let turn_result = Ok(());
+        let protocol_payload = r#"{"answer":"Hi.","questions":[],"summary":{"turn":"- Replied to greeting.","session":"- Greeting response added on branch."}}"#;
+        let assistant_messages = vec![protocol_payload.to_string(), "Hi.".to_string()];
+
+        // Act
+        let result = RealCodexAppServerClient::finalize_turn_completion(
+            turn_result,
+            &assistant_messages,
+            &stream_tx,
+            11,
+            4,
+        );
+
+        // Assert
+        assert_eq!(result, Ok((protocol_payload.to_string(), 11, 4)));
+        assert!(stream_rx.try_recv().is_err());
+    }
+
+    #[test]
+    /// Verifies completed turns keep the latest protocol payload even when it
+    /// does not include `summary`.
+    fn finalize_turn_completion_prefers_latest_protocol_payload() {
+        // Arrange
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+        let turn_result = Ok(());
+        let protocol_payload =
+            r#"{"answer":"Structured answer","questions":[],"summary":null}"#;
+        let assistant_messages = vec![
+            "Draft".to_string(),
+            protocol_payload.to_string(),
+            "Structured answer".to_string(),
+        ];
+
+        // Act
+        let result = RealCodexAppServerClient::finalize_turn_completion(
+            turn_result,
+            &assistant_messages,
+            &stream_tx,
+            5,
+            2,
+        );
+
+        // Assert
+        assert_eq!(result, Ok((protocol_payload.to_string(), 5, 2)));
         assert!(stream_rx.try_recv().is_err());
     }
 
