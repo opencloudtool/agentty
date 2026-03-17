@@ -234,15 +234,17 @@ pub trait GitClient: Send + Sync {
     /// Returns an error when pull/rebase setup fails.
     fn pull_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<PullRebaseResult, String>>;
 
-    /// Pushes the currently checked out branch for `repo_path` and returns the
-    /// configured upstream reference after the successful push.
+    /// Pushes the currently checked out branch for `repo_path` with
+    /// `--force-with-lease` and returns the configured upstream reference
+    /// after the successful push.
     ///
     /// # Errors
     /// Returns an error when remote push fails.
     fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
 
     /// Pushes the current branch for `repo_path` to one explicit remote branch
-    /// name and returns the configured upstream reference after the push.
+    /// name with `--force-with-lease` and returns the configured upstream
+    /// reference after the push.
     ///
     /// # Errors
     /// Returns an error when remote push fails.

@@ -254,7 +254,7 @@ Detached/background execution paths and their trigger conditions:
 | Session title generation | First `Start` turn, before main turn execution | `spawn_start_turn_title_generation` | DB title + `AppEvent::RefreshSessions` | Runs one-shot title prompt in background and persists generated title if valid. |
 | At-mention file indexing | Prompt input activates `@` mention mode | `runtime/mode/prompt::activate_at_mention` | `AppEvent::AtMentionEntriesLoaded` | Lists session files (`spawn_blocking`) and updates mention picker entries. |
 | Background session-size refresh | Enter on session in list mode | `App::refresh_session_size_in_background` | DB size + `AppEvent::RefreshSessions` | Computes diff-size bucket without blocking key handling path. |
-| Session-view branch-publish action | Session view `p` in `Review`, then publish popup `Enter` | `App::start_publish_branch_action` | `AppEvent::BranchPublishActionCompleted` | Collects an optional remote branch name before first publish, locks to the existing upstream after publish, then runs `git push` for the session branch in the background and updates the session-view popup with success or recovery guidance. |
+| Session-view branch-publish action | Session view `p` in `Review`, then publish popup `Enter` | `App::start_publish_branch_action` | `AppEvent::BranchPublishActionCompleted` | Collects an optional remote branch name before first publish, locks to the existing upstream after publish, then runs `git push --force-with-lease` for the session branch in the background and updates the session-view popup with success or recovery guidance. |
 | Deferred session cleanup | Delete with deferred cleanup path | `delete_selected_session_deferred_cleanup` | Filesystem/git side effects | Removes worktree folder and branch asynchronously after DB deletion. |
 | Focused review assist | View mode focused-review open when diff is reviewable | `TaskService::spawn_review_assist_task` | `ReviewPrepared` / `ReviewPreparationFailed` | Runs model review prompt and stores final review text or error. |
 | Sync-main workflow task | List-mode sync action (`s`) | `TokioSyncMainRunner::start_sync_main` | `AppEvent::SyncMainCompleted` | Pull-rebase/push selected project branch, with assisted conflict flow. |
@@ -269,7 +269,7 @@ Project and session git workflows use shared boundaries (`GitClient`, `FsClient`
 - `sync main`: selected project branch pull/rebase/push, optional assisted conflict resolution, popup result summary.
 - session merge: queue-aware workflow, assisted rebase first, reuse the single evolving session-branch `HEAD` commit message for the squash commit into the base branch, then clean up the worktree and set status `Done`.
 - session rebase: assisted rebase of session branch onto base branch, returns to `Review` after completion/failure reporting.
-- session branch publish: review-ready sessions push the session branch through `GitClient`; pull request or merge request creation is left to the user's manual forge workflow.
+- session branch publish: review-ready sessions push the session branch through `GitClient` with `--force-with-lease`; pull request or merge request creation is left to the user's manual forge workflow.
 
 ## Persistence and Recovery Boundaries
 

@@ -402,10 +402,12 @@ fn current_branch_name(repo_path: &Path) -> Result<String, String> {
     Ok(branch_name)
 }
 
-/// Pushes the current branch to its upstream remote.
+/// Pushes the current branch to its upstream remote with
+/// `--force-with-lease`.
 ///
-/// Falls back to `git push --set-upstream origin HEAD` when no upstream branch
-/// is configured, then returns the resolved upstream reference.
+/// Falls back to `git push --force-with-lease --set-upstream origin HEAD`
+/// when no upstream branch is configured, then returns the resolved upstream
+/// reference.
 ///
 /// # Arguments
 /// * `repo_path` - Path to the git repository or worktree
@@ -419,7 +421,7 @@ fn current_branch_name(repo_path: &Path) -> Result<String, String> {
 /// resolved afterwards.
 pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, String> {
     spawn_blocking(move || {
-        let push_output = run_git_command_output_sync(&repo_path, &["push"])?;
+        let push_output = run_git_command_output_sync(&repo_path, &["push", "--force-with-lease"])?;
 
         if push_output.status.success() {
             return primary_upstream_reference(&repo_path);
@@ -432,7 +434,13 @@ pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, String> {
 
         run_git_command_sync(
             &repo_path,
-            &["push", "--set-upstream", "origin", "HEAD"],
+            &[
+                "push",
+                "--force-with-lease",
+                "--set-upstream",
+                "origin",
+                "HEAD",
+            ],
             "Git push failed",
         )?;
 
@@ -442,8 +450,8 @@ pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, String> {
     .map_err(|error| format!("Join error: {error}"))?
 }
 
-/// Pushes the current branch to one explicit remote branch name and returns
-/// the resulting upstream reference.
+/// Pushes the current branch to one explicit remote branch name with
+/// `--force-with-lease` and returns the resulting upstream reference.
 ///
 /// When the current branch already tracks a remote, that remote name is
 /// reused. Otherwise this falls back to `origin`.
@@ -469,7 +477,13 @@ pub async fn push_current_branch_to_remote_branch(
 
         run_git_command_sync(
             &repo_path,
-            &["push", "--set-upstream", &remote_name, &push_refspec],
+            &[
+                "push",
+                "--force-with-lease",
+                "--set-upstream",
+                &remote_name,
+                &push_refspec,
+            ],
             "Git push failed",
         )?;
 
@@ -850,7 +864,7 @@ pub(super) fn is_no_upstream_error(detail: &str) -> bool {
 mod tests {
     use std::fs;
     use std::path::Path;
-    use std::process::Command;
+    use std::process::{Command, Output};
 
     use tempfile::tempdir;
 
@@ -858,11 +872,7 @@ mod tests {
 
     /// Runs `git` in `repo_path` and asserts the command succeeds.
     fn run_git_command(repo_path: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo_path)
-            .output()
-            .expect("failed to run git command");
+        let output = git_command_output(repo_path, args);
 
         assert!(
             output.status.success(),
@@ -870,6 +880,32 @@ mod tests {
             args,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// Runs `git` in `repo_path` and returns the captured command output.
+    fn git_command_output(repo_path: &Path, args: &[&str]) -> Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to run git command")
+    }
+
+    /// Runs `git` in `repo_path`, asserts success, and returns trimmed stdout.
+    fn git_command_stdout(repo_path: &Path, args: &[&str]) -> String {
+        let output = git_command_output(repo_path, args);
+
+        assert!(
+            output.status.success(),
+            "git command {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        String::from_utf8(output.stdout)
+            .expect("git stdout should be valid utf-8")
+            .trim()
+            .to_string()
     }
 
     /// Creates a committed repository rooted at `repo_path`.
@@ -1030,7 +1066,54 @@ mod tests {
         // Assert
         let error = result.expect_err("non-fast-forward push should fail");
         assert!(error.contains("Git push failed:"));
-        assert!(error.contains("rejected") || error.contains("fetch first"));
+        assert!(
+            error.contains("stale info")
+                || error.contains("rejected")
+                || error.contains("fetch first")
+        );
+    }
+
+    #[tokio::test]
+    async fn push_current_branch_force_with_lease_updates_rewritten_history() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(remote_dir.path(), &["init", "--bare"]);
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        run_git_command(temp_dir.path(), &["remote", "add", "origin", &remote_path]);
+        run_git_command(temp_dir.path(), &["push", "-u", "origin", "main"]);
+        fs::write(
+            temp_dir.path().join("README.md"),
+            "first published version\n",
+        )
+        .expect("failed to write first version");
+        run_git_command(temp_dir.path(), &["add", "README.md"]);
+        run_git_command(temp_dir.path(), &["commit", "-m", "Publish branch change"]);
+        push_current_branch(temp_dir.path().to_path_buf())
+            .await
+            .expect("initial push should succeed");
+        fs::write(
+            temp_dir.path().join("README.md"),
+            "rewritten published version\n",
+        )
+        .expect("failed to rewrite published version");
+        run_git_command(temp_dir.path(), &["add", "README.md"]);
+        run_git_command(
+            temp_dir.path(),
+            &["commit", "--amend", "-m", "Rewrite published branch change"],
+        );
+
+        // Act
+        let upstream_reference = push_current_branch(temp_dir.path().to_path_buf())
+            .await
+            .expect("force-with-lease push should update rewritten history");
+        let local_head = git_command_stdout(temp_dir.path(), &["rev-parse", "HEAD"]);
+        let remote_head = git_command_stdout(remote_dir.path(), &["rev-parse", "refs/heads/main"]);
+
+        // Assert
+        assert_eq!(upstream_reference, "origin/main");
+        assert_eq!(local_head, remote_head);
     }
 
     #[tokio::test]
