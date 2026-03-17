@@ -672,10 +672,19 @@ fn compact_progress_message_from_json(stream_event: &serde_json::Value) -> Optio
     None
 }
 
+/// Maps one provider stream label to a compact user-facing progress message.
+///
+/// This intentionally recognizes broad families of labels because provider
+/// stream payloads evolve over time and may rename internal phases while still
+/// describing the same user-visible activity.
 fn compact_progress_message_from_stream_label(label: &str) -> Option<String> {
     let normalized_label = label.to_ascii_lowercase().replace('-', "_");
     if normalized_label.contains("search") {
         return Some("Searching the web".to_string());
+    }
+
+    if normalized_label.contains("compact") || normalized_label.contains("compress") {
+        return Some("Compacting context".to_string());
     }
 
     if normalized_label.contains("reasoning")
@@ -887,6 +896,23 @@ mod tests {
 
         // Assert
         assert_eq!(parsed_line, Some(("Running a command".to_string(), false)));
+    }
+
+    #[test]
+    fn test_compact_progress_message_from_stream_label_maps_compaction_labels() {
+        // Arrange
+        let compaction_label = "context_compaction";
+        let compression_label = "context-compression";
+
+        // Act
+        let compaction_progress =
+            compact_progress_message_from_stream_label(compaction_label);
+        let compression_progress =
+            compact_progress_message_from_stream_label(compression_label);
+
+        // Assert
+        assert_eq!(compaction_progress, Some("Compacting context".to_string()));
+        assert_eq!(compression_progress, Some("Compacting context".to_string()));
     }
 
     /// Ensures final NDJSON parsing keeps the real assistant reply when

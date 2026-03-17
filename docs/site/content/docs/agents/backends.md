@@ -157,7 +157,8 @@ Agentty validates final agent output against the structured response protocol.
   transport wiring stays with their provider-specific implementations instead
   of top-level `infra/` modules.
 - Claude turns use native schema validation via `claude --json-schema` and
-  `--output-format json` (no Claude `stream-json` mode).
+  `--output-format stream-json`, so tool/progress events can stream live while
+  the final response remains schema-validated.
 - Prompt-side protocol instructions rely on the raw self-descriptive
   `schemars` metadata (`title`, `description`, and related annotations),
   while transport `outputSchema` payloads are normalized separately for

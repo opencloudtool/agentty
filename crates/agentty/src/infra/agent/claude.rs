@@ -18,7 +18,9 @@ const CLAUDE_ALLOWED_TOOLS: &str = "Edit,MultiEdit,Write,Bash,EnterPlanMode,Exit
 ///
 /// Commands are built with `--strict-mcp-config` so provider-level MCP
 /// connector defaults (for example Claude.ai account connectors) are ignored
-/// unless explicitly configured by Agentty.
+/// unless explicitly configured by Agentty. Claude runs in `stream-json` mode
+/// so progress and tool-use events can surface live while the final turn still
+/// honors native schema validation.
 pub(super) struct ClaudeBackend;
 
 impl AgentBackend for ClaudeBackend {
@@ -64,7 +66,7 @@ impl AgentBackend for ClaudeBackend {
         command.arg("--strict-mcp-config");
         command.arg("--verbose");
         command.arg("--effort").arg(reasoning_level.claude());
-        command.arg("--output-format").arg("json");
+        command.arg("--output-format").arg("stream-json");
         command
             .arg("--json-schema")
             .arg(agent_response_output_schema_json());
@@ -240,7 +242,7 @@ mod tests {
         assert!(debug_command.contains("--strict-mcp-config"));
         assert!(debug_command.contains("--effort"));
         assert!(debug_command.contains("--output-format"));
-        assert!(debug_command.contains("json"));
+        assert!(debug_command.contains("stream-json"));
         assert!(!debug_command.contains("--permission-mode"));
         assert!(!args.iter().any(String::is_empty));
     }
@@ -402,7 +404,7 @@ mod tests {
         assert!(prompt.contains("Structured response protocol:"));
         assert!(prompt.contains("summary"));
         assert!(debug_command.contains("--output-format"));
-        assert!(debug_command.contains("json"));
+        assert!(debug_command.contains("stream-json"));
         assert!(debug_command.contains("--json-schema"));
         assert!(debug_command.contains("--input-format"));
     }

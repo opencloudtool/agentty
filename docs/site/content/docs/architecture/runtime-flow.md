@@ -189,7 +189,10 @@ Provider output is normalized to one structured response protocol:
 <a id="architecture-agent-interaction-streaming"></a>
 Streaming behavior differs by transport/provider:
 
-- CLI channel (`CliAgentChannel`): parses stdout lines into `AssistantDelta` and `Progress`; keeps raw output for final parse.
+- CLI channel (`CliAgentChannel`): parses stdout lines into `AssistantDelta`
+  and `Progress`; keeps raw output for final parse. Claude now uses its
+  documented `stream-json` output path here so compaction/tool-use progress can
+  surface without waiting for a single final JSON payload.
 - CLI prompt submission can stream the fully rendered prompt through stdin for
   providers that would otherwise exceed argv limits on large diffs or one-shot
   utility prompts.
