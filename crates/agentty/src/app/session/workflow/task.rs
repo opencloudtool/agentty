@@ -875,7 +875,7 @@ mod tests {
         // Act
         let commit_message = SessionTaskService::generate_session_commit_message_with_backend(
             temp_directory.path(),
-            AgentModel::Gpt54,
+            AgentModel::ClaudeSonnet46,
             "diff --git a/a.rs b/a.rs",
             None,
             &backend,

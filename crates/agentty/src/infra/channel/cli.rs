@@ -661,7 +661,7 @@ mod tests {
             .0;
 
         // Assert
-        assert!(error.contains("Claude command failed because authentication expired"));
+        assert!(error.contains("Agent command failed because Claude authentication expired"));
         assert!(error.contains("`claude auth login`"));
         assert!(error.contains("`claude auth status`"));
     }

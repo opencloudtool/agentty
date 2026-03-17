@@ -701,7 +701,9 @@ mod tests {
         .expect_err("expired Claude auth should fail");
 
         // Assert
-        assert!(error.contains("One-shot Claude command failed because authentication expired"));
+        assert!(
+            error.contains("One-shot agent command failed because Claude authentication expired")
+        );
         assert!(error.contains("`claude auth login`"));
         assert!(error.contains("`claude auth status`"));
     }
