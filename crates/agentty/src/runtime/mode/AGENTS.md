@@ -7,6 +7,7 @@ Key handling logic split by `AppMode`.
 - [`confirmation.rs`](confirmation.rs) - Shared yes/no confirmation mode key handling.
 - [`diff.rs`](diff.rs) - Diff mode key handling.
 - [`help.rs`](help.rs) - Help overlay mode key handling.
+- [`input_key.rs`](input_key.rs) - Shared input key utilities (modifier predicates, word movement, word deletion, text normalization) used by prompt and question modes.
 - [`list.rs`](list.rs) - Session list mode key handling.
 - [`prompt.rs`](prompt.rs) - Prompt mode editing and submit handling.
 - [`question.rs`](question.rs) - Model-question mode key handling and response submission flow.

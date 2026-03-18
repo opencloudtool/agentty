@@ -7,6 +7,7 @@ use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::channel::TurnPrompt;
 use crate::infra::file_index;
 use crate::runtime::EventResult;
+use crate::runtime::mode::input_key;
 use crate::ui::page::session_chat::SessionChatPage;
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode, QuestionFocus};
 use crate::ui::state::prompt::PromptAtMentionState;
@@ -187,7 +188,7 @@ fn scroll_offset_up(scroll_offset: Option<u16>, metrics: QuestionViewMetrics, st
 /// paste is ignored — the user must first navigate past the last option to
 /// enter free-text mode.
 pub(crate) fn handle_paste(app: &mut App, pasted_text: &str) {
-    let normalized_text = normalize_pasted_text(pasted_text);
+    let normalized_text = input_key::normalize_pasted_text(pasted_text);
     if normalized_text.is_empty() {
         return;
     }
@@ -255,6 +256,13 @@ fn resolve_question_action(app: &mut App, key: KeyEvent) -> Option<QuestionActio
 
         match key.code {
             KeyCode::Esc => QuestionAction::Submit(NO_ANSWER.to_string()),
+            KeyCode::Enter | KeyCode::Char('\r' | '\n')
+                if !is_navigating_options && input_key::should_insert_newline(key) =>
+            {
+                input.insert_newline();
+
+                QuestionAction::Continue
+            }
             KeyCode::Enter => {
                 resolve_enter_action(input, questions, *current_index, selected_option_index)
             }
@@ -269,14 +277,18 @@ fn resolve_question_action(app: &mut App, key: KeyEvent) -> Option<QuestionActio
                 QuestionAction::Continue
             }
             KeyCode::Up
-                if !is_navigating_options && option_count > 0 && is_cursor_on_first_line(input) =>
+                if !is_navigating_options
+                    && option_count > 0
+                    && input_key::is_cursor_on_first_line(input) =>
             {
                 *selected_option_index = Some(option_count - 1);
 
                 QuestionAction::Continue
             }
             KeyCode::Down
-                if !is_navigating_options && option_count > 0 && is_cursor_on_last_line(input) =>
+                if !is_navigating_options
+                    && option_count > 0
+                    && input_key::is_cursor_on_last_line(input) =>
             {
                 *selected_option_index = Some(0);
 
@@ -340,6 +352,12 @@ fn navigate_option_down(selected_option_index: &mut Option<usize>, option_count:
 /// Resolves a key event in free-text input mode (no option selected).
 fn resolve_free_text_key(input: &mut InputState, key: KeyEvent) -> QuestionAction {
     match key.code {
+        KeyCode::Backspace if input_key::is_line_delete_backspace(key) => {
+            input.delete_current_line();
+        }
+        KeyCode::Backspace if input_key::is_word_delete_backspace(key) => {
+            input_key::delete_word_backward(input);
+        }
         KeyCode::Backspace => input.delete_backward(),
         KeyCode::Delete => input.delete_forward(),
         KeyCode::Left if key.modifiers.contains(event::KeyModifiers::SUPER) => {
@@ -350,7 +368,7 @@ fn resolve_free_text_key(input: &mut InputState, key: KeyEvent) -> QuestionActio
                 .modifiers
                 .intersects(event::KeyModifiers::ALT | event::KeyModifiers::SHIFT) =>
         {
-            move_cursor_word_left(input);
+            input_key::move_cursor_word_left(input);
         }
         KeyCode::Left => input.move_left(),
         KeyCode::Right if key.modifiers.contains(event::KeyModifiers::SUPER) => {
@@ -361,7 +379,7 @@ fn resolve_free_text_key(input: &mut InputState, key: KeyEvent) -> QuestionActio
                 .modifiers
                 .intersects(event::KeyModifiers::ALT | event::KeyModifiers::SHIFT) =>
         {
-            move_cursor_word_right(input);
+            input_key::move_cursor_word_right(input);
         }
         KeyCode::Right => input.move_right(),
         KeyCode::Up => input.move_up(),
@@ -369,114 +387,60 @@ fn resolve_free_text_key(input: &mut InputState, key: KeyEvent) -> QuestionActio
         KeyCode::Home => input.move_home(),
         KeyCode::End => input.move_end(),
         // Ctrl+a / Ctrl+e: macOS terminals send these for Cmd+Left / Cmd+Right.
-        KeyCode::Char('a') if key.modifiers == event::KeyModifiers::CONTROL => {
+        KeyCode::Char('a') if input_key::is_control_key(key) => {
             input.move_line_start();
         }
-        KeyCode::Char('e') if key.modifiers == event::KeyModifiers::CONTROL => {
+        KeyCode::Char('e') if input_key::is_control_key(key) => {
             input.move_line_end();
         }
-        // Alt+b / Alt+f: macOS terminals send these for Option+Left / Option+Right.
-        KeyCode::Char('b') if key.modifiers.contains(event::KeyModifiers::ALT) => {
-            move_cursor_word_left(input);
+        // Ctrl+f / Ctrl+b: emacs-style forward/backward character movement.
+        KeyCode::Char('f') if input_key::is_control_key(key) => {
+            input.move_right();
         }
-        KeyCode::Char('f') if key.modifiers.contains(event::KeyModifiers::ALT) => {
-            move_cursor_word_right(input);
+        KeyCode::Char('b') if input_key::is_control_key(key) => {
+            input.move_left();
+        }
+        // Ctrl+p / Ctrl+n: emacs-style up/down line movement.
+        KeyCode::Char('p') if input_key::is_control_key(key) => {
+            input.move_up();
+        }
+        KeyCode::Char('n') if input_key::is_control_key(key) => {
+            input.move_down();
+        }
+        // Ctrl+d: emacs-style forward delete.
+        KeyCode::Char('d') if input_key::is_control_key(key) => {
+            input.delete_forward();
+        }
+        // Ctrl+k: kill to end of current line.
+        KeyCode::Char('k') if input_key::is_control_key(key) => {
+            input.delete_to_line_end();
+        }
+        // Ctrl+w: delete previous word.
+        KeyCode::Char('w') if input_key::is_control_key(key) => {
+            input_key::delete_word_backward(input);
+        }
+        // Alt+b / Alt+f: macOS terminals send these for Option+Left / Option+Right.
+        KeyCode::Char('b') if input_key::is_alt_key(key) => {
+            input_key::move_cursor_word_left(input);
+        }
+        KeyCode::Char('f') if input_key::is_alt_key(key) => {
+            input_key::move_cursor_word_right(input);
         }
         // KeyCode::Tab is handled by the focus toggle at the top level.
-        KeyCode::Char('u') if key.modifiers == event::KeyModifiers::CONTROL => {
+        KeyCode::Char('u') if input_key::is_control_key(key) => {
             input.delete_current_line();
         }
-        KeyCode::Char(character) if is_insertable_char_key(key) => {
+        // Ctrl+j / Ctrl+m: alternative newline insertion (macOS terminal compat).
+        KeyCode::Char(character) if input_key::is_control_newline_key(key, character) => {
+            input.insert_newline();
+        }
+        KeyCode::Char(character) if input_key::is_insertable_char_key(key) => {
             input.insert_char(character);
         }
         _ => {}
     }
 
     QuestionAction::Continue
-}
-
-/// Returns whether one key event inserts its character into input.
-fn is_insertable_char_key(key: KeyEvent) -> bool {
-    matches!(
-        key.modifiers,
-        event::KeyModifiers::NONE | event::KeyModifiers::SHIFT
-    )
-}
-
-/// Returns whether the input cursor is on the first line of text.
-///
-/// True when no newline characters appear before the cursor position,
-/// including when the input is empty.
-fn is_cursor_on_first_line(input: &InputState) -> bool {
-    input.text().chars().take(input.cursor).all(|ch| ch != '\n')
-}
-
-/// Returns whether the input cursor is on the last line of text.
-///
-/// True when no newline characters appear after the cursor position,
-/// including when the input is empty.
-fn is_cursor_on_last_line(input: &InputState) -> bool {
-    input.text().chars().skip(input.cursor).all(|ch| ch != '\n')
-}
-
-/// Moves the cursor to the start of the previous word, skipping adjacent
-/// whitespace separators.
-fn move_cursor_word_left(input: &mut InputState) {
-    if input.cursor == 0 {
-        return;
-    }
-
-    let characters: Vec<char> = input.text().chars().collect();
-    let mut cursor = input.cursor;
-
-    while cursor > 0 && characters[cursor - 1].is_whitespace() {
-        cursor -= 1;
-    }
-
-    while cursor > 0 && !characters[cursor - 1].is_whitespace() {
-        cursor -= 1;
-    }
-
-    input.cursor = cursor;
-}
-
-/// Moves the cursor to the start of the next word, skipping adjacent
-/// whitespace separators.
-fn move_cursor_word_right(input: &mut InputState) {
-    let characters: Vec<char> = input.text().chars().collect();
-    let mut cursor = input.cursor;
-
-    while cursor < characters.len() && !characters[cursor].is_whitespace() {
-        cursor += 1;
-    }
-
-    while cursor < characters.len() && characters[cursor].is_whitespace() {
-        cursor += 1;
-    }
-
-    input.cursor = cursor;
-}
-
-/// Normalizes pasted text line endings to `\n`.
-fn normalize_pasted_text(pasted_text: &str) -> String {
-    let mut normalized_text = String::with_capacity(pasted_text.len());
-    let mut characters = pasted_text.chars().peekable();
-
-    while let Some(character) = characters.next() {
-        if character == '\r' {
-            if matches!(characters.peek(), Some(&'\n')) {
-                let _ = characters.next();
-            }
-
-            normalized_text.push('\n');
-
-            continue;
-        }
-
-        normalized_text.push(character);
-    }
-
-    normalized_text
 }
 
 /// Returns whether the question-mode at-mention dropdown is currently visible.
@@ -1858,5 +1822,313 @@ mod tests {
         if let AppMode::Question { input, .. } = &app.mode {
             assert_eq!(input.cursor, "hello ".chars().count());
         }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_alt_enter_inserts_newline() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("hello", "hello".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+        )
+        .await;
+
+        // Assert
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.text(), "hello\n");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_shift_enter_inserts_newline() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("hello", "hello".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+        )
+        .await;
+
+        // Assert
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.text(), "hello\n");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_j_inserts_newline() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("hello", "hello".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.text(), "hello\n");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_m_inserts_newline() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("hello", "hello".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.text(), "hello\n");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_f_moves_right() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("hello", 2);
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.cursor, 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_b_moves_left() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("hello", 3);
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.cursor, 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_p_moves_up() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("first\nsecond", "first\nseco".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert — cursor moved up to the first line.
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert!(input.cursor < "first\n".chars().count());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_n_moves_down() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("first\nsecond", 2);
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert — cursor moved down to the second line.
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert!(input.cursor >= "first\n".chars().count());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_d_deletes_forward() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("hello", 2);
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.text(), "helo");
+            assert_eq!(input.cursor, 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_k_kills_to_line_end() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("first\nsecond\nthird", "first\nse".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert — text from cursor to end of "second" line is deleted.
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.text(), "first\nse\nthird");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_ctrl_w_deletes_previous_word() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode =
+            free_text_question_mode("hello brave world", "hello brave world".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        )
+        .await;
+
+        // Assert — deletes "world" and the preceding whitespace.
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.text(), "hello brave");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_alt_backspace_deletes_previous_word() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode =
+            free_text_question_mode("hello brave world", "hello brave world".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+        )
+        .await;
+
+        // Assert — deletes "world" and the preceding whitespace.
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert_eq!(input.text(), "hello brave");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_free_text_super_backspace_deletes_current_line() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = free_text_question_mode("first\nsecond\nthird", "first\nseco".chars().count());
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::SUPER),
+        )
+        .await;
+
+        // Assert — current line "second" is deleted.
+        if let AppMode::Question { input, .. } = &app.mode {
+            assert!(!input.text().contains("second"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_alt_enter_ignored_while_navigating_options() {
+        // Arrange — navigating options, Alt+Enter should submit (not insert
+        // newline), because newline insertion only applies in free-text mode.
+        let mut app = new_test_app().await;
+        app.mode = AppMode::Question {
+            at_mention_state: None,
+            session_id: "missing-session".to_string(),
+            questions: vec![
+                QuestionItem {
+                    options: vec!["Yes".to_string(), "No".to_string()],
+                    text: "Continue?".to_string(),
+                },
+                QuestionItem {
+                    options: vec!["A".to_string()],
+                    text: "Follow-up?".to_string(),
+                },
+            ],
+            responses: Vec::new(),
+            current_index: 0,
+            focus: QuestionFocus::Answer,
+            input: InputState::default(),
+            scroll_offset: None,
+            selected_option_index: Some(0),
+        };
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+        )
+        .await;
+
+        // Assert — option was submitted, advanced to next question.
+        assert!(matches!(
+            app.mode,
+            AppMode::Question {
+                current_index: 1,
+                ref responses,
+                ..
+            } if responses == &vec!["Yes".to_string()]
+        ));
     }
 }

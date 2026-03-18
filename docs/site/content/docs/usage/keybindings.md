@@ -172,6 +172,8 @@ After selecting "Type custom answer", or when no predefined options exist:
 | Key | Action |
 |-----|--------|
 | `Enter` | Submit typed response |
+| `Alt+Enter` or `Shift+Enter` | Insert newline |
+| `Ctrl+J` / `Ctrl+M` | Insert newline (macOS terminal compat) |
 | `Esc` | Skip current question (`no answer`) |
 | `Left` / `Right` | Move cursor |
 | `Up` / `Down` | Move cursor across wrapped lines |
@@ -180,7 +182,11 @@ After selecting "Type custom answer", or when no predefined options exist:
 | `Cmd+Left` | Move to start of current line |
 | `Cmd+Right` | Move to end of current line |
 | `Option+Left` / `Option+Right` | Move to previous / next word |
+| `Option+Backspace` | Delete previous word |
 | `Cmd+Backspace` | Delete current line |
+| `Ctrl+K` | Kill to end of current line |
+| `Ctrl+W` | Delete previous word |
+| `Ctrl+D` | Delete character forward |
 | `Tab` | Switch focus to chat output for scrolling |
 
 ## Question Input — Chat Scroll

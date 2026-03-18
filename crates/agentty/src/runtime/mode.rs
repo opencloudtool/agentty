@@ -3,6 +3,7 @@
 pub(crate) mod confirmation;
 pub(crate) mod diff;
 pub(crate) mod help;
+pub(crate) mod input_key;
 pub(crate) mod list;
 pub(crate) mod prompt;
 pub(crate) mod question;

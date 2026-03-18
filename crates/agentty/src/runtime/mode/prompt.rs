@@ -9,6 +9,7 @@ use crate::domain::agent::AgentKind;
 use crate::domain::input::InputState;
 use crate::infra::channel::{TurnPrompt, TurnPromptAttachment};
 use crate::infra::file_index;
+use crate::runtime::mode::input_key;
 use crate::runtime::{EventResult, clipboard_image};
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode};
 use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
@@ -55,7 +56,7 @@ where
 fn handle_at_mention_key(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Esc => dismiss_at_mention(app),
-        KeyCode::Enter if !should_insert_newline(key) => handle_at_mention_select(app),
+        KeyCode::Enter if !input_key::should_insert_newline(key) => handle_at_mention_select(app),
         KeyCode::Tab => handle_at_mention_select(app),
         KeyCode::Up => handle_at_mention_up(app),
         KeyCode::Down => handle_at_mention_down(app),
@@ -76,7 +77,7 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     match key.code {
-        KeyCode::Enter if should_insert_newline(key) => {
+        KeyCode::Enter | KeyCode::Char('\r' | '\n') if input_key::should_insert_newline(key) => {
             reset_prompt_history_navigation(app);
             if let AppMode::Prompt { input, .. } = &mut app.mode {
                 input.insert_newline();
@@ -100,47 +101,47 @@ where
         KeyCode::End => handle_prompt_input(app, InputState::move_end),
         KeyCode::Backspace => handle_prompt_backspace(app, key),
         KeyCode::Delete => handle_prompt_delete(app),
-        KeyCode::Char(character) if is_control_newline_key(key, character) => {
+        KeyCode::Char(character) if input_key::is_control_newline_key(key, character) => {
             reset_prompt_history_navigation(app);
             if let AppMode::Prompt { input, .. } = &mut app.mode {
                 input.insert_newline();
             }
         }
-        KeyCode::Char('u') if is_control_line_delete_key(key) => handle_prompt_line_delete(app),
+        KeyCode::Char('u') if input_key::is_control_key(key) => handle_prompt_line_delete(app),
         KeyCode::Char('v') if is_prompt_image_paste_key(key) => {
             handle_prompt_image_paste(app, prompt_context).await;
         }
-        KeyCode::Char('a') if is_control_key(key) => {
+        KeyCode::Char('a') if input_key::is_control_key(key) => {
             handle_prompt_input(app, InputState::move_line_start);
         }
-        KeyCode::Char('e') if is_control_key(key) => {
+        KeyCode::Char('e') if input_key::is_control_key(key) => {
             handle_prompt_input(app, InputState::move_line_end);
         }
-        KeyCode::Char('f') if is_control_key(key) => {
+        KeyCode::Char('f') if input_key::is_control_key(key) => {
             handle_prompt_input(app, InputState::move_right);
         }
-        KeyCode::Char('b') if is_control_key(key) => {
+        KeyCode::Char('b') if input_key::is_control_key(key) => {
             handle_prompt_input(app, InputState::move_left);
         }
-        KeyCode::Char('p') if is_control_key(key) => {
+        KeyCode::Char('p') if input_key::is_control_key(key) => {
             handle_prompt_up_key(app, terminal, prompt_context)?;
         }
-        KeyCode::Char('n') if is_control_key(key) => {
+        KeyCode::Char('n') if input_key::is_control_key(key) => {
             handle_prompt_down_key(app, terminal, prompt_context)?;
         }
-        KeyCode::Char('d') if is_control_key(key) => handle_prompt_delete(app),
-        KeyCode::Char('k') if is_control_key(key) => handle_prompt_kill_to_line_end(app),
-        KeyCode::Char('w') if is_control_key(key) => handle_prompt_word_delete(app),
-        KeyCode::Char('b') if is_alt_key(key) => {
+        KeyCode::Char('d') if input_key::is_control_key(key) => handle_prompt_delete(app),
+        KeyCode::Char('k') if input_key::is_control_key(key) => handle_prompt_kill_to_line_end(app),
+        KeyCode::Char('w') if input_key::is_control_key(key) => handle_prompt_word_delete(app),
+        KeyCode::Char('b') if input_key::is_alt_key(key) => {
             if let AppMode::Prompt { input, .. } = &mut app.mode {
-                move_prompt_cursor_word_left(input);
+                input_key::move_cursor_word_left(input);
             }
 
             sync_prompt_at_mention_state(app);
         }
-        KeyCode::Char('f') if is_alt_key(key) => {
+        KeyCode::Char('f') if input_key::is_alt_key(key) => {
             if let AppMode::Prompt { input, .. } = &mut app.mode {
-                move_prompt_cursor_word_right(input);
+                input_key::move_cursor_word_right(input);
             }
 
             sync_prompt_at_mention_state(app);
@@ -165,7 +166,7 @@ fn handle_prompt_input(app: &mut App, action: fn(&mut InputState)) {
 /// Inserts pasted content into the prompt input while normalizing mixed
 /// line-endings to `\n`.
 pub(crate) fn handle_paste(app: &mut App, pasted_text: &str) {
-    let normalized_text = normalize_pasted_text(pasted_text);
+    let normalized_text = input_key::normalize_pasted_text(pasted_text);
     if normalized_text.is_empty() {
         return;
     }
@@ -296,57 +297,6 @@ fn is_plain_char_key(key: KeyEvent, character: char) -> bool {
     key.code == KeyCode::Char(character) && key.modifiers == event::KeyModifiers::NONE
 }
 
-/// Returns true when the key event represents a control-key newline variant
-/// such as `Ctrl+j` or `Ctrl+m`.
-fn is_control_newline_key(key: KeyEvent, character: char) -> bool {
-    key.modifiers == event::KeyModifiers::CONTROL && matches!(character, 'j' | 'm' | '\n' | '\r')
-}
-
-/// Returns true when backspace should delete the previous word instead of a
-/// single character.
-///
-/// `Option`+`Backspace` is reported as `Alt` on macOS terminals. `Shift` is
-/// also accepted for backward compatibility with existing behavior.
-/// `Cmd`+`Backspace` is handled separately as a whole-line deletion shortcut.
-fn is_word_delete_backspace(key: KeyEvent) -> bool {
-    key.modifiers
-        .intersects(event::KeyModifiers::ALT | event::KeyModifiers::SHIFT)
-}
-
-/// Returns true when backspace should delete the current line content.
-///
-/// On macOS terminals this is produced by pressing `Cmd`+`Backspace`.
-fn is_line_delete_backspace(key: KeyEvent) -> bool {
-    key.modifiers.contains(event::KeyModifiers::SUPER)
-}
-
-/// Returns true when `Ctrl+u` is pressed to delete the current line.
-///
-/// macOS terminals send `Ctrl+u` (`\x15`) for `Cmd`+`Backspace` because the
-/// legacy terminal protocol cannot encode the Super/Cmd modifier. `Ctrl+u` is
-/// also the standard Unix "kill line" binding.
-fn is_control_line_delete_key(key: KeyEvent) -> bool {
-    key.modifiers == event::KeyModifiers::CONTROL
-}
-
-/// Returns true when `Ctrl` is pressed without `Alt` or `Shift`.
-///
-/// macOS terminals send `Ctrl+a` (`\x01`) for `Cmd`+`Left` and `Ctrl+e`
-/// (`\x05`) for `Cmd`+`Right` because the legacy terminal protocol cannot
-/// encode the Super/Cmd modifier.
-fn is_control_key(key: KeyEvent) -> bool {
-    key.modifiers == event::KeyModifiers::CONTROL
-}
-
-/// Returns true when the `Alt` modifier is present.
-///
-/// macOS terminals report `Option`+key as `Alt`+key. `Option`+`Left` sends
-/// `ESC b` (parsed as `Alt+b`) and `Option`+`Right` sends `ESC f` (parsed
-/// as `Alt+f`).
-fn is_alt_key(key: KeyEvent) -> bool {
-    key.modifiers.contains(event::KeyModifiers::ALT)
-}
-
 /// Returns true when the key event should paste one clipboard image into the
 /// prompt composer.
 fn is_prompt_image_paste_key(key: KeyEvent) -> bool {
@@ -354,28 +304,6 @@ fn is_prompt_image_paste_key(key: KeyEvent) -> bool {
         && key
             .modifiers
             .intersects(event::KeyModifiers::ALT | event::KeyModifiers::CONTROL)
-}
-
-/// Normalizes pasted text line-endings to `\n`.
-fn normalize_pasted_text(pasted_text: &str) -> String {
-    let mut normalized_text = String::with_capacity(pasted_text.len());
-    let mut characters = pasted_text.chars().peekable();
-
-    while let Some(character) = characters.next() {
-        if character == '\r' {
-            if matches!(characters.peek(), Some(&'\n')) {
-                let _ = characters.next();
-            }
-
-            normalized_text.push('\n');
-
-            continue;
-        }
-
-        normalized_text.push(character);
-    }
-
-    normalized_text
 }
 
 fn handle_prompt_up_key<B: Backend>(
@@ -919,23 +847,6 @@ fn prompt_slash_option_count(
     }
 }
 
-/// Returns whether an Enter-like key event should insert a newline into the
-/// prompt input.
-///
-/// Prompt input accepts both `Alt+Enter` and `Shift+Enter` so newline entry
-/// remains portable across terminals that emit either modifier for multiline
-/// editing.
-fn should_insert_newline(key: KeyEvent) -> bool {
-    is_enter_key(key.code)
-        && key
-            .modifiers
-            .intersects(event::KeyModifiers::ALT | event::KeyModifiers::SHIFT)
-}
-
-fn is_enter_key(key_code: KeyCode) -> bool {
-    matches!(key_code, KeyCode::Enter | KeyCode::Char('\r' | '\n'))
-}
-
 fn prompt_input_width<B: Backend>(terminal: &Terminal<B>) -> io::Result<u16>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
@@ -959,7 +870,7 @@ fn handle_prompt_left(app: &mut App, key: KeyEvent) {
             .modifiers
             .intersects(event::KeyModifiers::ALT | event::KeyModifiers::SHIFT)
         {
-            move_prompt_cursor_word_left(input);
+            input_key::move_cursor_word_left(input);
         } else {
             input.move_left();
         }
@@ -982,51 +893,13 @@ fn handle_prompt_right(app: &mut App, key: KeyEvent) {
             .modifiers
             .intersects(event::KeyModifiers::ALT | event::KeyModifiers::SHIFT)
         {
-            move_prompt_cursor_word_right(input);
+            input_key::move_cursor_word_right(input);
         } else {
             input.move_right();
         }
     }
 
     sync_prompt_at_mention_state(app);
-}
-
-/// Moves the cursor to the start of the previous word, skipping adjacent
-/// whitespace separators.
-fn move_prompt_cursor_word_left(input: &mut InputState) {
-    if input.cursor == 0 {
-        return;
-    }
-
-    let characters: Vec<char> = input.text().chars().collect();
-    let mut cursor = input.cursor;
-
-    while cursor > 0 && characters[cursor - 1].is_whitespace() {
-        cursor -= 1;
-    }
-
-    while cursor > 0 && !characters[cursor - 1].is_whitespace() {
-        cursor -= 1;
-    }
-
-    input.cursor = cursor;
-}
-
-/// Moves the cursor to the start of the next word, skipping adjacent
-/// whitespace separators.
-fn move_prompt_cursor_word_right(input: &mut InputState) {
-    let characters: Vec<char> = input.text().chars().collect();
-    let mut cursor = input.cursor;
-
-    while cursor < characters.len() && !characters[cursor].is_whitespace() {
-        cursor += 1;
-    }
-
-    while cursor < characters.len() && characters[cursor].is_whitespace() {
-        cursor += 1;
-    }
-
-    input.cursor = cursor;
 }
 
 /// Handles `Ctrl+u` line deletion by clearing the current line content.
@@ -1052,7 +925,7 @@ fn handle_prompt_kill_to_line_end(app: &mut App) {
 /// Handles `Ctrl+w` word deletion by deleting the previous word.
 fn handle_prompt_word_delete(app: &mut App) {
     if let AppMode::Prompt { input, .. } = &app.mode
-        && let Some((start, end)) = word_delete_range(input)
+        && let Some((start, end)) = input_key::word_delete_range(input.text(), input.cursor)
     {
         apply_prompt_delete_range(app, start, end);
     }
@@ -1076,12 +949,12 @@ fn prompt_backspace_range(app: &App, key: KeyEvent) -> Option<(usize, usize)> {
         return None;
     };
 
-    if is_line_delete_backspace(key) {
+    if input_key::is_line_delete_backspace(key) {
         return current_line_delete_range(input);
     }
 
-    if is_word_delete_backspace(key) {
-        return word_delete_range(input);
+    if input_key::is_word_delete_backspace(key) {
+        return input_key::word_delete_range(input.text(), input.cursor);
     }
 
     if input.cursor == 0 {
@@ -1089,32 +962,6 @@ fn prompt_backspace_range(app: &App, key: KeyEvent) -> Option<(usize, usize)> {
     }
 
     Some((input.cursor - 1, input.cursor))
-}
-
-/// Returns the character range for deleting the previous word plus adjacent
-/// separator whitespace.
-fn word_delete_range(input: &InputState) -> Option<(usize, usize)> {
-    if input.cursor == 0 {
-        return None;
-    }
-
-    let cursor = input.cursor;
-    let characters: Vec<char> = input.text().chars().collect();
-    let mut start = cursor;
-
-    while start > 0 && characters[start - 1].is_whitespace() {
-        start -= 1;
-    }
-
-    while start > 0 && !characters[start - 1].is_whitespace() {
-        start -= 1;
-    }
-
-    while start > 0 && characters[start - 1].is_whitespace() {
-        start -= 1;
-    }
-
-    Some((start, cursor))
 }
 
 fn handle_prompt_delete(app: &mut App) {
@@ -1501,164 +1348,6 @@ mod tests {
 
         (app, base_dir)
     }
-    #[test]
-    fn test_should_insert_newline_for_alt_enter() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::ALT);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_should_insert_newline_for_alt_shift_enter() {
-        // Arrange
-        let key = KeyEvent::new(
-            KeyCode::Enter,
-            event::KeyModifiers::ALT | event::KeyModifiers::SHIFT,
-        );
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_should_insert_newline_for_alt_carriage_return() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('\r'), event::KeyModifiers::ALT);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_should_insert_newline_for_alt_line_feed() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('\n'), event::KeyModifiers::ALT);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_should_not_insert_newline_for_plain_enter() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::NONE);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_should_insert_newline_for_shift_enter() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::SHIFT);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_should_insert_newline_for_shift_carriage_return() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('\r'), event::KeyModifiers::SHIFT);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_should_insert_newline_for_shift_line_feed() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('\n'), event::KeyModifiers::SHIFT);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_should_not_insert_newline_for_control_enter() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Enter, event::KeyModifiers::CONTROL);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_should_not_insert_newline_for_non_enter_key() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('x'), event::KeyModifiers::SHIFT);
-
-        // Act
-        let result = should_insert_newline(key);
-
-        // Assert
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_is_enter_key_for_enter() {
-        // Arrange & Act
-        let result = is_enter_key(KeyCode::Enter);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_enter_key_for_carriage_return() {
-        // Arrange & Act
-        let result = is_enter_key(KeyCode::Char('\r'));
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_enter_key_for_line_feed() {
-        // Arrange & Act
-        let result = is_enter_key(KeyCode::Char('\n'));
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_enter_key_for_other_key() {
-        // Arrange & Act
-        let result = is_enter_key(KeyCode::Char('x'));
-
-        // Assert
-        assert!(!result);
-    }
 
     #[test]
     fn test_is_plain_char_key_for_plain_character() {
@@ -1691,126 +1380,6 @@ mod tests {
 
         // Act
         let result = is_plain_char_key(key, 'k');
-
-        // Assert
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_is_control_newline_key_accepts_ctrl_j() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('j'), event::KeyModifiers::CONTROL);
-
-        // Act
-        let result = is_control_newline_key(key, 'j');
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_control_newline_key_accepts_ctrl_m() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('m'), event::KeyModifiers::CONTROL);
-
-        // Act
-        let result = is_control_newline_key(key, 'm');
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_control_newline_key_rejects_plain_j() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('j'), event::KeyModifiers::NONE);
-
-        // Act
-        let result = is_control_newline_key(key, 'j');
-
-        // Assert
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_is_word_delete_backspace_accepts_alt_modifier() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Backspace, event::KeyModifiers::ALT);
-
-        // Act
-        let result = is_word_delete_backspace(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_word_delete_backspace_accepts_shift_modifier() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Backspace, event::KeyModifiers::SHIFT);
-
-        // Act
-        let result = is_word_delete_backspace(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_word_delete_backspace_rejects_plain_backspace() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Backspace, event::KeyModifiers::NONE);
-
-        // Act
-        let result = is_word_delete_backspace(key);
-
-        // Assert
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_is_line_delete_backspace_accepts_super_modifier() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Backspace, event::KeyModifiers::SUPER);
-
-        // Act
-        let result = is_line_delete_backspace(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_line_delete_backspace_rejects_plain_backspace() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Backspace, event::KeyModifiers::NONE);
-
-        // Act
-        let result = is_line_delete_backspace(key);
-
-        // Assert
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_is_control_line_delete_key_accepts_ctrl_u() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('u'), event::KeyModifiers::CONTROL);
-
-        // Act
-        let result = is_control_line_delete_key(key);
-
-        // Assert
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_control_line_delete_key_rejects_plain_u() {
-        // Arrange
-        let key = KeyEvent::new(KeyCode::Char('u'), event::KeyModifiers::NONE);
-
-        // Act
-        let result = is_control_line_delete_key(key);
 
         // Assert
         assert!(!result);
@@ -1850,18 +1419,6 @@ mod tests {
 
         // Assert
         assert!(!result);
-    }
-
-    #[test]
-    fn test_normalize_pasted_text_replaces_carriage_returns() {
-        // Arrange
-        let pasted_text = "line 1\r\nline 2\rline 3\nline 4";
-
-        // Act
-        let normalized = normalize_pasted_text(pasted_text);
-
-        // Assert
-        assert_eq!(normalized, "line 1\nline 2\nline 3\nline 4");
     }
 
     #[tokio::test]
@@ -2424,60 +1981,6 @@ mod tests {
         if let AppMode::Prompt { input, .. } = &app.mode {
             assert_eq!(input.cursor, "first\nsecond".chars().count());
         }
-    }
-
-    #[test]
-    fn test_is_control_key_accepts_control_modifier() {
-        // Arrange, Act
-        let key = KeyEvent::new(KeyCode::Char('a'), event::KeyModifiers::CONTROL);
-
-        // Assert
-        assert!(is_control_key(key));
-    }
-
-    #[test]
-    fn test_is_control_key_rejects_plain_key() {
-        // Arrange, Act
-        let key = KeyEvent::new(KeyCode::Char('a'), event::KeyModifiers::NONE);
-
-        // Assert
-        assert!(!is_control_key(key));
-    }
-
-    #[test]
-    fn test_is_control_key_rejects_alt_modifier() {
-        // Arrange, Act
-        let key = KeyEvent::new(KeyCode::Char('a'), event::KeyModifiers::ALT);
-
-        // Assert
-        assert!(!is_control_key(key));
-    }
-
-    #[test]
-    fn test_is_alt_key_accepts_alt_modifier() {
-        // Arrange, Act
-        let key = KeyEvent::new(KeyCode::Char('b'), event::KeyModifiers::ALT);
-
-        // Assert
-        assert!(is_alt_key(key));
-    }
-
-    #[test]
-    fn test_is_alt_key_rejects_plain_key() {
-        // Arrange, Act
-        let key = KeyEvent::new(KeyCode::Char('b'), event::KeyModifiers::NONE);
-
-        // Assert
-        assert!(!is_alt_key(key));
-    }
-
-    #[test]
-    fn test_is_alt_key_rejects_control_modifier() {
-        // Arrange, Act
-        let key = KeyEvent::new(KeyCode::Char('b'), event::KeyModifiers::CONTROL);
-
-        // Assert
-        assert!(!is_alt_key(key));
     }
 
     #[tokio::test]

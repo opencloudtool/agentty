@@ -118,6 +118,7 @@ choose the correct module when implementing changes.
 | - `session_view.rs` | Session view mode navigation. |
 | - `prompt.rs` | Prompt mode editing and submit. |
 | - `question.rs` | Clarification question input mode handling and follow-up reply submission. |
+| - `input_key.rs` | Shared input key utilities (modifier predicates, word movement, word deletion, text normalization). |
 | - `diff.rs` | Diff mode handling. |
 | - `help.rs` | Help overlay mode. |
 | - `confirmation.rs` | Shared yes/no confirmation mode. |
