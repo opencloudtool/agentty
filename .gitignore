@@ -1,3 +1,6 @@
 /target
 .agentty/
 docs/site/public/
+
+# E2E test artifacts (actual screenshots saved on comparison failure)
+*_actual.png

@@ -847,9 +847,11 @@ mod tests {
 
     #[tokio::test]
     /// Verifies plain-text one-shot output still generates a valid session
-    /// commit message.
+    /// commit message via the CLI backend path.
     async fn test_generate_session_commit_message_with_backend_accepts_plain_text_output() {
-        // Arrange
+        // Arrange — use a CLI-backed model so the mock backend is exercised.
+        // App-server-backed models (Codex, Gemini) bypass `build_command`
+        // entirely and route through the shared app-server client.
         let temp_directory = tempfile::tempdir().expect("failed to create temp dir");
         let mut backend = MockAgentBackend::new();
         backend

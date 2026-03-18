@@ -229,8 +229,9 @@ impl<'a> SessionOutput<'a> {
             Status::Canceled => {
                 return session.output.clone();
             }
-            Status::Review | Status::Question => {}
-            Status::New
+            Status::Review
+            | Status::Question
+            | Status::New
             | Status::Done
             | Status::InProgress
             | Status::Queued

@@ -23,4 +23,4 @@ Keep size budgeting in the skill workflow only; do not render `### Size` section
 
 - [`tech_debt_error_handling.md`](tech_debt_error_handling.md) - Implementation plan for replacing 167 `Result<..., String>` functions with typed error enums, documenting ~170 silent `let _ =` discards, filling test coverage gaps, and fixing minor convention violations.
 
-- [`tui_e2e_testing_framework.md`](tui_e2e_testing_framework.md) - Implementation plan for a Rust-native Playwright-inspired TUI end-to-end testing framework with in-process `TestBackend` harness, `insta` snapshot assertions, and PTY-based smoke validation.
+- [`tui_e2e_testing_framework.md`](tui_e2e_testing_framework.md) - VHS-based E2E testing framework: real binary screenshots in virtual terminal with pixel-level comparison and tolerance.
