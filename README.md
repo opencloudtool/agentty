@@ -4,6 +4,8 @@
 
 Agentty is an **ADE (Agentic Development Environment) for structured, controllable AI-assisted software development**. It is itself developed with Agentty, built with Rust and [Ratatui](https://ratatui.rs), and designed around a deeply integrated workflow.
 
+![Agentty demo](docs/assets/demo/demo.gif)
+
 ## Installation
 
 ### Shell
