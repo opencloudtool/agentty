@@ -5,7 +5,6 @@ use std::path::Path;
 use ignore::WalkBuilder;
 
 const MAX_DEPTH: usize = 10;
-const MAX_ENTRIES: usize = 500;
 
 /// A single file or directory entry for the `@` mention dropdown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,11 +18,12 @@ pub struct FileEntry {
 /// Lists files and directories recursively under `root`, respecting
 /// `.gitignore`.
 ///
-/// Returns at most [`MAX_ENTRIES`] entries with a maximum depth of
-/// [`MAX_DEPTH`]. Directories sort before files; within each group,
-/// results are sorted alphabetically by path.
+/// The prompt `@` mention index keeps the full depth-limited result set so
+/// file entries are still available in repositories that contain many
+/// directories. Directories sort before files; within each group, results are
+/// sorted alphabetically by path.
 pub fn list_files(root: &Path) -> Vec<FileEntry> {
-    list_files_with_limits(root, Some(MAX_DEPTH), Some(MAX_ENTRIES))
+    list_files_with_limits(root, Some(MAX_DEPTH), None)
 }
 
 /// Lists files and directories recursively under `root` for project-explorer
@@ -263,6 +263,8 @@ mod tests {
 
     use super::*;
 
+    const TEST_MAX_ENTRIES: usize = 500;
+
     /// Git boundary used by file-index tests that need repository
     /// initialization.
     #[cfg_attr(test, mockall::automock)]
@@ -445,10 +447,10 @@ mod tests {
     }
 
     #[test]
-    fn test_list_files_respects_max_entries() {
+    fn test_list_files_is_unbounded_within_max_depth() {
         // Arrange
         let temp_dir = TempDir::new().expect("test expectation should hold");
-        for index in 0..MAX_ENTRIES + 50 {
+        for index in 0..TEST_MAX_ENTRIES + 50 {
             fs::write(temp_dir.path().join(format!("file_{index:04}.txt")), "")
                 .expect("test expectation should hold");
         }
@@ -457,14 +459,33 @@ mod tests {
         let entries = list_files(temp_dir.path());
 
         // Assert
-        assert_eq!(entries.len(), MAX_ENTRIES);
+        assert_eq!(entries.len(), TEST_MAX_ENTRIES + 50);
+    }
+
+    #[test]
+    fn test_list_files_keeps_files_when_many_directories_exist() {
+        // Arrange
+        let temp_dir = TempDir::new().expect("test expectation should hold");
+        for index in 0..TEST_MAX_ENTRIES + 50 {
+            fs::create_dir_all(temp_dir.path().join(format!("dir_{index:04}")))
+                .expect("test expectation should hold");
+        }
+        fs::write(temp_dir.path().join("z_last_file.rs"), "")
+            .expect("test expectation should hold");
+
+        // Act
+        let entries = list_files(temp_dir.path());
+
+        // Assert
+        assert!(entries.iter().any(|entry| entry.path == "z_last_file.rs"));
+        assert!(entries.len() > TEST_MAX_ENTRIES);
     }
 
     #[test]
     fn test_list_files_for_explorer_can_be_unbounded() {
         // Arrange
         let temp_dir = TempDir::new().expect("test expectation should hold");
-        for index in 0..MAX_ENTRIES + 50 {
+        for index in 0..TEST_MAX_ENTRIES + 50 {
             fs::write(temp_dir.path().join(format!("file_{index:04}.txt")), "")
                 .expect("test expectation should hold");
         }
@@ -473,7 +494,7 @@ mod tests {
         let entries = list_files_for_explorer(temp_dir.path(), None, None);
 
         // Assert
-        assert_eq!(entries.len(), MAX_ENTRIES + 50);
+        assert_eq!(entries.len(), TEST_MAX_ENTRIES + 50);
     }
 
     #[test]
@@ -495,7 +516,7 @@ mod tests {
     #[test]
     fn test_sort_and_limit_entries_truncates_after_sort() {
         // Arrange
-        let mut entries: Vec<FileEntry> = (0..MAX_ENTRIES + 20)
+        let mut entries: Vec<FileEntry> = (0..TEST_MAX_ENTRIES + 20)
             .rev()
             .map(|index| FileEntry {
                 is_dir: false,
@@ -504,10 +525,10 @@ mod tests {
             .collect();
 
         // Act
-        sort_and_limit_entries(&mut entries, Some(MAX_ENTRIES));
+        sort_and_limit_entries(&mut entries, Some(TEST_MAX_ENTRIES));
 
         // Assert
-        assert_eq!(entries.len(), MAX_ENTRIES);
+        assert_eq!(entries.len(), TEST_MAX_ENTRIES);
         assert_eq!(
             entries.first().map(|entry| entry.path.as_str()),
             Some("file_0000.txt")
