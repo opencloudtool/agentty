@@ -95,13 +95,17 @@ fn handle_view_info_popup_key(app: &mut App, key: KeyEvent) -> EventResult {
 }
 
 /// Handles key input while the publish-branch input overlay is visible.
+///
+/// Only `Esc` cancels the overlay. Plain character keys continue to edit the
+/// branch name so session-view shortcuts like `q` and `p` do not leak through
+/// while the text field has focus.
 fn handle_publish_branch_input_key(app: &mut App, key: KeyEvent) -> EventResult {
     let publish_branch_input =
         PublishBranchInputModeState::from_mode(std::mem::replace(&mut app.mode, AppMode::List));
     let input_locked = publish_branch_input.locked_upstream_ref.is_some();
 
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyCode::Esc => {
             app.mode = publish_branch_input.restore_view.into_view_mode();
         }
         KeyCode::Enter => {
@@ -165,6 +169,9 @@ fn handle_publish_branch_input_key(app: &mut App, key: KeyEvent) -> EventResult 
 
 /// Returns whether one key event should insert text into the publish-branch
 /// input field.
+///
+/// Matches the prompt/question input policy: only plain and shifted
+/// characters are treated as text input.
 fn is_publish_branch_input_text_key(key: KeyEvent) -> bool {
     key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT
 }
@@ -884,6 +891,50 @@ mod tests {
             unreachable!("mode should remain publish-branch input");
         };
         assert_eq!(input.text(), "r");
+    }
+
+    #[tokio::test]
+    async fn test_handle_publish_branch_input_key_shortcut_chars_are_inserted() {
+        // Arrange
+        let typed_shortcut_characters = ['q', 'p', 'd', 'f', 'm', 'r', 'j', 'k', 'g', 'G', '?'];
+
+        for character in typed_shortcut_characters {
+            let (mut app, _base_dir) = new_test_app().await;
+            app.mode = AppMode::PublishBranchInput {
+                default_branch_name: "agentty/session".to_string(),
+                input: crate::domain::input::InputState::default(),
+                locked_upstream_ref: None,
+                publish_branch_action: crate::domain::session::PublishBranchAction::Push,
+                restore_view: ConfirmationViewMode {
+                    done_session_output_mode: DoneSessionOutputMode::Summary,
+                    review_status_message: None,
+                    review_text: None,
+                    scroll_offset: None,
+                    session_id: "session-id".to_string(),
+                },
+            };
+            let modifiers = if character.is_ascii_uppercase() || character == '?' {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+
+            // Act
+            let event_result = handle_publish_branch_input_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(character), modifiers),
+            );
+
+            // Assert
+            assert!(matches!(event_result, EventResult::Continue));
+            assert!(matches!(
+                app.mode,
+                AppMode::PublishBranchInput {
+                    input: ref input_state,
+                    ..
+                } if input_state.cursor == 1 && input_state.text() == character.to_string()
+            ));
+        }
     }
 
     #[tokio::test]
