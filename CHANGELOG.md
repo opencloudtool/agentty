@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.6.6] - 2026-03-18
+
+### Added
+
+- Add VHS-based E2E testing framework with screenshot comparison.
+
+### Changed
+
+- Refresh session workflow and settings docs.
+- Keep tracked upstream branches current in the footer.
+- Keep prompt file index unbounded within max depth.
+- Keep publish branch shortcut keys in the input field.
+- Extract shared input key utilities and add emacs-style editing to question input.
+- Document shared-host test thread budget.
+
+### Refactored
+
+- Introduce typed `DbError` for database operations.
+
+### Fixed
+
+- Confirm review session cancellation.
+
+### Contributors
+
+- @andagaev
+- @minev-dev
+
 ## [v0.6.5] - 2026-03-17
 
 ### Added
