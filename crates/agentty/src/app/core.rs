@@ -2219,6 +2219,8 @@ impl App {
                     startup_working_dir.display()
                 )
             })?;
+        Self::refresh_project_catalog_on_startup(db).await;
+
         let project_items = Self::load_project_items(db, fs_client).await;
         let active_project_name =
             Self::project_title_for_id(&project_items, active_project_id, &startup_working_dir);
@@ -2294,30 +2296,59 @@ impl App {
 
     /// Loads project list entries for the projects tab.
     ///
-    /// Repositories discovered in the user home directory are upserted first
-    /// so the list can include projects even before they have sessions.
-    ///
     /// Agentty-managed session worktrees and missing project directories are
     /// excluded so the list keeps only user-facing repository roots that still
     /// exist on disk.
     async fn load_project_items(db: &Database, fs_client: &dyn FsClient) -> Vec<ProjectListItem> {
         let session_worktree_root = agentty_home().join(AGENTTY_WT_DIR);
-        Self::load_projects_from_home_directory(db, session_worktree_root.as_path()).await;
 
+        Self::load_project_items_with_session_worktree_root(
+            db,
+            fs_client,
+            session_worktree_root.as_path(),
+        )
+        .await
+    }
+
+    /// Loads project list entries with one caller-provided session worktree
+    /// root for filtering.
+    async fn load_project_items_with_session_worktree_root(
+        db: &Database,
+        fs_client: &dyn FsClient,
+        session_worktree_root: &Path,
+    ) -> Vec<ProjectListItem> {
         Self::visible_project_rows(
             db.load_projects_with_stats().await.unwrap_or_default(),
             fs_client,
-            &session_worktree_root,
+            session_worktree_root,
         )
         .into_iter()
         .map(Self::project_list_item_from_row)
         .collect()
     }
 
+    /// Refreshes the persisted project catalog from the user's home directory
+    /// during startup before the first project list render.
+    async fn refresh_project_catalog_on_startup(db: &Database) {
+        let session_worktree_root = agentty_home().join(AGENTTY_WT_DIR);
+        let home_directory = dirs::home_dir();
+
+        Self::load_projects_from_home_directory(
+            db,
+            session_worktree_root.as_path(),
+            home_directory.as_deref(),
+        )
+        .await;
+    }
+
     /// Discovers git repositories under the user home directory and persists
-    /// them so the project list can render them.
-    async fn load_projects_from_home_directory(db: &Database, session_worktree_root: &Path) {
-        let Some(home_directory) = dirs::home_dir() else {
+    /// them during the startup-only catalog refresh.
+    async fn load_projects_from_home_directory(
+        db: &Database,
+        session_worktree_root: &Path,
+        home_directory: Option<&Path>,
+    ) {
+        let Some(home_directory) = home_directory.map(Path::to_path_buf) else {
             return;
         };
 
@@ -4398,6 +4429,73 @@ mod tests {
             .find(|item| item.project.id == project_id)
             .map_or(0, |item| item.active_session_count);
         assert_eq!(updated_active_count, 0);
+    }
+
+    #[tokio::test]
+    /// Verifies project list loads reuse only persisted rows and do not
+    /// discover repositories implicitly.
+    async fn load_project_items_uses_persisted_rows_without_home_scan() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let home_directory = tempdir().expect("failed to create temp dir");
+        let discovered_repo = home_directory.path().join("agentty");
+        create_git_repo_marker(discovered_repo.as_path());
+        let fs_client = RealFsClient;
+        let session_worktree_root = home_directory.path().join(".agentty").join(AGENTTY_WT_DIR);
+
+        // Act
+        let project_items = App::load_project_items_with_session_worktree_root(
+            &database,
+            &fs_client,
+            session_worktree_root.as_path(),
+        )
+        .await;
+
+        // Assert
+        assert!(project_items.is_empty());
+        assert!(
+            database
+                .load_projects_with_stats()
+                .await
+                .expect("failed to load projects")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies the startup-only catalog refresh discovers repositories before
+    /// the first project list load.
+    async fn refresh_project_catalog_on_startup_discovers_home_directory_repositories() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let home_directory = tempdir().expect("failed to create temp dir");
+        let discovered_repo = home_directory.path().join("agentty");
+        create_git_repo_marker(discovered_repo.as_path());
+        let fs_client = RealFsClient;
+        let session_worktree_root = home_directory.path().join(".agentty").join(AGENTTY_WT_DIR);
+
+        // Act
+        App::load_projects_from_home_directory(
+            &database,
+            session_worktree_root.as_path(),
+            Some(home_directory.path()),
+        )
+        .await;
+
+        let project_items = App::load_project_items_with_session_worktree_root(
+            &database,
+            &fs_client,
+            session_worktree_root.as_path(),
+        )
+        .await;
+
+        // Assert
+        assert_eq!(project_items.len(), 1);
+        assert_eq!(project_items[0].project.path, discovered_repo);
     }
 
     /// Creates one directory with a `.git` marker for repository discovery

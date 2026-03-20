@@ -38,7 +38,7 @@ Primary foreground path from process start to one event-loop cycle:
 main.rs
   ├─ Database::open(...)                    // sqlite open + WAL + FK + migrations
   ├─ App::new(...)
-  │    ├─ load startup project/session snapshots
+  │    ├─ run one startup-only home-directory project scan, then load project/session snapshots
   │    ├─ fail unfinished operations from previous run
   │    └─ spawn app background tasks
   └─ runtime::run(&mut app)
@@ -87,6 +87,7 @@ Flow:
 Reducer behaviors that matter for data flow:
 
 - `RefreshSessions` sets `should_force_reload`, which triggers `refresh_sessions_now()` and `reload_projects()`.
+- `reload_projects()` now reloads only persisted project rows; the expensive home-directory repository discovery pass runs only during `App::new()`.
 - `BranchPublishActionCompleted` swaps the session-view popup from loading to success or blocked/failure copy after a manual branch push finishes.
 - `SessionUpdated` marks touched sessions so reducer can call `sync_session_from_handle()` selectively.
 - `SessionProgressUpdated` updates transient progress labels used by UI.
