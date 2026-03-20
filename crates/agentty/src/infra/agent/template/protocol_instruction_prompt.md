@@ -4,7 +4,8 @@ File path output requirements:
 - Paths must be relative to the repository root.
 - Allowed forms: `path`, `path:line`, `path:line:column`.
 - Do not use absolute paths, `file://` URIs, or `../`-prefixed paths.
-- Do not run `git commit` or create commits automatically.
+- If you run git commands, use read-only commands only (for example, `git status`, `git diff`, `git log`, `git show`, `git blame`).
+- Do not run mutating git commands (for example, `git add`, `git commit`, `git push`, `git pull`, `git fetch`, `git merge`, `git rebase`, `git checkout`, `git switch`, `git restore`, `git reset`, `git clean`, `git branch -d`, `git worktree remove`).
 
 Structured response protocol:
 

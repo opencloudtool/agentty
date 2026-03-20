@@ -195,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    /// Ensures protocol instructions are prepended to plain prompts.
+    /// Ensures session prompts include the critical protocol contract markers.
     fn test_prepend_protocol_instructions_adds_session_protocol_instructions() {
         // Arrange
         let prompt = "Implement feature";
@@ -210,7 +210,10 @@ mod tests {
         assert!(rendered_prompt.contains("repository-root-relative POSIX paths"));
         assert!(rendered_prompt.contains("Paths must be relative to the repository root."));
         assert!(
-            rendered_prompt.contains("Do not run `git commit` or create commits automatically.")
+            rendered_prompt.contains("If you run git commands, use read-only commands only")
+        );
+        assert!(
+            rendered_prompt.contains("Do not run mutating git commands")
         );
         assert!(rendered_prompt.contains("Structured response protocol:"));
         assert!(rendered_prompt.contains("Return a single JSON object"));

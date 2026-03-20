@@ -170,7 +170,10 @@ Agentty validates final agent output against the structured response protocol.
 - Prompt-side protocol instructions rely on the raw self-descriptive
   `schemars` metadata (`title`, `description`, and related annotations),
   while transport `outputSchema` payloads are normalized separately for
-  provider compatibility.
+  provider compatibility. The same prompt instructions also restrict any git
+  usage during session turns to read-only commands such as `git diff` and
+  `git show`, and explicitly forbid mutating operations such as `git commit`
+  or `git push`.
 - Claude and Gemini stream the rendered prompt body through stdin for CLI
   one-shot flows so large diffs and review prompts do not hit OS argv length
   limits.
