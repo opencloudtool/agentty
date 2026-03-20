@@ -184,7 +184,7 @@ Provider output is normalized to one structured response protocol:
 1. The caller selects one canonical `AgentRequestKind` before transport handoff, and the transport derives the matching `ProtocolRequestProfile` from it. Session turns use `SessionStart` or `SessionResume`, while isolated utility prompts use `UtilityPrompt`.
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts may leave `summary` unused.
 1. Channels stream deltas/progress as `TurnEvent`.
-1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary.
+1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary. Parsing accepts summary-only payloads by deserializing directly to the shared protocol wire type.
 1. Worker persists final display text, raw summary payload, and question payloads, then emits `AgentResponseReceived`.
 
 <a id="architecture-agent-interaction-streaming"></a>

@@ -51,7 +51,7 @@ pub(crate) fn parse_agent_response_strict(
         return Err(AgentResponseParseError::Empty);
     }
 
-    if let Some(response) = parse_structured_json_response(trimmed) {
+    if let Ok(response) = parse_structured_json_response(trimmed) {
         return Ok(response);
     }
 
@@ -70,7 +70,7 @@ pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
         return None;
     }
 
-    if let Some(response) = parse_structured_json_response(raw) {
+    if let Ok(response) = parse_structured_json_response(raw) {
         let display_text = response.to_answer_display_text();
         if display_text.trim().is_empty() {
             return None;
@@ -87,18 +87,11 @@ pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
 }
 
 /// Attempts to parse one schema-driven structured JSON response.
-fn parse_structured_json_response(raw: &str) -> Option<AgentResponse> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let payload = serde_json::from_str::<AgentResponse>(trimmed).ok()?;
-    if payload.answer.trim().is_empty() && payload.questions.is_empty() {
-        return None;
-    }
-
-    Some(payload)
+///
+/// This relies on the protocol wire type to define the accepted response
+/// shape.
+fn parse_structured_json_response(raw: &str) -> Result<AgentResponse, serde_json::Error> {
+    serde_json::from_str(raw.trim())
 }
 
 /// Returns whether one stream chunk looks like partial protocol JSON payload.
@@ -145,7 +138,7 @@ fn parse_first_valid_embedded_json_response(raw: &str) -> Option<AgentResponse> 
 
     while let Some((start_index, end_index)) = extract_next_json_object_range(raw, search_from) {
         let json_candidate = raw.get(start_index..end_index)?;
-        if let Some(parsed_response) = parse_structured_json_response(json_candidate) {
+        if let Ok(parsed_response) = parse_structured_json_response(json_candidate) {
             return Some(parsed_response);
         }
 
@@ -249,6 +242,26 @@ mod tests {
     }
 
     #[test]
+    /// Strict parsing accepts summary-only payloads that still match the
+    /// protocol shape.
+    fn test_parse_agent_response_strict_summary_only_payload() {
+        // Arrange
+        let raw = r#"{"summary":{"session":"Current diff summary","turn":"Turn summary"}}"#;
+
+        // Act
+        let response = parse_agent_response_strict(raw);
+
+        // Assert
+        assert_eq!(
+            response.expect("response should parse").summary,
+            Some(AgentResponseSummary {
+                session: "Current diff summary".to_string(),
+                turn: "Turn summary".to_string(),
+            })
+        );
+    }
+
+    #[test]
     /// Strict parsing extracts a valid embedded payload from wrapped text.
     fn test_parse_agent_response_strict_extracts_json_object_from_wrapped_text() {
         // Arrange
@@ -299,6 +312,20 @@ mod tests {
     fn test_normalize_stream_assistant_chunk_question_only_payload() {
         // Arrange
         let raw = r#"{"answer":"","questions":[{"text":"Need clarification.","options":[]}],"summary":null}"#;
+
+        // Act
+        let normalized = normalize_stream_assistant_chunk(raw);
+
+        // Assert
+        assert_eq!(normalized, None);
+    }
+
+    #[test]
+    /// Suppresses summary-only payloads while streaming because they do not
+    /// add transcript text.
+    fn test_normalize_stream_assistant_chunk_summary_only_payload() {
+        // Arrange
+        let raw = r#"{"summary":{"session":"Current diff summary","turn":"Turn summary"}}"#;
 
         // Act
         let normalized = normalize_stream_assistant_chunk(raw);
@@ -376,6 +403,23 @@ mod tests {
 
         // Assert
         assert_eq!(response.to_display_text(), raw);
+    }
+
+    #[test]
+    /// Strict parsing accepts an empty JSON object because the protocol wire
+    /// type supplies defaults for omitted fields.
+    fn test_parse_agent_response_strict_accepts_empty_json_object() {
+        // Arrange
+        let raw = "{}";
+
+        // Act
+        let response = parse_agent_response_strict(raw);
+
+        // Assert
+        assert_eq!(
+            response.expect("response should parse"),
+            AgentResponse::plain("")
+        );
     }
 
     #[test]

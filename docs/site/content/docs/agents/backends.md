@@ -114,6 +114,9 @@ One-shot utility prompts, such as title generation, session commit-message
 generation, focused review preparation, auto-commit assistance, and rebase
 conflict assistance, still return the same protocol JSON shape. They may leave
 `summary` unused, while session discussion turns typically populate it.
+Final parsing accepts any payload that deserializes to the shared protocol wire
+type, so session-turn responses can carry meaning in `summary` even when
+`answer` is blank and `questions` is empty.
 
 Example payload:
 
@@ -147,6 +150,9 @@ Agentty validates final agent output against the structured response protocol.
 
 - Claude and Gemini integrations use strict parsing and fail closed when
   output does not match the protocol schema.
+- Strict parsing accepts summary-only protocol payloads because the parser now
+  relies on the shared protocol wire type instead of extra top-level field
+  checks.
 - One-shot utility prompts also fail with a schema error when provider output
   does not match the required protocol JSON.
 - Provider-specific transport, stdin-vs-argv prompt delivery, strict-vs-best-effort
