@@ -209,6 +209,7 @@ mod tests {
         assert!(rendered_prompt.contains("File path output requirements:"));
         assert!(rendered_prompt.contains("repository-root-relative POSIX paths"));
         assert!(rendered_prompt.contains("Paths must be relative to the repository root."));
+        assert!(rendered_prompt.contains("Do not run `git commit` or create commits automatically."));
         assert!(rendered_prompt.contains("Structured response protocol:"));
         assert!(rendered_prompt.contains("Return a single JSON object"));
         assert!(rendered_prompt.contains("Do not wrap the JSON in markdown code fences."));

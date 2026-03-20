@@ -4,6 +4,7 @@ File path output requirements:
 - Paths must be relative to the repository root.
 - Allowed forms: `path`, `path:line`, `path:line:column`.
 - Do not use absolute paths, `file://` URIs, or `../`-prefixed paths.
+- Do not run `git commit` or create commits automatically.
 
 Structured response protocol:
 
