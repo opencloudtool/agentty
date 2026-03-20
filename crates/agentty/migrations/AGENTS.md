@@ -35,3 +35,4 @@ SQLite migrations for the `agentty` crate.
 - [`029_create_project_setting.sql`](029_create_project_setting.sql) - Creates project-scoped settings and backfills existing global values to each project.
 - [`030_create_session_review_request.sql`](030_create_session_review_request.sql) - Creates the `session_review_request` table for normalized forge review-request linkage.
 - [`031_add_published_upstream_ref_to_session.sql`](031_add_published_upstream_ref_to_session.sql) - Adds persisted upstream-reference storage for successfully published session branches.
+- [`032_add_session_indexes.sql`](032_add_session_indexes.sql) - Adds covering indexes for project session ordering, global refresh polling, and session activity aggregation.

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT (SELECT COUNT(*) FROM session) AS \"session_count!: _\",\n       COALESCE(\n           (\n               SELECT updated_at\n               FROM session\n               ORDER BY updated_at DESC, id\n               LIMIT 1\n           ),\n           0\n       ) AS \"max_updated_at!: _\"\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "session_count!: _",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "max_updated_at!: _",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5518f001b631773f946cb7bbb0a4ff9c0ba92ee5deed4959ac9fe7f693cb6de8"
+}

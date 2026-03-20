@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT CAST(\n           unixepoch(datetime(created_at, 'unixepoch', 'localtime', 'start of day', 'utc')) / 86400\n           AS INTEGER\n       ) AS \"day_key!: _\",\n       COUNT(*) AS \"session_count!: _\"\nFROM session_activity\nWHERE created_at IS NOT NULL\nGROUP BY 1\nORDER BY 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "day_key!: _",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "session_count!: _",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "4fddbf8478a319b05505c33cba1944abe81d0ffc2a91a37f6966b57f730eb6d1"
+}

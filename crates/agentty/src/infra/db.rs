@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 use crate::domain::agent::ReasoningLevel;
-use crate::domain::session::{ReviewRequest, SessionStats};
+use crate::domain::session::{DailyActivity, ReviewRequest, SessionStats};
 use crate::domain::setting::SettingName;
 
 /// Typed error returned by [`Database`] operations.
@@ -191,6 +191,22 @@ pub struct SessionUsageRow {
 /// Row returned when loading one session activity timestamp.
 struct TimestampValueRow {
     pub created_at: i64,
+}
+
+/// Row returned when loading aggregated session activity by local day.
+struct DailyActivityQueryRow {
+    day_key: i64,
+    session_count: i64,
+}
+
+impl DailyActivityQueryRow {
+    /// Converts one aggregate query row into the public daily activity model.
+    fn into_daily_activity(self) -> DailyActivity {
+        DailyActivity {
+            day_key: self.day_key,
+            session_count: u32::try_from(self.session_count).unwrap_or(u32::MAX),
+        }
+    }
 }
 
 /// Row returned when loading both persisted timestamps for one session.
@@ -763,6 +779,39 @@ ORDER BY id
         Ok(rows.into_iter().map(|row| row.created_at).collect())
     }
 
+    /// Loads aggregated session-creation activity counts keyed by local day.
+    ///
+    /// Activity history stays available after session deletion because counts
+    /// are sourced from immutable `session_activity` rows instead of live
+    /// `session` records.
+    ///
+    /// # Errors
+    /// Returns an error if daily activity cannot be aggregated from the
+    /// database.
+    pub async fn load_session_activity(&self) -> Result<Vec<DailyActivity>, DbError> {
+        let rows = sqlx::query_as!(
+            DailyActivityQueryRow,
+            r#"
+SELECT CAST(
+           unixepoch(datetime(created_at, 'unixepoch', 'localtime', 'start of day', 'utc')) / 86400
+           AS INTEGER
+       ) AS "day_key!: _",
+       COUNT(*) AS "session_count!: _"
+FROM session_activity
+WHERE created_at IS NOT NULL
+GROUP BY 1
+ORDER BY 1
+"#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(DailyActivityQueryRow::into_daily_activity)
+            .collect())
+    }
+
     /// Loads lightweight session metadata used for cheap change detection.
     ///
     /// Returns `(session_count, max_updated_at)` from the `session` table so
@@ -774,9 +823,16 @@ ORDER BY id
         let row = sqlx::query_as!(
             SessionMetadataRow,
             r#"
-SELECT COUNT(*) AS "session_count!: _",
-       COALESCE(MAX(updated_at), 0) AS "max_updated_at!: _"
-FROM session
+SELECT (SELECT COUNT(*) FROM session) AS "session_count!: _",
+       COALESCE(
+           (
+               SELECT updated_at
+               FROM session
+               ORDER BY updated_at DESC, id
+               LIMIT 1
+           ),
+           0
+       ) AS "max_updated_at!: _"
 "#
         )
         .fetch_one(&self.pool)
@@ -1925,11 +1981,18 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::process::Command;
+
     use tempfile::tempdir;
 
     use super::*;
     use crate::agent::AgentModel;
     use crate::domain::session::{ForgeKind, ReviewRequestState, ReviewRequestSummary};
+
+    /// Environment flag used to run the DST regression helper in an isolated
+    /// subprocess with a fixed timezone.
+    const DST_TEST_SUBPROCESS_ENV: &str = "AGENTTY_DST_TEST_SUBPROCESS";
 
     /// Builds one deterministic persisted review-request fixture for DB tests.
     fn review_request_fixture() -> ReviewRequest {
@@ -3180,6 +3243,73 @@ WHERE model = ?
         assert_eq!(activity_timestamps, vec![100, 200]);
     }
 
+    /// Verifies `load_session_activity()` groups immutable activity rows by
+    /// local day.
+    #[tokio::test]
+    async fn test_load_session_activity_groups_counts_by_local_day() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert first session");
+        database
+            .insert_session("session-b", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert second session");
+        database
+            .insert_session("session-c", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert third session");
+
+        let first_day_timestamp = 10 * 86_400 + 10;
+        let second_timestamp_same_day = 10 * 86_400 + 600;
+        let second_day_timestamp = 11 * 86_400 + 50;
+
+        database
+            .clear_session_activity()
+            .await
+            .expect("failed to clear session activity");
+        database
+            .insert_session_creation_activity_at("session-a", first_day_timestamp)
+            .await
+            .expect("failed to persist first activity event");
+        database
+            .insert_session_creation_activity_at("session-b", second_timestamp_same_day)
+            .await
+            .expect("failed to persist second activity event");
+        database
+            .insert_session_creation_activity_at("session-c", second_day_timestamp)
+            .await
+            .expect("failed to persist third activity event");
+
+        let expected_activity = vec![
+            DailyActivity {
+                day_key: local_day_key(first_day_timestamp),
+                session_count: 2,
+            },
+            DailyActivity {
+                day_key: local_day_key(second_day_timestamp),
+                session_count: 1,
+            },
+        ];
+
+        // Act
+        let activity = database
+            .load_session_activity()
+            .await
+            .expect("failed to load aggregated session activity");
+
+        // Assert
+        assert_eq!(activity, expected_activity);
+    }
+
     #[tokio::test]
     async fn test_load_projects_with_stats_returns_session_counts_and_last_update() {
         // Arrange
@@ -3209,6 +3339,134 @@ WHERE model = ?
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].session_count, 2);
         assert!(projects[0].last_session_updated_at.is_some());
+    }
+
+    /// Converts one Unix timestamp into the local day key used by heatmap
+    /// activity rows.
+    fn local_day_key(timestamp_seconds: i64) -> i64 {
+        let utc_timestamp = time::OffsetDateTime::from_unix_timestamp(timestamp_seconds)
+            .expect("timestamp should be valid for test fixture");
+        let local_offset = time::UtcOffset::local_offset_at(utc_timestamp)
+            .expect("local offset should resolve for test fixture");
+
+        timestamp_seconds
+            .saturating_add(i64::from(local_offset.whole_seconds()))
+            .div_euclid(86_400)
+    }
+
+    /// Verifies the SQL activity aggregation matches Rust local-day grouping
+    /// across a known daylight-saving transition in an isolated timezone-fixed
+    /// subprocess.
+    #[test]
+    fn test_load_session_activity_matches_rust_grouping_across_dst_transition() {
+        // Arrange
+        if !cfg!(unix) {
+            return;
+        }
+
+        let current_test_binary = env::current_exe().expect("failed to resolve current test bin");
+
+        // Act
+        let output = Command::new(current_test_binary)
+            .env(DST_TEST_SUBPROCESS_ENV, "1")
+            .env("TZ", "America/Los_Angeles")
+            .arg(
+                "test_load_session_activity_matches_rust_grouping_across_dst_transition_subprocess",
+            )
+            .arg("--exact")
+            .arg("--test-threads=1")
+            .output()
+            .expect("failed to run DST subprocess test");
+
+        // Assert
+        assert!(
+            output.status.success(),
+            "DST subprocess test failed.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Verifies the SQL activity aggregation keeps timestamps on both sides of
+    /// the 2024 spring-forward transition in the same local day when Rust's
+    /// per-event local-offset calculation says they should.
+    #[tokio::test]
+    async fn test_load_session_activity_matches_rust_grouping_across_dst_transition_subprocess() {
+        // Arrange
+        if !cfg!(unix) || env::var_os(DST_TEST_SUBPROCESS_ENV).is_none() {
+            return;
+        }
+
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", None)
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert first session");
+        database
+            .insert_session("session-b", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert second session");
+        database
+            .insert_session("session-c", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert third session");
+        database
+            .clear_session_activity()
+            .await
+            .expect("failed to clear activity history");
+
+        // `2024-03-10T01:30:00-08:00`, still before the DST jump.
+        let before_dst_jump = 1_710_063_000_i64;
+        // `2024-03-10T03:30:00-07:00`, after the skipped hour.
+        let after_dst_jump = 1_710_066_600_i64;
+        // `2024-03-11T00:30:00-07:00`, the next local day.
+        let next_local_day = 1_710_142_200_i64;
+
+        database
+            .insert_session_creation_activity_at("session-a", before_dst_jump)
+            .await
+            .expect("failed to persist pre-DST activity");
+        database
+            .insert_session_creation_activity_at("session-b", after_dst_jump)
+            .await
+            .expect("failed to persist post-DST activity");
+        database
+            .insert_session_creation_activity_at("session-c", next_local_day)
+            .await
+            .expect("failed to persist next-day activity");
+
+        let first_day_key = local_day_key(before_dst_jump);
+        let second_day_key = local_day_key(after_dst_jump);
+        let third_day_key = local_day_key(next_local_day);
+
+        // Act
+        let activity = database
+            .load_session_activity()
+            .await
+            .expect("failed to load grouped session activity");
+
+        // Assert
+        assert_eq!(first_day_key, second_day_key);
+        assert_ne!(second_day_key, third_day_key);
+        assert_eq!(
+            activity,
+            vec![
+                DailyActivity {
+                    day_key: first_day_key,
+                    session_count: 2,
+                },
+                DailyActivity {
+                    day_key: third_day_key,
+                    session_count: 1,
+                },
+            ]
+        );
     }
 
     #[tokio::test]
