@@ -184,7 +184,7 @@ Provider output is normalized to one structured response protocol:
 1. The caller selects one canonical `AgentRequestKind` before transport handoff, and the transport derives the matching `ProtocolRequestProfile` from it. Session turns use `SessionStart` or `SessionResume`, while isolated utility prompts use `UtilityPrompt`.
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts may leave `summary` unused.
 1. Channels stream deltas/progress as `TurnEvent`.
-1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary. Parsing accepts summary-only payloads by deserializing directly to the shared protocol wire type.
+1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary. The final assistant payload itself must be the shared protocol JSON object on every transport and request profile, while direct deserialization into the shared wire type still accepts summary-only or otherwise defaulted top-level fields.
 1. Worker persists final display text, raw summary payload, and question payloads, then emits `AgentResponseReceived`.
 
 <a id="architecture-agent-interaction-streaming"></a>
@@ -212,9 +212,11 @@ Streaming behavior differs by transport/provider:
 <a id="architecture-agent-interaction-validation"></a>
 Final-output validation:
 
-- Claude and Gemini use strict protocol parsing and return an error immediately when invalid.
-- Codex uses permissive parse fallback (schema already supplied via app-server `outputSchema` path).
-- One-shot agent submissions use strict protocol parsing and surface schema errors directly to the caller before returning utility results to app/session workflows, including auto-commit and rebase conflict assistance.
+- Claude, Gemini, and Codex use strict protocol parsing and return an error immediately when invalid.
+- One-shot agent submissions still surface schema errors directly to the
+  caller whenever the shared parser rejects the final output, including plain
+  text, wrapped JSON, blank utility responses, and non-utility prompts that
+  miss the schema.
 - App-server restart retries and context-reset transcript replays still preserve the original protocol profile for normal prompt rendering through the shared `infra/app_server/` prompt and retry modules.
 
 ## Clarification Question Loop

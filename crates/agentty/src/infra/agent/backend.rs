@@ -31,15 +31,6 @@ pub(crate) enum AgentPromptTransport {
     Stdin,
 }
 
-/// Final protocol validation mode used after transport output is collected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentResponsePolicy {
-    /// Invalid protocol payloads fall back to plain text.
-    BestEffort,
-    /// Invalid protocol payloads fail the turn immediately.
-    Strict,
-}
-
 /// App-server thought-stream classification policy for one provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppServerThoughtPolicy {

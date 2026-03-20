@@ -525,7 +525,8 @@ mod tests {
         let structured_json = r#"{"answer":"Review looks good.","questions":[],"summary":null}"#;
 
         // Act
-        let agent_response = agent::protocol::parse_agent_response(structured_json);
+        let agent_response = agent::protocol::parse_agent_response_strict(structured_json)
+            .expect("structured response should parse");
         let display_text = agent_response.to_display_text();
 
         // Assert

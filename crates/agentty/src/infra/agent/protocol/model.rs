@@ -171,8 +171,6 @@ impl fmt::Display for AgentResponseParseError {
 
 impl AgentResponse {
     /// Creates a plain response from raw text as one `answer` string.
-    ///
-    /// Used as a safe fallback when provider output is not schema-compliant.
     pub fn plain(text: impl Into<String>) -> Self {
         Self {
             answer: text.into(),

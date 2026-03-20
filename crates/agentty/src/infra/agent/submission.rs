@@ -1,9 +1,9 @@
 //! One-shot agent prompt execution helpers.
 //!
 //! These helpers run isolated utility prompts outside the long-lived session
-//! turn flow. They prefer the shared structured response protocol, while
-//! still accepting non-empty plain-text utility responses as compatibility
-//! fallback answer text.
+//! turn flow. They require the shared structured response protocol on every
+//! transport so one-shot callers enforce the same schema contract as normal
+//! session turns.
 
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use super::backend::{AgentBackend, BuildCommandRequest};
 use super::cli::{error, stdin};
-use super::protocol::{AgentResponse, ProtocolRequestProfile, parse_agent_response_strict};
+use super::protocol::{AgentResponse, parse_agent_response_strict};
 use super::{
     ParsedResponse, create_app_server_client, create_backend, parse_response, transport_mode,
 };
@@ -109,7 +109,7 @@ pub(crate) async fn submit_one_shot_with_stats_and_app_server_client(
 ///
 /// # Errors
 /// Returns an error when app-server turn execution fails or the final output
-/// does not match the required protocol JSON.
+/// is empty or otherwise unusable.
 pub(crate) async fn submit_one_shot_with_app_server_client(
     app_server_client: &dyn AppServerClient,
     request: OneShotRequest<'_>,
@@ -135,14 +135,7 @@ pub(crate) async fn submit_one_shot_with_app_server_client(
 
     let turn_result = turn_result
         .map_err(|error| format!("Failed to execute one-shot app-server turn: {error}"))?;
-    let response =
-        parse_agent_response_strict(&turn_result.assistant_message).map_err(|error| {
-            format!(
-                "One-shot agent output did not match the required JSON schema: \
-                 {error}\nresponse:\n{}",
-                turn_result.assistant_message
-            )
-        })?;
+    let response = parse_one_shot_response(&turn_result.assistant_message)?;
 
     Ok(OneShotSubmission {
         response,
@@ -166,9 +159,8 @@ pub(crate) async fn submit_one_shot_with_backend(
     backend: &dyn AgentBackend,
     request: OneShotRequest<'_>,
 ) -> Result<OneShotSubmission, String> {
-    let protocol_profile = request.request_kind.protocol_profile();
     let parsed_response = execute_one_shot_command(backend, request.prompt, request).await?;
-    let agent_response = parse_one_shot_response(&parsed_response.content, protocol_profile)?;
+    let agent_response = parse_one_shot_response(&parsed_response.content)?;
 
     Ok(OneShotSubmission {
         response: agent_response,
@@ -176,32 +168,17 @@ pub(crate) async fn submit_one_shot_with_backend(
     })
 }
 
-/// Parses one one-shot response, preferring protocol JSON and falling back to
-/// plain-text utility answers when providers return legacy output.
+/// Parses one one-shot response strictly against the shared protocol schema.
 ///
 /// # Errors
-/// Returns an error when the response is empty or when a non-utility one-shot
-/// payload is not valid protocol JSON.
-fn parse_one_shot_response(
-    content: &str,
-    protocol_profile: ProtocolRequestProfile,
-) -> Result<AgentResponse, String> {
-    match parse_agent_response_strict(content) {
-        Ok(agent_response) => Ok(agent_response),
-        Err(error) => {
-            let trimmed_content = content.trim();
-            if matches!(protocol_profile, ProtocolRequestProfile::UtilityPrompt)
-                && !trimmed_content.is_empty()
-            {
-                return Ok(AgentResponse::plain(trimmed_content.to_string()));
-            }
-
-            Err(format!(
-                "One-shot agent output did not match the required JSON schema: \
-                 {error}\nresponse:\n{content}"
-            ))
-        }
-    }
+/// Returns an error when the response is empty or not valid protocol JSON.
+fn parse_one_shot_response(content: &str) -> Result<AgentResponse, String> {
+    parse_agent_response_strict(content).map_err(|error| {
+        format!(
+            "One-shot agent output did not match the required JSON schema: \
+             {error}\nresponse:\n{content}"
+        )
+    })
 }
 
 /// Runs one one-shot backend command and returns the parsed provider content.
@@ -432,9 +409,9 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies one-shot execution falls back to plain-text answers for
-    /// utility prompts when the response is not valid protocol JSON.
-    async fn test_submit_one_shot_with_backend_accepts_plain_text_utility_output() {
+    /// Verifies one-shot execution rejects plain-text utility output that
+    /// does not match the protocol schema.
+    async fn test_submit_one_shot_with_backend_rejects_plain_text_utility_output() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let mut backend = MockAgentBackend::new();
@@ -452,7 +429,7 @@ mod tests {
             });
 
         // Act
-        let response = submit_one_shot_with_backend(
+        let error = submit_one_shot_with_backend(
             &backend,
             OneShotRequest {
                 child_pid: None,
@@ -464,16 +441,17 @@ mod tests {
             },
         )
         .await
-        .expect("plain-text utility output should succeed");
+        .expect_err("plain-text utility output should fail");
 
         // Assert
-        assert_eq!(response.response.answers(), vec!["plain text".to_string()]);
+        assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("response:\nplain text"));
     }
 
     #[tokio::test]
-    /// Verifies wrapped provider output still falls back to the extracted
-    /// plain-text utility answer when protocol parsing fails.
-    async fn test_submit_one_shot_with_backend_accepts_wrapped_plain_text_utility_output() {
+    /// Verifies one-shot execution rejects wrapped non-schema utility output
+    /// instead of extracting plain text from provider wrappers.
+    async fn test_submit_one_shot_with_backend_rejects_wrapped_plain_text_utility_output() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let mut backend = MockAgentBackend::new();
@@ -495,7 +473,7 @@ mod tests {
             });
 
         // Act
-        let response = submit_one_shot_with_backend(
+        let error = submit_one_shot_with_backend(
             &backend,
             OneShotRequest {
                 child_pid: None,
@@ -507,10 +485,11 @@ mod tests {
             },
         )
         .await
-        .expect("wrapped plain-text utility output should succeed");
+        .expect_err("wrapped plain-text utility output should fail");
 
         // Assert
-        assert_eq!(response.response.answers(), vec!["plain text".to_string()]);
+        assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("response:\n"));
     }
 
     #[tokio::test]
@@ -769,10 +748,9 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies app-server-backed one-shot execution surfaces invalid
-    /// structured output as a schema error.
-    async fn test_submit_one_shot_with_app_server_client_returns_error_for_invalid_protocol_output()
-    {
+    /// Verifies app-server-backed one-shot execution rejects plain-text
+    /// utility output that does not match the protocol schema.
+    async fn test_submit_one_shot_with_app_server_client_rejects_plain_text_utility_output() {
         // Arrange
         let temp_directory = tempdir().expect("failed to create temp dir");
         let mut app_server_client = MockAppServerClient::new();
@@ -811,7 +789,59 @@ mod tests {
             },
         )
         .await
-        .expect_err("invalid protocol output should fail");
+        .expect_err("plain-text utility output should fail");
+
+        // Assert
+        assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("response:\nplain text"));
+    }
+
+    #[tokio::test]
+    /// Verifies app-server-backed non-utility one-shot execution still
+    /// rejects plain-text output that does not match the protocol schema.
+    async fn test_submit_one_shot_with_app_server_client_rejects_plain_text_non_utility_output() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let mut app_server_client = MockAppServerClient::new();
+        app_server_client
+            .expect_run_turn()
+            .times(1)
+            .returning(|request, _| {
+                assert!(matches!(
+                    request.request_kind,
+                    AgentRequestKind::SessionStart
+                ));
+
+                Box::pin(async {
+                    Ok(AppServerTurnResponse {
+                        assistant_message: "plain text".to_string(),
+                        context_reset: false,
+                        input_tokens: 2,
+                        output_tokens: 1,
+                        pid: None,
+                        provider_conversation_id: None,
+                    })
+                })
+            });
+        app_server_client
+            .expect_shutdown_session()
+            .times(1)
+            .returning(|_| Box::pin(async {}));
+
+        // Act
+        let error = submit_one_shot_with_app_server_client(
+            &app_server_client,
+            OneShotRequest {
+                child_pid: None,
+                folder: temp_directory.path(),
+                model: AgentModel::Gpt54,
+                prompt: "Generate title",
+                request_kind: AgentRequestKind::SessionStart,
+                reasoning_level: ReasoningLevel::default(),
+            },
+        )
+        .await
+        .expect_err("invalid non-utility output should fail");
 
         // Assert
         assert!(error.contains("did not match the required JSON schema"));

@@ -10,8 +10,7 @@ mod schema;
 pub use model::ProtocolRequestProfile;
 pub(crate) use model::{AgentResponse, AgentResponseSummary, QuestionItem};
 pub(crate) use parse::{
-    normalize_stream_assistant_chunk, normalize_turn_response, parse_agent_response,
-    parse_agent_response_strict,
+    normalize_stream_assistant_chunk, normalize_turn_response, parse_agent_response_strict,
 };
 pub(crate) use schema::{
     agent_response_json_schema_json, agent_response_output_schema,

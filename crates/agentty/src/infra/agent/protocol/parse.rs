@@ -4,15 +4,6 @@ use super::model::{
     AgentResponse, AgentResponseParseError, AgentResponseSummary, ProtocolRequestProfile,
 };
 
-/// Parses a raw assistant message into an [`AgentResponse`].
-///
-/// Parsing order:
-/// 1. Whole-response JSON that matches [`AgentResponse`].
-/// 2. Plain-text fallback (`answer` string preserving the original payload).
-pub(crate) fn parse_agent_response(raw: &str) -> AgentResponse {
-    parse_agent_response_strict(raw).unwrap_or_else(|_| AgentResponse::plain(raw))
-}
-
 /// Normalizes one parsed turn response according to the request profile.
 ///
 /// Interactive session turns expect a summary block on every response so the
@@ -37,9 +28,8 @@ pub(crate) fn normalize_turn_response(
 
 /// Parses one raw assistant message strictly as protocol payload.
 ///
-/// Parsing order:
-/// 1. Whole-response JSON that matches [`AgentResponse`].
-/// 2. First extractable top-level JSON object inside `raw`.
+/// The full assistant payload must be one JSON object that matches
+/// [`AgentResponse`]. Top-level fields may rely on the wire type's defaults.
 ///
 /// # Errors
 /// Returns [`AgentResponseParseError`] when no valid protocol payload is found.
@@ -51,11 +41,7 @@ pub(crate) fn parse_agent_response_strict(
         return Err(AgentResponseParseError::Empty);
     }
 
-    if let Ok(response) = parse_structured_json_response(trimmed) {
-        return Ok(response);
-    }
-
-    parse_first_valid_embedded_json_response(trimmed).ok_or(AgentResponseParseError::InvalidFormat)
+    parse_structured_json_response(trimmed).map_err(|_| AgentResponseParseError::InvalidFormat)
 }
 
 /// Normalizes one streamed assistant chunk for transcript display.
@@ -128,102 +114,9 @@ fn is_json_punctuation_only(value: &str) -> bool {
         .chars()
         .all(|character| matches!(character, '{' | '}' | '[' | ']' | ':' | ',' | '"'))
 }
-
-/// Parses the first valid protocol payload embedded in free-form text.
-///
-/// This skips non-protocol or invalid JSON objects that may appear before the
-/// actual protocol payload.
-fn parse_first_valid_embedded_json_response(raw: &str) -> Option<AgentResponse> {
-    let mut search_from = 0;
-
-    while let Some((start_index, end_index)) = extract_next_json_object_range(raw, search_from) {
-        let json_candidate = raw.get(start_index..end_index)?;
-        if let Ok(parsed_response) = parse_structured_json_response(json_candidate) {
-            return Some(parsed_response);
-        }
-
-        search_from = start_index + 1;
-    }
-
-    None
-}
-
-/// Extracts the next complete top-level JSON object byte range starting at
-/// `search_from`.
-fn extract_next_json_object_range(raw: &str, search_from: usize) -> Option<(usize, usize)> {
-    if search_from >= raw.len() || !raw.is_char_boundary(search_from) {
-        return None;
-    }
-
-    let mut object_start: Option<usize> = None;
-    let mut brace_depth: usize = 0;
-    let mut in_string = false;
-    let mut is_escaped = false;
-
-    for (relative_index, character) in raw[search_from..].char_indices() {
-        let index = search_from + relative_index;
-        if object_start.is_none() {
-            if character == '{' {
-                object_start = Some(index);
-                brace_depth = 1;
-            }
-
-            continue;
-        }
-
-        if is_escaped {
-            is_escaped = false;
-            continue;
-        }
-
-        if in_string {
-            match character {
-                '\\' => is_escaped = true,
-                '"' => in_string = false,
-                _ => {}
-            }
-
-            continue;
-        }
-
-        match character {
-            '"' => in_string = true,
-            '{' => brace_depth += 1,
-            '}' => {
-                brace_depth = brace_depth.saturating_sub(1);
-                if brace_depth == 0
-                    && let Some(start_index) = object_start
-                {
-                    let end_index = index + character.len_utf8();
-                    return Some((start_index, end_index));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    /// Parses a full JSON response object into the top-level answer and
-    /// question fields.
-    fn test_parse_agent_response_structured_json_payload() {
-        // Arrange
-        let raw = r#"{"answer":"Here is my analysis.","questions":[],"summary":null}"#;
-
-        // Act
-        let response = parse_agent_response(raw);
-
-        // Assert
-        assert_eq!(response.answer, "Here is my analysis.");
-        assert!(response.questions.is_empty());
-        assert_eq!(response.to_display_text(), "Here is my analysis.");
-    }
 
     #[test]
     /// Strict parsing accepts a complete schema payload.
@@ -262,8 +155,9 @@ mod tests {
     }
 
     #[test]
-    /// Strict parsing extracts a valid embedded payload from wrapped text.
-    fn test_parse_agent_response_strict_extracts_json_object_from_wrapped_text() {
+    /// Strict parsing rejects wrapped text even when it contains a valid JSON
+    /// payload later in the response.
+    fn test_parse_agent_response_strict_rejects_wrapped_text() {
         // Arrange
         let raw = concat!(
             "Some wrapper text\n",
@@ -274,10 +168,7 @@ mod tests {
         let response = parse_agent_response_strict(raw);
 
         // Assert
-        assert_eq!(
-            response.expect("response should parse").answer,
-            "Recovered payload"
-        );
+        assert_eq!(response, Err(AgentResponseParseError::InvalidFormat));
     }
 
     #[test]
@@ -393,16 +284,16 @@ mod tests {
     }
 
     #[test]
-    /// Falls back to plain text when the payload is not schema-compliant.
-    fn test_parse_agent_response_non_schema_payload_falls_back_to_plain_text() {
+    /// Strict parsing rejects non-schema JSON payloads.
+    fn test_parse_agent_response_strict_rejects_non_schema_payload() {
         // Arrange
         let raw = r#"{"message":"not the expected shape"}"#;
 
         // Act
-        let response = parse_agent_response(raw);
+        let response = parse_agent_response_strict(raw);
 
         // Assert
-        assert_eq!(response.to_display_text(), raw);
+        assert_eq!(response, Err(AgentResponseParseError::InvalidFormat));
     }
 
     #[test]
@@ -423,8 +314,9 @@ mod tests {
     }
 
     #[test]
-    /// Preserves wrapped code-fence payloads by extracting the JSON object.
-    fn test_parse_agent_response_structured_json_in_code_fence_extracts_payload() {
+    /// Strict parsing rejects code-fenced JSON because the full response must
+    /// be the schema object itself.
+    fn test_parse_agent_response_strict_rejects_code_fenced_payload() {
         // Arrange
         let raw = concat!(
             "```json\n",
@@ -433,9 +325,9 @@ mod tests {
         );
 
         // Act
-        let response = parse_agent_response(raw);
+        let response = parse_agent_response_strict(raw);
 
         // Assert
-        assert_eq!(response.to_display_text(), "Need details.");
+        assert_eq!(response, Err(AgentResponseParseError::InvalidFormat));
     }
 }

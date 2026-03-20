@@ -148,15 +148,16 @@ the session summary panel instead of being parsed back out of answer markdown.
 <a id="backends-protocol-validation-repair"></a>
 Agentty validates final agent output against the structured response protocol.
 
-- Claude and Gemini integrations use strict parsing and fail closed when
+- Claude, Gemini, and Codex integrations use strict parsing and fail closed when
   output does not match the protocol schema.
 - Strict parsing accepts summary-only protocol payloads because the parser now
   relies on the shared protocol wire type instead of extra top-level field
   checks.
-- One-shot utility prompts also fail with a schema error when provider output
-  does not match the required protocol JSON.
-- Provider-specific transport, stdin-vs-argv prompt delivery, strict-vs-best-effort
-  final parsing, and app-server thought-phase handling are centralized in the
+- One-shot utility prompts use the same strict final validation across both
+  CLI and app-server transports. Plain text, wrapped JSON, and other
+  non-schema output are rejected instead of being coerced into `answer`.
+- Provider-specific transport, stdin-vs-argv prompt delivery, strict final
+  parsing, and app-server thought-phase handling are centralized in the
   shared provider descriptor in `crates/agentty/src/infra/agent/backend.rs`.
 - Concrete backends in `crates/agentty/src/infra/agent/` now also own app-server
   client selection and runtime command construction, so Codex and Gemini
@@ -182,9 +183,9 @@ Agentty validates final agent output against the structured response protocol.
   for consistency across providers.
 - Claude always uses structured protocol output, including isolated one-shot
   utility prompts, through native schema enforcement plus prompt instructions.
-- Codex app-server turns include `outputSchema` at transport level and then use
-  permissive final parsing fallback so non-schema text is still visible if
-  needed.
+- Codex app-server turns include `outputSchema` at transport level and still
+  require the final assistant payload itself to parse as the shared protocol
+  JSON object.
 - Partial protocol JSON fragments are suppressed during streaming so raw JSON
   wrappers do not leak into live transcript output.
 

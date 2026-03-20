@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use super::backend::{
-    AgentBackend, AgentBackendError, AgentPromptTransport, AgentResponsePolicy, AgentTransport,
-    AppServerThoughtPolicy, BuildCommandRequest,
+    AgentBackend, AgentBackendError, AgentPromptTransport, AgentTransport, AppServerThoughtPolicy,
+    BuildCommandRequest,
 };
 use super::protocol;
 use super::response_parser::ParsedResponse;
@@ -50,27 +50,23 @@ pub(crate) fn prompt_transport(kind: AgentKind) -> AgentPromptTransport {
     provider_descriptor(kind).prompt_transport
 }
 
-/// Parses one final assistant payload according to the provider response
-/// policy and normalizes it for the active protocol profile.
+/// Parses one final assistant payload strictly against the shared protocol and
+/// normalizes it for the active request profile.
 ///
 /// # Errors
-/// Returns a descriptive error when a strict provider emits invalid protocol
-/// JSON.
+/// Returns a descriptive error when provider output does not match the
+/// required protocol JSON.
 pub(crate) fn parse_turn_response(
-    kind: AgentKind,
+    _kind: AgentKind,
     response_text: &str,
     protocol_profile: protocol::ProtocolRequestProfile,
 ) -> Result<protocol::AgentResponse, String> {
-    let response = match provider_descriptor(kind).response_policy {
-        AgentResponsePolicy::BestEffort => protocol::parse_agent_response(response_text),
-        AgentResponsePolicy::Strict => protocol::parse_agent_response_strict(response_text)
-            .map_err(|error| {
-                format!(
-                    "Agent output did not match the required JSON schema: \
-                     {error}\nresponse:\n{response_text}"
-                )
-            })?,
-    };
+    let response = protocol::parse_agent_response_strict(response_text).map_err(|error| {
+        format!(
+            "Agent output did not match the required JSON schema: \
+             {error}\nresponse:\n{response_text}"
+        )
+    })?;
 
     Ok(protocol::normalize_turn_response(
         response,
@@ -81,10 +77,7 @@ pub(crate) fn parse_turn_response(
 /// Returns whether app-server assistant chunks should be forwarded while the
 /// turn is still in progress.
 pub(crate) fn should_stream_app_server_assistant_messages(kind: AgentKind) -> bool {
-    !matches!(
-        provider_descriptor(kind).response_policy,
-        AgentResponsePolicy::Strict
-    )
+    provider_descriptor(kind).stream_app_server_assistant_messages
 }
 
 /// Returns whether one app-server assistant chunk should be treated as
@@ -143,7 +136,7 @@ struct AgentProviderDescriptor {
     parse_stream_output_line: fn(&str) -> Option<(String, bool)>,
     app_server_thought_policy: AppServerThoughtPolicy,
     prompt_transport: AgentPromptTransport,
-    response_policy: AgentResponsePolicy,
+    stream_app_server_assistant_messages: bool,
     transport: AgentTransport,
 }
 
@@ -161,7 +154,7 @@ fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
             parse_stream_output_line: super::response_parser::parse_gemini_stream_output_line,
             app_server_thought_policy: AppServerThoughtPolicy::None,
             prompt_transport: AgentPromptTransport::Stdin,
-            response_policy: AgentResponsePolicy::Strict,
+            stream_app_server_assistant_messages: false,
             transport: AgentTransport::AppServer,
         },
         AgentKind::Claude => AgentProviderDescriptor {
@@ -171,7 +164,7 @@ fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
             parse_stream_output_line: super::response_parser::parse_claude_stream_output_line,
             app_server_thought_policy: AppServerThoughtPolicy::None,
             prompt_transport: AgentPromptTransport::Stdin,
-            response_policy: AgentResponsePolicy::Strict,
+            stream_app_server_assistant_messages: false,
             transport: AgentTransport::Cli,
         },
         AgentKind::Codex => AgentProviderDescriptor {
@@ -186,7 +179,7 @@ fn provider_descriptor(kind: AgentKind) -> AgentProviderDescriptor {
             parse_stream_output_line: super::response_parser::parse_codex_stream_output_line,
             app_server_thought_policy: AppServerThoughtPolicy::PhaseLabel,
             prompt_transport: AgentPromptTransport::Argv,
-            response_policy: AgentResponsePolicy::BestEffort,
+            stream_app_server_assistant_messages: true,
             transport: AgentTransport::AppServer,
         },
     }
@@ -250,28 +243,30 @@ mod tests {
     }
 
     #[test]
-    /// Ensures strict providers reject malformed final protocol payloads.
-    fn test_parse_turn_response_rejects_invalid_payload_for_strict_provider() {
+    /// Ensures providers reject malformed final protocol payloads.
+    fn test_parse_turn_response_rejects_invalid_payload() {
         // Arrange
         let raw_response = "plain response";
 
-        // Act
-        let result = parse_turn_response(
-            AgentKind::Claude,
-            raw_response,
-            protocol::ProtocolRequestProfile::SessionTurn,
-        );
+        for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini] {
+            // Act
+            let result = parse_turn_response(
+                kind,
+                raw_response,
+                protocol::ProtocolRequestProfile::SessionTurn,
+            );
 
-        // Assert
-        assert!(result.is_err());
+            // Assert
+            assert!(result.is_err());
+        }
     }
 
     #[test]
-    /// Ensures best-effort providers preserve plain-text payloads while still
-    /// normalizing the protocol profile.
-    fn test_parse_turn_response_keeps_plain_text_for_best_effort_provider() {
+    /// Ensures valid session-turn payloads still gain an empty summary when
+    /// the response omits it.
+    fn test_parse_turn_response_fills_missing_summary_for_session_turn() {
         // Arrange
-        let raw_response = "plain response";
+        let raw_response = r#"{"answer":"done","questions":[],"summary":null}"#;
 
         // Act
         let result = parse_turn_response(
@@ -279,10 +274,10 @@ mod tests {
             raw_response,
             protocol::ProtocolRequestProfile::SessionTurn,
         )
-        .expect("best-effort provider should accept plain text");
+        .expect("valid protocol response should parse");
 
         // Assert
-        assert_eq!(result.answer, "plain response");
+        assert_eq!(result.answer, "done");
         assert_eq!(
             result.summary,
             Some(protocol::AgentResponseSummary {
