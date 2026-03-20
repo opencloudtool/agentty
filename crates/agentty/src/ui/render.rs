@@ -44,6 +44,8 @@ pub struct RenderContext<'a> {
     pub project_table_state: &'a mut TableState,
     /// Project rows available for rendering.
     pub projects: &'a [ProjectListItem],
+    /// Latest session-branch ahead/behind snapshots keyed by session id.
+    pub session_git_statuses: &'a HashMap<String, Option<(u32, u32)>>,
     /// Background progress messages keyed by session id.
     pub session_progress_messages: &'a HashMap<String, String>,
     /// Mutable project-scoped settings snapshot.
@@ -92,6 +94,7 @@ pub fn render(f: &mut Frame, context: RenderContext<'_>) {
         context.git_branch,
         context.git_upstream_ref,
         context.git_status,
+        context.session_git_statuses,
     );
 
     router::route_frame(f, content_area, context);
@@ -102,7 +105,8 @@ fn current_version_display_text() -> String {
     format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Renders the footer bar with directory, branch, and git status info.
+/// Renders the footer bar with directory, branch, and project- or
+/// session-scoped git status info.
 fn render_footer_bar(
     f: &mut Frame,
     footer_bar_area: Rect,
@@ -112,6 +116,7 @@ fn render_footer_bar(
     git_branch: Option<&str>,
     git_upstream_ref: Option<&str>,
     git_status: Option<(u32, u32)>,
+    session_git_statuses: &HashMap<String, Option<(u32, u32)>>,
 ) {
     let session_id = match mode {
         AppMode::Confirmation {
@@ -151,7 +156,7 @@ fn render_footer_bar(
             session.folder.to_string_lossy().to_string(),
             Some(session_branch(&session.id)),
             session.published_upstream_ref.clone(),
-            None,
+            session_git_statuses.get(&session.id).copied().flatten(),
         ),
         None => (
             working_dir.to_string_lossy().to_string(),
@@ -237,6 +242,7 @@ mod tests {
                     Some("main"),
                     Some("origin/main"),
                     Some((2, 1)),
+                    &HashMap::new(),
                 );
             })
             .expect("failed to draw");
@@ -276,6 +282,7 @@ mod tests {
                     Some("main"),
                     Some("origin/main"),
                     Some((2, 1)),
+                    &HashMap::new(),
                 );
             })
             .expect("failed to draw");
@@ -320,6 +327,7 @@ mod tests {
                     Some("main"),
                     Some("origin/main"),
                     Some((2, 1)),
+                    &HashMap::new(),
                 );
             })
             .expect("failed to draw");
@@ -353,6 +361,7 @@ mod tests {
                     git_branch,
                     Some("origin/feature/test-render"),
                     git_status,
+                    &HashMap::new(),
                 );
             })
             .expect("failed to draw");
@@ -361,6 +370,47 @@ mod tests {
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("/tmp/current-workspace"));
         assert!(text.contains("feature/test-render -> origin/feature/test-render"));
+    }
+
+    #[test]
+    fn render_footer_bar_uses_session_git_status_when_available() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 3);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let session_id = "session-status";
+        let mut session = session_fixture(session_id, "/tmp/session-status-folder");
+        session.published_upstream_ref = Some("origin/agentty/session-status".to_string());
+        let mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            session_id: session_id.to_string(),
+            scroll_offset: None,
+        };
+        let sessions = vec![session];
+        let session_git_statuses = HashMap::from([(session_id.to_string(), Some((3, 2)))]);
+
+        // Act
+        terminal
+            .draw(|frame| {
+                render_footer_bar(
+                    frame,
+                    frame.area(),
+                    &mode,
+                    &sessions,
+                    Path::new("/tmp/workspace-root"),
+                    Some("main"),
+                    Some("origin/main"),
+                    Some((0, 0)),
+                    &session_git_statuses,
+                );
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("↓2 ↑3"));
+        assert!(!text.contains("↓0"));
     }
 
     #[test]

@@ -248,7 +248,7 @@ Detached/background execution paths and their trigger conditions:
 | Task | Trigger | Spawn site | Emits / Writes | What it does |
 |------|---------|------------|----------------|--------------|
 | Terminal event reader thread | Runtime startup | `runtime/event::spawn_event_reader` | Terminal `Event` channel | Polls crossterm and forwards terminal events into the runtime loop. |
-| Git status poller loop | App startup (if project has git branch), and project switch | `TaskService::spawn_git_status_task` | `AppEvent::GitStatusUpdated` | Periodic fetch + ahead/behind snapshot (about every 30s). |
+| Git status poller loop | App startup (if project has git branch), project switch, and session refreshes that change published session branches | `TaskService::spawn_git_status_task` | `AppEvent::GitStatusUpdated` | Periodic fetch plus one repo-level branch-tracking snapshot, then maps that snapshot to the active project branch and all published session branches in that project (about every 30s). |
 | Version check one-shot | App startup | `TaskService::spawn_version_check_task` | `AppEvent::VersionAvailabilityUpdated` | Checks npm latest version tag and reports update availability. |
 | Per-session worker loop | First command enqueue for a session | `SessionWorkerService::spawn_session_worker` | DB `session_operation` updates, app/session updates | Serializes all turn commands per session and manages channel lifecycle. |
 | Per-turn turn-event consumer | Every queued turn execution | `run_channel_turn` | Output append, progress updates, pid slot updates | Consumes `TurnEvent` stream and applies immediate side effects. |

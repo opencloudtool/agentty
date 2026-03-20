@@ -1,7 +1,7 @@
 //! Session lifecycle orchestration for creation, refresh, prompt handling,
 //! history management, merge, and cleanup.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -176,6 +176,21 @@ impl SessionManager {
         {
             session.published_upstream_ref = Some(published_upstream_ref);
         }
+    }
+
+    /// Replaces cached session git-status snapshots from the latest
+    /// background poll.
+    pub(crate) fn replace_session_git_statuses(
+        &mut self,
+        session_git_statuses: HashMap<String, Option<(u32, u32)>>,
+    ) {
+        self.state
+            .replace_session_git_statuses(session_git_statuses);
+    }
+
+    /// Returns cached session git-status snapshots keyed by session id.
+    pub(crate) fn session_git_statuses(&self) -> &HashMap<String, Option<(u32, u32)>> {
+        &self.state.session_git_statuses
     }
 }
 
@@ -426,6 +441,9 @@ mod tests {
         mock.expect_fetch_remote()
             .times(0..)
             .returning(|_| Box::pin(async { Ok(()) }));
+        mock.expect_branch_tracking_statuses()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(HashMap::new()) }));
         mock.expect_get_ahead_behind()
             .times(0..)
             .returning(|_| Box::pin(async { Ok((0, 0)) }));

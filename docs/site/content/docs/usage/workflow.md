@@ -29,7 +29,10 @@ header row above the output panel.
 
 The footer always shows the active directory. When the current branch tracks an
 upstream, the footer branch badge renders `local -> remote`, for example
-`main -> origin/main`.
+`main -> origin/main`. For active sessions whose published worktree branch also
+tracks a remote, the footer switches to that session directory and shows the
+session branch's own ahead/behind counts instead of the active project branch
+snapshot.
 
 ## Session Lifecycle
 

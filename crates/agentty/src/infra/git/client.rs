@@ -1,5 +1,6 @@
 //! Git client trait boundary and production adapter implementation.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -10,9 +11,9 @@ use super::rebase::RebaseStepResult;
 use super::sync;
 use super::sync::{PullRebaseResult, SingleCommitMessageStrategy};
 use super::{
-    abort_rebase, commit_all, commit_all_preserving_single_commit, create_worktree,
-    current_upstream_reference, delete_branch, detect_git_info, diff, fetch_remote,
-    find_git_repo_root, get_ahead_behind, has_commits_since, has_unmerged_paths,
+    abort_rebase, branch_tracking_statuses, commit_all, commit_all_preserving_single_commit,
+    create_worktree, current_upstream_reference, delete_branch, detect_git_info, diff,
+    fetch_remote, find_git_repo_root, get_ahead_behind, has_commits_since, has_unmerged_paths,
     head_commit_message, head_short_hash, is_rebase_in_progress, is_worktree_clean,
     list_conflicted_files, list_local_commit_titles, list_staged_conflict_marker_files,
     list_upstream_commit_titles, main_repo_root, pull_rebase, push_current_branch,
@@ -272,6 +273,19 @@ pub trait GitClient: Send + Sync {
     /// Returns an error when upstream tracking information is unavailable.
     fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), String>>;
 
+    /// Reads ahead/behind snapshots for all local branches that track an
+    /// upstream.
+    ///
+    /// The returned map is keyed by local branch name and stores `None` when
+    /// a branch has no tracked upstream or its upstream is gone.
+    ///
+    /// # Errors
+    /// Returns an error when branch tracking information cannot be queried.
+    fn branch_tracking_statuses(
+        &self,
+        repo_path: PathBuf,
+    ) -> GitFuture<Result<HashMap<String, Option<(u32, u32)>>, String>>;
+
     /// Returns commit subjects that exist in upstream but not in local
     /// `HEAD`.
     ///
@@ -488,6 +502,13 @@ impl GitClient for RealGitClient {
 
     fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), String>> {
         Box::pin(async move { get_ahead_behind(repo_path).await })
+    }
+
+    fn branch_tracking_statuses(
+        &self,
+        repo_path: PathBuf,
+    ) -> GitFuture<Result<HashMap<String, Option<(u32, u32)>>, String>> {
+        Box::pin(async move { branch_tracking_statuses(repo_path).await })
     }
 
     fn list_upstream_commit_titles(

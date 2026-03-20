@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,6 +15,7 @@ pub struct SessionState {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) refresh_deadline: Instant,
     pub(crate) row_count: i64,
+    pub(crate) session_git_statuses: HashMap<String, Option<(u32, u32)>>,
     pub(crate) updated_at_max: i64,
 }
 
@@ -41,6 +42,7 @@ impl SessionState {
             clock,
             refresh_deadline,
             row_count,
+            session_git_statuses: HashMap::new(),
             updated_at_max,
         }
     }
@@ -88,6 +90,22 @@ impl SessionState {
         session.size = session_size;
     }
 
+    /// Replaces all cached session git-status snapshots with one fresh poll
+    /// result.
+    pub(crate) fn replace_session_git_statuses(
+        &mut self,
+        session_git_statuses: HashMap<String, Option<(u32, u32)>>,
+    ) {
+        self.session_git_statuses = session_git_statuses;
+    }
+
+    /// Drops cached git-status entries for sessions that are no longer active
+    /// in memory.
+    pub(crate) fn retain_session_git_statuses(&mut self, active_session_ids: &HashSet<String>) {
+        self.session_git_statuses
+            .retain(|session_id, _| active_session_ids.contains(session_id));
+    }
+
     /// Synchronizes one session snapshot from shared runtime handles.
     ///
     /// Output synchronization prefers an append-only fast path: when runtime
@@ -131,7 +149,7 @@ impl SessionState {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
     use std::time::{Duration, Instant, SystemTime};
 
@@ -349,5 +367,35 @@ mod tests {
         // Assert
         assert_eq!(session.output, "xyzq");
         assert_eq!(session.status, Status::Review);
+    }
+
+    #[test]
+    /// Verifies session git-status caching keeps only entries for active
+    /// sessions after refresh.
+    fn retain_session_git_statuses_drops_removed_sessions() {
+        // Arrange
+        let mut state = SessionState::new(
+            HashMap::new(),
+            Vec::new(),
+            TableState::default(),
+            Arc::new(FixedClock::new()),
+            0,
+            0,
+        );
+        state.replace_session_git_statuses(HashMap::from([
+            ("session-1".to_string(), Some((1, 0))),
+            ("session-2".to_string(), Some((0, 2))),
+        ]));
+        let active_session_ids = HashSet::from(["session-2".to_string()]);
+
+        // Act
+        state.retain_session_git_statuses(&active_session_ids);
+
+        // Assert
+        assert_eq!(state.session_git_statuses.get("session-1"), None);
+        assert_eq!(
+            state.session_git_statuses.get("session-2"),
+            Some(&Some((0, 2)))
+        );
     }
 }

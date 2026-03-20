@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -563,6 +564,31 @@ pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), String> 
     Err("Unexpected output format from git rev-list".to_string())
 }
 
+/// Returns ahead/behind snapshots for every local branch in `repo_path`.
+///
+/// The returned map is keyed by local branch name. Branches without an
+/// upstream, with a gone upstream, or without ahead/behind markers map to
+/// `None`.
+///
+/// # Errors
+/// Returns an error if `git for-each-ref` fails.
+pub async fn branch_tracking_statuses(
+    repo_path: PathBuf,
+) -> Result<HashMap<String, Option<(u32, u32)>>, String> {
+    let git_output = run_git_command(
+        repo_path,
+        vec![
+            "for-each-ref".to_string(),
+            "--format=%(refname:short)\t%(upstream:short)\t%(upstream:track,nobracket)".to_string(),
+            "refs/heads".to_string(),
+        ],
+        "Git for-each-ref failed".to_string(),
+    )
+    .await?;
+
+    Ok(parse_branch_tracking_statuses(&git_output))
+}
+
 /// Returns upstream commit subjects that are not yet in local `HEAD`.
 ///
 /// The returned order is oldest to newest to match pull application order.
@@ -645,6 +671,58 @@ fn parse_commit_titles(output: &str) -> Vec<String> {
         .filter(|title| !title.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+/// Parses repo-wide branch tracking information from `git for-each-ref`.
+fn parse_branch_tracking_statuses(output: &str) -> HashMap<String, Option<(u32, u32)>> {
+    let mut branch_tracking_statuses = HashMap::new();
+
+    for line in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let mut parts = line.splitn(3, '\t');
+        let Some(branch_name) = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let upstream_ref = parts.next().map(str::trim).unwrap_or_default();
+        let track = parts.next().map(str::trim).unwrap_or_default();
+
+        let status = if upstream_ref.is_empty() {
+            None
+        } else {
+            parse_branch_tracking_counts(track)
+        };
+        branch_tracking_statuses.insert(branch_name.to_string(), status);
+    }
+
+    branch_tracking_statuses
+}
+
+/// Parses one `%(upstream:track,nobracket)` marker into ahead/behind counts.
+fn parse_branch_tracking_counts(track: &str) -> Option<(u32, u32)> {
+    let normalized_track = track.trim();
+    if normalized_track.is_empty() || normalized_track == "gone" {
+        return None;
+    }
+
+    let mut ahead = 0;
+    let mut behind = 0;
+
+    for part in normalized_track.split(',').map(str::trim) {
+        if let Some(count) = part.strip_prefix("ahead ") {
+            ahead = count.parse().ok()?;
+        } else if let Some(count) = part.strip_prefix("behind ") {
+            behind = count.parse().ok()?;
+        }
+    }
+
+    Some((ahead, behind))
 }
 
 /// Resolves the commit/tree to use as the `git diff` "before" side.
@@ -965,6 +1043,26 @@ mod tests {
         assert_eq!(upstream_reference, "origin/main");
     }
 
+    #[test]
+    fn parse_branch_tracking_statuses_reads_repo_wide_branch_snapshot() {
+        // Arrange
+        let output = "\
+main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3, behind \
+                      1\nfeature/local\t\t\nfeature/gone\torigin/feature/gone\tgone\n";
+
+        // Act
+        let branch_tracking_statuses = parse_branch_tracking_statuses(output);
+
+        // Assert
+        assert_eq!(branch_tracking_statuses.get("main"), Some(&Some((0, 2))));
+        assert_eq!(
+            branch_tracking_statuses.get("agentty/1234abcd"),
+            Some(&Some((3, 1)))
+        );
+        assert_eq!(branch_tracking_statuses.get("feature/local"), Some(&None));
+        assert_eq!(branch_tracking_statuses.get("feature/gone"), Some(&None));
+    }
+
     #[tokio::test]
     async fn pull_rebase_returns_conflict_detail_for_conflicting_remote_change() {
         // Arrange
@@ -1156,5 +1254,70 @@ mod tests {
 
         // Assert
         assert_eq!(upstream_reference, "origin/main");
+    }
+
+    #[tokio::test]
+    async fn branch_tracking_statuses_returns_repo_wide_branch_counts() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let remote_dir = tempdir().expect("failed to create remote temp dir");
+        let contributor_dir = tempdir().expect("failed to create contributor temp dir");
+        let contributor_clone_path = contributor_dir.path().join("clone");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(remote_dir.path(), &["init", "--bare"]);
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        let contributor_clone_path_text = contributor_clone_path.to_string_lossy().to_string();
+        run_git_command(temp_dir.path(), &["remote", "add", "origin", &remote_path]);
+        run_git_command(temp_dir.path(), &["push", "-u", "origin", "main"]);
+        run_git_command(
+            contributor_dir.path(),
+            &["clone", &remote_path, &contributor_clone_path_text],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["config", "user.name", "Contributor User"],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["config", "user.email", "contributor@example.com"],
+        );
+        run_git_command(
+            &contributor_clone_path,
+            &["checkout", "-B", "main", "origin/main"],
+        );
+        fs::write(contributor_clone_path.join("remote.txt"), "remote change")
+            .expect("failed to write remote file");
+        run_git_command(&contributor_clone_path, &["add", "remote.txt"]);
+        run_git_command(&contributor_clone_path, &["commit", "-m", "Remote change"]);
+        run_git_command(&contributor_clone_path, &["push", "origin", "main"]);
+        run_git_command(temp_dir.path(), &["checkout", "-b", "agentty/1234abcd"]);
+        fs::write(temp_dir.path().join("session.txt"), "session change\n")
+            .expect("failed to write session file");
+        run_git_command(temp_dir.path(), &["add", "session.txt"]);
+        run_git_command(temp_dir.path(), &["commit", "-m", "Session change"]);
+        run_git_command(
+            temp_dir.path(),
+            &["push", "-u", "origin", "agentty/1234abcd"],
+        );
+        fs::write(
+            temp_dir.path().join("session.txt"),
+            "session change\nmore local\n",
+        )
+        .expect("failed to extend session file");
+        run_git_command(temp_dir.path(), &["add", "session.txt"]);
+        run_git_command(temp_dir.path(), &["commit", "-m", "More session work"]);
+        run_git_command(temp_dir.path(), &["fetch"]);
+
+        // Act
+        let branch_tracking_statuses = branch_tracking_statuses(temp_dir.path().to_path_buf())
+            .await
+            .expect("failed to read branch tracking statuses");
+
+        // Assert
+        assert_eq!(branch_tracking_statuses.get("main"), Some(&Some((0, 1))));
+        assert_eq!(
+            branch_tracking_statuses.get("agentty/1234abcd"),
+            Some(&Some((1, 0)))
+        );
     }
 }

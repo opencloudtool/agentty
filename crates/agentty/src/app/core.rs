@@ -103,8 +103,12 @@ pub(crate) enum AppEvent {
         entries: Vec<FileEntry>,
         session_id: String,
     },
-    /// Indicates latest ahead/behind information from the git status worker.
-    GitStatusUpdated { status: Option<(u32, u32)> },
+    /// Indicates the latest project-branch and session-branch ahead/behind
+    /// information from the git status worker.
+    GitStatusUpdated {
+        session_statuses: HashMap<String, Option<(u32, u32)>>,
+        status: Option<(u32, u32)>,
+    },
     /// Indicates whether a newer stable `agentty` release is available.
     VersionAvailabilityUpdated {
         latest_available_version: Option<String>,
@@ -170,6 +174,7 @@ struct AppEventBatch {
     has_latest_available_version_update: bool,
     latest_available_version_update: Option<String>,
     branch_publish_action_update: Option<BranchPublishActionUpdate>,
+    session_git_status_updates: HashMap<String, Option<(u32, u32)>>,
     session_ids: HashSet<String>,
     session_model_updates: HashMap<String, AgentModel>,
     session_size_updates: HashMap<String, SessionSize>,
@@ -599,7 +604,7 @@ impl App {
         )
         .await;
 
-        Self::spawn_background_tasks(auto_update, &event_tx, &projects, &services);
+        Self::spawn_background_tasks(auto_update, &event_tx, &projects, &services, &sessions);
 
         Ok(Self {
             mode: AppMode::List,
@@ -706,11 +711,14 @@ impl App {
         event_tx: &mpsc::UnboundedSender<AppEvent>,
         projects: &ProjectManager,
         services: &AppServices,
+        sessions: &SessionManager,
     ) {
         task::TaskService::spawn_version_check_task(event_tx, auto_update);
         if projects.has_git_branch() {
             task::TaskService::spawn_git_status_task(
                 projects.working_dir(),
+                projects.git_branch().unwrap_or_default().to_string(),
+                Self::session_git_status_targets(sessions),
                 projects.git_status_cancel(),
                 event_tx.clone(),
                 services.git_client(),
@@ -764,6 +772,7 @@ impl App {
         let git_upstream_ref = self.projects.git_upstream_ref().map(str::to_string);
         let git_status = self.projects.git_status();
         let latest_available_version = self.latest_available_version.as_deref().map(str::to_string);
+        let session_git_statuses = self.sessions.session_git_statuses().clone();
         let update_status = self.update_status().cloned();
         let projects = self.projects.project_items().to_vec();
         let session_progress_messages = self.session_progress_messages.clone();
@@ -785,6 +794,7 @@ impl App {
                 mode,
                 project_table_state,
                 projects: &projects,
+                session_git_statuses: &session_git_statuses,
                 session_progress_messages: &session_progress_messages,
                 settings,
                 stats_activity,
@@ -882,7 +892,6 @@ impl App {
         .await;
         self.sessions
             .set_default_session_model(default_session_model);
-        self.restart_git_status_task();
         self.reload_projects().await;
         self.refresh_sessions_now().await;
 
@@ -1262,6 +1271,7 @@ impl App {
         self.sessions
             .refresh_sessions_now(&mut self.mode, &self.projects, &self.services)
             .await;
+        self.restart_git_status_task();
     }
 
     /// Reloads project list snapshots from persistence.
@@ -1272,17 +1282,38 @@ impl App {
     }
 
     /// Restarts git status polling for the currently active project context.
-    fn restart_git_status_task(&self) {
+    fn restart_git_status_task(&mut self) {
+        let cancel = self.projects.replace_git_status_cancel();
         if !self.projects.has_git_branch() {
             return;
         }
 
         task::TaskService::spawn_git_status_task(
             self.projects.working_dir(),
-            self.projects.git_status_cancel(),
+            self.projects.git_branch().unwrap_or_default().to_string(),
+            Self::session_git_status_targets(&self.sessions),
+            cancel,
             self.services.event_sender(),
             self.services.git_client(),
         );
+    }
+
+    /// Builds git-status polling targets for published session branches in the
+    /// active project.
+    fn session_git_status_targets(sessions: &SessionManager) -> Vec<task::SessionGitStatusTarget> {
+        sessions
+            .state()
+            .sessions
+            .iter()
+            .filter(|session| {
+                session.published_upstream_ref.is_some()
+                    && !matches!(session.status, Status::Canceled | Status::Done)
+            })
+            .map(|session| task::SessionGitStatusTarget {
+                branch_name: session::session_branch(&session.id),
+                session_id: session.id.clone(),
+            })
+            .collect()
     }
 
     /// Applies one or more queued app events through a single reducer path.
@@ -1354,6 +1385,8 @@ impl App {
 
         if event_batch.has_git_status_update {
             self.projects.set_git_status(event_batch.git_status_update);
+            self.sessions
+                .replace_session_git_statuses(event_batch.session_git_status_updates);
         }
 
         if event_batch.has_latest_available_version_update {
@@ -1674,6 +1707,7 @@ impl App {
             }) => {
                 self.sessions
                     .apply_published_upstream_ref(&session_id, upstream_reference);
+                self.restart_git_status_task();
 
                 Self::view_info_popup_mode(
                     Self::branch_publish_success_title(PublishBranchAction::Push),
@@ -2755,9 +2789,13 @@ impl AppEventBatch {
             } => {
                 self.at_mention_entries_updates.insert(session_id, entries);
             }
-            AppEvent::GitStatusUpdated { status } => {
+            AppEvent::GitStatusUpdated {
+                session_statuses,
+                status,
+            } => {
                 self.has_git_status_update = true;
                 self.git_status_update = status;
+                self.session_git_status_updates = session_statuses;
             }
             AppEvent::VersionAvailabilityUpdated {
                 latest_available_version,
@@ -3026,9 +3064,9 @@ mod tests {
             .times(0..)
             .returning(|_| Box::pin(async { Ok(()) }));
         mock_git_client
-            .expect_get_ahead_behind()
+            .expect_branch_tracking_statuses()
             .times(0..)
-            .returning(|_| Box::pin(async { Ok((0, 0)) }));
+            .returning(|_| Box::pin(async { Ok(HashMap::new()) }));
         install_mock_git_client(&mut app, mock_git_client);
 
         // Act
@@ -3951,6 +3989,31 @@ mod tests {
             Some(UpdateStatus::InProgress {
                 version: "v2.0.0".to_string()
             })
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies that one combined git-status event updates the in-memory
+    /// session snapshot cache.
+    async fn apply_app_events_git_status_updated_updates_project_and_session_state() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-git-status")));
+
+        // Act
+        app.apply_app_events(AppEvent::GitStatusUpdated {
+            session_statuses: HashMap::from([("session-1".to_string(), Some((4, 2)))]),
+            status: Some((1, 3)),
+        })
+        .await;
+
+        // Assert
+        assert_eq!(app.git_status_info(), Some((1, 3)));
+        assert_eq!(
+            app.sessions.session_git_statuses().get("session-1"),
+            Some(&Some((4, 2)))
         );
     }
 

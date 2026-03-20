@@ -1,6 +1,7 @@
 //! App-wide background task helpers for status polling, version checks, and
 //! app-server turns.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -20,6 +21,16 @@ use crate::version;
 /// Stateless helpers for app-scoped background pollers and app-server
 /// session execution.
 pub(super) struct TaskService;
+
+/// Per-session git-status polling target for one published session branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SessionGitStatusTarget {
+    /// Local branch name tracked for the session, for example
+    /// `agentty/1234abcd`.
+    pub(super) branch_name: String,
+    /// Stable session identifier used as the reducer map key.
+    pub(super) session_id: String,
+}
 
 /// Inputs needed to generate review assist text in the background.
 pub(super) struct ReviewAssistTaskInput {
@@ -45,10 +56,13 @@ struct ReviewAssistPromptTemplate<'a> {
 impl TaskService {
     /// Spawns a background loop that periodically refreshes ahead/behind info.
     ///
-    /// The task emits [`AppEvent::GitStatusUpdated`] snapshots instead of
+    /// The task emits one combined [`AppEvent::GitStatusUpdated`] payload for
+    /// the active project branch and all published session branches instead of
     /// mutating app state directly.
     pub(super) fn spawn_git_status_task(
         working_dir: &Path,
+        project_branch_name: String,
+        session_git_status_targets: Vec<SessionGitStatusTarget>,
         cancel: Arc<AtomicBool>,
         app_event_tx: mpsc::UnboundedSender<AppEvent>,
         git_client: Arc<dyn GitClient>,
@@ -69,14 +83,28 @@ impl TaskService {
                     let _ = git_client.fetch_remote(root).await;
                 }
 
-                let status = {
+                let branch_tracking_statuses = {
                     let root = repo_root.clone();
-                    git_client.get_ahead_behind(root).await.ok()
+                    git_client
+                        .branch_tracking_statuses(root)
+                        .await
+                        .unwrap_or_default()
                 };
+                let status = branch_tracking_statuses
+                    .get(&project_branch_name)
+                    .copied()
+                    .flatten();
+                let session_git_statuses = Self::session_git_statuses(
+                    &branch_tracking_statuses,
+                    &session_git_status_targets,
+                );
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
-                let _ = app_event_tx.send(AppEvent::GitStatusUpdated { status });
+                let _ = app_event_tx.send(AppEvent::GitStatusUpdated {
+                    session_statuses: session_git_statuses,
+                    status,
+                });
                 for _ in 0..30 {
                     if cancel.load(Ordering::Relaxed) {
                         return;
@@ -85,6 +113,25 @@ impl TaskService {
                 }
             }
         });
+    }
+
+    /// Resolves ahead/behind snapshots for all tracked session branches from
+    /// one repo-level branch-tracking snapshot.
+    fn session_git_statuses(
+        branch_tracking_statuses: &HashMap<String, Option<(u32, u32)>>,
+        session_git_status_targets: &[SessionGitStatusTarget],
+    ) -> HashMap<String, Option<(u32, u32)>> {
+        let mut session_git_statuses = HashMap::with_capacity(session_git_status_targets.len());
+
+        for session_git_status_target in session_git_status_targets {
+            let status = branch_tracking_statuses
+                .get(&session_git_status_target.branch_name)
+                .copied()
+                .flatten();
+            session_git_statuses.insert(session_git_status_target.session_id.clone(), status);
+        }
+
+        session_git_statuses
     }
 
     /// Spawns a one-shot background check for newer `agentty` versions on
@@ -421,6 +468,58 @@ mod tests {
         // Assert
         let error = result.expect_err("submit failure should be returned");
         assert_eq!(error, "submit failed");
+    }
+
+    #[test]
+    /// Verifies session git-status selection maps branch snapshots back to
+    /// session ids.
+    fn session_git_statuses_collects_all_target_statuses() {
+        // Arrange
+        let branch_tracking_statuses = HashMap::from([
+            ("agentty/session-a".to_string(), Some((2, 1))),
+            ("agentty/session-b".to_string(), Some((0, 0))),
+        ]);
+        let session_git_status_targets = vec![
+            SessionGitStatusTarget {
+                branch_name: "agentty/session-a".to_string(),
+                session_id: "session-a".to_string(),
+            },
+            SessionGitStatusTarget {
+                branch_name: "agentty/session-b".to_string(),
+                session_id: "session-b".to_string(),
+            },
+        ];
+
+        // Act
+        let statuses = TaskService::session_git_statuses(
+            &branch_tracking_statuses,
+            &session_git_status_targets,
+        );
+
+        // Assert
+        assert_eq!(statuses.get("session-a"), Some(&Some((2, 1))));
+        assert_eq!(statuses.get("session-b"), Some(&Some((0, 0))));
+    }
+
+    #[test]
+    /// Verifies session branches without tracked status degrade to `None`
+    /// without affecting the rest of the snapshot.
+    fn session_git_statuses_keeps_failed_targets_as_none() {
+        // Arrange
+        let branch_tracking_statuses = HashMap::new();
+        let session_git_status_targets = vec![SessionGitStatusTarget {
+            branch_name: "agentty/session-a".to_string(),
+            session_id: "session-a".to_string(),
+        }];
+
+        // Act
+        let statuses = TaskService::session_git_statuses(
+            &branch_tracking_statuses,
+            &session_git_status_targets,
+        );
+
+        // Assert
+        assert_eq!(statuses.get("session-a"), Some(&None));
     }
 
     #[test]
