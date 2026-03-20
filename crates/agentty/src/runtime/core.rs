@@ -38,8 +38,8 @@ pub(crate) enum EventResult {
 /// # Errors
 /// Returns an error if terminal setup, rendering, or event processing fails.
 pub async fn run(app: &mut App) -> io::Result<()> {
-    let _terminal_guard = terminal::TerminalGuard;
-    let mut terminal = terminal::setup_terminal()?;
+    let _terminal_guard = terminal::TerminalGuard::new();
+    let mut terminal = terminal::setup_terminal(&_terminal_guard)?;
 
     // Spawn a dedicated thread for crossterm event reading so the main async
     // loop can yield to tokio between iterations.

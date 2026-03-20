@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crossterm::event::{Event, KeyEvent};
+use crossterm::event::{Event, KeyEvent, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use tokio::sync::mpsc;
@@ -194,9 +194,10 @@ where
 {
     if let Some(event) = event {
         match event {
-            Event::Key(key) => {
+            Event::Key(key) if is_press_key_event(key) => {
                 return handle_key_event(app, terminal, key).await;
             }
+            Event::Key(_) => {}
             Event::Paste(pasted_text) => {
                 process_paste_event(app, &pasted_text);
             }
@@ -205,6 +206,15 @@ where
     }
 
     Ok(EventResult::Continue)
+}
+
+/// Returns whether the runtime should treat the key event as actionable input.
+///
+/// Keyboard enhancement protocols can emit release and repeat events. The TUI
+/// only reacts to the initial press so higher-level mode handlers retain their
+/// existing semantics.
+fn is_press_key_event(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
 }
 
 /// Applies one pasted-text event to the active prompt or question input.
@@ -222,7 +232,7 @@ fn process_paste_event(app: &mut App, pasted_text: &str) {
 mod tests {
     use std::io::ErrorKind;
 
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use mockall::Sequence;
     use mockall::predicate::eq;
     use tempfile::tempdir;
@@ -496,6 +506,31 @@ mod tests {
         // Assert
         assert!(matches!(result, Ok(EventResult::Continue)));
         assert!(matches!(&app.mode, AppMode::List));
+    }
+
+    /// Verifies key release events are ignored even when keyboard enhancement
+    /// flags make them visible to the runtime.
+    #[tokio::test]
+    async fn test_process_event_with_key_handler_ignores_key_release_events() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let mut terminal = ();
+
+        // Act
+        let result = process_event_with_key_handler(
+            &mut app,
+            &mut terminal,
+            Some(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::ALT,
+                KeyEventKind::Release,
+            ))),
+            |_, (), _| Box::pin(async { Err(io::Error::other("unexpected key-handler call")) }),
+        )
+        .await;
+
+        // Assert
+        assert!(matches!(result, Ok(EventResult::Continue)));
     }
 
     /// Verifies handler errors terminate the outer event-processing cycle.
