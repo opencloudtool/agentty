@@ -28,8 +28,12 @@ pub(crate) fn normalize_turn_response(
 
 /// Parses one raw assistant message strictly as protocol payload.
 ///
-/// The full assistant payload must be one JSON object that matches
-/// [`AgentResponse`]. Top-level fields may rely on the wire type's defaults.
+/// The final assistant payload must match [`AgentResponse`].
+///
+/// When a provider prepends stray prose before the final schema object, this
+/// still recovers the trailing protocol payload as long as nothing except
+/// whitespace follows the JSON object. Top-level fields may rely on the wire
+/// type's defaults.
 ///
 /// # Errors
 /// Returns [`AgentResponseParseError`] when no valid protocol payload is found.
@@ -41,7 +45,11 @@ pub(crate) fn parse_agent_response_strict(
         return Err(AgentResponseParseError::Empty);
     }
 
-    parse_structured_json_response(trimmed).map_err(|_| AgentResponseParseError::InvalidFormat)
+    let Some(response) = parse_structured_json_response_with_recovery(trimmed) else {
+        return Err(AgentResponseParseError::InvalidFormat);
+    };
+
+    Ok(response)
 }
 
 /// Normalizes one streamed assistant chunk for transcript display.
@@ -56,7 +64,7 @@ pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
         return None;
     }
 
-    if let Ok(response) = parse_structured_json_response(raw) {
+    if let Some(response) = parse_structured_json_response_with_recovery(raw) {
         let display_text = response.to_answer_display_text();
         if display_text.trim().is_empty() {
             return None;
@@ -78,6 +86,38 @@ pub(crate) fn normalize_stream_assistant_chunk(raw: &str) -> Option<String> {
 /// shape.
 fn parse_structured_json_response(raw: &str) -> Result<AgentResponse, serde_json::Error> {
     serde_json::from_str(raw.trim())
+}
+
+/// Parses one full protocol payload and then falls back to recovering a
+/// trailing schema object from wrapped provider output.
+fn parse_structured_json_response_with_recovery(raw: &str) -> Option<AgentResponse> {
+    parse_structured_json_response(raw)
+        .ok()
+        .or_else(|| recover_embedded_structured_json_response(raw))
+}
+
+/// Recovers one trailing protocol payload from provider output that starts
+/// with extra prose before the final JSON object.
+///
+/// This intentionally keeps trailing text strict: once a candidate JSON object
+/// parses successfully, only whitespace may remain after it.
+fn recover_embedded_structured_json_response(raw: &str) -> Option<AgentResponse> {
+    for (start_index, _) in raw.match_indices('{').rev() {
+        let candidate = &raw[start_index..];
+        let mut deserializer =
+            serde_json::Deserializer::from_str(candidate).into_iter::<AgentResponse>();
+        let Some(Ok(response)) = deserializer.next() else {
+            continue;
+        };
+        let trailing_text = &candidate[deserializer.byte_offset()..];
+        if !trailing_text.trim().is_empty() {
+            continue;
+        }
+
+        return Some(response);
+    }
+
+    None
 }
 
 /// Returns whether one stream chunk looks like partial protocol JSON payload.
@@ -155,9 +195,9 @@ mod tests {
     }
 
     #[test]
-    /// Strict parsing rejects wrapped text even when it contains a valid JSON
-    /// payload later in the response.
-    fn test_parse_agent_response_strict_rejects_wrapped_text() {
+    /// Strict parsing recovers a trailing protocol payload when a provider
+    /// prepends extra prose before the final JSON object.
+    fn test_parse_agent_response_strict_recovers_wrapped_text() {
         // Arrange
         let raw = concat!(
             "Some wrapper text\n",
@@ -168,7 +208,10 @@ mod tests {
         let response = parse_agent_response_strict(raw);
 
         // Assert
-        assert_eq!(response, Err(AgentResponseParseError::InvalidFormat));
+        assert_eq!(
+            response.expect("response should parse"),
+            AgentResponse::plain("Recovered payload")
+        );
     }
 
     #[test]
@@ -190,6 +233,23 @@ mod tests {
     fn test_normalize_stream_assistant_chunk_structured_payload() {
         // Arrange
         let raw = r#"{"answer":"Done.","questions":[{"text":"Need clarification.","options":[]}],"summary":null}"#;
+
+        // Act
+        let normalized = normalize_stream_assistant_chunk(raw);
+
+        // Assert
+        assert_eq!(normalized, Some("Done.".to_string()));
+    }
+
+    #[test]
+    /// Keeps only the answer field when wrapped prose precedes a full
+    /// structured payload in one stream chunk.
+    fn test_normalize_stream_assistant_chunk_recovers_wrapped_structured_payload() {
+        // Arrange
+        let raw = concat!(
+            "Let me format that cleanly.\n",
+            r#"{"answer":"Done.","questions":[],"summary":null}"#
+        );
 
         // Act
         let normalized = normalize_stream_assistant_chunk(raw);
@@ -322,6 +382,24 @@ mod tests {
             "```json\n",
             r#"{"answer":"Need details.","questions":[],"summary":null}"#,
             "\n```"
+        );
+
+        // Act
+        let response = parse_agent_response_strict(raw);
+
+        // Assert
+        assert_eq!(response, Err(AgentResponseParseError::InvalidFormat));
+    }
+
+    #[test]
+    /// Strict parsing still rejects trailing wrapper text after a recovered
+    /// schema object.
+    fn test_parse_agent_response_strict_rejects_trailing_wrapper_after_payload() {
+        // Arrange
+        let raw = concat!(
+            "Some wrapper text\n",
+            r#"{"answer":"Recovered payload","questions":[],"summary":null}"#,
+            "\ntrailing wrapper text"
         );
 
         // Act

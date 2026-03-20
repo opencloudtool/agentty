@@ -184,7 +184,7 @@ Provider output is normalized to one structured response protocol:
 1. The caller selects one canonical `AgentRequestKind` before transport handoff, and the transport derives the matching `ProtocolRequestProfile` from it. Session turns use `SessionStart` or `SessionResume`, while isolated utility prompts use `UtilityPrompt`.
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts may leave `summary` unused.
 1. Channels stream deltas/progress as `TurnEvent`.
-1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary. The final assistant payload itself must match the shared protocol JSON object, while direct deserialization into the shared wire type still accepts summary-only or otherwise defaulted top-level fields.
+1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary. The final assistant payload itself must match the shared protocol JSON object, while direct deserialization into the shared wire type still accepts summary-only or otherwise defaulted top-level fields. If a provider prepends prose before one final schema object, parsing now recovers that trailing payload as long as nothing except whitespace follows it.
 1. Worker persists final display text, raw summary payload, and question payloads, then emits `AgentResponseReceived`.
 
 <a id="architecture-agent-interaction-streaming"></a>
@@ -207,6 +207,9 @@ Streaming behavior differs by transport/provider:
 - Codex thought phases (`thinking`/`plan`/`reasoning`/`thought`) stream as `ThoughtDelta`.
 - Provider capabilities in `crates/agentty/src/infra/agent/provider.rs` centralize whether transports stream assistant chunks live, require strict final protocol validation, classify app-server phase labels as thought output, and construct provider app-server clients.
 - Strict providers suppress streamed assistant chunks when needed so malformed first-pass protocol JSON is not persisted.
+- Wrapped stream chunks that end in one valid protocol payload are normalized
+  down to that payload's `answer`, so recovered schema output does not persist
+  any prefatory prose.
 - Gemini ACP still accumulates streamed assistant chunks internally for its
   final turn result, but the runtime now prefers the completed
   `session/prompt` payload whenever that payload parses as protocol JSON and
@@ -220,8 +223,9 @@ Final-output validation:
   immediately when invalid.
 - One-shot agent submissions still surface schema errors directly to the
   caller whenever the shared parser rejects the final output, including plain
-  text, wrapped JSON, blank utility responses, and non-utility prompts that
-  miss the schema.
+  text, blank utility responses, non-utility prompts that miss the schema, or
+  any output that leaves trailing non-whitespace text after the recovered
+  protocol payload.
 - App-server restart retries and context-reset transcript replays still preserve the original protocol profile for normal prompt rendering through the shared `infra/app_server/` prompt and retry modules.
 
 ## Clarification Question Loop

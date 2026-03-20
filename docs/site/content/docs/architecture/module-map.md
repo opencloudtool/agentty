@@ -85,7 +85,7 @@ choose the correct module when implementing changes.
 | - `codex.rs` | Codex backend runtime command construction. |
 | - `gemini.rs` | Gemini backend runtime command construction. |
 | - `prompt.rs` | Shared prompt preparation (`prepare_prompt_text`) for transcript replay and protocol preamble injection. |
-| - `protocol.rs` + `infra/agent/protocol/` | Router plus focused protocol submodules: `model.rs` for the wire contract, `schema.rs` for prompt/transport schema generation, and `parse.rs` for final/stream parsing helpers. |
+| - `protocol.rs` + `infra/agent/protocol/` | Router plus focused protocol submodules: `model.rs` for the wire contract, `schema.rs` for prompt/transport schema generation, and `parse.rs` for final/stream parsing helpers, including recovery of one trailing schema object from wrapped provider output. |
 | - `response_parser.rs` | Provider-specific final/stream output parsing and usage extraction for Claude, Gemini, and Codex. |
 | - `submission.rs` | Shared one-shot prompt execution and strict protocol validation for generated titles, session commit messages, assist prompts, and review text, asking each concrete backend to provide either an app-server client or direct CLI execution path. |
 | `crates/agentty/src/infra/app_server.rs` + `infra/app_server/` | Router plus shared app-server contract, prompt shaping, runtime registry, and restart/retry modules. |

@@ -154,9 +154,11 @@ Agentty validates final agent output against the structured response protocol.
   relies on the shared protocol wire type instead of extra top-level field
   checks.
 - One-shot utility prompts use the same strict final validation across both
-  CLI and app-server transports. Plain text, wrapped JSON, blank responses,
-  and other non-schema output are rejected instead of being coerced into
-  `answer`.
+  CLI and app-server transports. Plain text, blank responses, trailing junk
+  after a schema object, and other non-schema output are rejected instead of
+  being coerced into `answer`. Provider prose that appears before one final
+  protocol JSON object is now tolerated so Claude-style wrapped completions
+  still recover the authoritative payload.
 - Provider-specific transport, stdin-vs-argv prompt delivery, strict final
   parsing, and app-server thought-phase handling are centralized in the
   shared provider descriptor in `crates/agentty/src/infra/agent/backend.rs`.
@@ -192,6 +194,9 @@ Agentty validates final agent output against the structured response protocol.
   JSON object.
 - Partial protocol JSON fragments are suppressed during streaming so raw JSON
   wrappers do not leak into live transcript output.
+- Wrapped stream chunks that end in one valid protocol JSON object are reduced
+  to that payload's `answer`, so prefatory provider prose is not persisted
+  when recovery succeeds.
 - Gemini ACP final turn assembly now prefers the completed `session/prompt`
   payload when it contains valid protocol JSON and the earlier streamed chunk
   accumulation does not, so strict validation sees the authoritative

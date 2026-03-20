@@ -435,6 +435,39 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies strict turn parsing recovers one trailing protocol payload
+    /// when Claude prepends extra prose before the final JSON object.
+    async fn test_run_turn_recovers_wrapped_structured_output_for_claude() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut mock_backend = MockAgentBackend::new();
+        mock_backend.expect_build_command().returning(|_| {
+            let mut command = std::process::Command::new("sh");
+            command.arg("-c").arg(concat!(
+                "printf '%s\\n' 'Now I have the full context.';",
+                "printf '%s' '{\"answer\":\"ok\",\"questions\":[],\"summary\":null}'",
+            ));
+
+            Ok(command)
+        });
+        let channel = CliAgentChannel {
+            backend: Arc::new(mock_backend),
+            kind: AgentKind::Claude,
+        };
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let req = make_turn_request(dir.path().to_path_buf());
+
+        // Act
+        let result = channel
+            .run_turn("sess-1".to_string(), req, events_tx)
+            .await
+            .expect("turn should succeed");
+
+        // Assert
+        assert_eq!(result.assistant_message.to_answer_display_text(), "ok");
+    }
+
+    #[tokio::test]
     /// Verifies session-turn Claude responses synthesize an empty summary when
     /// the provider returns `summary: null`.
     async fn test_run_turn_fills_missing_summary_for_session_turn() {

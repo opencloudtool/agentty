@@ -493,6 +493,55 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies one-shot execution recovers a trailing protocol payload when
+    /// the provider prepends extra prose before the final JSON object.
+    async fn test_submit_one_shot_with_backend_recovers_wrapped_protocol_output() {
+        // Arrange
+        let temp_directory = tempdir().expect("failed to create temp dir");
+        let mut backend = MockAgentBackend::new();
+        backend
+            .expect_build_command()
+            .times(1)
+            .returning(|request| {
+                assert!(matches!(
+                    request.request_kind,
+                    AgentRequestKind::UtilityPrompt
+                ));
+                assert_eq!(request.prompt, "Generate title");
+
+                Ok(mock_shell_command(
+                    concat!(
+                        "Now I have full context.\n",
+                        r#"{"answer":"Generated title","questions":[],"summary":null}"#
+                    ),
+                    "",
+                    0,
+                ))
+            });
+
+        // Act
+        let response = submit_one_shot_with_backend(
+            &backend,
+            OneShotRequest {
+                child_pid: None,
+                folder: temp_directory.path(),
+                model: AgentModel::ClaudeSonnet46,
+                prompt: "Generate title",
+                request_kind: AgentRequestKind::UtilityPrompt,
+                reasoning_level: ReasoningLevel::default(),
+            },
+        )
+        .await
+        .expect("wrapped protocol output should succeed");
+
+        // Assert
+        assert_eq!(
+            response.response.answers(),
+            vec!["Generated title".to_string()]
+        );
+    }
+
+    #[tokio::test]
     /// Verifies one-shot execution still rejects blank utility responses.
     async fn test_submit_one_shot_with_backend_rejects_blank_utility_output() {
         // Arrange
