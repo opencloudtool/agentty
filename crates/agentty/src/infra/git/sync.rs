@@ -4,10 +4,15 @@ use std::process::Output;
 
 use tokio::task::spawn_blocking;
 
+use super::error::GitError;
 use super::rebase::{is_rebase_conflict, run_git_command_with_index_lock_retry};
 use super::repo::{
     command_output_detail, run_git_command, run_git_command_output_sync, run_git_command_sync,
 };
+
+/// Map of local branch names to their ahead/behind counts relative to their
+/// tracked upstream branch. `None` indicates no upstream or a gone upstream.
+pub type BranchTrackingMap = HashMap<String, Option<(u32, u32)>>;
 
 const COMMIT_ALL_HOOK_RETRY_ATTEMPTS: usize = 5;
 
@@ -39,15 +44,15 @@ pub enum PullRebaseResult {
 ///   (`--no-verify`)
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure
+/// Ok(()) on success.
 ///
 /// # Errors
-/// Returns an error if staging or committing changes fails.
+/// Returns a [`GitError`] if staging or committing changes fails.
 pub async fn commit_all(
     repo_path: PathBuf,
     commit_message: String,
     no_verify: bool,
-) -> Result<(), String> {
+) -> Result<(), GitError> {
     commit_all_with_retry(
         repo_path,
         commit_message,
@@ -74,17 +79,18 @@ pub async fn commit_all(
 ///   (`--no-verify`)
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure
+/// Ok(()) on success.
 ///
 /// # Errors
-/// Returns an error if staging, commit lookup, or committing changes fails.
+/// Returns a [`GitError`] if staging, commit lookup, or committing changes
+/// fails.
 pub async fn commit_all_preserving_single_commit(
     repo_path: PathBuf,
     base_branch: String,
     commit_message: String,
     message_strategy: SingleCommitMessageStrategy,
     no_verify: bool,
-) -> Result<(), String> {
+) -> Result<(), GitError> {
     let amend_existing_commit = has_commits_since(repo_path.clone(), base_branch).await?;
 
     commit_all_with_retry(
@@ -103,14 +109,12 @@ pub async fn commit_all_preserving_single_commit(
 /// * `repo_path` - Path to the git repository or worktree
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) on failure.
+/// Ok(()) on success.
 ///
 /// # Errors
-/// Returns an error if `git add -A` fails.
-pub async fn stage_all(repo_path: PathBuf) -> Result<(), String> {
-    spawn_blocking(move || stage_all_sync(&repo_path))
-        .await
-        .map_err(|error| format!("Join error: {error}"))?
+/// Returns a [`GitError`] if `git add -A` fails.
+pub async fn stage_all(repo_path: PathBuf) -> Result<(), GitError> {
+    spawn_blocking(move || stage_all_sync(&repo_path)).await?
 }
 
 /// Returns the short hash of the current `HEAD` commit.
@@ -122,8 +126,8 @@ pub async fn stage_all(repo_path: PathBuf) -> Result<(), String> {
 /// The short commit hash as a string.
 ///
 /// # Errors
-/// Returns an error if resolving `HEAD` fails.
-pub async fn head_short_hash(repo_path: PathBuf) -> Result<String, String> {
+/// Returns a [`GitError`] if resolving `HEAD` fails.
+pub async fn head_short_hash(repo_path: PathBuf) -> Result<String, GitError> {
     let hash = run_git_command(
         repo_path,
         vec![
@@ -133,10 +137,13 @@ pub async fn head_short_hash(repo_path: PathBuf) -> Result<String, String> {
         ],
         "Failed to resolve HEAD hash".to_string(),
     )
-    .await?;
+    .await
+    .map_err(GitError::OutputParse)?;
     let hash = hash.trim().to_string();
     if hash.is_empty() {
-        return Err("Failed to resolve HEAD hash: empty output".to_string());
+        return Err(GitError::OutputParse(
+            "Failed to resolve HEAD hash: empty output".to_string(),
+        ));
     }
 
     Ok(hash)
@@ -145,11 +152,9 @@ pub async fn head_short_hash(repo_path: PathBuf) -> Result<String, String> {
 /// Returns the full `HEAD` commit message, or `None` when no commits exist.
 ///
 /// # Errors
-/// Returns an error if `HEAD` cannot be inspected.
-pub async fn head_commit_message(repo_path: PathBuf) -> Result<Option<String>, String> {
-    spawn_blocking(move || head_commit_message_sync(&repo_path))
-        .await
-        .map_err(|error| format!("Join error: {error}"))?
+/// Returns a [`GitError`] if `HEAD` cannot be inspected.
+pub async fn head_commit_message(repo_path: PathBuf) -> Result<Option<String>, GitError> {
+    spawn_blocking(move || head_commit_message_sync(&repo_path)).await?
 }
 
 /// Deletes a git branch.
@@ -161,17 +166,18 @@ pub async fn head_commit_message(repo_path: PathBuf) -> Result<Option<String>, S
 /// * `branch_name` - Name of the branch to delete
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure
+/// Ok(()) on success.
 ///
 /// # Errors
-/// Returns an error if the branch delete command fails.
-pub async fn delete_branch(repo_path: PathBuf, branch_name: String) -> Result<(), String> {
+/// Returns a [`GitError`] if the branch delete command fails.
+pub async fn delete_branch(repo_path: PathBuf, branch_name: String) -> Result<(), GitError> {
     run_git_command(
         repo_path,
         vec!["branch".to_string(), "-D".to_string(), branch_name],
         "Git branch deletion failed".to_string(),
     )
-    .await?;
+    .await
+    .map_err(GitError::OutputParse)?;
 
     Ok(())
 }
@@ -191,21 +197,23 @@ pub async fn delete_branch(repo_path: PathBuf, branch_name: String) -> Result<()
 /// * `base_branch` - Branch to diff against (e.g., `main`)
 ///
 /// # Returns
-/// The diff output as a string, or an error message on failure
+/// The diff output as a string.
 ///
 /// # Errors
-/// Returns an error if preparing the index, generating the diff, or restoring
-/// index state fails.
-pub async fn diff(repo_path: PathBuf, base_branch: String) -> Result<String, String> {
-    spawn_blocking(move || {
+/// Returns a [`GitError`] if preparing the index, generating the diff, or
+/// restoring index state fails.
+pub async fn diff(repo_path: PathBuf, base_branch: String) -> Result<String, GitError> {
+    spawn_blocking(move || -> Result<String, GitError> {
         run_git_command_sync(
             &repo_path,
             &["add", "-A", "--intent-to-add"],
             "Git add --intent-to-add failed",
-        )?;
+        )
+        .map_err(GitError::OutputParse)?;
 
         let merge_base_output =
-            run_git_command_output_sync(&repo_path, &["merge-base", "HEAD", &base_branch])?;
+            run_git_command_output_sync(&repo_path, &["merge-base", "HEAD", &base_branch])
+                .map_err(GitError::OutputParse)?;
 
         let diff_target = if merge_base_output.status.success() {
             resolve_diff_target(
@@ -221,15 +229,20 @@ pub async fn diff(repo_path: PathBuf, base_branch: String) -> Result<String, Str
             &repo_path,
             &["diff", diff_target.as_str()],
             "Git diff failed",
-        );
-        let reset_result = run_git_command_sync(&repo_path, &["reset"], "Git reset failed");
+        )
+        .map_err(GitError::OutputParse);
+        let reset_result = run_git_command_sync(&repo_path, &["reset"], "Git reset failed")
+            .map_err(GitError::OutputParse);
 
         if let Err(diff_error) = diff_output {
             return match reset_result {
                 Ok(_) => Err(diff_error),
-                Err(reset_error) => Err(format!(
-                    "{diff_error} Additionally failed to restore index state: {reset_error}"
-                )),
+                Err(reset_error) => Err(GitError::CommandFailed {
+                    command: "git diff".to_string(),
+                    stderr: format!(
+                        "{diff_error} Additionally failed to restore index state: {reset_error}"
+                    ),
+                }),
             };
         }
 
@@ -237,8 +250,7 @@ pub async fn diff(repo_path: PathBuf, base_branch: String) -> Result<String, Str
 
         diff_output
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Returns whether a repository or worktree has no uncommitted changes.
@@ -250,14 +262,15 @@ pub async fn diff(repo_path: PathBuf, base_branch: String) -> Result<String, Str
 /// `true` when `git status --porcelain` is empty, `false` otherwise.
 ///
 /// # Errors
-/// Returns an error if `git status --porcelain` cannot be executed.
-pub async fn is_worktree_clean(repo_path: PathBuf) -> Result<bool, String> {
+/// Returns a [`GitError`] if `git status --porcelain` cannot be executed.
+pub async fn is_worktree_clean(repo_path: PathBuf) -> Result<bool, GitError> {
     let status_output = run_git_command(
         repo_path,
         vec!["status".to_string(), "--porcelain".to_string()],
         "Git status --porcelain failed".to_string(),
     )
-    .await?;
+    .await
+    .map_err(GitError::OutputParse)?;
 
     Ok(status_output.trim().is_empty())
 }
@@ -276,8 +289,8 @@ pub async fn is_worktree_clean(repo_path: PathBuf) -> Result<bool, String> {
 /// on conflicts.
 ///
 /// # Errors
-/// Returns an error for non-conflict pull/rebase failures.
-pub async fn pull_rebase(repo_path: PathBuf) -> Result<PullRebaseResult, String> {
+/// Returns a [`GitError`] for non-conflict pull/rebase failures.
+pub async fn pull_rebase(repo_path: PathBuf) -> Result<PullRebaseResult, GitError> {
     spawn_blocking(move || {
         let pull_arguments = pull_rebase_arguments(&repo_path)
             .unwrap_or_else(|_| vec!["pull".to_string(), "--rebase".to_string()]);
@@ -297,17 +310,19 @@ pub async fn pull_rebase(repo_path: PathBuf) -> Result<PullRebaseResult, String>
             return Ok(PullRebaseResult::Conflict { detail });
         }
 
-        Err(format!("Failed to pull with rebase: {detail}."))
+        Err(GitError::CommandFailed {
+            command: "git pull --rebase".to_string(),
+            stderr: detail,
+        })
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Builds pull arguments that target a single upstream branch when available.
 ///
 /// Resolves an explicit `<remote> <branch>` pull target for both remote and
 /// local upstreams so git does not need to infer one from branch config.
-fn pull_rebase_arguments(repo_path: &Path) -> Result<Vec<String>, String> {
+fn pull_rebase_arguments(repo_path: &Path) -> Result<Vec<String>, GitError> {
     let upstream_reference = primary_upstream_reference(repo_path)?;
 
     if let Some((remote_name, branch_name)) = upstream_reference.split_once('/') {
@@ -334,29 +349,34 @@ fn pull_rebase_arguments(repo_path: &Path) -> Result<Vec<String>, String> {
 /// Git can return multiple lines when multiple merge targets are configured.
 /// Pulling with rebase needs one concrete target, so this selects the first
 /// non-empty line.
-fn primary_upstream_reference(repo_path: &Path) -> Result<String, String> {
+fn primary_upstream_reference(repo_path: &Path) -> Result<String, GitError> {
     let upstream_reference = upstream_reference_name(repo_path)?;
     let Some(primary_reference) = upstream_reference
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
     else {
-        return Err("Failed to resolve upstream branch: empty output".to_string());
+        return Err(GitError::OutputParse(
+            "Failed to resolve upstream branch: empty output".to_string(),
+        ));
     };
 
     Ok(primary_reference.to_string())
 }
 
 /// Returns the full upstream reference for `HEAD` (for example, `origin/main`).
-fn upstream_reference_name(repo_path: &Path) -> Result<String, String> {
+fn upstream_reference_name(repo_path: &Path) -> Result<String, GitError> {
     let upstream_reference = run_git_command_sync(
         repo_path,
         &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
         "Failed to resolve upstream branch",
-    )?;
+    )
+    .map_err(GitError::OutputParse)?;
     let upstream_reference = upstream_reference.trim().to_string();
     if upstream_reference.is_empty() {
-        return Err("Failed to resolve upstream branch: empty output".to_string());
+        return Err(GitError::OutputParse(
+            "Failed to resolve upstream branch: empty output".to_string(),
+        ));
     }
 
     Ok(upstream_reference)
@@ -366,38 +386,44 @@ fn upstream_reference_name(repo_path: &Path) -> Result<String, String> {
 ///
 /// This is used when the upstream short name omits a remote prefix (for
 /// example, `main` with `branch.<name>.remote=.`).
-fn current_branch_remote_name(repo_path: &Path) -> Result<String, String> {
+fn current_branch_remote_name(repo_path: &Path) -> Result<String, GitError> {
     let current_branch_name = current_branch_name(repo_path)?;
     let remote_config_key = format!("branch.{current_branch_name}.remote");
     let remote_name = run_git_command_sync(
         repo_path,
         &["config", "--get", &remote_config_key],
         &format!("Failed to resolve current branch remote `{remote_config_key}`"),
-    )?;
+    )
+    .map_err(GitError::OutputParse)?;
     let remote_name = remote_name.trim().to_string();
     if remote_name.is_empty() {
-        return Err(format!(
+        return Err(GitError::OutputParse(format!(
             "Failed to resolve current branch remote `{remote_config_key}`: empty output"
-        ));
+        )));
     }
 
     Ok(remote_name)
 }
 
 /// Returns the current local branch name for `HEAD`.
-fn current_branch_name(repo_path: &Path) -> Result<String, String> {
+fn current_branch_name(repo_path: &Path) -> Result<String, GitError> {
     let branch_name = run_git_command_sync(
         repo_path,
         &["rev-parse", "--abbrev-ref", "HEAD"],
         "Failed to resolve current branch name",
-    )?;
+    )
+    .map_err(GitError::OutputParse)?;
     let branch_name = branch_name.trim().to_string();
     if branch_name.is_empty() {
-        return Err("Failed to resolve current branch name: empty output".to_string());
+        return Err(GitError::OutputParse(
+            "Failed to resolve current branch name: empty output".to_string(),
+        ));
     }
 
     if branch_name == "HEAD" {
-        return Err("Failed to resolve current branch name: detached HEAD".to_string());
+        return Err(GitError::OutputParse(
+            "Failed to resolve current branch name: detached HEAD".to_string(),
+        ));
     }
 
     Ok(branch_name)
@@ -414,15 +440,15 @@ fn current_branch_name(repo_path: &Path) -> Result<String, String> {
 /// * `repo_path` - Path to the git repository or worktree
 ///
 /// # Returns
-/// The upstream reference on success, Err(msg) with detailed error message on
-/// failure.
+/// The upstream reference on success.
 ///
 /// # Errors
-/// Returns an error if `git push` fails or upstream tracking cannot be
+/// Returns a [`GitError`] if `git push` fails or upstream tracking cannot be
 /// resolved afterwards.
-pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, String> {
-    spawn_blocking(move || {
-        let push_output = run_git_command_output_sync(&repo_path, &["push", "--force-with-lease"])?;
+pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, GitError> {
+    spawn_blocking(move || -> Result<String, GitError> {
+        let push_output = run_git_command_output_sync(&repo_path, &["push", "--force-with-lease"])
+            .map_err(GitError::OutputParse)?;
 
         if push_output.status.success() {
             return primary_upstream_reference(&repo_path);
@@ -430,7 +456,10 @@ pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, String> {
 
         let push_detail = command_output_detail(&push_output.stdout, &push_output.stderr);
         if !is_no_upstream_error(&push_detail) {
-            return Err(format!("Git push failed: {push_detail}"));
+            return Err(GitError::CommandFailed {
+                command: "git push".to_string(),
+                stderr: push_detail,
+            });
         }
 
         run_git_command_sync(
@@ -443,12 +472,12 @@ pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, String> {
                 "HEAD",
             ],
             "Git push failed",
-        )?;
+        )
+        .map_err(GitError::OutputParse)?;
 
         primary_upstream_reference(&repo_path)
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Pushes the current branch to one explicit remote branch name with
@@ -466,12 +495,12 @@ pub async fn push_current_branch(repo_path: PathBuf) -> Result<String, String> {
 /// The upstream reference on success, for example `origin/feature/review`.
 ///
 /// # Errors
-/// Returns an error if `git push` fails.
+/// Returns a [`GitError`] if `git push` fails.
 pub async fn push_current_branch_to_remote_branch(
     repo_path: PathBuf,
     remote_branch_name: String,
-) -> Result<String, String> {
-    spawn_blocking(move || {
+) -> Result<String, GitError> {
+    spawn_blocking(move || -> Result<String, GitError> {
         let remote_name =
             current_branch_remote_name(&repo_path).unwrap_or_else(|_| "origin".to_string());
         let push_refspec = format!("HEAD:{remote_branch_name}");
@@ -486,12 +515,12 @@ pub async fn push_current_branch_to_remote_branch(
                 &push_refspec,
             ],
             "Git push failed",
-        )?;
+        )
+        .map_err(GitError::OutputParse)?;
 
         Ok(format!("{remote_name}/{remote_branch_name}"))
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Returns the current upstream reference for `HEAD`.
@@ -503,11 +532,10 @@ pub async fn push_current_branch_to_remote_branch(
 /// The configured upstream reference, for example `origin/main`.
 ///
 /// # Errors
-/// Returns an error when upstream tracking information cannot be resolved.
-pub async fn current_upstream_reference(repo_path: PathBuf) -> Result<String, String> {
-    spawn_blocking(move || primary_upstream_reference(&repo_path))
-        .await
-        .map_err(|error| format!("Join error: {error}"))?
+/// Returns a [`GitError`] when upstream tracking information cannot be
+/// resolved.
+pub async fn current_upstream_reference(repo_path: PathBuf) -> Result<String, GitError> {
+    spawn_blocking(move || primary_upstream_reference(&repo_path)).await?
 }
 
 /// Fetches from the configured remote.
@@ -516,17 +544,18 @@ pub async fn current_upstream_reference(repo_path: PathBuf) -> Result<String, St
 /// * `repo_path` - Path to the git repository root
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure
+/// Ok(()) on success.
 ///
 /// # Errors
-/// Returns an error if `git fetch` cannot be executed successfully.
-pub async fn fetch_remote(repo_path: PathBuf) -> Result<(), String> {
+/// Returns a [`GitError`] if `git fetch` cannot be executed successfully.
+pub async fn fetch_remote(repo_path: PathBuf) -> Result<(), GitError> {
     run_git_command(
         repo_path,
         vec!["fetch".to_string()],
         "Git fetch failed".to_string(),
     )
-    .await?;
+    .await
+    .map_err(GitError::OutputParse)?;
 
     Ok(())
 }
@@ -537,11 +566,12 @@ pub async fn fetch_remote(repo_path: PathBuf) -> Result<(), String> {
 /// * `repo_path` - Path to the git repository root
 ///
 /// # Returns
-/// Ok((ahead, behind)) on success, Err(msg) on failure (e.g., no upstream)
+/// Ok((ahead, behind)) on success.
 ///
 /// # Errors
-/// Returns an error if `git rev-list` fails or returns unexpected output.
-pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), String> {
+/// Returns a [`GitError`] if `git rev-list` fails or returns unexpected
+/// output.
+pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), GitError> {
     let rev_list_output = run_git_command(
         repo_path,
         vec![
@@ -552,7 +582,8 @@ pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), String> 
         ],
         "Git rev-list failed".to_string(),
     )
-    .await?;
+    .await
+    .map_err(GitError::OutputParse)?;
     let parts: Vec<&str> = rev_list_output.split_whitespace().collect();
     if parts.len() >= 2 {
         let ahead = parts[0].parse().unwrap_or(0);
@@ -561,7 +592,9 @@ pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), String> 
         return Ok((ahead, behind));
     }
 
-    Err("Unexpected output format from git rev-list".to_string())
+    Err(GitError::OutputParse(
+        "Unexpected output format from git rev-list".to_string(),
+    ))
 }
 
 /// Returns ahead/behind snapshots for every local branch in `repo_path`.
@@ -571,10 +604,8 @@ pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), String> 
 /// `None`.
 ///
 /// # Errors
-/// Returns an error if `git for-each-ref` fails.
-pub async fn branch_tracking_statuses(
-    repo_path: PathBuf,
-) -> Result<HashMap<String, Option<(u32, u32)>>, String> {
+/// Returns a [`GitError`] if `git for-each-ref` fails.
+pub async fn branch_tracking_statuses(repo_path: PathBuf) -> Result<BranchTrackingMap, GitError> {
     let git_output = run_git_command(
         repo_path,
         vec![
@@ -584,7 +615,8 @@ pub async fn branch_tracking_statuses(
         ],
         "Git for-each-ref failed".to_string(),
     )
-    .await?;
+    .await
+    .map_err(GitError::OutputParse)?;
 
     Ok(parse_branch_tracking_statuses(&git_output))
 }
@@ -597,9 +629,9 @@ pub async fn branch_tracking_statuses(
 /// * `repo_path` - Path to the git repository root
 ///
 /// # Errors
-/// Returns an error when `git log` fails or upstream tracking refs are
+/// Returns a [`GitError`] when `git log` fails or upstream tracking refs are
 /// unavailable.
-pub async fn list_upstream_commit_titles(repo_path: PathBuf) -> Result<Vec<String>, String> {
+pub async fn list_upstream_commit_titles(repo_path: PathBuf) -> Result<Vec<String>, GitError> {
     let git_output = run_git_command(
         repo_path,
         vec![
@@ -610,7 +642,8 @@ pub async fn list_upstream_commit_titles(repo_path: PathBuf) -> Result<Vec<Strin
         ],
         "Git log failed".to_string(),
     )
-    .await?;
+    .await
+    .map_err(GitError::OutputParse)?;
 
     Ok(parse_commit_titles(&git_output))
 }
@@ -623,9 +656,9 @@ pub async fn list_upstream_commit_titles(repo_path: PathBuf) -> Result<Vec<Strin
 /// * `repo_path` - Path to the git repository root
 ///
 /// # Errors
-/// Returns an error when `git log` fails or upstream tracking refs are
+/// Returns a [`GitError`] when `git log` fails or upstream tracking refs are
 /// unavailable.
-pub async fn list_local_commit_titles(repo_path: PathBuf) -> Result<Vec<String>, String> {
+pub async fn list_local_commit_titles(repo_path: PathBuf) -> Result<Vec<String>, GitError> {
     let git_output = run_git_command(
         repo_path,
         vec![
@@ -636,7 +669,8 @@ pub async fn list_local_commit_titles(repo_path: PathBuf) -> Result<Vec<String>,
         ],
         "Git log failed".to_string(),
     )
-    .await?;
+    .await
+    .map_err(GitError::OutputParse)?;
 
     Ok(parse_commit_titles(&git_output))
 }
@@ -645,22 +679,24 @@ pub async fn list_local_commit_titles(repo_path: PathBuf) -> Result<Vec<String>,
 /// `base_branch`.
 ///
 /// # Errors
-/// Returns an error if commit ancestry cannot be queried.
-pub async fn has_commits_since(repo_path: PathBuf, base_branch: String) -> Result<bool, String> {
-    spawn_blocking(move || {
+/// Returns a [`GitError`] if commit ancestry cannot be queried.
+pub async fn has_commits_since(repo_path: PathBuf, base_branch: String) -> Result<bool, GitError> {
+    spawn_blocking(move || -> Result<bool, GitError> {
         let rev_list_output = run_git_command_sync(
             &repo_path,
             &["rev-list", "--count", &format!("{base_branch}..HEAD")],
             "Failed to count commits since base branch",
-        )?;
+        )
+        .map_err(GitError::OutputParse)?;
         let commit_count = rev_list_output.trim().parse::<u32>().map_err(|error| {
-            format!("Failed to parse commit count since base branch `{base_branch}`: {error}")
+            GitError::OutputParse(format!(
+                "Failed to parse commit count since base branch `{base_branch}`: {error}"
+            ))
         })?;
 
         Ok(commit_count > 0)
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Parses newline-delimited commit subjects from `git log` output.
@@ -674,7 +710,7 @@ fn parse_commit_titles(output: &str) -> Vec<String> {
 }
 
 /// Parses repo-wide branch tracking information from `git for-each-ref`.
-fn parse_branch_tracking_statuses(output: &str) -> HashMap<String, Option<(u32, u32)>> {
+fn parse_branch_tracking_statuses(output: &str) -> BranchTrackingMap {
     let mut branch_tracking_statuses = HashMap::new();
 
     for line in output
@@ -734,8 +770,9 @@ fn resolve_diff_target(
     repo_path: &Path,
     base_branch: &str,
     merge_base: &str,
-) -> Result<String, String> {
-    let cherry_output = run_git_command_output_sync(repo_path, &["cherry", base_branch, "HEAD"])?;
+) -> Result<String, GitError> {
+    let cherry_output = run_git_command_output_sync(repo_path, &["cherry", base_branch, "HEAD"])
+        .map_err(GitError::OutputParse)?;
     if !cherry_output.status.success() {
         return Ok(merge_base.to_string());
     }
@@ -791,7 +828,7 @@ async fn commit_all_with_retry(
     message_strategy: SingleCommitMessageStrategy,
     no_verify: bool,
     amend_existing_commit: bool,
-) -> Result<(), String> {
+) -> Result<(), GitError> {
     spawn_blocking(move || {
         stage_all_sync(&repo_path)?;
 
@@ -811,7 +848,10 @@ async fn commit_all_with_retry(
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains("nothing to commit") || stderr.contains("nothing to commit") {
-                return Err("Nothing to commit: no changes detected".to_string());
+                return Err(GitError::CommandFailed {
+                    command: "git commit".to_string(),
+                    stderr: "Nothing to commit: no changes detected".to_string(),
+                });
             }
 
             if is_hook_modified_error(&stdout, &stderr) {
@@ -822,35 +862,43 @@ async fn commit_all_with_retry(
 
             let detail = command_output_detail(&output.stdout, &output.stderr);
 
-            return Err(format!("Failed to commit: {detail}"));
+            return Err(GitError::CommandFailed {
+                command: "git commit".to_string(),
+                stderr: detail,
+            });
         }
 
-        Err(format!(
-            "Failed to commit: commit hooks kept modifying files after
-             {COMMIT_ALL_HOOK_RETRY_ATTEMPTS} attempts"
-        ))
+        Err(GitError::CommandFailed {
+            command: "git commit".to_string(),
+            stderr: format!(
+                "Failed to commit: commit hooks kept modifying files after \
+                 {COMMIT_ALL_HOOK_RETRY_ATTEMPTS} attempts"
+            ),
+        })
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Stages all changed files in the repository.
 ///
 /// Uses shared git retry behavior for transient `index.lock` contention.
-fn stage_all_sync(repo_path: &Path) -> Result<(), String> {
+fn stage_all_sync(repo_path: &Path) -> Result<(), GitError> {
     let output = run_git_command_with_index_lock_retry(repo_path, &["add", "-A"], &[])?;
 
     if !output.status.success() {
         let detail = command_output_detail(&output.stdout, &output.stderr);
 
-        return Err(format!("Failed to stage changes: {detail}"));
+        return Err(GitError::CommandFailed {
+            command: "git add -A".to_string(),
+            stderr: format!("Failed to stage changes: {detail}"),
+        });
     }
 
     Ok(())
 }
 
 /// Returns the full `HEAD` commit message, or `None` when no commits exist.
-fn head_commit_message_sync(repo_path: &Path) -> Result<Option<String>, String> {
+fn head_commit_message_sync(repo_path: &Path) -> Result<Option<String>, GitError> {
     if !has_head_commit_sync(repo_path)? {
         return Ok(None);
     }
@@ -859,14 +907,16 @@ fn head_commit_message_sync(repo_path: &Path) -> Result<Option<String>, String> 
         repo_path,
         &["log", "-1", "--pretty=%B"],
         "Failed to read HEAD commit message",
-    )?;
+    )
+    .map_err(GitError::OutputParse)?;
 
     Ok(Some(output.trim().to_string()))
 }
 
 /// Returns whether `HEAD` resolves to an existing commit.
-fn has_head_commit_sync(repo_path: &Path) -> Result<bool, String> {
-    let output = run_git_command_output_sync(repo_path, &["rev-parse", "--verify", "HEAD"])?;
+fn has_head_commit_sync(repo_path: &Path) -> Result<bool, GitError> {
+    let output = run_git_command_output_sync(repo_path, &["rev-parse", "--verify", "HEAD"])
+        .map_err(GitError::OutputParse)?;
 
     if output.status.success() {
         return Ok(true);
@@ -881,7 +931,10 @@ fn has_head_commit_sync(repo_path: &Path) -> Result<bool, String> {
         return Ok(false);
     }
 
-    Err(format!("Failed to resolve HEAD: {detail}"))
+    Err(GitError::CommandFailed {
+        command: "git rev-parse --verify HEAD".to_string(),
+        stderr: detail,
+    })
 }
 
 /// Runs `git commit` with optional amend and hook settings.
@@ -893,7 +946,7 @@ fn run_commit_command(
     message_strategy: SingleCommitMessageStrategy,
     no_verify: bool,
     amend_existing_commit: bool,
-) -> Result<Output, String> {
+) -> Result<Output, GitError> {
     let mut args = vec!["commit"];
     if amend_existing_commit {
         args.push("--amend");
@@ -1008,7 +1061,7 @@ mod tests {
 
         // Assert
         let error = result.expect_err("detached HEAD should fail");
-        assert!(error.contains("detached HEAD"));
+        assert!(error.to_string().contains("detached HEAD"));
     }
 
     #[test]
@@ -1162,8 +1215,10 @@ main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3,
         let result = push_current_branch(temp_dir.path().to_path_buf()).await;
 
         // Assert
-        let error = result.expect_err("non-fast-forward push should fail");
-        assert!(error.contains("Git push failed:"));
+        let error = result
+            .expect_err("non-fast-forward push should fail")
+            .to_string();
+        assert!(error.contains("git push"));
         assert!(
             error.contains("stale info")
                 || error.contains("rejected")

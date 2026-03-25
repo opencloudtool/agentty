@@ -334,15 +334,23 @@ impl SessionTaskService {
     ) -> Result<SessionCommitOutcome, String> {
         if cfg!(test) {
             let folder = folder.to_path_buf();
-            if git_client.is_worktree_clean(folder.clone()).await? {
+            if git_client
+                .is_worktree_clean(folder.clone())
+                .await
+                .map_err(|error| error.to_string())?
+            {
                 return Err("Nothing to commit: no changes detected".to_string());
             }
 
             let has_session_commit = git_client
                 .has_commits_since(folder.clone(), base_branch.to_string())
-                .await?;
+                .await
+                .map_err(|error| error.to_string())?;
             let current_commit_message = if has_session_commit {
-                git_client.head_commit_message(folder.clone()).await?
+                git_client
+                    .head_commit_message(folder.clone())
+                    .await
+                    .map_err(|error| error.to_string())?
             } else {
                 None
             };
@@ -372,8 +380,12 @@ impl SessionTaskService {
                     git::SingleCommitMessageStrategy::Replace,
                     no_verify,
                 )
-                .await?;
-            let commit_hash = git_client.head_short_hash(folder).await?;
+                .await
+                .map_err(|error| error.to_string())?;
+            let commit_hash = git_client
+                .head_short_hash(folder)
+                .await
+                .map_err(|error| error.to_string())?;
 
             return Ok(SessionCommitOutcome {
                 commit_hash,
@@ -412,18 +424,27 @@ impl SessionTaskService {
         include_coauthored_by_agentty: bool,
     ) -> Result<SessionCommitOutcome, String> {
         let folder = folder.to_path_buf();
-        if git_client.is_worktree_clean(folder.clone()).await? {
+        if git_client
+            .is_worktree_clean(folder.clone())
+            .await
+            .map_err(|error| error.to_string())?
+        {
             return Err("Nothing to commit: no changes detected".to_string());
         }
 
         let diff = git_client
             .diff(folder.clone(), base_branch.to_string())
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         let has_session_commit = git_client
             .has_commits_since(folder.clone(), base_branch.to_string())
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         let current_commit_message = if has_session_commit {
-            git_client.head_commit_message(folder.clone()).await?
+            git_client
+                .head_commit_message(folder.clone())
+                .await
+                .map_err(|error| error.to_string())?
         } else {
             None
         };
@@ -445,9 +466,13 @@ impl SessionTaskService {
                 git::SingleCommitMessageStrategy::Replace,
                 no_verify,
             )
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
 
-        let commit_hash = git_client.head_short_hash(folder).await?;
+        let commit_hash = git_client
+            .head_short_hash(folder)
+            .await
+            .map_err(|error| error.to_string())?;
 
         Ok(SessionCommitOutcome {
             commit_hash,
@@ -721,7 +746,7 @@ mod tests {
     use crate::db::Database;
     use crate::infra::agent::tests::MockAgentBackend;
     use crate::infra::channel::AgentRequestKind;
-    use crate::infra::git::MockGitClient;
+    use crate::infra::git::{GitError, MockGitClient};
 
     /// Builds one deterministic shell command used by mocked backends.
     fn mock_shell_command(stdout: &str, stderr: &str, exit_code: i32) -> Command {
@@ -966,7 +991,9 @@ mod tests {
         mock_git_client
             .expect_is_worktree_clean()
             .times(1)
-            .returning(|_| Box::pin(async { Err("commit failed".to_string()) }));
+            .returning(|_| {
+                Box::pin(async { Err(GitError::OutputParse("commit failed".to_string())) })
+            });
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
@@ -1004,7 +1031,7 @@ mod tests {
         mock_git_client
             .expect_is_worktree_clean()
             .times(1)
-            .returning(|_| Box::pin(async { Ok(true) }));
+            .returning(|_| Box::pin(async { Ok::<_, GitError>(true) }));
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
@@ -1042,17 +1069,17 @@ mod tests {
         mock_git_client
             .expect_is_worktree_clean()
             .times(1)
-            .returning(|_| Box::pin(async { Ok(false) }));
+            .returning(|_| Box::pin(async { Ok::<_, GitError>(false) }));
         mock_git_client
             .expect_has_commits_since()
             .times(1)
-            .returning(|_, _| Box::pin(async { Ok(true) }));
+            .returning(|_, _| Box::pin(async { Ok::<_, GitError>(true) }));
         mock_git_client
             .expect_head_commit_message()
             .times(1)
             .returning(|_| {
                 Box::pin(async {
-                    Ok(Some(
+                    Ok::<_, GitError>(Some(
                         "Refine README updates\n\n- Keep title aligned with commit".to_string(),
                     ))
                 })
@@ -1060,11 +1087,11 @@ mod tests {
         mock_git_client
             .expect_commit_all_preserving_single_commit()
             .times(1)
-            .returning(|_, _, _, _, _| Box::pin(async { Ok(()) }));
+            .returning(|_, _, _, _, _| Box::pin(async { Ok::<_, GitError>(()) }));
         mock_git_client
             .expect_head_short_hash()
             .times(1)
-            .returning(|_| Box::pin(async { Ok("abc1234".to_string()) }));
+            .returning(|_| Box::pin(async { Ok::<_, GitError>("abc1234".to_string()) }));
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");

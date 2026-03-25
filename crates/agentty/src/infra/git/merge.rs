@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use tokio::task::spawn_blocking;
 
+use super::error::GitError;
 use super::repo::{command_output_detail, run_git_command_output_sync, run_git_command_sync};
 use super::worktree::detect_git_info_sync;
 
@@ -12,6 +13,15 @@ pub enum SquashMergeOutcome {
     Committed,
     /// Squash merge staged nothing because changes already exist in target.
     AlreadyPresentInTarget,
+}
+
+/// Converts a `String` error from a repo helper into a
+/// [`GitError::CommandFailed`].
+fn string_to_git_error(command: &str, error: String) -> GitError {
+    GitError::CommandFailed {
+        command: command.to_string(),
+        stderr: error,
+    }
 }
 
 /// Returns the full patch diff that will be squashed when merging a source
@@ -34,17 +44,18 @@ pub async fn squash_merge_diff(
     repo_path: PathBuf,
     source_branch: String,
     target_branch: String,
-) -> Result<String, String> {
+) -> Result<String, GitError> {
     spawn_blocking(move || {
         let revision_range = format!("{target_branch}..{source_branch}");
+
         run_git_command_sync(
             &repo_path,
             &["diff", revision_range.as_str()],
             "Failed to read squash merge diff",
         )
+        .map_err(|error| string_to_git_error("git diff", error))
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Performs a squash merge from a source branch to a target branch.
@@ -76,27 +87,36 @@ pub async fn squash_merge(
     source_branch: String,
     target_branch: String,
     commit_message: String,
-) -> Result<SquashMergeOutcome, String> {
+) -> Result<SquashMergeOutcome, GitError> {
     spawn_blocking(move || {
         // Verify that `repo_path` is already on the target branch.
-        let current_branch = detect_git_info_sync(&repo_path)
-            .ok_or_else(|| format!("Failed to detect current branch in {}", repo_path.display()))?;
+        let current_branch = detect_git_info_sync(&repo_path).ok_or_else(|| {
+            GitError::OutputParse(format!(
+                "Failed to detect current branch in {}",
+                repo_path.display()
+            ))
+        })?;
+
         if current_branch != target_branch {
-            return Err(format!(
-                "Cannot merge: repository is on '{current_branch}' but expected
-                 '{target_branch}'. Switch to '{target_branch}' first."
-            ));
+            return Err(GitError::CommandFailed {
+                command: "git merge --squash".to_string(),
+                stderr: format!(
+                    "Cannot merge: repository is on '{current_branch}' but expected \
+                     '{target_branch}'. Switch to '{target_branch}' first."
+                ),
+            });
         }
 
         run_git_command_sync(
             &repo_path,
             &["merge", "--squash", source_branch.as_str()],
             &format!("Failed to squash merge {source_branch}"),
-        )?;
+        )
+        .map_err(|error| string_to_git_error("git merge --squash", error))?;
 
         // `git diff --cached --quiet` exits 0 when index matches `HEAD`.
-        let cached_diff =
-            run_git_command_output_sync(&repo_path, &["diff", "--cached", "--quiet"])?;
+        let cached_diff = run_git_command_output_sync(&repo_path, &["diff", "--cached", "--quiet"])
+            .map_err(|error| string_to_git_error("git diff --cached", error))?;
 
         if cached_diff.status.success() {
             return Ok(SquashMergeOutcome::AlreadyPresentInTarget);
@@ -105,9 +125,10 @@ pub async fn squash_merge(
         if cached_diff.status.code() != Some(1) {
             let detail = command_output_detail(&cached_diff.stdout, &cached_diff.stderr);
 
-            return Err(format!(
-                "Failed to inspect staged squash merge diff: {detail}"
-            ));
+            return Err(GitError::CommandFailed {
+                command: "git diff --cached".to_string(),
+                stderr: detail,
+            });
         }
 
         // Skip hooks here because the session worktree already ran them.
@@ -115,12 +136,12 @@ pub async fn squash_merge(
             &repo_path,
             &["commit", "--no-verify", "-m", commit_message.as_str()],
             "Failed to commit squash merge",
-        )?;
+        )
+        .map_err(|error| string_to_git_error("git commit", error))?;
 
         Ok(SquashMergeOutcome::Committed)
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 #[cfg(test)]
@@ -194,7 +215,7 @@ mod tests {
         .await;
 
         // Assert
-        let error = result.expect_err("branch mismatch should fail");
+        let error = result.expect_err("branch mismatch should fail").to_string();
         assert!(error.contains("repository is on 'feature-branch'"));
         assert!(error.contains("Switch to 'main' first."));
     }
@@ -223,7 +244,10 @@ mod tests {
         let head_message = run_git_stdout(temp_dir.path(), &["log", "-1", "--pretty=%B"]);
 
         // Assert
-        assert_eq!(result, Ok(SquashMergeOutcome::Committed));
+        assert_eq!(
+            result.expect("squash merge should succeed"),
+            SquashMergeOutcome::Committed,
+        );
         assert_eq!(head_message, commit_message);
     }
 
@@ -260,7 +284,10 @@ mod tests {
         let head_message_after = run_git_stdout(temp_dir.path(), &["log", "-1", "--pretty=%B"]);
 
         // Assert
-        assert_eq!(result, Ok(SquashMergeOutcome::AlreadyPresentInTarget));
+        assert_eq!(
+            result.expect("squash merge should succeed"),
+            SquashMergeOutcome::AlreadyPresentInTarget,
+        );
         assert_eq!(commit_count_after, commit_count_before);
         assert_eq!(head_message_after, head_message_before);
     }
@@ -281,7 +308,7 @@ mod tests {
         .await;
 
         // Assert
-        let error = result.expect_err("missing branch should fail");
+        let error = result.expect_err("missing branch should fail").to_string();
         assert!(error.contains("Failed to squash merge missing-branch"));
         assert!(error.contains("missing-branch"));
     }

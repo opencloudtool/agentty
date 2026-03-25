@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use tokio::task::spawn_blocking;
 
+use super::error::GitError;
 use super::repo::{
     command_output_detail, resolve_git_dir, run_git_command_output_sync,
     run_git_command_output_with_env_sync, run_git_command_sync,
@@ -23,7 +24,7 @@ trait GitCommandRunner: Send + Sync {
         repo_path: &Path,
         args: &[&'argument str],
         environment: &[(&'argument str, &'argument str)],
-    ) -> Result<Output, String>;
+    ) -> Result<Output, GitError>;
 }
 
 /// Git command runner backed by process execution.
@@ -35,8 +36,9 @@ impl GitCommandRunner for ProcessGitCommandRunner {
         repo_path: &Path,
         args: &[&'argument str],
         environment: &[(&'argument str, &'argument str)],
-    ) -> Result<Output, String> {
+    ) -> Result<Output, GitError> {
         run_git_command_output_with_env_sync(repo_path, args, environment)
+            .map_err(GitError::OutputParse)
     }
 }
 
@@ -59,12 +61,12 @@ pub enum RebaseStepResult {
 /// * `target_branch` - Branch to rebase onto (e.g., `main`)
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure.
+/// Ok(()) on success.
 ///
 /// # Errors
-/// Returns an error if rebase fails, or aborting a conflicted rebase also
-/// fails.
-pub async fn rebase(repo_path: PathBuf, target_branch: String) -> Result<(), String> {
+/// Returns a [`GitError`] if rebase fails, or aborting a conflicted rebase
+/// also fails.
+pub async fn rebase(repo_path: PathBuf, target_branch: String) -> Result<(), GitError> {
     match rebase_start(repo_path.clone(), target_branch.clone()).await? {
         RebaseStepResult::Completed => Ok(()),
         RebaseStepResult::Conflict { detail } => {
@@ -73,9 +75,10 @@ pub async fn rebase(repo_path: PathBuf, target_branch: String) -> Result<(), Str
                 Err(error) => format!(" {error}"),
             };
 
-            Err(format!(
-                "Failed to rebase onto {target_branch}: {detail}.{abort_suffix}"
-            ))
+            Err(GitError::CommandFailed {
+                command: "git rebase".to_string(),
+                stderr: format!("Failed to rebase onto {target_branch}: {detail}.{abort_suffix}"),
+            })
         }
     }
 }
@@ -93,11 +96,11 @@ pub async fn rebase(repo_path: PathBuf, target_branch: String) -> Result<(), Str
 /// encountered conflicts.
 ///
 /// # Errors
-/// Returns an error for non-conflict git failures.
+/// Returns a [`GitError`] for non-conflict git failures.
 pub async fn rebase_start(
     repo_path: PathBuf,
     target_branch: String,
-) -> Result<RebaseStepResult, String> {
+) -> Result<RebaseStepResult, GitError> {
     spawn_blocking(move || {
         let rebase_args = ["rebase", target_branch.as_str()];
         let output = run_git_command_with_index_lock_retry(&repo_path, &rebase_args, &[])?;
@@ -111,10 +114,12 @@ pub async fn rebase_start(
             return Ok(RebaseStepResult::Conflict { detail });
         }
 
-        Err(format!("Failed to rebase onto {target_branch}: {detail}."))
+        Err(GitError::CommandFailed {
+            command: "git rebase".to_string(),
+            stderr: format!("Failed to rebase onto {target_branch}: {detail}."),
+        })
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Continues an in-progress rebase.
@@ -127,8 +132,8 @@ pub async fn rebase_start(
 /// encountered conflicts.
 ///
 /// # Errors
-/// Returns an error for non-conflict git failures.
-pub async fn rebase_continue(repo_path: PathBuf) -> Result<RebaseStepResult, String> {
+/// Returns a [`GitError`] for non-conflict git failures.
+pub async fn rebase_continue(repo_path: PathBuf) -> Result<RebaseStepResult, GitError> {
     spawn_blocking(move || {
         let output = run_git_command_with_index_lock_retry(
             &repo_path,
@@ -145,10 +150,12 @@ pub async fn rebase_continue(repo_path: PathBuf) -> Result<RebaseStepResult, Str
             return Ok(RebaseStepResult::Conflict { detail });
         }
 
-        Err(format!("Failed to continue rebase: {detail}."))
+        Err(GitError::CommandFailed {
+            command: "git rebase --continue".to_string(),
+            stderr: format!("Failed to continue rebase: {detail}."),
+        })
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Aborts an in-progress rebase.
@@ -161,11 +168,11 @@ pub async fn rebase_continue(repo_path: PathBuf) -> Result<RebaseStepResult, Str
 /// * `repo_path` - Path to the git repository or worktree
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) on failure.
+/// Ok(()) on success.
 ///
 /// # Errors
-/// Returns an error when `git rebase --abort` cannot be executed.
-pub async fn abort_rebase(repo_path: PathBuf) -> Result<(), String> {
+/// Returns a [`GitError`] when `git rebase --abort` cannot be executed.
+pub async fn abort_rebase(repo_path: PathBuf) -> Result<(), GitError> {
     spawn_blocking(move || {
         let output =
             run_git_command_with_index_lock_retry(&repo_path, &["rebase", "--abort"], &[])?;
@@ -173,7 +180,10 @@ pub async fn abort_rebase(repo_path: PathBuf) -> Result<(), String> {
         if !output.status.success() {
             let detail = command_output_detail(&output.stdout, &output.stderr);
             if !is_stale_or_inactive_rebase_error(&detail) {
-                return Err(format!("Failed to abort rebase: {detail}."));
+                return Err(GitError::CommandFailed {
+                    command: "git rebase --abort".to_string(),
+                    stderr: format!("Failed to abort rebase: {detail}."),
+                });
             }
 
             let cleaned_stale_metadata = clean_stale_rebase_metadata(&repo_path)?;
@@ -181,13 +191,15 @@ pub async fn abort_rebase(repo_path: PathBuf) -> Result<(), String> {
                 return Ok(());
             }
 
-            return Err(format!("Failed to abort rebase: {detail}."));
+            return Err(GitError::CommandFailed {
+                command: "git rebase --abort".to_string(),
+                stderr: format!("Failed to abort rebase: {detail}."),
+            });
         }
 
         Ok(())
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Returns whether a rebase is currently in progress in the repository or
@@ -201,18 +213,17 @@ pub async fn abort_rebase(repo_path: PathBuf) -> Result<(), String> {
 /// otherwise.
 ///
 /// # Errors
-/// Returns an error when the git directory cannot be resolved.
-pub async fn is_rebase_in_progress(repo_path: PathBuf) -> Result<bool, String> {
-    spawn_blocking(move || {
+/// Returns a [`GitError`] when the git directory cannot be resolved.
+pub async fn is_rebase_in_progress(repo_path: PathBuf) -> Result<bool, GitError> {
+    spawn_blocking(move || -> Result<bool, GitError> {
         let git_dir = resolve_git_dir(&repo_path)
-            .ok_or_else(|| "Failed to resolve git directory".to_string())?;
+            .ok_or_else(|| GitError::OutputParse("Failed to resolve git directory".to_string()))?;
         let rebase_merge = git_dir.join("rebase-merge");
         let rebase_apply = git_dir.join("rebase-apply");
 
         Ok(rebase_merge.exists() || rebase_apply.exists())
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Returns whether unresolved paths still exist in the index.
@@ -224,8 +235,8 @@ pub async fn is_rebase_in_progress(repo_path: PathBuf) -> Result<bool, String> {
 /// `true` when unresolved paths exist, `false` otherwise.
 ///
 /// # Errors
-/// Returns an error when conflicted files cannot be queried.
-pub async fn has_unmerged_paths(repo_path: PathBuf) -> Result<bool, String> {
+/// Returns a [`GitError`] when conflicted files cannot be queried.
+pub async fn has_unmerged_paths(repo_path: PathBuf) -> Result<bool, GitError> {
     let conflicted_files = list_conflicted_files(repo_path).await?;
 
     Ok(!conflicted_files.is_empty())
@@ -251,31 +262,33 @@ pub async fn has_unmerged_paths(repo_path: PathBuf) -> Result<bool, String> {
 /// `paths` is empty.
 ///
 /// # Errors
-/// Returns an error if `git grep` cannot be executed or exits with an
+/// Returns a [`GitError`] if `git grep` cannot be executed or exits with an
 /// unexpected error code. An exit code of `1` (no matches) is treated as
 /// success with an empty result.
 pub async fn list_staged_conflict_marker_files(
     repo_path: PathBuf,
     paths: Vec<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, GitError> {
     if paths.is_empty() {
         return Ok(vec![]);
     }
 
-    spawn_blocking(move || {
+    spawn_blocking(move || -> Result<Vec<String>, GitError> {
         let mut grep_arguments = vec!["grep", "--cached", "-l", "^<<<<<<<", "--"];
         let path_arguments: Vec<&str> = paths.iter().map(String::as_str).collect();
         grep_arguments.extend(path_arguments);
-        let output = run_git_command_output_sync(&repo_path, &grep_arguments)?;
+        let output = run_git_command_output_sync(&repo_path, &grep_arguments)
+            .map_err(GitError::OutputParse)?;
 
         // git grep exits with 1 when no matches are found.
         let exit_code = output.status.code().unwrap_or(2);
         if !output.status.success() && exit_code != 1 {
             let detail = command_output_detail(&output.stdout, &output.stderr);
 
-            return Err(format!(
-                "Failed to check for staged conflict markers: {detail}"
-            ));
+            return Err(GitError::CommandFailed {
+                command: "git grep".to_string(),
+                stderr: format!("Failed to check for staged conflict markers: {detail}"),
+            });
         }
 
         let files = String::from_utf8_lossy(&output.stdout)
@@ -287,8 +300,7 @@ pub async fn list_staged_conflict_marker_files(
 
         Ok(files)
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Returns conflicted file paths for the current index.
@@ -300,14 +312,16 @@ pub async fn list_staged_conflict_marker_files(
 /// A list of relative file paths with unresolved conflicts.
 ///
 /// # Errors
-/// Returns an error if invoking `git diff --name-only --diff-filter=U` fails.
-pub async fn list_conflicted_files(repo_path: PathBuf) -> Result<Vec<String>, String> {
-    spawn_blocking(move || {
+/// Returns a [`GitError`] if invoking `git diff --name-only --diff-filter=U`
+/// fails.
+pub async fn list_conflicted_files(repo_path: PathBuf) -> Result<Vec<String>, GitError> {
+    spawn_blocking(move || -> Result<Vec<String>, GitError> {
         let output = run_git_command_sync(
             &repo_path,
             &["diff", "--name-only", "--diff-filter=U"],
             "Failed to read conflicted files",
-        )?;
+        )
+        .map_err(GitError::OutputParse)?;
         let files = output
             .lines()
             .map(str::trim)
@@ -317,8 +331,7 @@ pub async fn list_conflicted_files(repo_path: PathBuf) -> Result<Vec<String>, St
 
         Ok(files)
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Runs a git command and retries when `index.lock` contention occurs.
@@ -326,7 +339,7 @@ pub(super) fn run_git_command_with_index_lock_retry(
     repo_path: &Path,
     args: &[&str],
     environment: &[(&str, &str)],
-) -> Result<Output, String> {
+) -> Result<Output, GitError> {
     let command_runner = ProcessGitCommandRunner;
     let sleeper = ThreadSleeper;
 
@@ -347,7 +360,7 @@ fn run_git_command_with_index_lock_retry_with_dependencies(
     environment: &[(&str, &str)],
     command_runner: &dyn GitCommandRunner,
     sleeper: &dyn Sleeper,
-) -> Result<Output, String> {
+) -> Result<Output, GitError> {
     for attempt in 0..GIT_INDEX_LOCK_RETRY_ATTEMPTS {
         let output =
             command_runner.run_git_command_output_with_env(repo_path, args, environment)?;
@@ -398,11 +411,11 @@ fn is_stale_or_inactive_rebase_error(detail: &str) -> bool {
 /// Returns `true` when at least one stale metadata path was removed.
 ///
 /// # Errors
-/// Returns an error when the git directory cannot be resolved or metadata
-/// cleanup fails.
-fn clean_stale_rebase_metadata(repo_path: &Path) -> Result<bool, String> {
-    let git_dir =
-        resolve_git_dir(repo_path).ok_or_else(|| "Failed to resolve git directory".to_string())?;
+/// Returns a [`GitError`] when the git directory cannot be resolved or
+/// metadata cleanup fails.
+fn clean_stale_rebase_metadata(repo_path: &Path) -> Result<bool, GitError> {
+    let git_dir = resolve_git_dir(repo_path)
+        .ok_or_else(|| GitError::OutputParse("Failed to resolve git directory".to_string()))?;
     let rebase_merge = git_dir.join("rebase-merge");
     let rebase_apply = git_dir.join("rebase-apply");
     let removed_rebase_merge = remove_stale_rebase_metadata_path(&rebase_merge)?;
@@ -414,21 +427,20 @@ fn clean_stale_rebase_metadata(repo_path: &Path) -> Result<bool, String> {
 /// Removes one stale rebase metadata path and returns whether anything changed.
 ///
 /// # Errors
-/// Returns an error when a stale metadata path exists but cannot be removed.
-fn remove_stale_rebase_metadata_path(path: &Path) -> Result<bool, String> {
+/// Returns a [`GitError`] when a stale metadata path exists but cannot be
+/// removed.
+fn remove_stale_rebase_metadata_path(path: &Path) -> Result<bool, GitError> {
     if !path.exists() {
         return Ok(false);
     }
 
     if path.is_dir() {
-        fs::remove_dir_all(path)
-            .map_err(|error| format!("Failed to remove stale rebase metadata: {error}"))?;
+        fs::remove_dir_all(path)?;
 
         return Ok(true);
     }
 
-    fs::remove_file(path)
-        .map_err(|error| format!("Failed to remove stale rebase metadata: {error}"))?;
+    fs::remove_file(path)?;
 
     Ok(true)
 }
@@ -538,7 +550,12 @@ mod tests {
         command_runner
             .expect_run_git_command_output_with_env()
             .times(1)
-            .return_once(|_, _, _| Err("git execution failed".to_string()));
+            .return_once(|_, _, _| {
+                Err(GitError::CommandFailed {
+                    command: "git".to_string(),
+                    stderr: "git execution failed".to_string(),
+                })
+            });
         sleeper.expect_sleep().times(0);
 
         // Act
@@ -552,7 +569,7 @@ mod tests {
         .expect_err("retry helper should surface command execution errors");
 
         // Assert
-        assert_eq!(error, "git execution failed");
+        assert_eq!(error.to_string(), "git: git execution failed");
     }
 
     #[test]

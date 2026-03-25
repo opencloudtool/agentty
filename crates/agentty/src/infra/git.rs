@@ -5,6 +5,8 @@
 
 /// Client boundary and production adapter implementations.
 mod client;
+/// Typed error types for git infrastructure operations.
+mod error;
 /// Squash-merge workflows.
 mod merge;
 /// Rebase and conflict workflows.
@@ -19,6 +21,8 @@ mod worktree;
 #[cfg(test)]
 pub(crate) use client::MockGitClient;
 pub use client::{GitClient, GitFuture, RealGitClient};
+/// Re-exported typed error for git infrastructure operations.
+pub use error::GitError;
 /// Re-exported squash-merge APIs.
 pub use merge::{SquashMergeOutcome, squash_merge, squash_merge_diff};
 /// Re-exported rebase/conflict APIs.
@@ -31,9 +35,9 @@ pub use rebase::{
 pub use repo::{main_repo_root, repo_url};
 /// Re-exported commit/sync/diff APIs.
 pub use sync::{
-    PullRebaseResult, SingleCommitMessageStrategy, branch_tracking_statuses, commit_all,
-    commit_all_preserving_single_commit, current_upstream_reference, delete_branch, diff,
-    fetch_remote, get_ahead_behind, has_commits_since, head_commit_message, head_short_hash,
+    BranchTrackingMap, PullRebaseResult, SingleCommitMessageStrategy, branch_tracking_statuses,
+    commit_all, commit_all_preserving_single_commit, current_upstream_reference, delete_branch,
+    diff, fetch_remote, get_ahead_behind, has_commits_since, head_commit_message, head_short_hash,
     is_worktree_clean, list_local_commit_titles, list_upstream_commit_titles, pull_rebase,
     push_current_branch, push_current_branch_to_remote_branch, stage_all,
 };

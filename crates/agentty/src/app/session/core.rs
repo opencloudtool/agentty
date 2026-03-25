@@ -410,13 +410,17 @@ mod tests {
                         .create_dir_all(worktree_path.clone())
                         .await
                         .map_err(|error| {
-                            format!("Failed to create mock worktree directory: {error}")
+                            git::GitError::OutputParse(format!(
+                                "Failed to create mock worktree directory: {error}"
+                            ))
                         })?;
                     fs_client
                         .create_dir_all(worktree_path.join(SESSION_DATA_DIR))
                         .await
                         .map_err(|error| {
-                            format!("Failed to create mock session data directory: {error}")
+                            git::GitError::OutputParse(format!(
+                                "Failed to create mock session data directory: {error}"
+                            ))
                         })?;
 
                     Ok(())
@@ -433,7 +437,11 @@ mod tests {
                 })
             });
         mock.expect_pull_rebase().times(0..).returning(|_| {
-            Box::pin(async { Err("No upstream branch configured for pull".to_string()) })
+            Box::pin(async {
+                Err(git::GitError::OutputParse(
+                    "No upstream branch configured for pull".to_string(),
+                ))
+            })
         });
         mock.expect_push_current_branch()
             .times(0..)
@@ -554,7 +562,11 @@ mod tests {
         mock.expect_commit_all_preserving_single_commit()
             .times(0..)
             .returning(|_, _, _, _, _| {
-                Box::pin(async { Err("Nothing to commit: no changes detected".to_string()) })
+                Box::pin(async {
+                    Err(git::GitError::OutputParse(
+                        "Nothing to commit: no changes detected".to_string(),
+                    ))
+                })
             });
         mock.expect_stage_all()
             .times(0..)
@@ -2728,12 +2740,18 @@ mod tests {
                     fs_client
                         .create_dir_all(worktree_path.clone())
                         .await
-                        .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
+                        .map_err(|error| {
+                            git::GitError::OutputParse(format!(
+                                "Failed to create mock worktree: {error}"
+                            ))
+                        })?;
                     fs_client
                         .create_dir_all(worktree_path.join(SESSION_DATA_DIR))
                         .await
                         .map_err(|error| {
-                            format!("Failed to create mock worktree data dir: {error}")
+                            git::GitError::OutputParse(format!(
+                                "Failed to create mock worktree data dir: {error}"
+                            ))
                         })?;
 
                     Ok(())
@@ -2887,7 +2905,11 @@ mod tests {
             .expect_create_worktree()
             .times(1)
             .returning(|_, _, _, _| {
-                Box::pin(async { Err("mock create_worktree failed".to_string()) })
+                Box::pin(async {
+                    Err(git::GitError::OutputParse(
+                        "mock create_worktree failed".to_string(),
+                    ))
+                })
             });
         install_mock_git_client(&mut app, mock_git_client);
 
@@ -3166,12 +3188,18 @@ mod tests {
                     fs_client
                         .create_dir_all(worktree_path.clone())
                         .await
-                        .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
+                        .map_err(|error| {
+                            git::GitError::OutputParse(format!(
+                                "Failed to create mock worktree: {error}"
+                            ))
+                        })?;
                     fs_client
                         .create_dir_all(worktree_path.join(SESSION_DATA_DIR))
                         .await
                         .map_err(|error| {
-                            format!("Failed to create mock worktree data dir: {error}")
+                            git::GitError::OutputParse(format!(
+                                "Failed to create mock worktree data dir: {error}"
+                            ))
                         })?;
 
                     Ok(())
@@ -3233,12 +3261,18 @@ mod tests {
                     fs_client
                         .create_dir_all(worktree_path.clone())
                         .await
-                        .map_err(|error| format!("Failed to create mock worktree: {error}"))?;
+                        .map_err(|error| {
+                            git::GitError::OutputParse(format!(
+                                "Failed to create mock worktree: {error}"
+                            ))
+                        })?;
                     fs_client
                         .create_dir_all(worktree_path.join(SESSION_DATA_DIR))
                         .await
                         .map_err(|error| {
-                            format!("Failed to create mock worktree data dir: {error}")
+                            git::GitError::OutputParse(format!(
+                                "Failed to create mock worktree data dir: {error}"
+                            ))
                         })?;
 
                     Ok(())

@@ -2595,7 +2595,7 @@ async fn push_session_branch(
         }
         None => git_client.push_current_branch(folder).await,
     }
-    .map_err(|error| branch_push_failure(&error))?;
+    .map_err(|error| branch_push_failure(&error.to_string()))?;
 
     db.update_session_published_upstream_ref(&branch_publish_session.id, Some(&upstream_reference))
         .await
@@ -3302,9 +3302,11 @@ mod tests {
             .once()
             .returning(|_| {
                 Box::pin(async {
-                    Err("Git push failed: fatal: could not read Username for \
+                    Err(crate::infra::git::GitError::OutputParse(
+                        "Git push failed: fatal: could not read Username for \
                          'https://github.com': terminal prompts disabled"
-                        .to_string())
+                            .to_string(),
+                    ))
                 })
             });
         let git_client: Arc<dyn crate::infra::git::GitClient> = Arc::new(mock_git_client);

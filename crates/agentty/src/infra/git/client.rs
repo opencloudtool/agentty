@@ -1,15 +1,15 @@
 //! Git client trait boundary and production adapter implementation.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 
+use super::error::GitError;
 use super::merge::SquashMergeOutcome;
 use super::rebase::RebaseStepResult;
 #[cfg(test)]
 use super::sync;
-use super::sync::{PullRebaseResult, SingleCommitMessageStrategy};
+use super::sync::{BranchTrackingMap, PullRebaseResult, SingleCommitMessageStrategy};
 use super::{
     abort_rebase, branch_tracking_statuses, commit_all, commit_all_preserving_single_commit,
     create_worktree, current_upstream_reference, delete_branch, detect_git_info, diff,
@@ -53,14 +53,14 @@ pub trait GitClient: Send + Sync {
         worktree_path: PathBuf,
         branch_name: String,
         base_branch: String,
-    ) -> GitFuture<Result<(), String>>;
+    ) -> GitFuture<Result<(), GitError>>;
 
     /// Removes the existing worktree at `worktree_path`.
     ///
     /// # Errors
     /// Returns an error when the path is not a registered worktree or git
     /// cannot remove it.
-    fn remove_worktree(&self, worktree_path: PathBuf) -> GitFuture<Result<(), String>>;
+    fn remove_worktree(&self, worktree_path: PathBuf) -> GitFuture<Result<(), GitError>>;
 
     /// Returns the staged squash-merge preview diff from `source_branch` into
     /// `target_branch` within `repo_path`.
@@ -72,7 +72,7 @@ pub trait GitClient: Send + Sync {
         repo_path: PathBuf,
         source_branch: String,
         target_branch: String,
-    ) -> GitFuture<Result<String, String>>;
+    ) -> GitFuture<Result<String, GitError>>;
 
     /// Performs a squash merge of `source_branch` into `target_branch` inside
     /// `repo_path` using `commit_message`.
@@ -85,13 +85,13 @@ pub trait GitClient: Send + Sync {
         source_branch: String,
         target_branch: String,
         commit_message: String,
-    ) -> GitFuture<Result<SquashMergeOutcome, String>>;
+    ) -> GitFuture<Result<SquashMergeOutcome, GitError>>;
 
     /// Runs `git rebase <target_branch>` in `repo_path`.
     ///
     /// # Errors
     /// Returns an error when rebase setup fails or git reports a fatal error.
-    fn rebase(&self, repo_path: PathBuf, target_branch: String) -> GitFuture<Result<(), String>>;
+    fn rebase(&self, repo_path: PathBuf, target_branch: String) -> GitFuture<Result<(), GitError>>;
 
     /// Starts a rebase onto `target_branch` and reports whether it completed
     /// immediately or stopped for conflicts.
@@ -102,31 +102,31 @@ pub trait GitClient: Send + Sync {
         &self,
         repo_path: PathBuf,
         target_branch: String,
-    ) -> GitFuture<Result<RebaseStepResult, String>>;
+    ) -> GitFuture<Result<RebaseStepResult, GitError>>;
 
     /// Continues an in-progress rebase in `repo_path`.
     ///
     /// # Errors
     /// Returns an error when there is no rebase to continue or git fails.
-    fn rebase_continue(&self, repo_path: PathBuf) -> GitFuture<Result<RebaseStepResult, String>>;
+    fn rebase_continue(&self, repo_path: PathBuf) -> GitFuture<Result<RebaseStepResult, GitError>>;
 
     /// Aborts an in-progress rebase in `repo_path`.
     ///
     /// # Errors
     /// Returns an error when abort fails or no rebase state exists.
-    fn abort_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>>;
+    fn abort_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<(), GitError>>;
 
     /// Returns whether rebase metadata exists in `repo_path`.
     ///
     /// # Errors
     /// Returns an error when git state cannot be inspected.
-    fn is_rebase_in_progress(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>>;
+    fn is_rebase_in_progress(&self, repo_path: PathBuf) -> GitFuture<Result<bool, GitError>>;
 
     /// Returns whether unmerged index entries remain in `repo_path`.
     ///
     /// # Errors
     /// Returns an error when index status cannot be read.
-    fn has_unmerged_paths(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>>;
+    fn has_unmerged_paths(&self, repo_path: PathBuf) -> GitFuture<Result<bool, GitError>>;
 
     /// Filters `paths` to files that are staged and still contain conflict
     /// markers in `repo_path`.
@@ -137,13 +137,14 @@ pub trait GitClient: Send + Sync {
         &self,
         repo_path: PathBuf,
         paths: Vec<String>,
-    ) -> GitFuture<Result<Vec<String>, String>>;
+    ) -> GitFuture<Result<Vec<String>, GitError>>;
 
     /// Lists files currently marked conflicted in the index for `repo_path`.
     ///
     /// # Errors
     /// Returns an error when conflict state cannot be queried.
-    fn list_conflicted_files(&self, repo_path: PathBuf) -> GitFuture<Result<Vec<String>, String>>;
+    fn list_conflicted_files(&self, repo_path: PathBuf)
+    -> GitFuture<Result<Vec<String>, GitError>>;
 
     /// Stages and commits all changes in `repo_path` using `message`.
     ///
@@ -156,7 +157,7 @@ pub trait GitClient: Send + Sync {
         repo_path: PathBuf,
         message: String,
         no_verify: bool,
-    ) -> GitFuture<Result<(), String>>;
+    ) -> GitFuture<Result<(), GitError>>;
 
     /// Commits all changes while preserving one evolving session commit in
     /// `repo_path`.
@@ -173,26 +174,29 @@ pub trait GitClient: Send + Sync {
         commit_message: String,
         message_strategy: SingleCommitMessageStrategy,
         no_verify: bool,
-    ) -> GitFuture<Result<(), String>>;
+    ) -> GitFuture<Result<(), GitError>>;
 
     /// Stages all tracked and untracked changes in `repo_path`.
     ///
     /// # Errors
     /// Returns an error when `git add` fails.
-    fn stage_all(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>>;
+    fn stage_all(&self, repo_path: PathBuf) -> GitFuture<Result<(), GitError>>;
 
     /// Returns the short `HEAD` hash for `repo_path`.
     ///
     /// # Errors
     /// Returns an error when `HEAD` cannot be resolved.
-    fn head_short_hash(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
+    fn head_short_hash(&self, repo_path: PathBuf) -> GitFuture<Result<String, GitError>>;
 
     /// Returns the full `HEAD` commit message for `repo_path`, or `None` when
     /// no commits exist.
     ///
     /// # Errors
     /// Returns an error when `HEAD` cannot be inspected.
-    fn head_commit_message(&self, repo_path: PathBuf) -> GitFuture<Result<Option<String>, String>>;
+    fn head_commit_message(
+        &self,
+        repo_path: PathBuf,
+    ) -> GitFuture<Result<Option<String>, GitError>>;
 
     /// Deletes `branch_name` in `repo_path`.
     ///
@@ -203,20 +207,20 @@ pub trait GitClient: Send + Sync {
         &self,
         repo_path: PathBuf,
         branch_name: String,
-    ) -> GitFuture<Result<(), String>>;
+    ) -> GitFuture<Result<(), GitError>>;
 
     /// Returns a patch diff from `base_branch` to current `HEAD` in
     /// `repo_path`.
     ///
     /// # Errors
     /// Returns an error when refs are invalid or diff generation fails.
-    fn diff(&self, repo_path: PathBuf, base_branch: String) -> GitFuture<Result<String, String>>;
+    fn diff(&self, repo_path: PathBuf, base_branch: String) -> GitFuture<Result<String, GitError>>;
 
     /// Returns whether the worktree in `repo_path` has no local changes.
     ///
     /// # Errors
     /// Returns an error when status inspection fails.
-    fn is_worktree_clean(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>>;
+    fn is_worktree_clean(&self, repo_path: PathBuf) -> GitFuture<Result<bool, GitError>>;
 
     /// Returns whether `HEAD` contains commits not reachable from
     /// `base_branch`.
@@ -227,13 +231,13 @@ pub trait GitClient: Send + Sync {
         &self,
         repo_path: PathBuf,
         base_branch: String,
-    ) -> GitFuture<Result<bool, String>>;
+    ) -> GitFuture<Result<bool, GitError>>;
 
     /// Performs a `pull --rebase` in `repo_path`.
     ///
     /// # Errors
     /// Returns an error when pull/rebase setup fails.
-    fn pull_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<PullRebaseResult, String>>;
+    fn pull_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<PullRebaseResult, GitError>>;
 
     /// Pushes the currently checked out branch for `repo_path` with
     /// `--force-with-lease` and returns the configured upstream reference
@@ -241,7 +245,7 @@ pub trait GitClient: Send + Sync {
     ///
     /// # Errors
     /// Returns an error when remote push fails.
-    fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
+    fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<String, GitError>>;
 
     /// Pushes the current branch for `repo_path` to one explicit remote branch
     /// name with `--force-with-lease` and returns the configured upstream
@@ -253,25 +257,26 @@ pub trait GitClient: Send + Sync {
         &self,
         repo_path: PathBuf,
         remote_branch_name: String,
-    ) -> GitFuture<Result<String, String>>;
+    ) -> GitFuture<Result<String, GitError>>;
 
     /// Resolves the current upstream reference for `repo_path`.
     ///
     /// # Errors
     /// Returns an error when upstream tracking information is unavailable.
-    fn current_upstream_reference(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
+    fn current_upstream_reference(&self, repo_path: PathBuf)
+    -> GitFuture<Result<String, GitError>>;
 
     /// Fetches remote refs for `repo_path`.
     ///
     /// # Errors
     /// Returns an error when fetch fails.
-    fn fetch_remote(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>>;
+    fn fetch_remote(&self, repo_path: PathBuf) -> GitFuture<Result<(), GitError>>;
 
     /// Reads ahead/behind commit counts for `repo_path`.
     ///
     /// # Errors
     /// Returns an error when upstream tracking information is unavailable.
-    fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), String>>;
+    fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), GitError>>;
 
     /// Reads ahead/behind snapshots for all local branches that track an
     /// upstream.
@@ -284,7 +289,7 @@ pub trait GitClient: Send + Sync {
     fn branch_tracking_statuses(
         &self,
         repo_path: PathBuf,
-    ) -> GitFuture<Result<HashMap<String, Option<(u32, u32)>>, String>>;
+    ) -> GitFuture<Result<BranchTrackingMap, GitError>>;
 
     /// Returns commit subjects that exist in upstream but not in local
     /// `HEAD`.
@@ -295,7 +300,7 @@ pub trait GitClient: Send + Sync {
     fn list_upstream_commit_titles(
         &self,
         repo_path: PathBuf,
-    ) -> GitFuture<Result<Vec<String>, String>>;
+    ) -> GitFuture<Result<Vec<String>, GitError>>;
 
     /// Returns commit subjects that exist in local `HEAD` but not in upstream.
     ///
@@ -305,19 +310,19 @@ pub trait GitClient: Send + Sync {
     fn list_local_commit_titles(
         &self,
         repo_path: PathBuf,
-    ) -> GitFuture<Result<Vec<String>, String>>;
+    ) -> GitFuture<Result<Vec<String>, GitError>>;
 
     /// Reads the configured origin URL for `repo_path`.
     ///
     /// # Errors
     /// Returns an error when origin is missing or cannot be resolved.
-    fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>>;
+    fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, GitError>>;
 
     /// Resolves the main repository root for a repository or worktree path.
     ///
     /// # Errors
     /// Returns an error when the main repository cannot be resolved.
-    fn main_repo_root(&self, repo_path: PathBuf) -> GitFuture<Result<PathBuf, String>>;
+    fn main_repo_root(&self, repo_path: PathBuf) -> GitFuture<Result<PathBuf, GitError>>;
 }
 
 /// Production [`GitClient`] implementation backed by real git commands.
@@ -338,14 +343,20 @@ impl GitClient for RealGitClient {
         worktree_path: PathBuf,
         branch_name: String,
         base_branch: String,
-    ) -> GitFuture<Result<(), String>> {
+    ) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move {
-            create_worktree(repo_path, worktree_path, branch_name, base_branch).await
+            create_worktree(repo_path, worktree_path, branch_name, base_branch)
+                .await
+                .map_err(GitError::OutputParse)
         })
     }
 
-    fn remove_worktree(&self, worktree_path: PathBuf) -> GitFuture<Result<(), String>> {
-        Box::pin(async move { remove_worktree(worktree_path).await })
+    fn remove_worktree(&self, worktree_path: PathBuf) -> GitFuture<Result<(), GitError>> {
+        Box::pin(async move {
+            remove_worktree(worktree_path)
+                .await
+                .map_err(GitError::OutputParse)
+        })
     }
 
     fn squash_merge_diff(
@@ -353,7 +364,7 @@ impl GitClient for RealGitClient {
         repo_path: PathBuf,
         source_branch: String,
         target_branch: String,
-    ) -> GitFuture<Result<String, String>> {
+    ) -> GitFuture<Result<String, GitError>> {
         Box::pin(async move { squash_merge_diff(repo_path, source_branch, target_branch).await })
     }
 
@@ -363,13 +374,13 @@ impl GitClient for RealGitClient {
         source_branch: String,
         target_branch: String,
         commit_message: String,
-    ) -> GitFuture<Result<SquashMergeOutcome, String>> {
+    ) -> GitFuture<Result<SquashMergeOutcome, GitError>> {
         Box::pin(async move {
             squash_merge(repo_path, source_branch, target_branch, commit_message).await
         })
     }
 
-    fn rebase(&self, repo_path: PathBuf, target_branch: String) -> GitFuture<Result<(), String>> {
+    fn rebase(&self, repo_path: PathBuf, target_branch: String) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move { rebase::rebase(repo_path, target_branch).await })
     }
 
@@ -377,23 +388,23 @@ impl GitClient for RealGitClient {
         &self,
         repo_path: PathBuf,
         target_branch: String,
-    ) -> GitFuture<Result<RebaseStepResult, String>> {
+    ) -> GitFuture<Result<RebaseStepResult, GitError>> {
         Box::pin(async move { rebase_start(repo_path, target_branch).await })
     }
 
-    fn rebase_continue(&self, repo_path: PathBuf) -> GitFuture<Result<RebaseStepResult, String>> {
+    fn rebase_continue(&self, repo_path: PathBuf) -> GitFuture<Result<RebaseStepResult, GitError>> {
         Box::pin(async move { rebase_continue(repo_path).await })
     }
 
-    fn abort_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>> {
+    fn abort_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move { abort_rebase(repo_path).await })
     }
 
-    fn is_rebase_in_progress(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>> {
+    fn is_rebase_in_progress(&self, repo_path: PathBuf) -> GitFuture<Result<bool, GitError>> {
         Box::pin(async move { is_rebase_in_progress(repo_path).await })
     }
 
-    fn has_unmerged_paths(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>> {
+    fn has_unmerged_paths(&self, repo_path: PathBuf) -> GitFuture<Result<bool, GitError>> {
         Box::pin(async move { has_unmerged_paths(repo_path).await })
     }
 
@@ -401,11 +412,14 @@ impl GitClient for RealGitClient {
         &self,
         repo_path: PathBuf,
         paths: Vec<String>,
-    ) -> GitFuture<Result<Vec<String>, String>> {
+    ) -> GitFuture<Result<Vec<String>, GitError>> {
         Box::pin(async move { list_staged_conflict_marker_files(repo_path, paths).await })
     }
 
-    fn list_conflicted_files(&self, repo_path: PathBuf) -> GitFuture<Result<Vec<String>, String>> {
+    fn list_conflicted_files(
+        &self,
+        repo_path: PathBuf,
+    ) -> GitFuture<Result<Vec<String>, GitError>> {
         Box::pin(async move { list_conflicted_files(repo_path).await })
     }
 
@@ -414,7 +428,7 @@ impl GitClient for RealGitClient {
         repo_path: PathBuf,
         message: String,
         no_verify: bool,
-    ) -> GitFuture<Result<(), String>> {
+    ) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move { commit_all(repo_path, message, no_verify).await })
     }
 
@@ -425,7 +439,7 @@ impl GitClient for RealGitClient {
         commit_message: String,
         message_strategy: SingleCommitMessageStrategy,
         no_verify: bool,
-    ) -> GitFuture<Result<(), String>> {
+    ) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move {
             commit_all_preserving_single_commit(
                 repo_path,
@@ -438,15 +452,18 @@ impl GitClient for RealGitClient {
         })
     }
 
-    fn stage_all(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>> {
+    fn stage_all(&self, repo_path: PathBuf) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move { stage_all(repo_path).await })
     }
 
-    fn head_short_hash(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
+    fn head_short_hash(&self, repo_path: PathBuf) -> GitFuture<Result<String, GitError>> {
         Box::pin(async move { head_short_hash(repo_path).await })
     }
 
-    fn head_commit_message(&self, repo_path: PathBuf) -> GitFuture<Result<Option<String>, String>> {
+    fn head_commit_message(
+        &self,
+        repo_path: PathBuf,
+    ) -> GitFuture<Result<Option<String>, GitError>> {
         Box::pin(async move { head_commit_message(repo_path).await })
     }
 
@@ -454,15 +471,15 @@ impl GitClient for RealGitClient {
         &self,
         repo_path: PathBuf,
         branch_name: String,
-    ) -> GitFuture<Result<(), String>> {
+    ) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move { delete_branch(repo_path, branch_name).await })
     }
 
-    fn diff(&self, repo_path: PathBuf, base_branch: String) -> GitFuture<Result<String, String>> {
+    fn diff(&self, repo_path: PathBuf, base_branch: String) -> GitFuture<Result<String, GitError>> {
         Box::pin(async move { diff(repo_path, base_branch).await })
     }
 
-    fn is_worktree_clean(&self, repo_path: PathBuf) -> GitFuture<Result<bool, String>> {
+    fn is_worktree_clean(&self, repo_path: PathBuf) -> GitFuture<Result<bool, GitError>> {
         Box::pin(async move { is_worktree_clean(repo_path).await })
     }
 
@@ -470,15 +487,15 @@ impl GitClient for RealGitClient {
         &self,
         repo_path: PathBuf,
         base_branch: String,
-    ) -> GitFuture<Result<bool, String>> {
+    ) -> GitFuture<Result<bool, GitError>> {
         Box::pin(async move { has_commits_since(repo_path, base_branch).await })
     }
 
-    fn pull_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<PullRebaseResult, String>> {
+    fn pull_rebase(&self, repo_path: PathBuf) -> GitFuture<Result<PullRebaseResult, GitError>> {
         Box::pin(async move { pull_rebase(repo_path).await })
     }
 
-    fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
+    fn push_current_branch(&self, repo_path: PathBuf) -> GitFuture<Result<String, GitError>> {
         Box::pin(async move { push_current_branch(repo_path).await })
     }
 
@@ -486,51 +503,58 @@ impl GitClient for RealGitClient {
         &self,
         repo_path: PathBuf,
         remote_branch_name: String,
-    ) -> GitFuture<Result<String, String>> {
+    ) -> GitFuture<Result<String, GitError>> {
         Box::pin(async move {
             push_current_branch_to_remote_branch(repo_path, remote_branch_name).await
         })
     }
 
-    fn current_upstream_reference(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
+    fn current_upstream_reference(
+        &self,
+        repo_path: PathBuf,
+    ) -> GitFuture<Result<String, GitError>> {
         Box::pin(async move { current_upstream_reference(repo_path).await })
     }
 
-    fn fetch_remote(&self, repo_path: PathBuf) -> GitFuture<Result<(), String>> {
+    fn fetch_remote(&self, repo_path: PathBuf) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move { fetch_remote(repo_path).await })
     }
 
-    fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), String>> {
+    fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), GitError>> {
         Box::pin(async move { get_ahead_behind(repo_path).await })
     }
 
     fn branch_tracking_statuses(
         &self,
         repo_path: PathBuf,
-    ) -> GitFuture<Result<HashMap<String, Option<(u32, u32)>>, String>> {
+    ) -> GitFuture<Result<BranchTrackingMap, GitError>> {
         Box::pin(async move { branch_tracking_statuses(repo_path).await })
     }
 
     fn list_upstream_commit_titles(
         &self,
         repo_path: PathBuf,
-    ) -> GitFuture<Result<Vec<String>, String>> {
+    ) -> GitFuture<Result<Vec<String>, GitError>> {
         Box::pin(async move { list_upstream_commit_titles(repo_path).await })
     }
 
     fn list_local_commit_titles(
         &self,
         repo_path: PathBuf,
-    ) -> GitFuture<Result<Vec<String>, String>> {
+    ) -> GitFuture<Result<Vec<String>, GitError>> {
         Box::pin(async move { list_local_commit_titles(repo_path).await })
     }
 
-    fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, String>> {
-        Box::pin(async move { repo_url(repo_path).await })
+    fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, GitError>> {
+        Box::pin(async move { repo_url(repo_path).await.map_err(GitError::OutputParse) })
     }
 
-    fn main_repo_root(&self, repo_path: PathBuf) -> GitFuture<Result<PathBuf, String>> {
-        Box::pin(async move { main_repo_root(repo_path).await })
+    fn main_repo_root(&self, repo_path: PathBuf) -> GitFuture<Result<PathBuf, GitError>> {
+        Box::pin(async move {
+            main_repo_root(repo_path)
+                .await
+                .map_err(GitError::OutputParse)
+        })
     }
 }
 
@@ -614,7 +638,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(result, Ok(SquashMergeOutcome::Committed));
+        assert_eq!(
+            result.expect("squash merge should succeed"),
+            SquashMergeOutcome::Committed,
+        );
     }
 
     #[tokio::test]
@@ -641,7 +668,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(result, Ok(SquashMergeOutcome::AlreadyPresentInTarget));
+        assert_eq!(
+            result.expect("squash merge should succeed"),
+            SquashMergeOutcome::AlreadyPresentInTarget,
+        );
     }
 
     #[tokio::test]
@@ -666,7 +696,10 @@ mod tests {
         let head_message = run_git_command_stdout(dir.path(), &["log", "-1", "--pretty=%B"]);
 
         // Assert
-        assert_eq!(result, Ok(()));
+        assert!(
+            result.is_ok(),
+            "commit_all_preserving_single_commit should succeed: {result:?}"
+        );
         assert_eq!(commit_count, "2");
         assert_eq!(head_message, commit_message);
     }
@@ -705,7 +738,7 @@ mod tests {
         let second_count = run_git_command_stdout(dir.path(), &["rev-list", "--count", "HEAD"]);
 
         // Assert
-        assert_eq!(result, Ok(()));
+        assert!(result.is_ok(), "amend commit should succeed: {result:?}");
         assert_ne!(first_hash, second_hash);
         assert_eq!(first_count, second_count);
     }
@@ -740,7 +773,10 @@ mod tests {
         let head_message = run_git_command_stdout(dir.path(), &["log", "-1", "--pretty=%B"]);
 
         // Assert
-        assert_eq!(result, Ok(()));
+        assert!(
+            result.is_ok(),
+            "replace amended message should succeed: {result:?}"
+        );
         assert_eq!(head_message, "Refined session message");
     }
 
@@ -774,7 +810,10 @@ mod tests {
         let head_message = run_git_command_stdout(dir.path(), &["log", "-1", "--pretty=%B"]);
 
         // Assert
-        assert_eq!(result, Ok(()));
+        assert!(
+            result.is_ok(),
+            "retry with index lock should succeed: {result:?}"
+        );
         assert_eq!(head_message, commit_message);
     }
 
@@ -950,7 +989,7 @@ mod tests {
         let result = abort_rebase(dir.path().to_path_buf()).await;
 
         // Assert
-        assert_eq!(result, Ok(()));
+        assert!(result.is_ok(), "abort_rebase should succeed: {result:?}");
         assert!(!stale_rebase_dir.exists());
     }
 
@@ -1024,7 +1063,10 @@ mod tests {
         let result = pull_rebase(dir.path().to_path_buf()).await;
 
         // Assert
-        assert_eq!(result, Ok(PullRebaseResult::Completed));
+        assert!(
+            matches!(result, Ok(PullRebaseResult::Completed)),
+            "pull_rebase should complete: {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -1074,7 +1116,10 @@ mod tests {
         let result = pull_rebase(dir.path().to_path_buf()).await;
 
         // Assert
-        assert_eq!(result, Ok(PullRebaseResult::Completed));
+        assert!(
+            matches!(result, Ok(PullRebaseResult::Completed)),
+            "pull_rebase with local upstream should complete: {result:?}"
+        );
     }
 
     #[tokio::test]

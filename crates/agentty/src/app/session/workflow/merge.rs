@@ -633,7 +633,8 @@ impl SessionManager {
 
             git_client
                 .squash_merge(repo_root, source_branch, base_branch, commit_message)
-                .await?
+                .await
+                .map_err(|error| error.to_string())?
         } else {
             git::SquashMergeOutcome::AlreadyPresentInTarget
         };
@@ -713,7 +714,10 @@ impl SessionManager {
         git_client: &dyn GitClient,
         folder: PathBuf,
     ) -> Result<String, String> {
-        let commit_message = git_client.head_commit_message(folder).await?;
+        let commit_message = git_client
+            .head_commit_message(folder)
+            .await
+            .map_err(|error| error.to_string())?;
         let Some(commit_message) = commit_message else {
             return Err("Session branch has no commit message to reuse for merge".to_string());
         };
@@ -851,7 +855,7 @@ impl SessionManager {
         let is_default_branch_clean = git_client
             .is_worktree_clean(working_dir.clone())
             .await
-            .map_err(SyncSessionStartError::Other)?;
+            .map_err(|error| SyncSessionStartError::Other(error.to_string()))?;
         if !is_default_branch_clean {
             return Err(SyncSessionStartError::MainHasUncommittedChanges {
                 default_branch: default_branch.clone(),
@@ -867,7 +871,7 @@ impl SessionManager {
         let pull_result = git_client
             .pull_rebase(working_dir.clone())
             .await
-            .map_err(SyncSessionStartError::Other)?;
+            .map_err(|error| SyncSessionStartError::Other(error.to_string()))?;
         let mut resolved_conflict_files = Vec::new();
         if let git::PullRebaseResult::Conflict { detail } = pull_result {
             let sync_rebase_input = SyncRebaseAssistInput {
@@ -898,7 +902,7 @@ impl SessionManager {
         git_client
             .push_current_branch(working_dir)
             .await
-            .map_err(SyncSessionStartError::Other)?;
+            .map_err(|error| SyncSessionStartError::Other(error.to_string()))?;
 
         let (pulled_commits, pushed_commits) = Self::summarize_sync_ahead_behind_counts(
             ahead_behind_before_pull,
@@ -957,12 +961,14 @@ impl SessionManager {
         let mut conflicted = input
             .git_client
             .list_conflicted_files(folder.clone())
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
 
         let staged_with_markers = input
             .git_client
             .list_staged_conflict_marker_files(folder, previous_conflict_files.to_vec())
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         for file in staged_with_markers {
             if !conflicted.contains(&file) {
                 conflicted.push(file);
@@ -998,10 +1004,19 @@ impl SessionManager {
         conflict_files: &[String],
     ) -> Result<bool, String> {
         let folder = input.folder.clone();
-        input.git_client.stage_all(folder).await?;
+        input
+            .git_client
+            .stage_all(folder)
+            .await
+            .map_err(|error| error.to_string())?;
 
         let folder = input.folder.clone();
-        if input.git_client.has_unmerged_paths(folder).await? {
+        if input
+            .git_client
+            .has_unmerged_paths(folder)
+            .await
+            .map_err(|error| error.to_string())?
+        {
             return Ok(true);
         }
 
@@ -1009,7 +1024,8 @@ impl SessionManager {
         let staged_with_markers = input
             .git_client
             .list_staged_conflict_marker_files(folder, conflict_files.to_vec())
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
 
         Ok(!staged_with_markers.is_empty())
     }
@@ -1023,7 +1039,11 @@ impl SessionManager {
         input: &SyncRebaseAssistInput,
     ) -> Result<git::RebaseStepResult, String> {
         let folder = input.folder.clone();
-        let result = input.git_client.rebase_continue(folder).await?;
+        let result = input
+            .git_client
+            .rebase_continue(folder)
+            .await
+            .map_err(|error| error.to_string())?;
 
         Ok(result)
     }
@@ -1391,7 +1411,11 @@ impl SessionManager {
     /// Returns an error if git state cannot be queried.
     async fn is_rebase_in_progress(input: &RebaseAssistInput) -> Result<bool, String> {
         let folder = input.folder.clone();
-        let is_rebase_in_progress = input.git_client.is_rebase_in_progress(folder).await?;
+        let is_rebase_in_progress = input
+            .git_client
+            .is_rebase_in_progress(folder)
+            .await
+            .map_err(|error| error.to_string())?;
 
         Ok(is_rebase_in_progress)
     }
@@ -1415,13 +1439,18 @@ impl SessionManager {
         {
             Ok(result) => Ok(result),
             Err(error) => {
-                if !Self::is_stale_rebase_state_error(&error) {
-                    return Err(error);
+                let error_string = error.to_string();
+                if !Self::is_stale_rebase_state_error(&error_string) {
+                    return Err(error_string);
                 }
 
-                Self::recover_from_stale_rebase_start_error(input, &error).await?;
+                Self::recover_from_stale_rebase_start_error(input, &error_string).await?;
 
-                input.git_client.rebase_start(folder, base_branch).await
+                input
+                    .git_client
+                    .rebase_start(folder, base_branch)
+                    .await
+                    .map_err(|error| error.to_string())
             }
         }
     }
@@ -1481,12 +1510,14 @@ impl SessionManager {
         let mut conflicted = input
             .git_client
             .list_conflicted_files(folder.clone())
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
 
         let staged_with_markers = input
             .git_client
             .list_staged_conflict_marker_files(folder, previous_conflict_files.to_vec())
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         for file in staged_with_markers {
             if !conflicted.contains(&file) {
                 conflicted.push(file);
@@ -1549,10 +1580,19 @@ impl SessionManager {
         conflict_files: &[String],
     ) -> Result<bool, String> {
         let folder = input.folder.clone();
-        input.git_client.stage_all(folder).await?;
+        input
+            .git_client
+            .stage_all(folder)
+            .await
+            .map_err(|error| error.to_string())?;
 
         let folder = input.folder.clone();
-        if input.git_client.has_unmerged_paths(folder).await? {
+        if input
+            .git_client
+            .has_unmerged_paths(folder)
+            .await
+            .map_err(|error| error.to_string())?
+        {
             return Ok(true);
         }
 
@@ -1560,7 +1600,8 @@ impl SessionManager {
         let staged_with_markers = input
             .git_client
             .list_staged_conflict_marker_files(folder, conflict_files.to_vec())
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
 
         Ok(!staged_with_markers.is_empty())
     }
@@ -1573,7 +1614,11 @@ impl SessionManager {
         input: &RebaseAssistInput,
     ) -> Result<git::RebaseStepResult, String> {
         let folder = input.folder.clone();
-        let result = input.git_client.rebase_continue(folder).await?;
+        let result = input
+            .git_client
+            .rebase_continue(folder)
+            .await
+            .map_err(|error| error.to_string())?;
 
         Ok(result)
     }
@@ -1669,10 +1714,16 @@ impl SessionManager {
             None => git_client.main_repo_root(folder.clone()).await.ok(),
         };
 
-        git_client.remove_worktree(folder.clone()).await?;
+        git_client
+            .remove_worktree(folder.clone())
+            .await
+            .map_err(|error| error.to_string())?;
 
         if let Some(repo_root) = repo_root {
-            git_client.delete_branch(repo_root, source_branch).await?;
+            git_client
+                .delete_branch(repo_root, source_branch)
+                .await
+                .map_err(|error| error.to_string())?;
         }
 
         let _ = fs_client.remove_dir_all(folder).await;
@@ -1687,6 +1738,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::*;
+    use crate::infra::git::GitError;
 
     /// Builds a filesystem mock that delegates operations to local disk.
     fn create_passthrough_mock_fs_client() -> fs::MockFsClient {
@@ -2225,7 +2277,9 @@ mod tests {
             .expect_is_rebase_in_progress()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_| Box::pin(async { Err("state query failed".to_string()) }));
+            .returning(|_| {
+                Box::pin(async { Err(GitError::OutputParse("state query failed".to_string())) })
+            });
         mock_git_client
             .expect_abort_rebase()
             .times(1)
@@ -2254,7 +2308,13 @@ mod tests {
             .expect_list_conflicted_files()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_| Box::pin(async { Err("failed to list conflicts".to_string()) }));
+            .returning(|_| {
+                Box::pin(async {
+                    Err(GitError::OutputParse(
+                        "failed to list conflicts".to_string(),
+                    ))
+                })
+            });
         mock_git_client
             .expect_abort_rebase()
             .times(1)
@@ -2402,10 +2462,10 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_, _| {
                 Box::pin(async {
-                    Err(
+                    Err(GitError::OutputParse(
                         "fatal: It seems that there is already a rebase-merge directory"
                             .to_string(),
-                    )
+                    ))
                 })
             });
         mock_git_client
@@ -2439,17 +2499,19 @@ mod tests {
             .in_sequence(&mut sequence)
             .returning(|_, _| {
                 Box::pin(async {
-                    Err(
+                    Err(GitError::OutputParse(
                         "fatal: It seems that there is already a rebase-merge directory"
                             .to_string(),
-                    )
+                    ))
                 })
             });
         mock_git_client
             .expect_abort_rebase()
             .times(1)
             .in_sequence(&mut sequence)
-            .returning(|_| Box::pin(async { Err("abort failed".to_string()) }));
+            .returning(|_| {
+                Box::pin(async { Err(GitError::OutputParse("abort failed".to_string())) })
+            });
         let (_temp_dir, input) =
             build_rebase_assist_input_for_test(Arc::new(mock_git_client)).await;
 
@@ -2482,7 +2544,9 @@ mod tests {
         mock_git_client
             .expect_delete_branch()
             .times(1)
-            .returning(|_, _| Box::pin(async { Err("delete failed".to_string()) }));
+            .returning(|_, _| {
+                Box::pin(async { Err(GitError::OutputParse("delete failed".to_string())) })
+            });
         mock_fs_client.expect_remove_dir_all().times(0);
 
         // Act
