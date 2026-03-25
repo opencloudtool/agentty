@@ -237,6 +237,7 @@ pub enum HelpContext {
     List { keybindings: Vec<HelpAction> },
     View {
         done_session_output_mode: DoneSessionOutputMode,
+        has_review_request: bool,
         review_status_message: Option<String>,
         review_text: Option<String>,
         publish_branch_action: Option<PublishBranchAction>,
@@ -257,10 +258,12 @@ impl HelpContext {
     pub fn keybindings(&self) -> Vec<HelpAction> {
         match self {
             HelpContext::View {
+                has_review_request,
                 publish_branch_action,
                 session_state,
                 ..
             } => help_action::view_actions(ViewHelpState {
+                has_review_request: *has_review_request,
                 publish_branch_action: *publish_branch_action,
                 session_state: *session_state,
             }),
@@ -366,6 +369,7 @@ mod tests {
         // Arrange
         let context = HelpContext::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
+            has_review_request: false,
             review_status_message: None,
             review_text: None,
             publish_branch_action: None,
@@ -394,6 +398,7 @@ mod tests {
         // Arrange
         let context = HelpContext::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
+            has_review_request: false,
             review_status_message: Some("Preparing review...".to_string()),
             review_text: Some("Ready".to_string()),
             publish_branch_action: Some(PublishBranchAction::Push),
@@ -425,6 +430,7 @@ mod tests {
         // Arrange
         let context = HelpContext::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
+            has_review_request: false,
             review_status_message: None,
             review_text: None,
             publish_branch_action: Some(PublishBranchAction::Push),

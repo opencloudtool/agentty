@@ -1302,6 +1302,37 @@ impl SessionManager {
     /// Cancels a session that is currently in review and drops its worktree.
     ///
     /// Persisted transcript metadata remains available after the worktree
+    /// Transitions an externally merged session to `Done` and emits a refresh.
+    ///
+    /// Called by the sync review-request reducer when the forge reports the
+    /// review request as merged. The session transitions to `Done` and
+    /// `RefreshSessions` fires via `update_status` so the session list
+    /// reflects the archived state before the background worktree cleanup
+    /// finishes.
+    ///
+    /// Returns `true` when the transition succeeded, `false` when the session
+    /// handles were missing or the status transition was rejected.
+    pub async fn complete_externally_merged_session(
+        &self,
+        services: &AppServices,
+        session_id: &str,
+    ) -> bool {
+        let Some(handles) = self.state().handles.get(session_id) else {
+            return false;
+        };
+        let status = Arc::clone(&handles.status);
+        let app_event_tx = services.event_sender();
+
+        SessionTaskService::update_status(
+            &status,
+            services.db(),
+            &app_event_tx,
+            session_id,
+            Status::Done,
+        )
+        .await
+    }
+
     /// checkout and session branch are removed.
     ///
     /// # Errors

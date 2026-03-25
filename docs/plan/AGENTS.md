@@ -15,6 +15,8 @@ Keep size budgeting in the skill workflow only; do not render `### Size` section
 
 - [`forge_review_request_support.md`](forge_review_request_support.md) - Implementation plan for adding forge-generic review request workflows across GitHub and GitLab.
 
+- [`sync_review_request.md`](sync_review_request.md) - Implementation plan for a manual `s` keybinding in session view that syncs review request status from the forge and transitions merged sessions to `Done` with worktree cleanup.
+
 - [`session_follow_up_tasks.md`](session_follow_up_tasks.md) - Implementation plan for session-emitted low-severity nitpick follow-up tasks that can launch sibling sessions while the source session stays active.
 
 - [`local_agent_availability.md`](local_agent_availability.md) - Implementation plan for startup-time agent CLI discovery and filtering settings plus `/model` choices to locally available backends.

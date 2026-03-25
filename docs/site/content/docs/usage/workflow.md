@@ -43,12 +43,12 @@ Session statuses and what you can do in each state:
 |--------|-------------|-------------------|
 | **New** | Session created, prompt not yet sent. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, scroll, help |
 | **InProgress** | Agent is actively working. | `o` open worktree, scroll, help |
-| **Review** | Agent finished; changes are ready for review. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, scroll, help |
+| **Review** | Agent finished; changes are ready for review. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, `s` sync review request, scroll, help |
 | **Question** | Agent requested clarification before continuing. | question input mode (`Enter` submit, `Esc` skip, text editing keys) |
 | **Queued** | Session is waiting in the merge queue. | read-only view (`q`, scroll, help) |
 | **Rebasing** | Worktree branch is rebasing onto the base branch. | `o` open worktree, scroll, help |
 | **Merging** | Changes are being merged into the base branch. | read-only view (`q`, scroll, help) |
-| **Done** | Session completed, merged, and its worktree checkout was removed. | `t` toggle summary/output, scroll, help |
+| **Done** | Session completed, merged (locally or externally), and its worktree checkout was removed. | `t` toggle summary/output, scroll, help |
 | **Canceled** | Session was canceled by the user and its worktree checkout was removed. | read-only view (`q`, scroll, help) |
 
 Settings values are stored per active project. Switching projects reloads that
@@ -110,10 +110,26 @@ Branch publishing on `p` uses regular Git authentication only:
 - HTTPS remotes need a working credential helper or PAT.
 - SSH remotes need a working SSH key.
 
+## Sync Review Request
+
+<a id="usage-sync-review-request"></a>
+When a session has a linked review request and is in **Review** status, pressing
+`s` in session view checks the remote review request status:
+
+- **Merged**: the session transitions to **Done**, its worktree and branch are
+  cleaned up, and a confirmation popup shows the result.
+- **Open**: the popup reports the review request is still open; no changes are made.
+- **Closed** (without merge): the popup reports the review request was closed;
+  no automatic action is taken.
+
+This manual sync complements the merge queue path — it lets you mark sessions
+as done when the review request was merged externally (for example, through the
+forge web UI).
+
 ### Typical Transitions
 
 ```text
-New → InProgress → Review → Done
+New → InProgress → Review → Done (via sync or merge queue)
                          ↘ Canceled
                          ↘ Question → InProgress
                          ↘ Queued → Merging → Done

@@ -1,13 +1,16 @@
 //! Session refresh scheduling and post-reload view state restoration.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 use ag_forge as forge;
+use ag_forge::ReviewRequestClient;
 
 use super::SESSION_REFRESH_INTERVAL;
 use crate::app::{AppServices, ProjectManager, SessionManager};
-use crate::domain::session::{ForgeKind, ReviewRequest};
+use crate::domain::session::{ForgeKind, ReviewRequest, ReviewRequestState};
+use crate::infra::db::Database;
 use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode};
 
 impl SessionManager {
@@ -188,6 +191,41 @@ impl SessionManager {
                 .split_once("/-/merge_requests/")
                 .map(|(repo_url, _)| repo_url.to_string()),
         }
+    }
+
+    /// Performs a standalone review-request sync check for one session.
+    ///
+    /// This static method runs in a background task and returns only the
+    /// refreshed review-request state without needing `&mut self`. The caller
+    /// emits the result as an `AppEvent` for the reducer to apply.
+    ///
+    /// # Errors
+    /// Returns an error if the session has no linked review request, the forge
+    /// remote cannot be resolved, or the provider refresh fails.
+    pub(crate) async fn sync_review_request_for_session(
+        db: &Database,
+        review_request_client: Arc<dyn ReviewRequestClient>,
+        session_id: &str,
+    ) -> Result<ReviewRequestState, String> {
+        let review_request = db
+            .load_session_review_request(session_id)
+            .await
+            .map_err(|error| format!("Failed to load review request: {error}"))?
+            .ok_or_else(|| "Session has no linked review request".to_string())?;
+
+        let repo_url = Self::review_request_repo_url(&review_request).ok_or_else(|| {
+            "Failed to resolve repository remote for linked review request".to_string()
+        })?;
+        let remote = review_request_client
+            .detect_remote(repo_url)
+            .map_err(|error| error.detail_message())?;
+
+        let refreshed_summary = review_request_client
+            .refresh_review_request(remote, review_request.summary.display_id.clone())
+            .await
+            .map_err(|error| error.detail_message())?;
+
+        Ok(refreshed_summary.state)
     }
 
     /// Restores table selection after session list reload.

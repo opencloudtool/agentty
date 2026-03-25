@@ -76,6 +76,7 @@ state:
 | `f` | Focused review (regenerate if already viewing) |
 | `m` | Add to merge queue (confirmation popup) |
 | `r` | Rebase |
+| `s` | Sync review request status |
 | `j` / `k` | Scroll output |
 | `g` | Scroll to top |
 | `G` | Scroll to bottom |
@@ -92,6 +93,7 @@ Additional notes:
 - **Branch publish**: `p` is available in **Review** and opens a publish popup. Press `Enter` with an empty field to keep the default session branch target, or type a custom remote branch name first.
 - **Branch publish lock**: once a session branch already tracks a remote branch, Agentty locks the popup field and re-publishes to that same remote branch only.
 - **Branch publish auth**: `p` uses regular Git authentication only. HTTPS remotes need a credential helper or PAT, and SSH remotes need a working SSH key.
+- **Sync review request**: `s` is available in **Review** status when the session has a linked review request. It checks the forge for the current review request state and transitions the session to **Done** with worktree cleanup when merged.
 - **Question**: opening the session enters Question Input mode until all prompts are answered or skipped.
 - **Done**: `t` toggles between summary and full output.
 - **Review**: Runs in read-only review mode. It can use internet lookup

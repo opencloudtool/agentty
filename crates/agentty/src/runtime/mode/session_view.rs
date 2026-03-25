@@ -64,6 +64,7 @@ struct ViewKeyContext<'a> {
 /// Snapshot of session-derived state used by view-mode key handling.
 struct ViewSessionSnapshot {
     can_open_worktree: bool,
+    has_review_request: bool,
     is_action_allowed: bool,
     publish_branch_action: Option<PublishBranchAction>,
     session_output: String,
@@ -153,29 +154,7 @@ async fn handle_view_key(
                 pending_update.scroll_offset,
             );
         }
-        KeyCode::Char('j') | KeyCode::Down => {
-            pending_update.scroll_offset =
-                scroll_offset_down(pending_update.scroll_offset, view_metrics, 1);
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            pending_update.scroll_offset = Some(scroll_offset_up(
-                pending_update.scroll_offset,
-                view_metrics,
-                1,
-            ));
-        }
-        KeyCode::Char('g') => pending_update.scroll_offset = Some(0),
-        KeyCode::Char('G') => pending_update.scroll_offset = None,
-        KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-            pending_update.scroll_offset =
-                scroll_offset_half_page_down(pending_update.scroll_offset, view_metrics);
-        }
-        KeyCode::Char('u') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-            pending_update.scroll_offset = Some(scroll_offset_half_page_up(
-                pending_update.scroll_offset,
-                view_metrics,
-            ));
-        }
+        _ if handle_scroll_key(key, pending_update, view_metrics) => {}
         KeyCode::Char('d')
             if !key.modifiers.contains(event::KeyModifiers::CONTROL)
                 && is_view_diff_allowed(view_session_snapshot.session_status) =>
@@ -206,6 +185,17 @@ async fn handle_view_key(
         KeyCode::Char('r') if view_session_snapshot.is_action_allowed => {
             rebase_view_session(app, &view_context.session_id).await;
         }
+        KeyCode::Char('s')
+            if !key.modifiers.contains(event::KeyModifiers::CONTROL)
+                && is_view_sync_allowed(view_session_snapshot) =>
+        {
+            app.start_sync_review_request_action(
+                confirmation_view_mode(view_context),
+                &view_context.session_id,
+            );
+
+            return false;
+        }
         _ if is_done_output_toggle_key(view_session_snapshot.session_status, key) => {
             pending_update.done_session_output_mode =
                 pending_update.done_session_output_mode.toggled();
@@ -215,12 +205,50 @@ async fn handle_view_key(
             open_view_help_overlay(
                 app,
                 view_context,
+                view_session_snapshot.has_review_request,
                 view_session_snapshot.publish_branch_action,
                 view_session_snapshot.session_state,
             );
             return false;
         }
         _ => {}
+    }
+
+    true
+}
+
+/// Handles scroll-navigation keys (`j`/`k`/`g`/`G`/`Ctrl+d`/`Ctrl+u`) and
+/// returns `true` when the key was consumed.
+fn handle_scroll_key(
+    key: KeyEvent,
+    pending_update: &mut ViewPendingUpdate,
+    view_metrics: ViewMetrics,
+) -> bool {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            pending_update.scroll_offset =
+                scroll_offset_down(pending_update.scroll_offset, view_metrics, 1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            pending_update.scroll_offset = Some(scroll_offset_up(
+                pending_update.scroll_offset,
+                view_metrics,
+                1,
+            ));
+        }
+        KeyCode::Char('g') => pending_update.scroll_offset = Some(0),
+        KeyCode::Char('G') => pending_update.scroll_offset = None,
+        KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+            pending_update.scroll_offset =
+                scroll_offset_half_page_down(pending_update.scroll_offset, view_metrics);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+            pending_update.scroll_offset = Some(scroll_offset_half_page_up(
+                pending_update.scroll_offset,
+                view_metrics,
+            ));
+        }
+        _ => return false,
     }
 
     true
@@ -327,6 +355,7 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
     Some(ViewSessionSnapshot {
         can_open_worktree: is_view_worktree_open_allowed(session_status)
             && can_open_session_worktree(session_status),
+        has_review_request: session.review_request.is_some(),
         is_action_allowed: is_view_action_allowed(session_status),
         publish_branch_action: session.publish_branch_action(),
         session_output: session.output.clone(),
@@ -402,6 +431,11 @@ fn is_view_review_allowed(status: Status) -> bool {
     status == Status::Review
 }
 
+/// Returns whether the `s` shortcut can trigger review-request sync.
+fn is_view_sync_allowed(snapshot: &ViewSessionSnapshot) -> bool {
+    snapshot.session_status == Status::Review && snapshot.has_review_request
+}
+
 /// Switches the TUI mode from session view to the prompt input.
 fn switch_view_to_prompt(
     app: &mut App,
@@ -446,12 +480,14 @@ fn view_session_state(status: Status) -> ViewSessionState {
 fn open_view_help_overlay(
     app: &mut App,
     view_context: &ViewContext,
+    has_review_request: bool,
     publish_branch_action: Option<PublishBranchAction>,
     session_state: ViewSessionState,
 ) {
     app.mode = AppMode::Help {
         context: HelpContext::View {
             done_session_output_mode: view_context.done_session_output_mode,
+            has_review_request,
             review_status_message: view_context.review_status_message.clone(),
             review_text: view_context.review_text.clone(),
             publish_branch_action,
@@ -1772,6 +1808,7 @@ mod tests {
         open_view_help_overlay(
             &mut app,
             &view_context,
+            true,
             Some(PublishBranchAction::Push),
             ViewSessionState::Review,
         );
@@ -1782,6 +1819,7 @@ mod tests {
             AppMode::Help {
                 context: HelpContext::View {
                     done_session_output_mode: DoneSessionOutputMode::Review,
+                    has_review_request: true,
                     review_status_message: Some(ref status_message),
                     review_text: Some(ref review_text),
                     publish_branch_action: Some(PublishBranchAction::Push),
@@ -2142,6 +2180,7 @@ mod tests {
         let mut pending_update = ViewPendingUpdate::from_context(&view_context);
         let view_session_snapshot = ViewSessionSnapshot {
             can_open_worktree: false,
+            has_review_request: false,
             is_action_allowed: false,
             publish_branch_action: None,
             session_output: String::new(),
@@ -2214,6 +2253,7 @@ mod tests {
             let mut pending_update = ViewPendingUpdate::from_context(&view_context);
             let view_session_snapshot = ViewSessionSnapshot {
                 can_open_worktree: false,
+                has_review_request: false,
                 is_action_allowed: false,
                 publish_branch_action: None,
                 session_output: String::new(),
@@ -2294,5 +2334,106 @@ mod tests {
             pending_update.done_session_output_mode,
             DoneSessionOutputMode::Summary
         );
+    }
+
+    #[test]
+    fn test_is_view_sync_allowed_with_review_request_and_review_status() {
+        // Arrange
+        let snapshot = ViewSessionSnapshot {
+            can_open_worktree: false,
+            has_review_request: true,
+            is_action_allowed: true,
+            publish_branch_action: None,
+            session_output: String::new(),
+            session_state: ViewSessionState::Review,
+            session_status: Status::Review,
+        };
+
+        // Act
+        let allowed = is_view_sync_allowed(&snapshot);
+
+        // Assert
+        assert!(allowed);
+    }
+
+    #[test]
+    fn test_is_view_sync_allowed_with_review_request_and_question_status() {
+        // Arrange
+        let snapshot = ViewSessionSnapshot {
+            can_open_worktree: false,
+            has_review_request: true,
+            is_action_allowed: true,
+            publish_branch_action: None,
+            session_output: String::new(),
+            session_state: ViewSessionState::Interactive,
+            session_status: Status::Question,
+        };
+
+        // Act
+        let allowed = is_view_sync_allowed(&snapshot);
+
+        // Assert — Question sessions open in AppMode::Question, not View,
+        // so sync is not available in session view for Question status.
+        assert!(!allowed);
+    }
+
+    #[test]
+    fn test_is_view_sync_allowed_without_review_request() {
+        // Arrange
+        let snapshot = ViewSessionSnapshot {
+            can_open_worktree: false,
+            has_review_request: false,
+            is_action_allowed: true,
+            publish_branch_action: None,
+            session_output: String::new(),
+            session_state: ViewSessionState::Review,
+            session_status: Status::Review,
+        };
+
+        // Act
+        let allowed = is_view_sync_allowed(&snapshot);
+
+        // Assert
+        assert!(!allowed);
+    }
+
+    #[test]
+    fn test_is_view_sync_allowed_with_in_progress_status() {
+        // Arrange
+        let snapshot = ViewSessionSnapshot {
+            can_open_worktree: false,
+            has_review_request: true,
+            is_action_allowed: true,
+            publish_branch_action: None,
+            session_output: String::new(),
+            session_state: ViewSessionState::InProgress,
+            session_status: Status::InProgress,
+        };
+
+        // Act
+        let allowed = is_view_sync_allowed(&snapshot);
+
+        // Assert
+        assert!(!allowed);
+    }
+
+    #[test]
+    fn test_is_view_sync_allowed_with_done_status() {
+        // Arrange
+        let snapshot = ViewSessionSnapshot {
+            can_open_worktree: false,
+            has_review_request: true,
+            is_action_allowed: false,
+            publish_branch_action: None,
+            session_output: String::new(),
+            session_state: ViewSessionState::Done,
+            session_status: Status::Done,
+        };
+
+        // Act
+        let allowed = is_view_sync_allowed(&snapshot);
+
+        // Assert
+        assert!(!allowed);
     }
 }

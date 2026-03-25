@@ -5,11 +5,11 @@
 - Avoid near-identical local variable names in the same function (for example, `gitdir` and `git_dir`). Use one clear naming style with distinct, descriptive names.
 - Prefer `module.rs` plus `module/` for nested modules. Avoid `mod.rs` module roots.
 - Session status flow:
-  - Status state machine is: `New` -> (`InProgress` | `Rebasing`), (`Review` | `Question`) -> (`InProgress` | `Queued` | `Rebasing` | `Merging` | `Canceled`), `Queued` -> (`Merging` | `Review`), (`InProgress` | `Rebasing`) -> (`Review` | `Question`), and `Merging` -> (`Done` | `Review`).
+  - Status state machine is: `New` -> (`InProgress` | `Rebasing`), (`Review` | `Question`) -> (`InProgress` | `Queued` | `Rebasing` | `Merging` | `Canceled` | `Done`), `Queued` -> (`Merging` | `Review`), (`InProgress` | `Rebasing`) -> (`Review` | `Question`), and `Merging` -> (`Done` | `Review`).
   - `New` is set when `create_session()` creates a blank session before the user types a prompt.
   - `InProgress` can be entered from `New` (first prompt) or from `Review`/`Question` (reply).
   - `Question` is set when a completed turn returns structured clarification questions.
-  - `Done` can only be entered from `Merging` after local merge cleanup succeeds.
+  - `Done` can be entered from `Merging` after local merge cleanup succeeds, or from `Review`/`Question` when a sync detects an externally merged review request.
   - When agent response finishes, all changes are auto-committed and status is set to `Review` or `Question`.
   - While agent is preparing a response, status is `InProgress`.
 

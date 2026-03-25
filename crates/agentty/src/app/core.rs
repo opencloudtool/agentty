@@ -32,7 +32,9 @@ use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::input::InputState;
 use crate::domain::permission::PermissionMode;
 use crate::domain::project::{Project, ProjectListItem, project_name_from_path};
-use crate::domain::session::{PublishBranchAction, Session, SessionSize, Status};
+use crate::domain::session::{
+    PublishBranchAction, ReviewRequestState, Session, SessionSize, Status,
+};
 use crate::infra::agent::AgentResponse;
 use crate::infra::channel::TurnPrompt;
 use crate::infra::db::Database;
@@ -162,6 +164,18 @@ pub(crate) enum AppEvent {
         response: AgentResponse,
         session_id: String,
     },
+    /// Indicates completion of a review-request sync check for one session.
+    SyncReviewRequestCompleted {
+        restore_view: ConfirmationViewMode,
+        result: Result<ReviewRequestState, String>,
+        session_id: String,
+    },
+    /// Indicates completion of worktree cleanup after a sync-driven `Done`
+    /// transition.
+    SyncCleanupCompleted {
+        result: Result<(), String>,
+        session_id: String,
+    },
 }
 
 #[derive(Default)]
@@ -180,7 +194,9 @@ struct AppEventBatch {
     session_size_updates: HashMap<String, SessionSize>,
     session_progress_updates: HashMap<String, Option<String>>,
     should_force_reload: bool,
+    sync_cleanup_update: Option<SyncCleanupUpdate>,
     sync_main_result: Option<Result<SyncMainOutcome, SyncSessionStartError>>,
+    sync_review_request_update: Option<SyncReviewRequestUpdate>,
     update_status: Option<UpdateStatus>,
 }
 
@@ -197,6 +213,24 @@ struct ReviewUpdate {
     /// Hash of the diff that triggered this review, carried from the task.
     diff_hash: u64,
     result: Result<String, String>,
+}
+
+impl ReviewUpdate {
+    /// Builds a successful review update from a diff hash and review text.
+    fn success(diff_hash: u64, review_text: String) -> Self {
+        Self {
+            diff_hash,
+            result: Ok(review_text),
+        }
+    }
+
+    /// Builds a failed review update from a diff hash and error message.
+    fn failure(diff_hash: u64, error: String) -> Self {
+        Self {
+            diff_hash,
+            result: Err(error),
+        }
+    }
 }
 
 /// Mutable render-state target for one focused-review-capable mode.
@@ -238,6 +272,21 @@ impl BranchPublishTaskSession {
 struct BranchPublishActionUpdate {
     restore_view: ConfirmationViewMode,
     result: BranchPublishTaskResult,
+    session_id: String,
+}
+
+/// Final reducer payload for a completed review-request sync check.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SyncReviewRequestUpdate {
+    restore_view: ConfirmationViewMode,
+    result: Result<ReviewRequestState, String>,
+    session_id: String,
+}
+
+/// Final reducer payload for a completed sync-driven worktree cleanup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SyncCleanupUpdate {
+    result: Result<(), String>,
     session_id: String,
 }
 
@@ -1445,6 +1494,15 @@ impl App {
             self.mode = Self::sync_main_popup_mode(sync_main_result, &sync_popup_context);
         }
 
+        if let Some(sync_review_request_update) = event_batch.sync_review_request_update {
+            self.apply_sync_review_request_update(sync_review_request_update)
+                .await;
+        }
+
+        if let Some(sync_cleanup_update) = event_batch.sync_cleanup_update {
+            self.apply_sync_cleanup_update(sync_cleanup_update);
+        }
+
         self.handle_merge_queue_progress(&event_batch.session_ids, &previous_session_states)
             .await;
         self.retain_valid_session_progress_messages();
@@ -1729,6 +1787,202 @@ impl App {
             ),
         };
         self.mode = popup_mode;
+    }
+
+    /// Starts one review-request sync check for the given session and updates
+    /// the UI mode to a loading popup.
+    pub(crate) fn start_sync_review_request_action(
+        &mut self,
+        restore_view: ConfirmationViewMode,
+        session_id: &str,
+    ) {
+        let Some(session_index) = self.session_index_for_id(session_id) else {
+            return;
+        };
+        let Some(session) = self.sessions.sessions.get(session_index) else {
+            return;
+        };
+        if session.status != Status::Review {
+            return;
+        }
+        if session.review_request.is_none() {
+            return;
+        }
+
+        self.mode = Self::view_info_popup_mode(
+            "Sync review request".to_string(),
+            "Checking review request status...".to_string(),
+            true,
+            "Checking review request status...".to_string(),
+            restore_view.clone(),
+        );
+
+        let event_sender = self.services.event_sender();
+        let db = self.services.db().clone();
+        let review_request_client = self.services.review_request_client();
+        let session_id = session_id.to_string();
+        let background_restore_view = restore_view;
+
+        tokio::spawn(async move {
+            let result = SessionManager::sync_review_request_for_session(
+                &db,
+                review_request_client,
+                &session_id,
+            )
+            .await;
+            let _ = event_sender.send(AppEvent::SyncReviewRequestCompleted {
+                restore_view: background_restore_view,
+                result,
+                session_id,
+            });
+        });
+    }
+
+    /// Applies the outcome of a review-request sync check to the popup.
+    async fn apply_sync_review_request_update(&mut self, update: SyncReviewRequestUpdate) {
+        let SyncReviewRequestUpdate {
+            restore_view,
+            result,
+            session_id,
+        } = update;
+
+        match result {
+            Ok(ReviewRequestState::Merged) => {
+                let transitioned = self
+                    .sessions
+                    .complete_externally_merged_session(&self.services, &session_id)
+                    .await;
+
+                if !transitioned {
+                    self.mode = Self::view_info_popup_mode(
+                        "Sync failed".to_string(),
+                        "Review request is merged but the session could not be transitioned to \
+                         Done.\nTry again or delete the session manually."
+                            .to_string(),
+                        false,
+                        String::new(),
+                        restore_view,
+                    );
+
+                    return;
+                }
+
+                self.mode = Self::view_info_popup_mode(
+                    "Review request merged".to_string(),
+                    "Review request has been merged.\nSession marked as Done.\nCleaning up \
+                     worktree\u{2026}"
+                        .to_string(),
+                    true,
+                    "Cleaning up worktree\u{2026}".to_string(),
+                    restore_view,
+                );
+
+                let Some(folder) = self
+                    .sessions
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .map(|session| session.folder.clone())
+                else {
+                    let event_sender = self.services.event_sender();
+                    let _ = event_sender.send(AppEvent::SyncCleanupCompleted {
+                        result: Err("Session folder not found for worktree cleanup".to_string()),
+                        session_id,
+                    });
+
+                    return;
+                };
+                let event_sender = self.services.event_sender();
+                let fs_client = self.services.fs_client().clone();
+                let git_client = self.services.git_client();
+                let branch_name = session::session_branch(&session_id);
+                let cleanup_session_id = session_id;
+
+                tokio::spawn(async move {
+                    let result = SessionManager::cleanup_merged_session_worktree(
+                        folder,
+                        fs_client,
+                        git_client,
+                        branch_name,
+                        None,
+                    )
+                    .await;
+                    let _ = event_sender.send(AppEvent::SyncCleanupCompleted {
+                        result,
+                        session_id: cleanup_session_id,
+                    });
+                });
+            }
+            Ok(ReviewRequestState::Open) => {
+                self.mode = Self::view_info_popup_mode(
+                    "Review request open".to_string(),
+                    "Review request is still open.\nNo changes made.".to_string(),
+                    false,
+                    String::new(),
+                    restore_view,
+                );
+            }
+            Ok(ReviewRequestState::Closed) => {
+                self.mode = Self::view_info_popup_mode(
+                    "Review request closed".to_string(),
+                    "Review request was closed without merge.\nCancel the session to clean up."
+                        .to_string(),
+                    false,
+                    String::new(),
+                    restore_view,
+                );
+            }
+            Err(error) => {
+                self.mode = Self::view_info_popup_mode(
+                    "Sync failed".to_string(),
+                    format!("Failed to check review request status:\n{error}"),
+                    false,
+                    String::new(),
+                    restore_view,
+                );
+            }
+        }
+    }
+
+    /// Applies the outcome of a sync-driven worktree cleanup to the popup.
+    ///
+    /// Only mutates the popup when the active `ViewInfoPopup` belongs to the
+    /// same session that completed cleanup, preventing stale async events from
+    /// overwriting an unrelated popup.
+    fn apply_sync_cleanup_update(&mut self, update: SyncCleanupUpdate) {
+        let SyncCleanupUpdate { result, session_id } = update;
+
+        let AppMode::ViewInfoPopup {
+            is_loading,
+            message,
+            restore_view,
+            title,
+            ..
+        } = &mut self.mode
+        else {
+            return;
+        };
+        if restore_view.session_id != session_id {
+            return;
+        }
+
+        match result {
+            Ok(()) => {
+                *title = "Review request merged".to_string();
+                *message = "Review request has been merged.\nSession marked as Done.\nWorktree \
+                            cleaned up."
+                    .to_string();
+                *is_loading = false;
+            }
+            Err(error) => {
+                *title = "Review request merged".to_string();
+                *message = format!(
+                    "Review request has been merged.\nSession marked as Done.\nWorktree cleanup \
+                     failed: {error}\nRun manual cleanup or delete the session to retry."
+                );
+                *is_loading = false;
+            }
+        }
     }
 
     /// Detects sessions that just transitioned to `Review` and automatically
@@ -2845,26 +3099,16 @@ impl AppEventBatch {
                 review_text,
                 session_id,
             } => {
-                self.review_updates.insert(
-                    session_id,
-                    ReviewUpdate {
-                        diff_hash,
-                        result: Ok(review_text),
-                    },
-                );
+                self.review_updates
+                    .insert(session_id, ReviewUpdate::success(diff_hash, review_text));
             }
             AppEvent::ReviewPreparationFailed {
                 diff_hash,
                 error,
                 session_id,
             } => {
-                self.review_updates.insert(
-                    session_id,
-                    ReviewUpdate {
-                        diff_hash,
-                        result: Err(error),
-                    },
-                );
+                self.review_updates
+                    .insert(session_id, ReviewUpdate::failure(diff_hash, error));
             }
             AppEvent::SessionUpdated { session_id } => {
                 self.session_ids.insert(session_id);
@@ -2874,6 +3118,20 @@ impl AppEventBatch {
                 session_id,
             } => {
                 self.agent_responses.insert(session_id, response);
+            }
+            AppEvent::SyncReviewRequestCompleted {
+                restore_view,
+                result,
+                session_id,
+            } => {
+                self.sync_review_request_update = Some(SyncReviewRequestUpdate {
+                    restore_view,
+                    result,
+                    session_id,
+                });
+            }
+            AppEvent::SyncCleanupCompleted { result, session_id } => {
+                self.sync_cleanup_update = Some(SyncCleanupUpdate { result, session_id });
             }
         }
     }
@@ -4802,5 +5060,163 @@ mod tests {
 
         // Assert
         assert!(!app.review_cache.contains_key(&session_id));
+    }
+
+    /// Builds a `ConfirmationViewMode` fixture for sync reducer tests.
+    fn test_restore_view() -> ConfirmationViewMode {
+        ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            scroll_offset: None,
+            session_id: "session-1".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sync_review_request_open_shows_still_open_message() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let update = SyncReviewRequestUpdate {
+            restore_view: test_restore_view(),
+            result: Ok(ReviewRequestState::Open),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_review_request_update(update).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::ViewInfoPopup {
+                is_loading: false,
+                ref title,
+                ref message,
+                ..
+            } if title == "Review request open"
+                && message == "Review request is still open.\nNo changes made."
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_sync_review_request_closed_shows_closed_message() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let update = SyncReviewRequestUpdate {
+            restore_view: test_restore_view(),
+            result: Ok(ReviewRequestState::Closed),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_review_request_update(update).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::ViewInfoPopup {
+                is_loading: false,
+                ref title,
+                ref message,
+                ..
+            } if title == "Review request closed"
+                && message.contains("closed without merge")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_sync_review_request_error_shows_failure_message() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let update = SyncReviewRequestUpdate {
+            restore_view: test_restore_view(),
+            result: Err("network timeout".to_string()),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_review_request_update(update).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::ViewInfoPopup {
+                is_loading: false,
+                ref title,
+                ref message,
+                ..
+            } if title == "Sync failed"
+                && message.contains("network timeout")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_sync_cleanup_success_updates_popup_to_final_message() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = AppMode::ViewInfoPopup {
+            is_loading: true,
+            loading_label: "Cleaning up worktree\u{2026}".to_string(),
+            message: "Review request has been merged.\nSession marked as Done.\nCleaning up \
+                      worktree\u{2026}"
+                .to_string(),
+            restore_view: test_restore_view(),
+            title: "Review request merged".to_string(),
+        };
+        let update = SyncCleanupUpdate {
+            result: Ok(()),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_cleanup_update(update);
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::ViewInfoPopup {
+                is_loading: false,
+                ref title,
+                ref message,
+                ..
+            } if title == "Review request merged"
+                && message.contains("Worktree cleaned up")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_sync_cleanup_failure_shows_warning_with_error() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.mode = AppMode::ViewInfoPopup {
+            is_loading: true,
+            loading_label: "Cleaning up worktree\u{2026}".to_string(),
+            message: "Review request has been merged.\nSession marked as Done.\nCleaning up \
+                      worktree\u{2026}"
+                .to_string(),
+            restore_view: test_restore_view(),
+            title: "Review request merged".to_string(),
+        };
+        let update = SyncCleanupUpdate {
+            result: Err("permission denied".to_string()),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_cleanup_update(update);
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::ViewInfoPopup {
+                is_loading: false,
+                ref title,
+                ref message,
+                ..
+            } if title == "Review request merged"
+                && message.contains("permission denied")
+                && message.contains("cleanup failed")
+        ));
     }
 }

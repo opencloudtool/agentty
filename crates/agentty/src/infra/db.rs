@@ -125,7 +125,7 @@ impl ProjectListQueryRow {
 }
 
 /// Row returned when loading one `session_review_request`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, sqlx::FromRow)]
 pub struct SessionReviewRequestRow {
     pub display_id: String,
     pub forge_kind: String,
@@ -1177,6 +1177,48 @@ WHERE id = ?
         .await?;
 
         Ok(())
+    }
+
+    /// Loads the persisted forge review-request linkage for one session.
+    ///
+    /// Returns `Ok(None)` when the session has no linked review request.
+    ///
+    /// # Errors
+    /// Returns an error if the database query fails.
+    pub async fn load_session_review_request(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ReviewRequest>, DbError> {
+        let row: Option<SessionReviewRequestRow> = sqlx::query_as(
+            r"
+SELECT display_id, forge_kind, last_refreshed_at, source_branch, state,
+       status_summary, target_branch, title, web_url
+FROM session_review_request
+WHERE session_id = ?
+",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.and_then(|row| {
+            let forge_kind = row.forge_kind.parse().ok()?;
+            let state = row.state.parse().ok()?;
+
+            Some(ReviewRequest {
+                last_refreshed_at: row.last_refreshed_at,
+                summary: ag_forge::ReviewRequestSummary {
+                    display_id: row.display_id,
+                    forge_kind,
+                    source_branch: row.source_branch,
+                    state,
+                    status_summary: row.status_summary,
+                    target_branch: row.target_branch,
+                    title: row.title,
+                    web_url: row.web_url,
+                },
+            })
+        }))
     }
 
     /// Updates the persisted forge review-request linkage for a session.

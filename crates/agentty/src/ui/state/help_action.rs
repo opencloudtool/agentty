@@ -56,6 +56,7 @@ pub enum ViewSessionState {
 /// Action availability snapshot for view-mode help projection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ViewHelpState {
+    pub(crate) has_review_request: bool,
     pub(crate) publish_branch_action: Option<PublishBranchAction>,
     pub(crate) session_state: ViewSessionState,
 }
@@ -195,6 +196,8 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
     );
     let can_show_diff = state.session_state == ViewSessionState::Review;
     let can_show_review = state.session_state == ViewSessionState::Review;
+    let can_sync_review_request =
+        state.session_state == ViewSessionState::Review && state.has_review_request;
     let can_toggle_done_output = state.session_state == ViewSessionState::Done;
 
     let mut actions = vec![HelpAction::new("back", "q", "Back to list")];
@@ -228,6 +231,10 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
         actions.push(HelpAction::new("rebase", "r", "Rebase"));
     }
 
+    if can_sync_review_request {
+        actions.push(HelpAction::new("sync", "s", "Sync review request status"));
+    }
+
     if can_toggle_done_output {
         actions.push(HelpAction::new("toggle view", "t", "Switch summary/output"));
     }
@@ -259,6 +266,8 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
         ViewSessionState::Interactive | ViewSessionState::Review
     );
     let can_show_review = state.session_state == ViewSessionState::Review;
+    let can_sync_review_request =
+        state.session_state == ViewSessionState::Review && state.has_review_request;
 
     let mut actions = vec![HelpAction::new("back", "q", "Back to list")];
 
@@ -282,6 +291,10 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
 
     if let Some(publish_branch_action) = state.publish_branch_action {
         actions.push(publish_branch_help_action(publish_branch_action));
+    }
+
+    if can_sync_review_request {
+        actions.push(HelpAction::new("sync", "s", "Sync review request status"));
     }
 
     if state.session_state == ViewSessionState::Done {
@@ -445,6 +458,7 @@ mod tests {
     fn test_view_actions_in_progress_shows_open_and_hides_edit_actions() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: None,
             session_state: ViewSessionState::InProgress,
         };
@@ -463,6 +477,7 @@ mod tests {
     fn test_view_actions_rebasing_shows_open_without_stop() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: None,
             session_state: ViewSessionState::Rebasing,
         };
@@ -481,6 +496,7 @@ mod tests {
     fn test_view_actions_merge_queue_hides_worktree_shortcuts_and_stop() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: None,
             session_state: ViewSessionState::MergeQueue,
         };
@@ -499,6 +515,7 @@ mod tests {
     fn test_view_actions_review_shows_diff() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: Some(PublishBranchAction::Push),
             session_state: ViewSessionState::Review,
         };
@@ -528,6 +545,7 @@ mod tests {
     fn test_view_actions_interactive_hides_diff() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: None,
             session_state: ViewSessionState::Interactive,
         };
@@ -545,6 +563,7 @@ mod tests {
     fn test_view_actions_done_shows_toggle_and_hides_edit_actions() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: Some(PublishBranchAction::Push),
             session_state: ViewSessionState::Done,
         };
@@ -566,6 +585,7 @@ mod tests {
     fn test_view_footer_actions_review_shows_advanced_actions() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: Some(PublishBranchAction::Push),
             session_state: ViewSessionState::Review,
         };
@@ -586,6 +606,7 @@ mod tests {
     fn test_view_footer_actions_rebasing_shows_open_without_stop() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: Some(PublishBranchAction::Push),
             session_state: ViewSessionState::Rebasing,
         };
@@ -604,6 +625,7 @@ mod tests {
     fn test_view_footer_actions_merge_queue_hides_worktree_shortcuts_and_stop() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: None,
             session_state: ViewSessionState::MergeQueue,
         };
@@ -623,6 +645,7 @@ mod tests {
     fn test_view_actions_canceled_without_branch_publish_action() {
         // Arrange
         let state = ViewHelpState {
+            has_review_request: false,
             publish_branch_action: None,
             session_state: ViewSessionState::Canceled,
         };
@@ -687,5 +710,69 @@ mod tests {
         // Assert
         assert_eq!(span.content, " | ");
         assert_eq!(span.style, Style::default().fg(Color::DarkGray));
+    }
+
+    #[test]
+    fn test_view_actions_review_with_review_request_includes_sync() {
+        // Arrange
+        let state = ViewHelpState {
+            has_review_request: true,
+            publish_branch_action: None,
+            session_state: ViewSessionState::Review,
+        };
+
+        // Act
+        let actions = view_actions(state);
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "s"));
+    }
+
+    #[test]
+    fn test_view_actions_review_without_review_request_excludes_sync() {
+        // Arrange
+        let state = ViewHelpState {
+            has_review_request: false,
+            publish_branch_action: None,
+            session_state: ViewSessionState::Review,
+        };
+
+        // Act
+        let actions = view_actions(state);
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "s"));
+    }
+
+    #[test]
+    fn test_view_footer_actions_review_with_review_request_includes_sync() {
+        // Arrange
+        let state = ViewHelpState {
+            has_review_request: true,
+            publish_branch_action: None,
+            session_state: ViewSessionState::Review,
+        };
+
+        // Act
+        let actions = view_footer_actions(state);
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "s"));
+    }
+
+    #[test]
+    fn test_view_footer_actions_in_progress_excludes_sync() {
+        // Arrange
+        let state = ViewHelpState {
+            has_review_request: true,
+            publish_branch_action: None,
+            session_state: ViewSessionState::InProgress,
+        };
+
+        // Act
+        let actions = view_footer_actions(state);
+
+        // Assert
+        assert!(!actions.iter().any(|action| action.key == "s"));
     }
 }

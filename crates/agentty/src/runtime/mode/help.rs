@@ -83,6 +83,7 @@ mod tests {
         app.mode = AppMode::Help {
             context: HelpContext::View {
                 done_session_output_mode: DoneSessionOutputMode::Summary,
+                has_review_request: false,
                 review_status_message: None,
                 review_text: None,
                 publish_branch_action: None,

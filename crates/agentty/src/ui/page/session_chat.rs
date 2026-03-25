@@ -452,6 +452,7 @@ impl<'a> SessionChatPage<'a> {
         };
 
         let mut actions = help_action::view_footer_actions(ViewHelpState {
+            has_review_request: session.review_request.is_some(),
             publish_branch_action: session.publish_branch_action(),
             session_state,
         });
