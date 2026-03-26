@@ -55,16 +55,19 @@ pub(crate) fn prompt_transport(kind: AgentKind) -> AgentPromptTransport {
 ///
 /// # Errors
 /// Returns a descriptive error when provider output does not match the
-/// required protocol JSON.
+/// required protocol JSON, including parse diagnostics that help explain why
+/// the payload was rejected.
 pub(crate) fn parse_turn_response(
-    _kind: AgentKind,
+    kind: AgentKind,
     response_text: &str,
     protocol_profile: protocol::ProtocolRequestProfile,
 ) -> Result<protocol::AgentResponse, String> {
     let response = protocol::parse_agent_response_strict(response_text).map_err(|error| {
         format!(
-            "Agent output did not match the required JSON schema: \
-             {error}\nresponse:\n{response_text}"
+            "Agent output did not match the required JSON schema from {kind}: \
+             {error}\nprotocol_profile: \
+             {protocol_profile:?}\ndebug_details:\n{}\nresponse:\n{response_text}",
+            protocol::format_protocol_parse_debug_details(response_text)
         )
     })?;
 
@@ -250,14 +253,17 @@ mod tests {
 
         for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Gemini] {
             // Act
-            let result = parse_turn_response(
+            let error = parse_turn_response(
                 kind,
                 raw_response,
                 protocol::ProtocolRequestProfile::SessionTurn,
-            );
+            )
+            .expect_err("plain response should fail strict protocol parsing");
 
             // Assert
-            assert!(result.is_err());
+            assert!(error.contains("debug_details:"));
+            assert!(error.contains("first_non_whitespace_char: 'p'"));
+            assert!(error.contains("direct_json_error_location: line 1, column 1"));
         }
     }
 

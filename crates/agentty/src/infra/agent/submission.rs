@@ -171,12 +171,14 @@ pub(crate) async fn submit_one_shot_with_backend(
 /// Parses one one-shot response strictly against the shared protocol schema.
 ///
 /// # Errors
-/// Returns an error when the response is empty or not valid protocol JSON.
+/// Returns an error when the response is empty or not valid protocol JSON,
+/// including parse diagnostics that help explain the mismatch.
 fn parse_one_shot_response(content: &str) -> Result<AgentResponse, String> {
     parse_agent_response_strict(content).map_err(|error| {
         format!(
             "One-shot agent output did not match the required JSON schema: \
-             {error}\nresponse:\n{content}"
+             {error}\ndebug_details:\n{}\nresponse:\n{content}",
+            super::protocol::format_protocol_parse_debug_details(content)
         )
     })
 }
@@ -445,6 +447,8 @@ mod tests {
 
         // Assert
         assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("debug_details:"));
+        assert!(error.contains("direct_json_error_location: line 1, column 1"));
         assert!(error.contains("response:\nplain text"));
     }
 
@@ -489,6 +493,7 @@ mod tests {
 
         // Assert
         assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("direct_json_keys: result, usage"));
         assert!(error.contains("response:\n"));
     }
 
@@ -574,6 +579,7 @@ mod tests {
 
         // Assert
         assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("trimmed_len: 0 chars"));
         assert!(error.contains("response:\n"));
     }
 
@@ -842,6 +848,7 @@ mod tests {
 
         // Assert
         assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("debug_details:"));
         assert!(error.contains("response:\nplain text"));
     }
 
@@ -894,6 +901,7 @@ mod tests {
 
         // Assert
         assert!(error.contains("did not match the required JSON schema"));
+        assert!(error.contains("debug_details:"));
         assert!(error.contains("response:\nplain text"));
     }
 }

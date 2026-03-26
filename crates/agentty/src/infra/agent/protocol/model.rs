@@ -153,15 +153,18 @@ pub struct AgentResponse {
 pub(crate) enum AgentResponseParseError {
     /// Response was empty or whitespace-only.
     Empty,
-    /// Response did not contain a valid protocol payload.
-    InvalidFormat,
+    /// Response was JSON, but it did not satisfy the structured protocol
+    /// contract.
+    InvalidFormat { reason: String },
 }
 
 impl fmt::Display for AgentResponseParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => write!(formatter, "response is empty"),
-            Self::InvalidFormat => write!(formatter, "response is not valid protocol JSON"),
+            Self::InvalidFormat { reason } => {
+                write!(formatter, "response is not valid protocol JSON: {reason}")
+            }
         }
     }
 }

@@ -159,6 +159,10 @@ Agentty validates final agent output against the structured response protocol.
   being coerced into `answer`. Provider prose that appears before one final
   protocol JSON object is now tolerated so Claude-style wrapped completions
   still recover the authoritative payload.
+- When strict validation fails, the surfaced error now includes parse-oriented
+  debug details such as response sizing, JSON parser location/category, and
+  visible top-level keys from any parsed JSON object so malformed provider
+  output is easier to diagnose.
 - Provider-specific transport, stdin-vs-argv prompt delivery, strict final
   parsing, and app-server thought-phase handling are centralized in the
   shared provider descriptor in `crates/agentty/src/infra/agent/backend.rs`.

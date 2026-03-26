@@ -79,14 +79,14 @@ choose the correct module when implementing changes.
 | - `app_server.rs` | `AppServerAgentChannel` - app-server RPC adapter (Codex/Gemini). |
 | `crates/agentty/src/infra/agent/` | Per-provider backend command builders and response parsing: |
 | - `backend.rs` | `AgentBackend` trait and shared backend request/error types. |
-| - `provider.rs` | Central provider registry for transport mode, parser policy, stdin strategy, and app-server client factories. |
+| - `provider.rs` | Central provider registry for transport mode, parser policy, stdin strategy, app-server client factories, and shared schema-mismatch error formatting. |
 | - `cli.rs` + `infra/agent/cli/` | Router plus shared CLI subprocess stdin/error helpers reused by session turns and one-shot prompts. |
 | - `claude.rs` | Claude backend implementation. |
 | - `app_server.rs` + `infra/agent/app_server/` | Router plus provider-specific app-server client trees kept private to the agent backend module. |
 | - `codex.rs` | Codex backend runtime command construction. |
 | - `gemini.rs` | Gemini backend runtime command construction. |
 | - `prompt.rs` | Shared prompt preparation (`prepare_prompt_text`) for transcript replay and protocol preamble injection. |
-| - `protocol.rs` + `infra/agent/protocol/` | Router plus focused protocol submodules: `model.rs` for the wire contract, `schema.rs` for prompt/transport schema generation, and `parse.rs` for final/stream parsing helpers, including recovery of one trailing schema object from wrapped provider output. |
+| - `protocol.rs` + `infra/agent/protocol/` | Router plus focused protocol submodules: `model.rs` for the wire contract, `schema.rs` for prompt/transport schema generation, and `parse.rs` for final/stream parsing helpers, including recovery of one trailing schema object from wrapped provider output plus shared debug diagnostics for schema mismatches. |
 | - `response_parser.rs` | Provider-specific final/stream output parsing and usage extraction for Claude, Gemini, and Codex. |
 | - `submission.rs` | Shared one-shot prompt execution and strict protocol validation for generated titles, session commit messages, assist prompts, and review text, asking each concrete backend to provide either an app-server client or direct CLI execution path. |
 | `crates/agentty/src/infra/app_server.rs` + `infra/app_server/` | Router plus shared app-server contract, prompt shaping, runtime registry, and restart/retry modules. |
