@@ -491,10 +491,11 @@ mod tests {
         .await
         .expect_err("wrapped plain-text utility output should fail");
 
-        // Assert
+        // Assert — the provider parser extracts "plain text" from the
+        // `result` wrapper, so the protocol parser sees raw text, not JSON keys.
         assert!(error.contains("did not match the required JSON schema"));
-        assert!(error.contains("direct_json_keys: result, usage"));
-        assert!(error.contains("response:\n"));
+        assert!(error.contains("direct_json_error:"));
+        assert!(error.contains("response:\nplain text"));
     }
 
     #[tokio::test]

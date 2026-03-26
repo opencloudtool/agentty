@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.6.9] - 2026-03-25
+
+### Added
+
+- Add `s` keybinding to sync review request status in session view.
+- Add `ag-tui-test` TUI E2E testing framework with PTY-driven semantic assertions.
+
+### Changed
+
+- Migrate git infrastructure module from `Result<..., String>` to typed `GitError`.
+- Tolerate extra fields in protocol deserialization while keeping schema strict.
+- Improve protocol parse diagnostics.
+- Separate summary transcript from streamed output.
+- Strip markdown fences in protocol parser.
+- Dim question panel when chat input is focused.
+
+### Fixed
+
+- Fix wrapped plain-text utility output test assertion after diagnostics refactor.
+
+### Contributors
+
+- @andagaev
+- @minev-dev
+
 ## [v0.6.8] - 2026-03-19
 
 ### Added

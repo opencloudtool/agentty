@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ag-forge"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "mockall",
  "serde",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "ag-tui-test"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "image",
  "portable-pty",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "ag-xtask"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "clap",
  "mockall",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "agentty"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "ag-forge",
  "ag-tui-test",
