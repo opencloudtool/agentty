@@ -677,6 +677,10 @@ async fn submit_response(app: &mut App, response: String) {
 /// user can inspect the current diff or start a new follow-up manually.
 /// If the database write fails the mode stays on `Question` so the user
 /// can retry, avoiding a split between persisted and in-memory state.
+///
+/// Updates the shared runtime handle status alongside the snapshot so
+/// the periodic `sync_from_handles` cycle does not revert the status
+/// back to `Question`.
 async fn end_turn_no_answer(app: &mut App) {
     let AppMode::Question { session_id, .. } = &app.mode else {
         return;
@@ -701,6 +705,12 @@ async fn end_turn_no_answer(app: &mut App) {
         .find(|session| session.id == session_id)
     {
         session.status = Status::Review;
+    }
+
+    if let Some(handles) = app.sessions.handles.get(&session_id)
+        && let Ok(mut handle_status) = handles.status.lock()
+    {
+        *handle_status = Status::Review;
     }
 
     app.mode = AppMode::View {
@@ -952,6 +962,74 @@ mod tests {
             .find(|session| session.id == session_id)
             .expect("session should exist");
         assert_eq!(session.status, Status::Review);
+    }
+
+    #[tokio::test]
+    async fn test_handle_escape_updates_session_handle_status_to_review() {
+        // Arrange — session has a runtime handle with Question status.
+        // Esc must update the handle so sync_from_handles does not revert
+        // the snapshot status back to Question.
+        use std::path::PathBuf;
+
+        use crate::domain::agent::AgentModel;
+        use crate::domain::session::{Session, SessionHandles, SessionSize, SessionStats};
+
+        let mut app = new_test_app().await;
+        let session_id = "session-handle-review";
+        app.sessions.sessions.push(Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            folder: PathBuf::from("/tmp/test"),
+            id: session_id.to_string(),
+            model: AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            project_name: String::new(),
+            prompt: String::new(),
+            published_upstream_ref: None,
+            questions: Vec::new(),
+            review_request: None,
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::Question,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        });
+        app.sessions.handles.insert(
+            session_id.to_string(),
+            SessionHandles::new(String::new(), Status::Question),
+        );
+        app.mode = AppMode::Question {
+            at_mention_state: None,
+            session_id: session_id.to_string(),
+            questions: vec![QuestionItem {
+                options: Vec::new(),
+                text: "Q?".to_string(),
+            }],
+            responses: Vec::new(),
+            current_index: 0,
+            focus: QuestionFocus::Answer,
+            input: InputState::default(),
+            scroll_offset: None,
+            selected_option_index: None,
+        };
+
+        // Act
+        let _ = handle(
+            &mut app,
+            TEST_TERMINAL_SIZE,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        )
+        .await;
+
+        // Assert — handle status updated so sync_from_handles preserves Review.
+        let handles = app
+            .sessions
+            .handles
+            .get(session_id)
+            .expect("handle should exist");
+        let handle_status = handles.status.lock().expect("lock should succeed");
+        assert_eq!(*handle_status, Status::Review);
     }
 
     #[tokio::test]
