@@ -6,64 +6,64 @@
     {% if blog_nav_section.pages | length > 0 %}
         {% if nested %}
             <ul class="docs-nav-list docs-nav-list--nested">
-        {% else %}
-            <ul class="docs-nav-list">
-        {% endif %}
-            {% for blog_post in blog_nav_section.pages %}
-                <li>
-                    <a class="docs-nav-link {% if blog_post.permalink == current_permalink %}is-active{% endif %}"
-                       href="{{ blog_post.permalink }}">{{ blog_post.title }}</a>
-                </li>
-            {% endfor %}
+            {% else %}
+                <ul class="docs-nav-list">
+                {% endif %}
+                {% for blog_post in blog_nav_section.pages %}
+                    <li>
+                        <a class="docs-nav-link {% if blog_post.permalink == current_permalink %}is-active{% endif %}"
+                           href="{{ blog_post.permalink }}">{{ blog_post.title }}</a>
+                    </li>
+                {% endfor %}
             </ul>
-    {% endif %}
-    {% for subsection_path in blog_nav_section.subsections %}
-        {{ self::render_blog_nav(section_path=subsection_path, current_permalink=current_permalink, nested=true) }}
-    {% endfor %}
-{% endmacro render_blog_nav %}
-{# Reuse the docs-style page outline so blog posts keep heading-based deep navigation. #}
-{% macro render_page_toc(items, nested=false) %}
-    {% if items | length > 0 %}
-        <ul class="docs-outline-list {% if nested %}docs-outline-list--nested{% endif %}">
-            {% for heading in items %}
-                <li class="docs-outline-item">
-                    <a class="docs-outline-link" href="{{ heading.permalink | safe }}">{{ heading.title }}</a>
-                    {% if heading.children | length > 0 %}{{ self::render_page_toc(items=heading.children, nested=true) }}{% endif %}
-                </li>
-            {% endfor %}
-        </ul>
-    {% endif %}
-{% endmacro render_page_toc %}
-{% block title %}
-    {{ page.title }} | {{ config.title }} Blog
-{% endblock title %}
-{% block canonical %}
-    {{ page.permalink }}
-{% endblock canonical %}
-{% block main_width_class %}
-    site-container-full
-{% endblock main_width_class %}
-{% block main_extra_classes %}
-    docs-layout
-{% endblock main_extra_classes %}
-{% block content %}
-    <aside class="docs-sidebar docs-sidebar--global">
-        <h2 class="docs-sidebar-title">Blog</h2>
-        {{ self::render_blog_nav(section_path="blog/_index.md", current_permalink=page.permalink) }}
-    </aside>
-    <article class="docs-content-wrapper">
-        <h1 class="docs-page-title">{{ page.title }}</h1>
-        {% if page.date %}
-            <p class="docs-section-intro">{{ page.date | date(format="%B %d, %Y") }}</p>
         {% endif %}
-        <div class="docs-content">{{ page.content | safe }}</div>
-    </article>
-    <aside class="docs-sidebar docs-sidebar--page">
-        <h2 class="docs-sidebar-title">On this page</h2>
-        {% if page.toc and page.toc | length > 0 %}
-            {{ self::render_page_toc(items=page.toc) }}
-        {% else %}
-            <p class="docs-outline-empty">No headings in this post.</p>
+        {% for subsection_path in blog_nav_section.subsections %}
+            {{ self::render_blog_nav(section_path=subsection_path, current_permalink=current_permalink, nested=true) }}
+        {% endfor %}
+    {% endmacro render_blog_nav %}
+    {# Reuse the docs-style page outline so blog posts keep heading-based deep navigation. #}
+    {% macro render_page_toc(items, nested=false) %}
+        {% if items | length > 0 %}
+            <ul class="docs-outline-list {% if nested %}docs-outline-list--nested{% endif %}">
+                {% for heading in items %}
+                    <li class="docs-outline-item">
+                        <a class="docs-outline-link" href="{{ heading.permalink | safe }}">{{ heading.title }}</a>
+                        {% if heading.children | length > 0 %}{{ self::render_page_toc(items=heading.children, nested=true) }}{% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
         {% endif %}
-    </aside>
-{% endblock content %}
+    {% endmacro render_page_toc %}
+    {% block title %}
+        {{ page.title }} | {{ config.title }} Blog
+    {% endblock title %}
+    {% block canonical %}
+        {{ page.permalink }}
+    {% endblock canonical %}
+    {% block main_width_class %}
+        site-container-full
+    {% endblock main_width_class %}
+    {% block main_extra_classes %}
+        docs-layout
+    {% endblock main_extra_classes %}
+    {% block content %}
+        <aside class="docs-sidebar docs-sidebar--global">
+            <h2 class="docs-sidebar-title">Blog</h2>
+            {{ self::render_blog_nav(section_path="blog/_index.md", current_permalink=page.permalink) }}
+        </aside>
+        <article class="docs-content-wrapper">
+            <h1 class="docs-page-title">{{ page.title }}</h1>
+            {% if page.date %}
+                <p class="docs-section-intro">{{ page.date | date(format="%B %d, %Y") }}</p>
+            {% endif %}
+            <div class="docs-content">{{ page.content | safe }}</div>
+        </article>
+        <aside class="docs-sidebar docs-sidebar--page">
+            <h2 class="docs-sidebar-title">On this page</h2>
+            {% if page.toc and page.toc | length > 0 %}
+                {{ self::render_page_toc(items=page.toc) }}
+            {% else %}
+                <p class="docs-outline-empty">No headings in this post.</p>
+            {% endif %}
+        </aside>
+    {% endblock content %}

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.6.10] - 2026-03-26
+
+### Added
+
+- Add a docs-site blog section.
+- Add roadmap metadata requirements for step headings, IDs, assignees, and claim commits.
+
+### Changed
+
+- Rename the Rust-native TUI E2E crate from `ag-tui-test` to `testty` and prepare it for crates.io publishing.
+- Remove the manual review-request sync flow and keep `end_turn_no_answer` aligned with `Review`.
+- Refocus implementation-roadmap guidance on active follow-up work and simpler step operations.
+- Remove `#[ignore]` gates from E2E tests.
+- Clarify session commit prompt guidance to consult repository commit conventions.
+
+### Contributors
+
+- @andagaev
+- @minev-dev
+
 ## [v0.6.9] - 2026-03-25
 
 ### Added

@@ -9,10 +9,10 @@ Change only the target step's `#### Assignee` field so ownership becomes visible
 ## Workflow
 
 1. Read `docs/plan/roadmap.md` and find the target step by the UUID in its `[UUID] Stream: Title` heading.
-2. Verify the claim should only change ownership. If the request also changes scope, handle that separately with `references/update-step.md`.
-3. Confirm the requested assignee uses the exact `@assignee` GitHub-handle format required by the roadmap.
-4. Edit only the text inside that step's `#### Assignee` block so the value changes from `No assignee` to `@assignee`.
-5. Re-read the touched step and confirm the only content change is the `#### Assignee` value.
+1. Verify the claim should only change ownership. If the request also changes scope, handle that separately with `references/update-step.md`.
+1. Confirm the requested assignee uses the exact `@assignee` GitHub-handle format required by the roadmap.
+1. Edit only the text inside that step's `#### Assignee` block so the value changes from `No assignee` to `@assignee`.
+1. Re-read the touched step and confirm the only content change is the `#### Assignee` value.
 
 ## Guardrails
 

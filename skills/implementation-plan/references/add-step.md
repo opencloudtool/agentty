@@ -9,10 +9,10 @@ Insert one new roadmap step into `## Implementation Steps` with the canonical se
 ## Workflow
 
 1. Read `docs/plan/roadmap.md`, the current streams, and the execution diagram before adding anything.
-2. Confirm the work is a new atomic acceptance story instead of a revision to an existing step.
-3. Prepare one stream name, one step title, one `#### Why now` sentence, one `#### Usable outcome` sentence, and the concrete `#### Substeps`, `#### Tests`, and `#### Docs` bullets for that slice.
-4. Insert a new step block in `## Implementation Steps` using the canonical layout from `skills/implementation-plan/SKILL.md`, give it a fresh UUID in the `[UUID] Stream: Title` heading, and place it where the execution order should reflect the new slice.
-5. Re-read the inserted step and then manually reconcile any roadmap sections outside `## Implementation Steps` that the new work affects.
+1. Confirm the work is a new atomic acceptance story instead of a revision to an existing step.
+1. Prepare one stream name, one step title, one `#### Why now` sentence, one `#### Usable outcome` sentence, and the concrete `#### Substeps`, `#### Tests`, and `#### Docs` bullets for that slice.
+1. Insert a new step block in `## Implementation Steps` using the canonical layout from `skills/implementation-plan/SKILL.md`, give it a fresh UUID in the `[UUID] Stream: Title` heading, and place it where the execution order should reflect the new slice.
+1. Re-read the inserted step and then manually reconcile any roadmap sections outside `## Implementation Steps` that the new work affects.
 
 ## Guardrails
 
