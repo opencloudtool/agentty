@@ -19,8 +19,8 @@ Single-file roadmap for the active implementation backlog in `docs/plan/roadmap.
 
 ## Implementation Approach
 
-- Keep one shared backlog and one numbered step list for the whole roadmap instead of splitting work into per-feature mini-plans.
-- Use stream tags in step titles to make parallel work obvious without creating separate step sections or extra diagrams.
+- Keep one shared backlog and one step list for the whole roadmap instead of splitting work into per-feature mini-plans.
+- Use `[UUID] Stream: Title` step headings so each slice stays identifiable in the roadmap while still showing stream ownership at a glance.
 - Group adjacent steps by stream where dependencies allow, and only interleave streams when one stream needs a baseline from another.
 - Start each stream with the smallest usable slice, then extend that stream only after the baseline slice lands.
 - Reflect already-landed behavior only in the snapshot above; do not keep implemented steps in the plan below.
@@ -32,20 +32,20 @@ Single-file roadmap for the active implementation backlog in `docs/plan/roadmap.
 ```mermaid
 flowchart TD
     subgraph Workflow
-        P1["1. Workflow: follow-up task persistence"] --> P2["2. Workflow: follow-up task launch and lifecycle"]
+        P1["[cbf025d6-2d29-4be7-b393-4ed3092ae66d] Workflow: follow-up task persistence"] --> P2["[8f4402cd-beff-4b4d-b9f7-00efd834249b] Workflow: follow-up task launch and lifecycle"]
     end
 
     subgraph Platform
-        P3["3. Platform: session chat timer"] --> P4["4. Platform: session list timer"]
+        P3["[f9270ba2-0905-4871-9cc9-9f02e041c88d] Platform: session chat timer"] --> P4["[9f115af0-a382-46f4-8bf9-25886936e252] Platform: session list timer"]
     end
 
     subgraph Quality
-        P5["5. Quality: deterministic local session harness"]
-        P6["6. Quality: GitError migration"] --> P7["7. Quality: remaining infra typed errors"]
-        P7 --> P8["8. Quality: app-layer typed errors"]
-        P8 --> P9["9. Quality: discard documentation"]
-        P9 --> P10["10. Quality: missing module tests"]
-        P10 --> P11["11. Quality: convention cleanup"]
+        P5["[1c7b7080-deaf-4e2c-8e3c-df24e01d9251] Quality: deterministic local session harness"]
+        P6["[7b743a5a-ee48-48ed-a9d6-689a50440a87] Quality: GitError migration"] --> P7["[7608043e-0adf-4a9d-95fc-1e6084fd75fb] Quality: remaining infra typed errors"]
+        P7 --> P8["[ed9de74b-2f42-446b-9bb3-506a2ba8e27b] Quality: app-layer typed errors"]
+        P8 --> P9["[282012e4-e70f-4cd2-a5a3-550ff03f8974] Quality: discard documentation"]
+        P9 --> P10["[832c9729-5081-4db3-b5de-662a5b8df0ac] Quality: missing module tests"]
+        P10 --> P11["[d2e6ee6c-8f1f-4d9e-8a3f-d797e7231c1a] Quality: convention cleanup"]
     end
 
     P1 --> P5
@@ -54,11 +54,7 @@ flowchart TD
 
 ## Implementation Steps
 
-### 1) `Workflow`: Persist and render emitted follow-up tasks
-
-#### ID
-
-`cbf025d6-2d29-4be7-b393-4ed3092ae66d`
+### [cbf025d6-2d29-4be7-b393-4ed3092ae66d] Workflow: Persist and render emitted follow-up tasks
 
 #### Assignee
 
@@ -87,11 +83,7 @@ After a turn completes, the session shows a persisted list of low-severity follo
 
 - [ ] Update `docs/site/content/docs/architecture/runtime-flow.md` and `docs/site/content/docs/architecture/module-map.md`.
 
-### 2) `Workflow`: Launch sibling sessions from follow-up tasks and retain task state
-
-#### ID
-
-`8f4402cd-beff-4b4d-b9f7-00efd834249b`
+### [8f4402cd-beff-4b4d-b9f7-00efd834249b] Workflow: Launch sibling sessions from follow-up tasks and retain task state
 
 #### Assignee
 
@@ -120,11 +112,7 @@ A user can launch a follow-up task into a normal sibling session, keep the sourc
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/runtime-flow.md` if the final lifecycle rules introduce visible launched/open task states.
 
-### 3) `Platform`: Persist cumulative `InProgress` time and render it in session chat
-
-#### ID
-
-`f9270ba2-0905-4871-9cc9-9f02e041c88d`
+### [f9270ba2-0905-4871-9cc9-9f02e041c88d] Platform: Persist cumulative `InProgress` time and render it in session chat
 
 #### Assignee
 
@@ -153,11 +141,7 @@ Session chat shows a compact cumulative active-work timer once a session has ent
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md` to distinguish cumulative active-work timing from `/stats` lifetime duration.
 
-### 4) `Platform`: Add the timer to the grouped session list
-
-#### ID
-
-`9f115af0-a382-46f4-8bf9-25886936e252`
+### [9f115af0-a382-46f4-8bf9-25886936e252] Platform: Add the timer to the grouped session list
 
 #### Assignee
 
@@ -185,11 +169,7 @@ The Sessions tab shows a compact cumulative active-work timer for active and com
 
 - [ ] Extend the same `docs/site/content/docs/usage/workflow.md` update with a short note about the session-list timer column.
 
-### 5) `Quality`: Ship one deterministic local session workflow slice
-
-#### ID
-
-`1c7b7080-deaf-4e2c-8e3c-df24e01d9251`
+### [1c7b7080-deaf-4e2c-8e3c-df24e01d9251] Quality: Ship one deterministic local session workflow slice
 
 #### Assignee
 
@@ -217,11 +197,7 @@ A deterministic scenario test can create a disposable repo, run one scripted loc
 
 - [ ] Update `CONTRIBUTING.md` with the deterministic local-session scenario command and the expectation that fake CLIs cover the default workflow path.
 
-### 6) `Quality`: Introduce `GitError` for `infra/git/` and `GitClient`
-
-#### ID
-
-`7b743a5a-ee48-48ed-a9d6-689a50440a87`
+### [7b743a5a-ee48-48ed-a9d6-689a50440a87] Quality: Introduce `GitError` for `infra/git/` and `GitClient`
 
 #### Assignee
 
@@ -250,11 +226,7 @@ The git modules and `GitClient` return typed `GitError` variants instead of stri
 
 - [ ] Keep the new error type documented in code and the touched directory index synchronized with the new file layout.
 
-### 7) `Quality`: Introduce typed errors for the remaining infra boundaries
-
-#### ID
-
-`7608043e-0adf-4a9d-95fc-1e6084fd75fb`
+### [7608043e-0adf-4a9d-95fc-1e6084fd75fb] Quality: Introduce typed errors for the remaining infra boundaries
 
 #### Assignee
 
@@ -283,11 +255,7 @@ Gemini, Codex, filesystem, version, clipboard, and remaining leaf helpers all re
 
 - [ ] Keep the new infra error types documented in code and reflected in any touched directory indexes.
 
-### 8) `Quality`: Propagate typed errors through the app layer
-
-#### ID
-
-`ed9de74b-2f42-446b-9bb3-506a2ba8e27b`
+### [ed9de74b-2f42-446b-9bb3-506a2ba8e27b] Quality: Propagate typed errors through the app layer
 
 #### Assignee
 
@@ -316,11 +284,7 @@ Session workflow, app services, and the CLI entrypoint propagate structured app-
 
 - [ ] Keep the new app-layer error types documented in code and in any touched directory indexes.
 
-### 9) `Quality`: Document silent `let _ =` result discards
-
-#### ID
-
-`282012e4-e70f-4cd2-a5a3-550ff03f8974`
+### [282012e4-e70f-4cd2-a5a3-550ff03f8974] Quality: Document silent `let _ =` result discards
 
 #### Assignee
 
@@ -348,11 +312,7 @@ Every `let _ =` that discards a `Result` in the touched backlog has a short just
 
 - [ ] No external docs changes are required for the discard-comment sweep.
 
-### 10) `Quality`: Add test modules for currently untested files
-
-#### ID
-
-`832c9729-5081-4db3-b5de-662a5b8df0ac`
+### [832c9729-5081-4db3-b5de-662a5b8df0ac] Quality: Add test modules for currently untested files
 
 #### Assignee
 
@@ -380,11 +340,7 @@ Every targeted non-router file with public functions has at least a focused happ
 
 - [ ] No external docs changes are required for the missing-module test sweep.
 
-### 11) `Quality`: Fix the remaining convention violations
-
-#### ID
-
-`d2e6ee6c-8f1f-4d9e-8a3f-d797e7231c1a`
+### [d2e6ee6c-8f1f-4d9e-8a3f-d797e7231c1a] Quality: Fix the remaining convention violations
 
 #### Assignee
 
