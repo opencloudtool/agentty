@@ -204,9 +204,4 @@ flowchart TD
 - After implementing a step, remove it from the roadmap and refresh the snapshot rows that changed.
 - When a step changes behavior, complete its `#### Tests` and `#### Docs` work in that same step before removing it.
 - If more work remains after a completed step, add a new pending step instead of preserving completed detail.
-
-## Out of Scope for This Pass
-
-- <non-goal>
-- <non-goal>
 ````
