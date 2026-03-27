@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add `s` keybinding to sync review request status in session view.
-- Add `ag-tui-test` TUI E2E testing framework with PTY-driven semantic assertions.
+- Add `testty` TUI E2E testing framework with PTY-driven semantic assertions.
 
 ### Changed
 

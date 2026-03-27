@@ -1,6 +1,6 @@
 //! TUI end-to-end tests for the agentty binary.
 //!
-//! Uses the `ag-tui-test` framework to drive the real binary in a PTY,
+//! Uses the `testty` framework to drive the real binary in a PTY,
 //! capture terminal frames for semantic assertions, and optionally generate
 //! VHS tapes for visual screenshot capture.
 //!
@@ -18,11 +18,11 @@
 
 use std::path::PathBuf;
 
-use ag_tui_test::recipe;
-use ag_tui_test::region::Region;
-use ag_tui_test::scenario::Scenario;
-use ag_tui_test::session::PtySessionBuilder;
-use ag_tui_test::snapshot::{self, SnapshotConfig};
+use testty::recipe;
+use testty::region::Region;
+use testty::scenario::Scenario;
+use testty::session::PtySessionBuilder;
+use testty::snapshot::{self, SnapshotConfig};
 
 /// Return the path to the compiled agentty binary.
 fn binary_path() -> PathBuf {

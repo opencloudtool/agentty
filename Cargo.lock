@@ -20,18 +20,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ag-tui-test"
-version = "0.6.9"
-dependencies = [
- "image",
- "portable-pty",
- "tempfile",
- "thiserror 2.0.18",
- "unicode-width",
- "vt100",
-]
-
-[[package]]
 name = "ag-xtask"
 version = "0.6.9"
 dependencies = [
@@ -79,7 +67,6 @@ name = "agentty"
 version = "0.6.9"
 dependencies = [
  "ag-forge",
- "ag-tui-test",
  "agent-client-protocol",
  "arboard",
  "askama",
@@ -96,6 +83,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
+ "testty",
  "thiserror 2.0.18",
  "time",
  "tokio",
@@ -3168,6 +3156,18 @@ dependencies = [
  "wezterm-dynamic",
  "wezterm-input-types",
  "winapi",
+]
+
+[[package]]
+name = "testty"
+version = "0.6.9"
+dependencies = [
+ "image",
+ "portable-pty",
+ "tempfile",
+ "thiserror 2.0.18",
+ "unicode-width",
+ "vt100",
 ]
 
 [[package]]

@@ -58,10 +58,10 @@ Session review-request publication and refresh follow this rule directly:
 cover branch publish, duplicate detection, stored-link reuse, and archived
 session refresh without live forge auth or network state.
 
-## TUI E2E Testing Framework (`ag-tui-test`)
+## TUI E2E Testing Framework (`testty`)
 
 <a id="architecture-tui-e2e-framework"></a>
-The `ag-tui-test` workspace crate provides a dual-oracle model for TUI end-to-end
+The `testty` workspace crate provides a dual-oracle model for TUI end-to-end
 testing. The PTY path (`portable-pty` + `vt100`) is the semantic oracle for text,
 style, and location assertions; the VHS path is the visual oracle and review
 artifact generator.

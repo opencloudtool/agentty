@@ -1,4 +1,4 @@
-# ag-tui-test
+# testty
 
 Rust-native TUI end-to-end testing framework. Drives a real TUI binary in a
 pseudo-terminal, captures location-aware terminal state with `vt100`, and
@@ -8,13 +8,13 @@ tapes for visual screenshot capture.
 
 ## Quick start
 
-Add `ag-tui-test` as a dev-dependency in the crate that contains your E2E
+Add `testty` as a dev-dependency in the crate that contains your E2E
 tests:
 
 ```toml
 # crates/my-app/Cargo.toml
 [dev-dependencies]
-ag-tui-test = { workspace = true }
+testty = { workspace = true }
 tempfile = { workspace = true }
 ```
 
@@ -26,9 +26,9 @@ Write a test that launches your binary, interacts with it, and asserts on
 the terminal state:
 
 ```rust
-use ag_tui_test::recipe;
-use ag_tui_test::scenario::Scenario;
-use ag_tui_test::session::PtySessionBuilder;
+use testty::recipe;
+use testty::scenario::Scenario;
+use testty::session::PtySessionBuilder;
 
 #[test]
 #[ignore = "requires compiled binary"]
@@ -68,7 +68,7 @@ VHS tape.
 
 ```rust
 use std::time::Duration;
-use ag_tui_test::scenario::Scenario;
+use testty::scenario::Scenario;
 
 let scenario = Scenario::new("tab_navigation")
     .wait_for_stable_frame(500, 5000)   // Wait for app to render
@@ -100,7 +100,7 @@ Each `Step` represents a single user action or wait condition:
 it with `PtySessionBuilder`:
 
 ```rust
-use ag_tui_test::session::PtySessionBuilder;
+use testty::session::PtySessionBuilder;
 
 let builder = PtySessionBuilder::new("/path/to/binary")
     .size(120, 40)                          // Terminal dimensions (default: 80x24)
@@ -124,7 +124,7 @@ A `TerminalFrame` is a snapshot of the terminal state parsed through `vt100`.
 It provides structured access to text, colors, and styles:
 
 ```rust
-use ag_tui_test::frame::TerminalFrame;
+use testty::frame::TerminalFrame;
 
 // Create from raw ANSI bytes (done automatically by PtySession)
 let frame = TerminalFrame::new(80, 24, b"\x1b[1mBold Title\x1b[0m\r\nBody text");
@@ -144,7 +144,7 @@ let matches = frame.find_text_in_region("Title", &region); // Find in region
 A `Region` defines a rectangular area for scoped assertions:
 
 ```rust
-use ag_tui_test::region::Region;
+use testty::region::Region;
 
 // Named constructors
 let header  = Region::top_row(80);           // First row, full width
@@ -187,9 +187,9 @@ span.has_bg(&color); // true if background matches
 ### Low-level assertions (`assertion` module)
 
 ```rust
-use ag_tui_test::assertion;
-use ag_tui_test::frame::CellColor;
-use ag_tui_test::region::Region;
+use testty::assertion;
+use testty::frame::CellColor;
+use testty::region::Region;
 
 let region = Region::top_row(80);
 
@@ -216,7 +216,7 @@ High-level, composable helpers for common TUI patterns. Prefer these over
 raw assertions:
 
 ```rust
-use ag_tui_test::recipe;
+use testty::recipe;
 
 // Tabs
 recipe::expect_selected_tab(&frame, "Projects");     // In header, highlighted
@@ -245,7 +245,7 @@ The framework supports two snapshot modes: **frame text** (semantic) and
 Compare the terminal text content against a committed baseline:
 
 ```rust
-use ag_tui_test::snapshot::{self, SnapshotConfig};
+use testty::snapshot::{self, SnapshotConfig};
 
 let config = SnapshotConfig::new(
     "tests/e2e_baselines",  // Committed baseline directory
@@ -320,10 +320,10 @@ let config = SnapshotConfig::new("tests/baselines", "tests/artifacts")
 A complete E2E test exercising tab navigation:
 
 ```rust
-use ag_tui_test::recipe;
-use ag_tui_test::scenario::Scenario;
-use ag_tui_test::session::PtySessionBuilder;
-use ag_tui_test::snapshot::{self, SnapshotConfig};
+use testty::recipe;
+use testty::scenario::Scenario;
+use testty::session::PtySessionBuilder;
+use testty::snapshot::{self, SnapshotConfig};
 
 #[test]
 #[ignore = "requires compiled binary"]

@@ -17,7 +17,7 @@ homepage = "https://github.com/agentty-xyz/agentty"
 
 [workspace.dependencies]
 ag-forge = { path = "crates/ag-forge", version = "0.6.8" }
-ag-tui-test = { path = "crates/ag-tui-test", version = "0.6.8" }
+testty = { path = "crates/testty", version = "0.6.8" }
 agent-client-protocol = "0.10.2"
 arboard = { version = "3", features = ["image-data"] }
 askama = "0.15.4"

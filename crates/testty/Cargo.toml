@@ -1,5 +1,5 @@
 [package]
-name = "ag-tui-test"
+name = "testty"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

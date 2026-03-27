@@ -16,7 +16,7 @@ choose the correct module when implementing changes.
 |------|------------------|
 | `crates/ag-forge/` | Shared forge review-request library crate with normalized review-request types, remote detection, and provider-specific `gh`/`glab` adapters. |
 | `crates/agentty/` | Main TUI application crate with composition root, application, domain, infrastructure, runtime, and UI layers. |
-| `crates/ag-tui-test/` | Rust-native TUI end-to-end testing framework: PTY-driven semantic assertions, VHS screenshot capture, calibration, overlay rendering, and snapshot workflows. |
+| `crates/testty/` | Rust-native TUI end-to-end testing framework: PTY-driven semantic assertions, VHS screenshot capture, calibration, overlay rendering, and snapshot workflows. |
 | `crates/ag-xtask/` | Workspace maintenance commands and automation helpers. |
 
 ## Composition Root

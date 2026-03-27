@@ -77,7 +77,7 @@ macro queries can compile in offline mode (for example, with `SQLX_OFFLINE=true`
 
 ## TUI E2E Tests
 
-TUI end-to-end tests use the `ag-tui-test` framework to drive the real `agentty`
+TUI end-to-end tests use the `testty` framework to drive the real `agentty`
 binary in a PTY and assert terminal state semantically. Tests are written as Rust
 scenarios and can also be compiled into VHS tapes for visual screenshots.
 

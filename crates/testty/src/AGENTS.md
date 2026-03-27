@@ -1,6 +1,6 @@
 # TUI Test Source
 
-Source modules for the `ag-tui-test` crate.
+Source modules for the `testty` crate.
 
 ## Directory Index
 
