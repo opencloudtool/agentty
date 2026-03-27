@@ -27,6 +27,7 @@ Single-file roadmap for the active implementation backlog in `docs/plan/roadmap.
 
 - Keep one shared backlog and one numbered step list for the whole roadmap instead of splitting work into per-feature mini-plans.
 - Use stream tags in step titles to make parallel work obvious without creating separate step sections or extra diagrams.
+- Group adjacent steps by stream where dependencies allow, and only interleave streams when one stream needs a baseline from another.
 - Start each stream with the smallest usable slice, then extend that stream only after the baseline slice lands.
 - Reflect already-landed behavior only in the snapshot above; do not keep implemented steps in the plan below.
 - Keep tests and documentation in the same step that changes behavior so each step stays mergeable on its own.
@@ -36,28 +37,28 @@ Single-file roadmap for the active implementation backlog in `docs/plan/roadmap.
 ```mermaid
 flowchart TD
     subgraph Runtime
-        P1["1. Runtime: backend-owned local turn execution"] --> P7["7. Runtime: backend lease reconciliation"]
-        P7 --> P11["11. Runtime: live output continuity"]
-        P11 --> P12["12. Runtime: detached stop/reply semantics"]
-        P12 --> P13["13. Runtime: close-and-reopen validation"]
+        P1["1. Runtime: backend-owned local turn execution"]
+        P15["15. Runtime: backend lease reconciliation"] --> P16["16. Runtime: live output continuity"]
+        P16 --> P17["17. Runtime: detached stop/reply semantics"]
+        P17 --> P18["18. Runtime: close-and-reopen validation"]
     end
 
     subgraph Workflow
-        P2["2. Workflow: draft-session baseline"] --> P8["8. Workflow: draft prompt editing"]
-        P8 --> P15["15. Workflow: draft start hardening"]
-        P10["10. Workflow: follow-up task persistence"] --> P16["16. Workflow: follow-up task launch and lifecycle"]
-        P9["9. Workflow: review-request reconciliation"]
+        P2["2. Workflow: draft-session baseline"] --> P3["3. Workflow: draft prompt editing"]
+        P3 --> P4["4. Workflow: draft start hardening"]
+        P5["5. Workflow: follow-up task persistence"] --> P6["6. Workflow: follow-up task launch and lifecycle"]
+        P7["7. Workflow: review-request reconciliation"]
     end
 
     subgraph Platform
-        P3["3. Platform: availability-aware model selection"]
-        P4["4. Platform: install-aware updating"]
-        P5["5. Platform: session chat timer"] --> P14["14. Platform: session list timer"]
+        P8["8. Platform: availability-aware model selection"]
+        P9["9. Platform: install-aware updating"]
+        P10["10. Platform: session chat timer"] --> P11["11. Platform: session list timer"]
     end
 
     subgraph Quality
-        P6["6. Quality: deterministic local session harness"] --> P17["17. Quality: deterministic PR/MR scenarios"]
-        P17 --> P18["18. Quality: live smoke isolation"]
+        P12["12. Quality: deterministic local session harness"] --> P13["13. Quality: deterministic PR/MR scenarios"]
+        P13 --> P14["14. Quality: live smoke isolation"]
         P19["19. Quality: GitError migration"] --> P20["20. Quality: remaining infra typed errors"]
         P20 --> P21["21. Quality: app-layer typed errors"]
         P21 --> P22["22. Quality: discard documentation"]
@@ -65,15 +66,15 @@ flowchart TD
         P23 --> P24["24. Quality: convention cleanup"]
     end
 
+    P1 --> P4
+    P1 --> P5
     P1 --> P15
-    P1 --> P10
-    P5 --> P7
-    P2 --> P16
-    P15 --> P16
-    P4 --> P20
-    P6 --> P13
-    P6 --> P17
-    P9 --> P17
+    P2 --> P6
+    P4 --> P6
+    P10 --> P15
+    P12 --> P18
+    P7 --> P13
+    P9 --> P20
 ```
 
 ## Implementation Steps
@@ -128,131 +129,7 @@ A user can create a draft session, collect multiple prompts over time, reopen th
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` for draft-session collection and `/start`.
 
-### 3) `Platform`: Filter agent and model selection to locally available backends
-
-#### Why now
-
-Agent/model selection is currently misleading because the app offers backends that may not exist locally. A startup availability snapshot is the smallest platform slice that makes settings and `/model` trustworthy.
-
-#### Usable outcome
-
-Startup resolves the locally available CLIs, settings only offer valid defaults, and `/model` only shows models from installed backends.
-
-#### Substeps
-
-- [ ] **Add an injectable backend-availability probe.** Introduce the startup probe boundary in `crates/agentty/src/infra/agent/` and expose filtered helper APIs from `crates/agentty/src/domain/agent.rs`.
-- [ ] **Wire the availability snapshot through startup.** Store the snapshot on `App` and route it into settings, session creation, and prompt flows that currently assume every provider exists.
-- [ ] **Filter settings and `/model` from the same snapshot.** Update `crates/agentty/src/app/setting.rs`, `crates/agentty/src/ui/page/session_chat.rs`, and `crates/agentty/src/runtime/mode/prompt.rs` so model selection stays aligned across screens.
-- [ ] **Define missing-backend fallback behavior.** Normalize persisted defaults or existing session models that point at unavailable backends without crashing or silently pretending the backend exists.
-
-#### Tests
-
-- [ ] Add probe tests, startup wiring coverage, settings tests, and `/model` tests for filtered backends, empty-install cases, and unavailable persisted models.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/agents/backends.md`, `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/testability-boundaries.md`.
-
-### 4) `Platform`: Detect installation method and run the correct update path
-
-#### Why now
-
-Auto-update and manual hints are still npm-only. The install-aware update slice is self-contained and can progress in parallel with the rest of the roadmap.
-
-#### Usable outcome
-
-Agentty detects whether it was installed via npm, cargo, shell installer, or `npx`, runs the correct update command, and shows the matching manual hint in the status bar.
-
-#### Substeps
-
-- [ ] **Add `InstallMethod` detection behind a boundary.** Define the enum and detector trait in `crates/agentty/src/infra/version.rs` using the current executable path and install-layout heuristics.
-- [ ] **Dispatch update commands by install method.** Replace the npm-only update runner with one method-aware `run_update_sync(...)` path that handles npm, cargo, shell, `npx`, and unknown installs, and treat this as the behavior baseline that the later typed-error pass in `infra/version.rs` must preserve rather than redesign.
-- [ ] **Thread install method through app startup and the status bar.** Store the detected install method on `App`, pass it into background update tasks, and render the matching manual update hint or `npx` suppression.
-- [ ] **Finish the install-aware docs pass.** Update installation and usage docs so the supported update behavior matches the shipped method-aware logic.
-
-#### Tests
-
-- [ ] Add install detection tests, method-aware update dispatch tests, status-bar tests, and `npx` coverage for skipped auto-update.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/getting-started/installation.md`, `docs/site/content/docs/getting-started/overview.md`, `docs/site/content/docs/usage/workflow.md`, and `docs/site/content/docs/architecture/testability-boundaries.md`, plus `README.md` if it still implies npm-only updating.
-
-### 5) `Platform`: Persist cumulative `InProgress` time and render it in session chat
-
-#### Why now
-
-The timer stream needs a persistence baseline before the session list can add another column. Chat is the smallest end-to-end surface that proves the timing model.
-
-#### Usable outcome
-
-Session chat shows a compact cumulative active-work timer once a session has entered `InProgress`, the value ticks while work is active, and it freezes when the session leaves `InProgress`.
-
-#### Substeps
-
-- [ ] **Persist session timing fields.** Add `in_progress_total_seconds` and `in_progress_started_at` to `session` via a new migration and thread the fields through the DB and domain models.
-- [ ] **Make status transitions timing-aware.** Update production status transitions and interrupted-work cleanup so entering and leaving `InProgress` opens and closes the persisted timing window consistently.
-- [ ] **Render the timer in session chat.** Thread a deterministic wall-clock value into session chat rendering and reuse `format_duration_compact()` instead of inventing a second formatting path.
-- [ ] **Document timing semantics in code.** Refresh or add `///` doc comments around the timing fields and helper behavior in the touched Rust files.
-
-#### Tests
-
-- [ ] Add DB tests for timing accumulation, workflow tests for repeated `InProgress` intervals, and session-chat tests for live ticking and truncation.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/usage/workflow.md` to distinguish cumulative active-work timing from `/stats` lifetime duration.
-
-### 6) `Quality`: Ship one deterministic local session workflow slice
-
-#### Why now
-
-The quality stream needs one full app-level scenario before it can safely expand to review-request workflows or reduced live smoke coverage.
-
-#### Usable outcome
-
-A deterministic scenario test can create a disposable repo, run one scripted local agent turn through the app-facing workflow, and verify the resulting commit, worktree, transcript output, and terminal session state.
-
-#### Substeps
-
-- [ ] **Add the minimal local-session harness.** Create the smallest reusable harness under `crates/agentty/tests/support/` for temp repos, fake CLIs, and workflow assertions.
-- [ ] **Add one deterministic local-session scenario.** Add `crates/agentty/tests/local_session_workflow.rs` to exercise a full local session journey without live credentials.
-- [ ] **Refactor only the boundaries the scenario needs.** Keep any workflow refactors constrained to explicit boundaries rather than shell-heavy test-only helpers.
-
-#### Tests
-
-- [ ] Run the new local-session scenario and the touched workflow-module tests to confirm the harness covers the full local path.
-
-#### Docs
-
-- [ ] Update `CONTRIBUTING.md` with the deterministic local-session scenario command and the expectation that fake CLIs cover the default workflow path.
-
-### 7) `Runtime`: Reconcile backend leases on restart
-
-#### Why now
-
-Detached execution is not durable enough until restart can distinguish live backend-owned work from abandoned operations.
-
-#### Usable outcome
-
-Reopening Agentty during a detached turn keeps healthy backend leases active, reclaims orphaned work deterministically, and no longer force-fails every unfinished operation on startup.
-
-#### Substeps
-
-- [ ] **Add generic lease claim and heartbeat helpers.** Extend `crates/agentty/src/infra/db.rs` with atomic claim, heartbeat refresh, owner clear, and stale-failure helpers keyed by the backend lease fields.
-- [ ] **Add backend-specific liveness checks behind the execution boundary.** Extend the execution backend contract so `LocalProcess` can report lease liveness without leaking PID rules into app orchestration.
-- [ ] **Replace blanket startup failure with reconciliation.** Move restart handling into focused workflow reconciliation logic that keeps healthy leases active and fails only stale work.
-- [ ] **Reuse the timing fields for interrupted cleanup.** Keep the reopened `InProgress` semantics aligned with the timer stream instead of introducing parallel timing state.
-
-#### Tests
-
-- [ ] Add mock-driven tests for healthy reopen, stale-lease failure, duplicate claim refusal, and finished-operation no-op reconciliation.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/module-map.md`, and `docs/site/content/docs/architecture/testability-boundaries.md`.
-
-### 8) `Workflow`: Make collected draft prompts inspectable and editable before start
+### 3) `Workflow`: Make collected draft prompts inspectable and editable before start
 
 #### Why now
 
@@ -277,154 +154,7 @@ A user can inspect saved draft prompts, edit them back into the composer, delete
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` for draft inspection and editing controls.
 
-### 9) `Workflow`: Add background review-request status reconciliation
-
-#### Why now
-
-Manual publish/open/refresh already exists, so the next meaningful review-request slice is automatic status reconciliation rather than more manual surface area.
-
-#### Usable outcome
-
-Linked sessions automatically reconcile to `Done` or `Canceled` after the remote PR or MR is observed as merged or closed.
-
-#### Substeps
-
-- [ ] **Add an app-scoped review-request poller.** Run periodic linked review-request refresh work from the app/task layer for sessions that already carry forge metadata.
-- [ ] **Route reconciliation through reducer events.** Keep status changes in reducer-driven app flow instead of mutating session state directly inside the poller task.
-- [ ] **Reuse the existing forge refresh adapters.** Build the poller on top of the current `gh` and `glab` refresh logic rather than introducing a second direct network client path.
-- [ ] **Define low-noise polling guardrails.** Set expectations for cadence, unsupported-forge failures, unauthenticated states, and stale-session behavior.
-
-#### Tests
-
-- [ ] Add deterministic tests for polling cadence, reducer handling, and merged/closed/reopened/unavailable review-request states.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/testability-boundaries.md`, and `docs/site/content/docs/architecture/module-map.md`.
-
-### 10) `Workflow`: Persist and render emitted follow-up tasks
-
-#### Why now
-
-The follow-up-task stream needs a durable response contract and visible session-level output before launch behavior can be layered on top.
-
-#### Usable outcome
-
-After a turn completes, the session shows a persisted list of low-severity follow-up tasks, and that list survives refresh and reopen.
-
-#### Substeps
-
-- [ ] **Extend the structured response protocol.** Add `follow_up_tasks` to the protocol model, schema, parser, prompt instructions, and wire type definitions in `crates/agentty/src/infra/agent/protocol/`.
-- [ ] **Add durable follow-up task storage.** Create the singular `session_follow_up_task` table and thread task loading/replacement through `crates/agentty/src/infra/db.rs` and the session domain model.
-- [ ] **Persist tasks during turn finalization.** Update the shared turn-finalization path introduced by step 1 so parsed follow-up tasks persist alongside summary and question state without reintroducing `worker.rs`-only ownership.
-- [ ] **Render a read-only follow-up task section.** Update session chat and output components so follow-up tasks are visible without being merged into transcript markdown.
-
-#### Tests
-
-- [ ] Add protocol tests, DB round-trip tests, and worker/UI tests proving follow-up tasks persist and render without altering transcript output.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md` and `docs/site/content/docs/architecture/module-map.md`.
-
-### 11) `Runtime`: Mirror live output across app restarts
-
-#### Why now
-
-Restart reconciliation is usable without live output, but it still feels broken when a reopened session cannot show active transcript updates.
-
-#### Usable outcome
-
-A reopened session can attach to live detached output and continue showing fresh transcript content while the turn is still running.
-
-#### Substeps
-
-- [ ] **Add a durable per-session output replica.** Append incremental output to a session-scoped replica file so detached work can surface live output outside the original TUI process.
-- [ ] **Attach reopened sessions to replica tailing.** Update load and refresh flows so reopened sessions stream replica output into `SessionHandles.output` while a lease is live.
-- [ ] **Import buffered output during finalization.** Ensure the shared runner and reconciliation paths drain any remaining replica content into durable `session.output`.
-
-#### Tests
-
-- [ ] Add tests for replica writes, reopen-time tail attachment, final transcript import, and stale-lease cleanup that preserves buffered output.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/architecture/runtime-flow.md`.
-
-### 12) `Runtime`: Preserve detached stop, cancel, and reply semantics
-
-#### Why now
-
-Once detached execution and live output exist, stop/cancel/reply behavior becomes the remaining major semantic gap between TUI-owned and backend-owned execution.
-
-#### Usable outcome
-
-Users can stop detached work, keep review cancel separate from execution stop, and reply after restart without corrupting resume state.
-
-#### Substeps
-
-- [ ] **Separate TUI exit from explicit stop requests.** Rework session lifecycle code so shutdown no longer implies cancelation while explicit stop still persists cancel intent.
-- [ ] **Add backend-owned termination through the execution contract.** Extend the execution backend boundary with stop delivery and implement the first `LocalProcess` version behind the adapter.
-- [ ] **Preserve review cancel as its own workflow.** Keep review-session cancel responsible for worktree cleanup while in-progress stop targets the active execution backend.
-- [ ] **Keep provider-native resume state correct after restart.** Update the channel and backend adapters so detached replies reuse the correct persisted conversation state.
-
-#### Tests
-
-- [ ] Add mock-driven tests for stop-before-start, stop-during-execution, review-cancel cleanup, and reply-after-restart behavior across CLI and app-server transport paths.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/module-map.md`, and `docs/site/content/docs/architecture/testability-boundaries.md`.
-
-### 13) `Runtime`: Validate close-and-reopen lifetime behavior end to end
-
-#### Why now
-
-The runtime stream needs final close-and-reopen regression coverage before detached execution can be treated as stable.
-
-#### Usable outcome
-
-The repository has deterministic close-and-reopen regression coverage for backend-owned session execution, and the full validation gates confirm the shipped detached-runtime slice is stable.
-
-#### Substeps
-
-- [ ] **Add close-while-running regression coverage.** Exercise shutdown during a live detached turn and verify a fresh `App` instance sees continued `InProgress` output or the correct terminal state.
-- [ ] **Add finish-while-closed regression coverage.** Exercise a turn that finishes while Agentty is closed and verify the next launch loads final transcript, operation state, and session status without replay.
-- [ ] **Run the full local validation gates.** Keep the detached-session scenarios in the default regression path and validate them with the repository quality gates.
-
-#### Tests
-
-- [ ] Run the close-and-reopen scenarios in the default suite and finish with the full `pre-commit` checks plus `cargo test -q` under the shared-host thread budget from `AGENTS.md`.
-
-#### Docs
-
-- [ ] Refresh detached-session docs only if the validated behavior narrows the supported contract for the shipped backend-owned flow.
-
-### 14) `Platform`: Add the timer to the grouped session list
-
-#### Why now
-
-Chat proves the timing model first; the list should extend that settled behavior rather than inventing separate timer math.
-
-#### Usable outcome
-
-The Sessions tab shows a compact cumulative active-work timer for active and completed sessions using the same semantics as session chat.
-
-#### Substeps
-
-- [ ] **Add a dedicated time column to `session_list.rs`.** Render the compact `Time` column and keep grouped headers and placeholders aligned with the new layout.
-- [ ] **Reuse the shared timer-label path.** Keep list rendering on the same session timing helper and `format_duration_compact()` output used by chat.
-- [ ] **Thread the current timestamp into list rendering.** Extend render context and page constructors so active rows can tick without extra DB churn.
-
-#### Tests
-
-- [ ] Add session-list tests for the new column, row layout, and timer text for active, archived, and never-started sessions.
-
-#### Docs
-
-- [ ] Extend the same `docs/site/content/docs/usage/workflow.md` update with a short note about the session-list timer column.
-
-### 15) `Workflow`: Harden draft start semantics and recovery
+### 4) `Workflow`: Harden draft start semantics and recovery
 
 #### Why now
 
@@ -449,7 +179,32 @@ Starting a draft session is atomic and restart-safe: the prompt queue is consume
 
 - [ ] Update architecture docs if the final draft-start wiring introduces a new persistence or rendering boundary, and refresh workflow docs if start-time behavior differs from the earlier draft baseline.
 
-### 16) `Workflow`: Launch sibling sessions from follow-up tasks and retain task state
+### 5) `Workflow`: Persist and render emitted follow-up tasks
+
+#### Why now
+
+The follow-up-task stream needs a durable response contract and visible session-level output before launch behavior can be layered on top.
+
+#### Usable outcome
+
+After a turn completes, the session shows a persisted list of low-severity follow-up tasks, and that list survives refresh and reopen.
+
+#### Substeps
+
+- [ ] **Extend the structured response protocol.** Add `follow_up_tasks` to the protocol model, schema, parser, prompt instructions, and wire type definitions in `crates/agentty/src/infra/agent/protocol/`.
+- [ ] **Add durable follow-up task storage.** Create the singular `session_follow_up_task` table and thread task loading/replacement through `crates/agentty/src/infra/db.rs` and the session domain model.
+- [ ] **Persist tasks during turn finalization.** Update the shared turn-finalization path introduced by step 1 so parsed follow-up tasks persist alongside summary and question state without reintroducing `worker.rs`-only ownership.
+- [ ] **Render a read-only follow-up task section.** Update session chat and output components so follow-up tasks are visible without being merged into transcript markdown.
+
+#### Tests
+
+- [ ] Add protocol tests, DB round-trip tests, and worker/UI tests proving follow-up tasks persist and render without altering transcript output.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md` and `docs/site/content/docs/architecture/module-map.md`.
+
+### 6) `Workflow`: Launch sibling sessions from follow-up tasks and retain task state
 
 #### Why now
 
@@ -461,7 +216,7 @@ A user can launch a follow-up task into a normal sibling session, keep the sourc
 
 #### Substeps
 
-- [ ] **Add follow-up task selection and launch actions.** Extend session-view and app state so emitted follow-up tasks can be focused and launched through the same draft-aware session creation flow established by steps 2 and 15.
+- [ ] **Add follow-up task selection and launch actions.** Extend session-view and app state so emitted follow-up tasks can be focused and launched through the same draft-aware session creation flow established by steps 2 and 4.
 - [ ] **Mark launched tasks locally without parent links.** Persist launched/open task state on the source session without storing a parent-child session relationship.
 - [ ] **Replace only open tasks on later turns.** Refresh open follow-up tasks on new turn results while retaining launched rows as local history.
 - [ ] **Keep reopen and refresh behavior consistent.** Rehydrate follow-up task state through load and refresh paths so launched/open state survives session reloads.
@@ -474,7 +229,155 @@ A user can launch a follow-up task into a normal sibling session, keep the sourc
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/runtime-flow.md` if the final lifecycle rules introduce visible launched/open task states.
 
-### 17) `Quality`: Expand the harness for deterministic PR/MR workflow scenarios
+### 7) `Workflow`: Add background review-request status reconciliation
+
+#### Why now
+
+Manual publish/open/refresh already exists, so the next meaningful review-request slice is automatic status reconciliation rather than more manual surface area.
+
+#### Usable outcome
+
+Linked sessions automatically reconcile to `Done` or `Canceled` after the remote PR or MR is observed as merged or closed.
+
+#### Substeps
+
+- [ ] **Add an app-scoped review-request poller.** Run periodic linked review-request refresh work from the app/task layer for sessions that already carry forge metadata.
+- [ ] **Route reconciliation through reducer events.** Keep status changes in reducer-driven app flow instead of mutating session state directly inside the poller task.
+- [ ] **Reuse the existing forge refresh adapters.** Build the poller on top of the current `gh` and `glab` refresh logic rather than introducing a second direct network client path.
+- [ ] **Define low-noise polling guardrails.** Set expectations for cadence, unsupported-forge failures, unauthenticated states, and stale-session behavior.
+
+#### Tests
+
+- [ ] Add deterministic tests for polling cadence, reducer handling, and merged/closed/reopened/unavailable review-request states.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/testability-boundaries.md`, and `docs/site/content/docs/architecture/module-map.md`.
+
+### 8) `Platform`: Filter agent and model selection to locally available backends
+
+#### Why now
+
+Agent/model selection is currently misleading because the app offers backends that may not exist locally. A startup availability snapshot is the smallest platform slice that makes settings and `/model` trustworthy.
+
+#### Usable outcome
+
+Startup resolves the locally available CLIs, settings only offer valid defaults, and `/model` only shows models from installed backends.
+
+#### Substeps
+
+- [ ] **Add an injectable backend-availability probe.** Introduce the startup probe boundary in `crates/agentty/src/infra/agent/` and expose filtered helper APIs from `crates/agentty/src/domain/agent.rs`.
+- [ ] **Wire the availability snapshot through startup.** Store the snapshot on `App` and route it into settings, session creation, and prompt flows that currently assume every provider exists.
+- [ ] **Filter settings and `/model` from the same snapshot.** Update `crates/agentty/src/app/setting.rs`, `crates/agentty/src/ui/page/session_chat.rs`, and `crates/agentty/src/runtime/mode/prompt.rs` so model selection stays aligned across screens.
+- [ ] **Define missing-backend fallback behavior.** Normalize persisted defaults or existing session models that point at unavailable backends without crashing or silently pretending the backend exists.
+
+#### Tests
+
+- [ ] Add probe tests, startup wiring coverage, settings tests, and `/model` tests for filtered backends, empty-install cases, and unavailable persisted models.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/agents/backends.md`, `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/testability-boundaries.md`.
+
+### 9) `Platform`: Detect installation method and run the correct update path
+
+#### Why now
+
+Auto-update and manual hints are still npm-only. The install-aware update slice is self-contained and can progress in parallel with the rest of the roadmap.
+
+#### Usable outcome
+
+Agentty detects whether it was installed via npm, cargo, shell installer, or `npx`, runs the correct update command, and shows the matching manual hint in the status bar.
+
+#### Substeps
+
+- [ ] **Add `InstallMethod` detection behind a boundary.** Define the enum and detector trait in `crates/agentty/src/infra/version.rs` using the current executable path and install-layout heuristics.
+- [ ] **Dispatch update commands by install method.** Replace the npm-only update runner with one method-aware `run_update_sync(...)` path that handles npm, cargo, shell, `npx`, and unknown installs, and treat this as the behavior baseline that the later typed-error pass in `infra/version.rs` must preserve rather than redesign.
+- [ ] **Thread install method through app startup and the status bar.** Store the detected install method on `App`, pass it into background update tasks, and render the matching manual update hint or `npx` suppression.
+- [ ] **Finish the install-aware docs pass.** Update installation and usage docs so the supported update behavior matches the shipped method-aware logic.
+
+#### Tests
+
+- [ ] Add install detection tests, method-aware update dispatch tests, status-bar tests, and `npx` coverage for skipped auto-update.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/getting-started/installation.md`, `docs/site/content/docs/getting-started/overview.md`, `docs/site/content/docs/usage/workflow.md`, and `docs/site/content/docs/architecture/testability-boundaries.md`, plus `README.md` if it still implies npm-only updating.
+
+### 10) `Platform`: Persist cumulative `InProgress` time and render it in session chat
+
+#### Why now
+
+The timer stream needs a persistence baseline before the session list can add another column. Chat is the smallest end-to-end surface that proves the timing model.
+
+#### Usable outcome
+
+Session chat shows a compact cumulative active-work timer once a session has entered `InProgress`, the value ticks while work is active, and it freezes when the session leaves `InProgress`.
+
+#### Substeps
+
+- [ ] **Persist session timing fields.** Add `in_progress_total_seconds` and `in_progress_started_at` to `session` via a new migration and thread the fields through the DB and domain models.
+- [ ] **Make status transitions timing-aware.** Update production status transitions and interrupted-work cleanup so entering and leaving `InProgress` opens and closes the persisted timing window consistently.
+- [ ] **Render the timer in session chat.** Thread a deterministic wall-clock value into session chat rendering and reuse `format_duration_compact()` instead of inventing a second formatting path.
+- [ ] **Document timing semantics in code.** Refresh or add `///` doc comments around the timing fields and helper behavior in the touched Rust files.
+
+#### Tests
+
+- [ ] Add DB tests for timing accumulation, workflow tests for repeated `InProgress` intervals, and session-chat tests for live ticking and truncation.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/usage/workflow.md` to distinguish cumulative active-work timing from `/stats` lifetime duration.
+
+### 11) `Platform`: Add the timer to the grouped session list
+
+#### Why now
+
+Chat proves the timing model first; the list should extend that settled behavior rather than inventing separate timer math.
+
+#### Usable outcome
+
+The Sessions tab shows a compact cumulative active-work timer for active and completed sessions using the same semantics as session chat.
+
+#### Substeps
+
+- [ ] **Add a dedicated time column to `session_list.rs`.** Render the compact `Time` column and keep grouped headers and placeholders aligned with the new layout.
+- [ ] **Reuse the shared timer-label path.** Keep list rendering on the same session timing helper and `format_duration_compact()` output used by chat.
+- [ ] **Thread the current timestamp into list rendering.** Extend render context and page constructors so active rows can tick without extra DB churn.
+
+#### Tests
+
+- [ ] Add session-list tests for the new column, row layout, and timer text for active, archived, and never-started sessions.
+
+#### Docs
+
+- [ ] Extend the same `docs/site/content/docs/usage/workflow.md` update with a short note about the session-list timer column.
+
+### 12) `Quality`: Ship one deterministic local session workflow slice
+
+#### Why now
+
+The quality stream needs one full app-level scenario before it can safely expand to review-request workflows or reduced live smoke coverage.
+
+#### Usable outcome
+
+A deterministic scenario test can create a disposable repo, run one scripted local agent turn through the app-facing workflow, and verify the resulting commit, worktree, transcript output, and terminal session state.
+
+#### Substeps
+
+- [ ] **Add the minimal local-session harness.** Create the smallest reusable harness under `crates/agentty/tests/support/` for temp repos, fake CLIs, and workflow assertions.
+- [ ] **Add one deterministic local-session scenario.** Add `crates/agentty/tests/local_session_workflow.rs` to exercise a full local session journey without live credentials.
+- [ ] **Refactor only the boundaries the scenario needs.** Keep any workflow refactors constrained to explicit boundaries rather than shell-heavy test-only helpers.
+
+#### Tests
+
+- [ ] Run the new local-session scenario and the touched workflow-module tests to confirm the harness covers the full local path.
+
+#### Docs
+
+- [ ] Update `CONTRIBUTING.md` with the deterministic local-session scenario command and the expectation that fake CLIs cover the default workflow path.
+
+### 13) `Quality`: Expand the harness for deterministic PR/MR workflow scenarios
 
 #### Why now
 
@@ -498,7 +401,7 @@ Deterministic local scenarios cover GitHub and GitLab review-request create, reu
 
 - [ ] Update `CONTRIBUTING.md` and `docs/site/content/docs/architecture/testability-boundaries.md` if the expanded harness changes the recommended test boundaries.
 
-### 18) `Quality`: Isolate live smoke suites and finalize suite guidance
+### 14) `Quality`: Isolate live smoke suites and finalize suite guidance
 
 #### Why now
 
@@ -521,6 +424,104 @@ Live provider and forge smoke suites are clearly named, ignored by default, and 
 #### Docs
 
 - [ ] Update `CONTRIBUTING.md` with the final suite-tier guidance.
+
+### 15) `Runtime`: Reconcile backend leases on restart
+
+#### Why now
+
+Detached execution is not durable enough until restart can distinguish live backend-owned work from abandoned operations.
+
+#### Usable outcome
+
+Reopening Agentty during a detached turn keeps healthy backend leases active, reclaims orphaned work deterministically, and no longer force-fails every unfinished operation on startup.
+
+#### Substeps
+
+- [ ] **Add generic lease claim and heartbeat helpers.** Extend `crates/agentty/src/infra/db.rs` with atomic claim, heartbeat refresh, owner clear, and stale-failure helpers keyed by the backend lease fields.
+- [ ] **Add backend-specific liveness checks behind the execution boundary.** Extend the execution backend contract so `LocalProcess` can report lease liveness without leaking PID rules into app orchestration.
+- [ ] **Replace blanket startup failure with reconciliation.** Move restart handling into focused workflow reconciliation logic that keeps healthy leases active and fails only stale work.
+- [ ] **Reuse the timing fields for interrupted cleanup.** Keep the reopened `InProgress` semantics aligned with the timer stream instead of introducing parallel timing state.
+
+#### Tests
+
+- [ ] Add mock-driven tests for healthy reopen, stale-lease failure, duplicate claim refusal, and finished-operation no-op reconciliation.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/module-map.md`, and `docs/site/content/docs/architecture/testability-boundaries.md`.
+
+### 16) `Runtime`: Mirror live output across app restarts
+
+#### Why now
+
+Restart reconciliation is usable without live output, but it still feels broken when a reopened session cannot show active transcript updates.
+
+#### Usable outcome
+
+A reopened session can attach to live detached output and continue showing fresh transcript content while the turn is still running.
+
+#### Substeps
+
+- [ ] **Add a durable per-session output replica.** Append incremental output to a session-scoped replica file so detached work can surface live output outside the original TUI process.
+- [ ] **Attach reopened sessions to replica tailing.** Update load and refresh flows so reopened sessions stream replica output into `SessionHandles.output` while a lease is live.
+- [ ] **Import buffered output during finalization.** Ensure the shared runner and reconciliation paths drain any remaining replica content into durable `session.output`.
+
+#### Tests
+
+- [ ] Add tests for replica writes, reopen-time tail attachment, final transcript import, and stale-lease cleanup that preserves buffered output.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/architecture/runtime-flow.md`.
+
+### 17) `Runtime`: Preserve detached stop, cancel, and reply semantics
+
+#### Why now
+
+Once detached execution and live output exist, stop/cancel/reply behavior becomes the remaining major semantic gap between TUI-owned and backend-owned execution.
+
+#### Usable outcome
+
+Users can stop detached work, keep review cancel separate from execution stop, and reply after restart without corrupting resume state.
+
+#### Substeps
+
+- [ ] **Separate TUI exit from explicit stop requests.** Rework session lifecycle code so shutdown no longer implies cancelation while explicit stop still persists cancel intent.
+- [ ] **Add backend-owned termination through the execution contract.** Extend the execution backend boundary with stop delivery and implement the first `LocalProcess` version behind the adapter.
+- [ ] **Preserve review cancel as its own workflow.** Keep review-session cancel responsible for worktree cleanup while in-progress stop targets the active execution backend.
+- [ ] **Keep provider-native resume state correct after restart.** Update the channel and backend adapters so detached replies reuse the correct persisted conversation state.
+
+#### Tests
+
+- [ ] Add mock-driven tests for stop-before-start, stop-during-execution, review-cancel cleanup, and reply-after-restart behavior across CLI and app-server transport paths.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/architecture/runtime-flow.md`, `docs/site/content/docs/architecture/module-map.md`, and `docs/site/content/docs/architecture/testability-boundaries.md`.
+
+### 18) `Runtime`: Validate close-and-reopen lifetime behavior end to end
+
+#### Why now
+
+The runtime stream needs final close-and-reopen regression coverage before detached execution can be treated as stable.
+
+#### Usable outcome
+
+The repository has deterministic close-and-reopen regression coverage for backend-owned session execution, and the full validation gates confirm the shipped detached-runtime slice is stable.
+
+#### Substeps
+
+- [ ] **Add close-while-running regression coverage.** Exercise shutdown during a live detached turn and verify a fresh `App` instance sees continued `InProgress` output or the correct terminal state.
+- [ ] **Add finish-while-closed regression coverage.** Exercise a turn that finishes while Agentty is closed and verify the next launch loads final transcript, operation state, and session status without replay.
+- [ ] **Run the full local validation gates.** Keep the detached-session scenarios in the default regression path and validate them with the repository quality gates.
+
+#### Tests
+
+- [ ] Run the close-and-reopen scenarios in the default suite and finish with the full `pre-commit` checks plus `cargo test -q` under the shared-host thread budget from `AGENTS.md`.
+
+#### Docs
+
+- [ ] Refresh detached-session docs only if the validated behavior narrows the supported contract for the shipped backend-owned flow.
 
 ### 19) `Quality`: Introduce `GitError` for `infra/git/` and `GitClient`
 
@@ -671,12 +672,12 @@ The remaining convention violations from the current audit are resolved without 
 
 ## Cross-Stream Notes
 
-- The `Runtime` and `Platform` streams share `InProgress` semantics. The timer fields introduced in step 5 should become the source of truth that restart reconciliation reuses in step 7.
-- The `Workflow` draft-session stream and the `Runtime` detached-execution stream share first-turn enqueue behavior. Step 15 should reuse the persisted detached-turn request shape introduced in step 1.
-- The `Workflow` follow-up-task stream and the `Runtime` detached-execution stream share turn finalization. Step 10 should extend the shared runner/finalization path from step 1 rather than adding a parallel persistence path in `worker.rs`.
-- The `Workflow` follow-up-task launch flow depends on the draft-session model. Step 16 should reuse the draft-aware session creation/start semantics established by steps 2 and 15 instead of assuming the older immediate-start flow.
-- The `Quality` scenario harness from step 6 is a dependency for the runtime validation work in step 13 and the review-request scenario work in step 17.
-- The `Platform` install-aware update work and the `Quality` infra typed-error work both touch `infra/version.rs`. Step 20 should follow the behavior shape established in step 4 rather than running independently against the old npm-only assumptions.
+- The `Runtime` and `Platform` streams share `InProgress` semantics. The timer fields introduced in step 10 should become the source of truth that restart reconciliation reuses in step 15.
+- The `Workflow` draft-session stream and the `Runtime` detached-execution stream share first-turn enqueue behavior. Step 4 should reuse the persisted detached-turn request shape introduced in step 1.
+- The `Workflow` follow-up-task stream and the `Runtime` detached-execution stream share turn finalization. Step 5 should extend the shared runner/finalization path from step 1 rather than adding a parallel persistence path in `worker.rs`.
+- The `Workflow` follow-up-task launch flow depends on the draft-session model. Step 6 should reuse the draft-aware session creation/start semantics established by steps 2 and 4 instead of assuming the older immediate-start flow.
+- The `Quality` scenario harness from step 12 is a dependency for the runtime validation work in step 18 and the review-request scenario work in step 13.
+- The `Platform` install-aware update work and the `Quality` infra typed-error work both touch `infra/version.rs`. Step 20 should follow the behavior shape established in step 9 rather than running independently against the old npm-only assumptions.
 - The typed-error stream must keep local `AGENTS.md` directory indexes and `///` doc comments synchronized whenever it adds files such as `error.rs`.
 
 ## Status Maintenance Rule
