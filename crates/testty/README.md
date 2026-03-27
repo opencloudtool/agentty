@@ -38,7 +38,6 @@ use testty::scenario::Scenario;
 use testty::session::PtySessionBuilder;
 
 #[test]
-#[ignore = "requires compiled binary"]
 fn startup_shows_welcome() {
     // Arrange
     let temp = tempfile::TempDir::new().unwrap();
@@ -59,10 +58,10 @@ fn startup_shows_welcome() {
 }
 ```
 
-Run the test (requires the binary to be built first):
+Run the test:
 
 ```sh
-cargo test -p my-app --test e2e -- --ignored
+cargo test -p my-app --test e2e
 ```
 
 ## Core concepts
@@ -289,7 +288,7 @@ tape.execute(Path::new("/tmp/test.tape"))?;
 Set `TUI_TEST_UPDATE=1` to overwrite baselines with the current output:
 
 ```sh
-TUI_TEST_UPDATE=1 cargo test -p my-app --test e2e -- --ignored
+TUI_TEST_UPDATE=1 cargo test -p my-app --test e2e
 ```
 
 ### Snapshot config tuning
@@ -333,7 +332,6 @@ use testty::session::PtySessionBuilder;
 use testty::snapshot::{self, SnapshotConfig};
 
 #[test]
-#[ignore = "requires compiled binary"]
 fn tab_key_switches_tabs() {
     // Arrange
     let temp = tempfile::TempDir::new().unwrap();
@@ -372,5 +370,5 @@ fn tab_key_switches_tabs() {
   stable across machines.
 - **Isolate state** with `tempfile::TempDir` and environment variables so
   tests don't interfere with each other or the real app data.
-- **Mark E2E tests `#[ignore]`** since they require the compiled binary.
-  Run them explicitly with `cargo test --test e2e -- --ignored`.
+- **E2E tests run automatically** with `cargo test`. Cargo builds the binary
+  before running integration tests, so `CARGO_BIN_EXE_*` is always available.

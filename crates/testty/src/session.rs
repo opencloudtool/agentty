@@ -216,6 +216,10 @@ impl PtySession {
     /// Wait until the terminal frame stabilizes (no changes for
     /// `stable_duration`).
     ///
+    /// The method requires at least one frame change from the initial empty
+    /// state before the stability timer starts. This prevents returning an
+    /// empty frame when the binary has not yet produced any output.
+    ///
     /// # Errors
     ///
     /// Returns an error if the frame does not stabilize within the timeout.
@@ -227,6 +231,7 @@ impl PtySession {
         let deadline = std::time::Instant::now() + timeout;
         let mut previous_text = String::new();
         let mut stable_since = std::time::Instant::now();
+        let mut seen_change = false;
 
         loop {
             self.drain_output(Duration::from_millis(100));
@@ -236,7 +241,10 @@ impl PtySession {
             if current_text != previous_text {
                 previous_text = current_text;
                 stable_since = std::time::Instant::now();
-            } else if std::time::Instant::now().duration_since(stable_since) >= stable_duration {
+                seen_change = true;
+            } else if seen_change
+                && std::time::Instant::now().duration_since(stable_since) >= stable_duration
+            {
                 return Ok(frame);
             }
 
@@ -521,5 +529,66 @@ mod tests {
 
         // Assert
         assert_eq!(bytes, vec![b'x']);
+    }
+
+    /// Verifies that `wait_for_stable_frame` times out when the spawned
+    /// binary produces no terminal output, instead of returning an empty
+    /// frame immediately.
+    #[test]
+    fn wait_for_stable_frame_times_out_when_no_output() {
+        // Arrange — script stays alive but produces nothing.
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let script_path = temp_dir.path().join("silent.sh");
+        std::fs::write(&script_path, "#!/bin/sh\nsleep 60\n").expect("failed to write script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to set permissions");
+        }
+
+        let mut session = PtySession::spawn(&script_path).expect("failed to spawn silent script");
+
+        // Act
+        let result =
+            session.wait_for_stable_frame(Duration::from_millis(200), Duration::from_millis(800));
+
+        // Assert
+        assert!(
+            matches!(result, Err(PtySessionError::Timeout(_))),
+            "should timeout when no frame change is observed"
+        );
+    }
+
+    /// Verifies that `wait_for_stable_frame` returns a non-empty frame once
+    /// the binary has rendered output and the frame stops changing.
+    #[test]
+    fn wait_for_stable_frame_returns_after_content_stabilizes() {
+        // Arrange — script writes visible text and stays alive so the PTY
+        // does not close.
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let script_path = temp_dir.path().join("greet.sh");
+        std::fs::write(&script_path, "#!/bin/sh\necho hello\nsleep 60\n")
+            .expect("failed to write script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to set permissions");
+        }
+
+        let mut session = PtySession::spawn(&script_path).expect("failed to spawn greet script");
+
+        // Act
+        let frame = session
+            .wait_for_stable_frame(Duration::from_millis(300), Duration::from_secs(5))
+            .expect("frame should stabilize");
+
+        // Assert
+        let text = frame.all_text();
+        assert!(
+            text.contains("hello"),
+            "stable frame should contain echoed output, got: '{text}'"
+        );
     }
 }

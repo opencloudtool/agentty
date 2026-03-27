@@ -82,11 +82,11 @@ binary in a PTY and assert terminal state semantically. Tests are written as Rus
 scenarios and can also be compiled into VHS tapes for visual screenshots.
 
 ```sh
-# Run TUI E2E tests (requires the agentty binary to be built)
-cargo test -p agentty --test e2e -- --ignored
+# Run TUI E2E tests
+cargo test -p agentty --test e2e
 
 # Update snapshot baselines
-TUI_TEST_UPDATE=1 cargo test -p agentty --test e2e -- --ignored
+TUI_TEST_UPDATE=1 cargo test -p agentty --test e2e
 ```
 
 ### Authoring Tests

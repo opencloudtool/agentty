@@ -39,6 +39,7 @@ unicode-width.workspace = true
 
 [dev-dependencies]
 ag-forge = { workspace = true, features = ["test-utils"] }
+assert_cmd.workspace = true
 testty.workspace = true
 mockall.workspace = true
 tempfile.workspace = true

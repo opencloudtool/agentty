@@ -19,6 +19,7 @@ homepage = "https://github.com/agentty-xyz/agentty"
 ag-forge = { path = "crates/ag-forge", version = "0.6.8" }
 testty = { path = "crates/testty", version = "0.6.8" }
 agent-client-protocol = "0.10.2"
+assert_cmd = "2"
 arboard = { version = "3", features = ["image-data"] }
 askama = "0.15.4"
 base64 = "0.22"
