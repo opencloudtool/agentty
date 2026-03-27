@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::task::spawn_blocking;
 
+use super::error::GitError;
 use super::repo::{main_repo_root_sync, resolve_git_dir, run_git_command_sync};
 
 /// Detects git repository information for the given directory.
@@ -33,17 +34,17 @@ pub async fn find_git_repo_root(dir: PathBuf) -> Option<PathBuf> {
 /// * `base_branch` - Name of the branch to base the new branch on
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure
+/// Ok(()) on success, Err([`GitError`]) on failure.
 ///
 /// # Errors
-/// Returns an error if invoking `git` fails or the worktree command exits with
-/// a non-zero status.
+/// Returns [`GitError::CommandFailed`] if spawning fails or the worktree
+/// command exits with a non-zero status.
 pub async fn create_worktree(
     repo_path: PathBuf,
     worktree_path: PathBuf,
     branch_name: String,
     base_branch: String,
-) -> Result<(), String> {
+) -> Result<(), GitError> {
     spawn_blocking(move || {
         let worktree_path = worktree_path.to_string_lossy().to_string();
         run_git_command_sync(
@@ -61,8 +62,7 @@ pub async fn create_worktree(
 
         Ok(())
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Removes a git worktree at the specified path.
@@ -74,12 +74,12 @@ pub async fn create_worktree(
 /// * `worktree_path` - Path to the worktree to remove
 ///
 /// # Returns
-/// Ok(()) on success, Err(msg) with detailed error message on failure
+/// Ok(()) on success, Err([`GitError`]) on failure.
 ///
 /// # Errors
-/// Returns an error if invoking `git` fails or the worktree remove command
-/// exits with a non-zero status.
-pub async fn remove_worktree(worktree_path: PathBuf) -> Result<(), String> {
+/// Returns [`GitError::CommandFailed`] if spawning fails or the worktree
+/// remove command exits with a non-zero status.
+pub async fn remove_worktree(worktree_path: PathBuf) -> Result<(), GitError> {
     spawn_blocking(move || {
         let repo_root = main_repo_root_sync(&worktree_path)?;
         let worktree_path = worktree_path.to_string_lossy().to_string();
@@ -91,8 +91,7 @@ pub async fn remove_worktree(worktree_path: PathBuf) -> Result<(), String> {
 
         Ok(())
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Returns branch information for a repository directory in synchronous code.

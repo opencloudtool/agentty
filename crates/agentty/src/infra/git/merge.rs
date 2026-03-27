@@ -15,15 +15,6 @@ pub enum SquashMergeOutcome {
     AlreadyPresentInTarget,
 }
 
-/// Converts a `String` error from a repo helper into a
-/// [`GitError::CommandFailed`].
-fn string_to_git_error(command: &str, error: String) -> GitError {
-    GitError::CommandFailed {
-        command: command.to_string(),
-        stderr: error,
-    }
-}
-
 /// Returns the full patch diff that will be squashed when merging a source
 /// branch into a target branch.
 ///
@@ -53,7 +44,6 @@ pub async fn squash_merge_diff(
             &["diff", revision_range.as_str()],
             "Failed to read squash merge diff",
         )
-        .map_err(|error| string_to_git_error("git diff", error))
     })
     .await?
 }
@@ -111,12 +101,11 @@ pub async fn squash_merge(
             &repo_path,
             &["merge", "--squash", source_branch.as_str()],
             &format!("Failed to squash merge {source_branch}"),
-        )
-        .map_err(|error| string_to_git_error("git merge --squash", error))?;
+        )?;
 
         // `git diff --cached --quiet` exits 0 when index matches `HEAD`.
-        let cached_diff = run_git_command_output_sync(&repo_path, &["diff", "--cached", "--quiet"])
-            .map_err(|error| string_to_git_error("git diff --cached", error))?;
+        let cached_diff =
+            run_git_command_output_sync(&repo_path, &["diff", "--cached", "--quiet"])?;
 
         if cached_diff.status.success() {
             return Ok(SquashMergeOutcome::AlreadyPresentInTarget);
@@ -136,8 +125,7 @@ pub async fn squash_merge(
             &repo_path,
             &["commit", "--no-verify", "-m", commit_message.as_str()],
             "Failed to commit squash merge",
-        )
-        .map_err(|error| string_to_git_error("git commit", error))?;
+        )?;
 
         Ok(SquashMergeOutcome::Committed)
     })

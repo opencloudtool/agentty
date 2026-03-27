@@ -4,17 +4,19 @@ use std::process::{Command, Output};
 
 use tokio::task::spawn_blocking;
 
+use super::error::GitError;
+
 /// Returns the origin repository URL normalized to HTTPS form when possible.
 ///
 /// # Arguments
 /// * `repo_path` - Path to a git repository or worktree
 ///
 /// # Returns
-/// Ok(url) on success, Err(msg) with detailed error message on failure
+/// Ok(url) on success, Err([`GitError`]) on failure.
 ///
 /// # Errors
 /// Returns an error if the remote URL cannot be read via `git remote get-url`.
-pub async fn repo_url(repo_path: PathBuf) -> Result<String, String> {
+pub async fn repo_url(repo_path: PathBuf) -> Result<String, GitError> {
     let remote = run_git_command(
         repo_path,
         vec![
@@ -40,18 +42,16 @@ pub async fn repo_url(repo_path: PathBuf) -> Result<String, String> {
 /// * `repo_path` - Path to a git repository or worktree
 ///
 /// # Returns
-/// Ok(path) containing the main repository root, Err(msg) on failure.
+/// Ok(path) containing the main repository root, Err([`GitError`]) on failure.
 ///
 /// # Errors
 /// Returns an error if git metadata cannot be queried from `repo_path`.
-pub async fn main_repo_root(repo_path: PathBuf) -> Result<PathBuf, String> {
-    spawn_blocking(move || main_repo_root_sync(&repo_path))
-        .await
-        .map_err(|error| format!("Join error: {error}"))?
+pub async fn main_repo_root(repo_path: PathBuf) -> Result<PathBuf, GitError> {
+    spawn_blocking(move || main_repo_root_sync(&repo_path)).await?
 }
 
 /// Resolves the main repository root for `repo_path` in synchronous code.
-pub(super) fn main_repo_root_sync(repo_path: &Path) -> Result<PathBuf, String> {
+pub(super) fn main_repo_root_sync(repo_path: &Path) -> Result<PathBuf, GitError> {
     let (git_dir, git_common_dir) = git_directory_paths(repo_path)?;
 
     if git_dir == git_common_dir {
@@ -95,20 +95,20 @@ pub(super) fn resolve_git_dir(repo_dir: &Path) -> Option<PathBuf> {
 /// The command stdout on success.
 ///
 /// # Errors
-/// Returns an error if spawning the command fails, the command exits with a
-/// non-zero status, or the blocking task cannot be joined.
+/// Returns [`GitError::Join`] if the blocking task panics, or
+/// [`GitError::CommandFailed`] if spawning fails or the command exits with
+/// a non-zero status.
 pub(super) async fn run_git_command(
     repo_path: PathBuf,
     args: Vec<String>,
     error_context: String,
-) -> Result<String, String> {
+) -> Result<String, GitError> {
     spawn_blocking(move || {
         let argument_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
         run_git_command_sync(&repo_path, &argument_refs, &error_context)
     })
-    .await
-    .map_err(|error| format!("Join error: {error}"))?
+    .await?
 }
 
 /// Runs a git command in `repo_path` and returns stdout text.
@@ -116,27 +116,41 @@ pub(super) async fn run_git_command(
 /// # Arguments
 /// * `repo_path` - Path to the git repository or worktree
 /// * `args` - Git command arguments
-/// * `error_context` - Prefix used for command failure messages
+/// * `error_context` - Human-readable label prepended to the stderr detail on
+///   failure (e.g. `"Failed to read squash merge diff"`)
 ///
 /// # Returns
 /// The command stdout on success.
 ///
 /// # Errors
-/// Returns an error if spawning the command fails or the command exits with a
-/// non-zero status.
+/// Returns [`GitError::CommandFailed`] with the concrete git invocation in
+/// `command` and the `error_context` plus stderr/stdout detail in `stderr`.
 pub(super) fn run_git_command_sync(
     repo_path: &Path,
     args: &[&str],
     error_context: &str,
-) -> Result<String, String> {
+) -> Result<String, GitError> {
     let output = run_git_command_output_sync(repo_path, args)?;
     if !output.status.success() {
         let detail = command_output_detail(&output.stdout, &output.stderr);
+        let git_invocation = format_git_invocation(args);
 
-        return Err(format!("{error_context}: {detail}"));
+        return Err(GitError::CommandFailed {
+            command: git_invocation,
+            stderr: format!("{error_context}: {detail}"),
+        });
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Formats the full git invocation string from command arguments.
+fn format_git_invocation(args: &[&str]) -> String {
+    if args.is_empty() {
+        return "git".to_string();
+    }
+
+    format!("git {}", args.join(" "))
 }
 
 /// Runs a git command in `repo_path` and returns raw process output.
@@ -149,11 +163,11 @@ pub(super) fn run_git_command_sync(
 /// The process output, including status, stdout, and stderr.
 ///
 /// # Errors
-/// Returns an error if spawning the command fails.
+/// Returns [`GitError::CommandFailed`] if spawning the command fails.
 pub(super) fn run_git_command_output_sync(
     repo_path: &Path,
     args: &[&str],
-) -> Result<Output, String> {
+) -> Result<Output, GitError> {
     run_git_command_output_with_env_sync(repo_path, args, &[])
 }
 
@@ -174,12 +188,12 @@ pub(super) fn run_git_command_output_sync(
 /// The process output, including status, stdout, and stderr.
 ///
 /// # Errors
-/// Returns an error if spawning the command fails.
+/// Returns [`GitError::CommandFailed`] if spawning the command fails.
 pub(super) fn run_git_command_output_with_env_sync(
     repo_path: &Path,
     args: &[&str],
     environment: &[(&str, &str)],
-) -> Result<Output, String> {
+) -> Result<Output, GitError> {
     let mut command = Command::new("git");
     command.args(args).current_dir(repo_path);
     apply_non_interactive_environment(&mut command);
@@ -188,9 +202,10 @@ pub(super) fn run_git_command_output_with_env_sync(
         command.env(key, value);
     }
 
-    command
-        .output()
-        .map_err(|error| format!("Failed to execute git{}: {error}", git_command_suffix(args)))
+    command.output().map_err(|error| GitError::CommandFailed {
+        command: format_git_invocation(args),
+        stderr: error.to_string(),
+    })
 }
 
 /// Applies non-interactive defaults so git failures return immediately instead
@@ -231,7 +246,7 @@ fn normalize_repo_url(remote: &str) -> String {
 }
 
 /// Reads absolute git and common git directory paths for `repo_path`.
-fn git_directory_paths(repo_path: &Path) -> Result<(PathBuf, PathBuf), String> {
+fn git_directory_paths(repo_path: &Path) -> Result<(PathBuf, PathBuf), GitError> {
     let stdout = run_git_command_sync(
         repo_path,
         &["rev-parse", "--git-dir", "--git-common-dir"],
@@ -243,10 +258,10 @@ fn git_directory_paths(repo_path: &Path) -> Result<(PathBuf, PathBuf), String> {
         .filter(|line| !line.is_empty());
     let git_dir = lines
         .next()
-        .ok_or_else(|| "Git rev-parse output missing git-dir".to_string())?;
-    let git_common_dir = lines
-        .next()
-        .ok_or_else(|| "Git rev-parse output missing git-common-dir".to_string())?;
+        .ok_or_else(|| GitError::OutputParse("Git rev-parse output missing git-dir".to_string()))?;
+    let git_common_dir = lines.next().ok_or_else(|| {
+        GitError::OutputParse("Git rev-parse output missing git-common-dir".to_string())
+    })?;
 
     Ok((
         normalize_git_dir_path(repo_path, git_dir),
@@ -255,16 +270,18 @@ fn git_directory_paths(repo_path: &Path) -> Result<(PathBuf, PathBuf), String> {
 }
 
 /// Converts a git directory path (typically `.git`) into repository root.
-fn repo_root_from_git_dir(repo_path: &Path, git_dir: &Path) -> Result<PathBuf, String> {
+fn repo_root_from_git_dir(repo_path: &Path, git_dir: &Path) -> Result<PathBuf, GitError> {
     if git_dir
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name == ".git")
     {
-        return git_dir
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| format!("Git directory has no parent: {}", git_dir.display()));
+        return git_dir.parent().map(Path::to_path_buf).ok_or_else(|| {
+            GitError::OutputParse(format!(
+                "Git directory has no parent: {}",
+                git_dir.display()
+            ))
+        });
     }
 
     let root = run_git_command_sync(
@@ -274,7 +291,9 @@ fn repo_root_from_git_dir(repo_path: &Path, git_dir: &Path) -> Result<PathBuf, S
     )?;
     let root = root.trim().to_string();
     if root.is_empty() {
-        return Err("Git rev-parse --show-toplevel returned empty output".to_string());
+        return Err(GitError::OutputParse(
+            "Git rev-parse --show-toplevel returned empty output".to_string(),
+        ));
     }
 
     Ok(PathBuf::from(root))
@@ -290,15 +309,6 @@ fn normalize_git_dir_path(repo_path: &Path, git_path: &str) -> PathBuf {
     };
 
     std::fs::canonicalize(&git_path).unwrap_or(git_path)
-}
-
-/// Formats git arguments for execution failure messages.
-fn git_command_suffix(args: &[&str]) -> String {
-    if args.is_empty() {
-        return String::new();
-    }
-
-    format!(" {}", args.join(" "))
 }
 
 #[cfg(test)]
@@ -411,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn test_run_git_command_sync_includes_context_and_command_detail_on_failure() {
+    fn test_run_git_command_sync_returns_command_failed_on_invalid_subcommand() {
         // Arrange
         let temp_dir = tempdir().expect("failed to create temp dir");
 
@@ -424,12 +434,16 @@ mod tests {
 
         // Assert
         let error = result.expect_err("invalid git command should fail");
-        assert!(error.contains("Git command failed"));
-        assert!(error.contains("definitely-not-a-git-subcommand"));
+        assert!(
+            matches!(&error, GitError::CommandFailed { command, stderr }
+                if command == "git definitely-not-a-git-subcommand"
+                    && stderr.contains("Git command failed")),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]
-    fn test_main_repo_root_sync_returns_error_outside_git_repository() {
+    fn test_main_repo_root_sync_returns_command_failed_outside_git_repository() {
         // Arrange
         let temp_dir = tempdir().expect("failed to create temp dir");
 
@@ -438,6 +452,26 @@ mod tests {
 
         // Assert
         let error = result.expect_err("non-repo should fail");
-        assert!(error.contains("Git rev-parse failed"));
+        assert!(
+            matches!(&error, GitError::CommandFailed { command, stderr }
+                if command.starts_with("git rev-parse")
+                    && stderr.contains("Git rev-parse failed")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_git_invocation_returns_bare_git_for_empty_args() {
+        // Act / Assert
+        assert_eq!(format_git_invocation(&[]), "git");
+    }
+
+    #[test]
+    fn test_format_git_invocation_joins_args_after_git() {
+        // Act / Assert
+        assert_eq!(
+            format_git_invocation(&["diff", "--cached", "--quiet"]),
+            "git diff --cached --quiet"
+        );
     }
 }

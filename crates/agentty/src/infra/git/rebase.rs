@@ -38,7 +38,6 @@ impl GitCommandRunner for ProcessGitCommandRunner {
         environment: &[(&'argument str, &'argument str)],
     ) -> Result<Output, GitError> {
         run_git_command_output_with_env_sync(repo_path, args, environment)
-            .map_err(GitError::OutputParse)
     }
 }
 
@@ -277,8 +276,7 @@ pub async fn list_staged_conflict_marker_files(
         let mut grep_arguments = vec!["grep", "--cached", "-l", "^<<<<<<<", "--"];
         let path_arguments: Vec<&str> = paths.iter().map(String::as_str).collect();
         grep_arguments.extend(path_arguments);
-        let output = run_git_command_output_sync(&repo_path, &grep_arguments)
-            .map_err(GitError::OutputParse)?;
+        let output = run_git_command_output_sync(&repo_path, &grep_arguments)?;
 
         // git grep exits with 1 when no matches are found.
         let exit_code = output.status.code().unwrap_or(2);
@@ -320,8 +318,7 @@ pub async fn list_conflicted_files(repo_path: PathBuf) -> Result<Vec<String>, Gi
             &repo_path,
             &["diff", "--name-only", "--diff-filter=U"],
             "Failed to read conflicted files",
-        )
-        .map_err(GitError::OutputParse)?;
+        )?;
         let files = output
             .lines()
             .map(str::trim)

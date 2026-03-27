@@ -345,18 +345,12 @@ impl GitClient for RealGitClient {
         base_branch: String,
     ) -> GitFuture<Result<(), GitError>> {
         Box::pin(async move {
-            create_worktree(repo_path, worktree_path, branch_name, base_branch)
-                .await
-                .map_err(GitError::OutputParse)
+            create_worktree(repo_path, worktree_path, branch_name, base_branch).await
         })
     }
 
     fn remove_worktree(&self, worktree_path: PathBuf) -> GitFuture<Result<(), GitError>> {
-        Box::pin(async move {
-            remove_worktree(worktree_path)
-                .await
-                .map_err(GitError::OutputParse)
-        })
+        Box::pin(async move { remove_worktree(worktree_path).await })
     }
 
     fn squash_merge_diff(
@@ -546,15 +540,11 @@ impl GitClient for RealGitClient {
     }
 
     fn repo_url(&self, repo_path: PathBuf) -> GitFuture<Result<String, GitError>> {
-        Box::pin(async move { repo_url(repo_path).await.map_err(GitError::OutputParse) })
+        Box::pin(async move { repo_url(repo_path).await })
     }
 
     fn main_repo_root(&self, repo_path: PathBuf) -> GitFuture<Result<PathBuf, GitError>> {
-        Box::pin(async move {
-            main_repo_root(repo_path)
-                .await
-                .map_err(GitError::OutputParse)
-        })
+        Box::pin(async move { main_repo_root(repo_path).await })
     }
 }
 
