@@ -150,6 +150,32 @@ pub fn format_duration_compact(duration_seconds: i64) -> String {
     "<1m".to_string()
 }
 
+/// Splits one trailing footer line block from `text` when its last non-empty
+/// line starts with any provided prefix.
+///
+/// This keeps transcript content and synthetic footers renderable in separate
+/// sections without rewriting the stored output string.
+pub fn split_trailing_line_block<'a>(
+    text: &'a str,
+    line_prefixes: &[&str],
+) -> (&'a str, Option<&'a str>) {
+    let trimmed_text = text.trim_end_matches('\n');
+    if trimmed_text.is_empty() {
+        return (text, None);
+    }
+
+    let line_start = trimmed_text.rfind('\n').map_or(0, |index| index + 1);
+    let trailing_line = &trimmed_text[line_start..];
+    if !line_prefixes
+        .iter()
+        .any(|line_prefix| trailing_line.starts_with(line_prefix))
+    {
+        return (text, None);
+    }
+
+    (&text[..line_start], Some(&text[line_start..]))
+}
+
 fn format_scaled_token_count(count: u64, divisor: u64, suffix: &str) -> String {
     let scaled_tenths =
         ((u128::from(count) * 10) + (u128::from(divisor) / 2)) / u128::from(divisor);
@@ -333,5 +359,31 @@ mod tests {
         assert_eq!(one_minute, "1m");
         assert_eq!(one_hour, "1h 0m");
         assert_eq!(one_day, "1d 1h");
+    }
+
+    #[test]
+    fn test_split_trailing_line_block_returns_matching_footer() {
+        // Arrange
+        let text = "Implemented the change.\n\n[Commit] committed with hash `abc1234`\n";
+
+        // Act
+        let (body, footer) = split_trailing_line_block(text, &["[Commit]", "[Commit Error]"]);
+
+        // Assert
+        assert_eq!(body, "Implemented the change.\n\n");
+        assert_eq!(footer, Some("[Commit] committed with hash `abc1234`\n"));
+    }
+
+    #[test]
+    fn test_split_trailing_line_block_ignores_nonmatching_last_line() {
+        // Arrange
+        let text = "[Commit] committed with hash `abc1234`\n\n › Follow up\n";
+
+        // Act
+        let (body, footer) = split_trailing_line_block(text, &["[Commit]", "[Commit Error]"]);
+
+        // Assert
+        assert_eq!(body, text);
+        assert_eq!(footer, None);
     }
 }

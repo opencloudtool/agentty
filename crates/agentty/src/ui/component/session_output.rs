@@ -10,11 +10,13 @@ use crate::icon::Icon;
 use crate::infra::agent::protocol::AgentResponseSummary;
 use crate::ui::markdown::render_markdown;
 use crate::ui::state::app_mode::DoneSessionOutputMode;
+use crate::ui::text_util;
 use crate::ui::{Component, style};
 
 const USER_PROMPT_PREFIX: &str = " › ";
 const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
 const CLARIFICATION_HEADER_LINE: &str = " › Clarifications:";
+const TRANSCRIPT_FOOTER_PREFIXES: &[&str] = &["[Commit]", "[Commit Error]"];
 
 /// Session chat output panel renderer.
 pub struct SessionOutput<'a> {
@@ -112,7 +114,11 @@ impl<'a> SessionOutput<'a> {
     /// summary and full output views. Active statuses append only the generic
     /// loader row so transcript text stays stable until the turn completes.
     /// Wrapping width follows the configured output panel borders so line
-    /// metrics stay in sync with rendered content.
+    /// metrics stay in sync with rendered content. Trailing commit notices are
+    /// rendered after follow-up tasks so auto-commit updates do not jump above
+    /// the assistant's structured footer section. Review mode suppresses
+    /// transcript-only follow-up tasks because the panel is showing review
+    /// assist content rather than the chat transcript.
     fn output_lines(
         session: &Session,
         output_area: Rect,
@@ -130,12 +136,17 @@ impl<'a> SessionOutput<'a> {
             review_text,
         );
         let output_text = Self::output_text_with_spaced_user_input(&output_text);
+        let (output_text, trailing_footer_text) =
+            text_util::split_trailing_line_block(&output_text, TRANSCRIPT_FOOTER_PREFIXES);
         let inner_width = output_area
             .width
             .saturating_sub(Self::output_horizontal_border_width())
             as usize;
         let mut lines = render_markdown(&output_text, inner_width);
-        Self::append_follow_up_task_lines(&mut lines, &session.follow_up_tasks, inner_width);
+        if Self::shows_follow_up_tasks(done_session_output_mode) {
+            Self::append_follow_up_task_lines(&mut lines, &session.follow_up_tasks, inner_width);
+        }
+        Self::append_transcript_footer_lines(&mut lines, trailing_footer_text, inner_width);
 
         if matches!(
             status,
@@ -286,6 +297,12 @@ impl<'a> SessionOutput<'a> {
         trimmed_summary
     }
 
+    /// Returns whether the output panel should append transcript-scoped
+    /// follow-up tasks for the selected display mode.
+    fn shows_follow_up_tasks(done_session_output_mode: DoneSessionOutputMode) -> bool {
+        done_session_output_mode != DoneSessionOutputMode::Review
+    }
+
     /// Appends a rendered follow-up-task section without mutating persisted
     /// transcript or summary text.
     fn append_follow_up_task_lines(
@@ -305,8 +322,28 @@ impl<'a> SessionOutput<'a> {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        let mut follow_up_task_lines = render_markdown(&follow_up_task_markdown, inner_width);
-        if follow_up_task_lines.is_empty() {
+        Self::append_markdown_lines(lines, &follow_up_task_markdown, inner_width);
+    }
+
+    /// Appends one trailing transcript footer after synthetic follow-up-task
+    /// content when a known footer block is present.
+    fn append_transcript_footer_lines(
+        lines: &mut Vec<Line<'static>>,
+        trailing_footer_text: Option<&str>,
+        inner_width: usize,
+    ) {
+        let Some(trailing_footer_text) = trailing_footer_text else {
+            return;
+        };
+
+        Self::append_markdown_lines(lines, trailing_footer_text, inner_width);
+    }
+
+    /// Appends rendered markdown with one blank separator while trimming any
+    /// existing trailing blank lines from `lines`.
+    fn append_markdown_lines(lines: &mut Vec<Line<'static>>, markdown: &str, inner_width: usize) {
+        let mut rendered_lines = render_markdown(markdown, inner_width);
+        if rendered_lines.is_empty() {
             return;
         }
 
@@ -318,7 +355,7 @@ impl<'a> SessionOutput<'a> {
             lines.push(Line::from(""));
         }
 
-        lines.append(&mut follow_up_task_lines);
+        lines.append(&mut rendered_lines);
     }
 
     /// Adds visual spacing around user prompt blocks while preserving pasted
@@ -656,6 +693,45 @@ mod tests {
     }
 
     #[test]
+    fn test_output_lines_renders_trailing_commit_footer_after_follow_up_tasks() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output =
+            "Implemented the change.\n\n[Commit] committed with hash `abc1234`\n".to_string();
+        session.follow_up_tasks = vec![SessionFollowUpTask {
+            id: 1,
+            text: "Run a broader regression pass.".to_string(),
+        }];
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            session.status,
+            DoneSessionOutputMode::Summary,
+            None,
+            None,
+            None,
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let follow_up_index = text
+            .find("Follow-Up Tasks")
+            .expect("follow-up task header should be rendered");
+        let commit_index = text
+            .find("[Commit] committed with hash abc1234")
+            .expect("commit footer should be rendered");
+
+        // Assert
+        assert!(text.contains("Implemented the change."));
+        assert!(text.contains("Run a broader regression pass."));
+        assert!(follow_up_index < commit_index);
+    }
+
+    #[test]
     fn test_output_lines_uses_streamed_output_for_done_session_in_output_mode() {
         // Arrange
         let mut session = session_fixture();
@@ -914,6 +990,38 @@ mod tests {
         // Assert
         assert!(text.contains("Preparing review with agent help..."));
         assert!(!text.contains("Review is not available."));
+    }
+
+    #[test]
+    fn test_output_lines_review_mode_hides_follow_up_tasks() {
+        // Arrange
+        let mut session = session_fixture();
+        session.status = Status::Review;
+        session.follow_up_tasks = vec![SessionFollowUpTask {
+            id: 1,
+            text: "Run cargo test -q.".to_string(),
+        }];
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 5),
+            session.status,
+            DoneSessionOutputMode::Review,
+            Some("Preparing review with agent help..."),
+            None,
+            None,
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("Preparing review with agent help..."));
+        assert!(!text.contains("Follow-Up Tasks"));
+        assert!(!text.contains("Run cargo test -q."));
     }
 
     #[test]

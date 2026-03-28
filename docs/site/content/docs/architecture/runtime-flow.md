@@ -94,6 +94,89 @@ Reducer behaviors that matter for data flow:
 - `AgentResponseReceived` routes question-mode transitions for active view sessions and updates in-memory follow-up-task snapshots for the currently loaded session.
 - After touched-session sync, terminal statuses (`Done`, `Canceled`) drop per-session worker senders so workers can shut down runtimes.
 
+## Session Chat Rendering Flow
+
+<a id="architecture-runtime-flow-session-chat"></a>
+The session chat panel is rendered by `crates/agentty/src/ui/page/session_chat.rs` and
+`crates/agentty/src/ui/component/session_output.rs`. The page chooses which
+session is visible and which auxiliary view state applies; the component turns
+that state into the exact lines printed inside the bordered output panel.
+
+### Data Origins
+
+The printed session-chat data comes from these sources:
+
+- `session.output`
+  Loaded with the session row in `crates/agentty/src/app/session/workflow/load.rs`,
+  then kept hot from the per-session handle via
+  `crates/agentty/src/app/session_state.rs`.
+  Runtime workers append new transcript text through
+  `SessionTaskService::append_session_output()` in
+  `crates/agentty/src/app/session/workflow/task.rs`, which updates both the
+  in-memory handle buffer and the persisted database row.
+- `session.summary`
+  Persisted by the turn worker in
+  `crates/agentty/src/app/session/workflow/worker.rs` as the raw protocol
+  `summary` payload and later reloaded with the session row. For merged/done
+  flows, merge helpers can rewrite the stored summary into a display-oriented
+  markdown form before the next reload.
+- `session.follow_up_tasks`
+  Persisted as separate rows by the worker in
+  `crates/agentty/src/app/session/workflow/worker.rs`, rehydrated into session
+  snapshots in `crates/agentty/src/app/session/workflow/load.rs`, and also
+  updated immediately in memory by `App::apply_agent_response_received()` in
+  `crates/agentty/src/app/core.rs` so the active session view reflects the
+  latest protocol payload without waiting for a full reload.
+- `review_status_message` and `review_text`
+  Stored on `AppMode::View` and its restore-view variants. Review mode is opened
+  from `crates/agentty/src/runtime/mode/session_view.rs`, which either reuses a
+  cached review, shows a loading message, or starts a review-assist task. That
+  task emits `ReviewPrepared` / `ReviewPreparationFailed`, and
+  `App::apply_review_update()` in `crates/agentty/src/app/core.rs` writes the
+  resulting text or error/status message back into the active view mode.
+- `active_progress`
+  Sourced from `App::session_progress_message()` in
+  `crates/agentty/src/app/core.rs`. Session task helpers emit
+  `AppEvent::SessionProgressUpdated` from
+  `crates/agentty/src/app/session/workflow/task.rs`, the reducer batches those
+  updates, and session view mode reads the latest message before rendering.
+
+### Render Path
+
+The exact session-chat render path is:
+
+1. `crates/agentty/src/runtime/mode/session_view.rs` calculates the visible
+   output height by calling `SessionChatPage::rendered_output_line_count(...)`
+   with the selected `Session`, the current `DoneSessionOutputMode`,
+   `review_status_message`, `review_text`, and the latest `active_progress`.
+1. `crates/agentty/src/ui/page/session_chat.rs` builds `SessionOutput` inside
+   `render_session()`, forwarding the same render inputs plus scroll offset.
+1. `SessionChatPage::render_session_header()` prints the single-line session
+   header above the bordered output region.
+1. `SessionOutput::output_text()` in
+   `crates/agentty/src/ui/component/session_output.rs` selects the base text:
+   review text/status while in `DoneSessionOutputMode::Review`, rendered
+   summary text for `Status::Done` summary mode, otherwise `session.output`.
+1. `SessionOutput::output_lines()` converts that source text into final panel
+   lines: it normalizes prompt spacing, splits any trailing commit footer,
+   renders markdown, appends follow-up tasks only for transcript-oriented modes,
+   reattaches the trailing commit footer, and finally adds the loader row or
+   `t` toggle hint when the current status requires it.
+1. `SessionOutput::render()` writes the final `Line` list into a `ratatui`
+   `Paragraph`, which is the exact widget printed in the session chat output
+   area.
+
+### What Actually Prints in Each Mode
+
+- Review mode prints only review-specific content (`review_text`,
+  `review_status_message`, or the `Review is not available.` fallback). It does
+  not append transcript follow-up-task sections.
+- Done summary mode prints the persisted summary payload rendered as
+  `Change Summary`, plus any transcript-scoped footer content and the `t`
+  toggle hint.
+- All other session-chat modes print `session.output`, which is the persisted
+  and handle-synchronized transcript built by worker/task append operations.
+
 ## Session Turn Data Flow
 
 <a id="architecture-runtime-flow-turn"></a>

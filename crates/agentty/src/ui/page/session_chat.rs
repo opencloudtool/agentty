@@ -1202,6 +1202,30 @@ mod tests {
     }
 
     #[test]
+    fn test_rendered_output_line_count_review_mode_ignores_follow_up_tasks() {
+        // Arrange
+        let mut session = session_fixture();
+        session.status = Status::Review;
+        session.follow_up_tasks = vec![crate::domain::session::SessionFollowUpTask {
+            id: 1,
+            text: "Run cargo test -q.".to_string(),
+        }];
+
+        // Act
+        let rendered_line_count = SessionChatPage::rendered_output_line_count(
+            &session,
+            80,
+            DoneSessionOutputMode::Review,
+            Some("Preparing review with agent help..."),
+            None,
+            None,
+        );
+
+        // Assert
+        assert_eq!(rendered_line_count, 2);
+    }
+
+    #[test]
     fn test_view_help_text_in_progress_shows_open_and_hides_diff() {
         // Arrange
         let mut session = session_fixture();
