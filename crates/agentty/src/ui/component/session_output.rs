@@ -10,12 +10,13 @@ use crate::icon::Icon;
 use crate::infra::agent::protocol::AgentResponseSummary;
 use crate::ui::markdown::render_markdown;
 use crate::ui::state::app_mode::DoneSessionOutputMode;
-use crate::ui::text_util;
-use crate::ui::{Component, style};
+use crate::ui::{Component, style, text_util};
 
 const USER_PROMPT_PREFIX: &str = " › ";
 const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
 const CLARIFICATION_HEADER_LINE: &str = " › Clarifications:";
+/// Markdown heading used for synthetic follow-up-task rendering.
+const FOLLOW_UP_TASK_HEADER: &str = "Follow-Up Tasks [Preview]";
 const TRANSCRIPT_FOOTER_PREFIXES: &[&str] = &["[Commit]", "[Commit Error]"];
 
 /// Session chat output panel renderer.
@@ -305,6 +306,9 @@ impl<'a> SessionOutput<'a> {
 
     /// Appends a rendered follow-up-task section without mutating persisted
     /// transcript or summary text.
+    ///
+    /// The section header includes a preview badge so users can distinguish
+    /// generated follow-up tasks from transcript content.
     fn append_follow_up_task_lines(
         lines: &mut Vec<Line<'static>>,
         follow_up_tasks: &[SessionFollowUpTask],
@@ -315,7 +319,7 @@ impl<'a> SessionOutput<'a> {
         }
 
         let follow_up_task_markdown = format!(
-            "## Follow-Up Tasks\n{}",
+            "## {FOLLOW_UP_TASK_HEADER}\n{}",
             follow_up_tasks
                 .iter()
                 .map(|follow_up_task| format!("- {}", follow_up_task.text))
@@ -689,7 +693,7 @@ mod tests {
         // Assert
         assert_eq!(session.output, "streamed output");
         assert!(text.contains("streamed output"));
-        assert!(text.contains("Follow-Up Tasks"));
+        assert!(text.contains(FOLLOW_UP_TASK_HEADER));
         assert!(text.contains("Document the new shortcut."));
         assert!(text.contains("Add a regression test."));
     }
@@ -721,7 +725,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let follow_up_index = text
-            .find("Follow-Up Tasks")
+            .find(FOLLOW_UP_TASK_HEADER)
             .expect("follow-up task header should be rendered");
         let commit_index = text
             .find("[Commit] committed with hash abc1234")
@@ -1022,7 +1026,7 @@ mod tests {
 
         // Assert
         assert!(text.contains("Preparing review with agent help..."));
-        assert!(!text.contains("Follow-Up Tasks"));
+        assert!(!text.contains(FOLLOW_UP_TASK_HEADER));
         assert!(!text.contains("Run cargo test -q."));
     }
 
