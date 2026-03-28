@@ -180,7 +180,7 @@ async fn handle_view_key(
             if !key.modifiers.contains(event::KeyModifiers::CONTROL)
                 && is_view_diff_allowed(view_session_snapshot.session_status) =>
         {
-            show_diff_for_view_session(app, view_context).await;
+            let _ = show_diff_for_view_session(app, view_context).await;
         }
         KeyCode::Char('p')
             if !key.modifiers.contains(event::KeyModifiers::CONTROL)
@@ -735,8 +735,16 @@ async fn open_review_output_mode(
     );
 }
 
-async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) {
+/// Opens diff mode only when the viewed session has actual worktree changes.
+///
+/// Returns `true` when diff mode was opened and `false` when the session diff
+/// is empty, which keeps the view page in place so the `d` shortcut behaves as
+/// unavailable for unchanged review sessions.
+async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) -> bool {
     let diff = load_view_session_diff(app, view_context).await;
+    if diff.trim().is_empty() {
+        return false;
+    }
 
     app.mode = AppMode::Diff {
         diff,
@@ -745,6 +753,8 @@ async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) {
         session_id: view_context.session_id.clone(),
         scroll_offset: 0,
     };
+
+    true
 }
 
 /// Returns whether a review status line indicates assist is still
@@ -1531,6 +1541,9 @@ mod tests {
     async fn test_show_diff_for_view_session_switches_mode_to_diff() {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        let session_folder = app.sessions.sessions[0].folder.clone();
+        std::fs::write(session_folder.join("README.md"), "updated content")
+            .expect("failed to write diff fixture");
         let context = ViewContext {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: None,
@@ -1541,14 +1554,50 @@ mod tests {
         };
 
         // Act
-        show_diff_for_view_session(&mut app, &context).await;
+        let opened = show_diff_for_view_session(&mut app, &context).await;
 
         // Assert
+        assert!(opened);
         assert!(matches!(
             app.mode,
             AppMode::Diff {
                 ref session_id,
                 scroll_offset: 0,
+                ..
+            } if session_id == &context.session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_show_diff_for_view_session_keeps_view_mode_when_diff_is_empty() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            session_id: session_id.clone(),
+            scroll_offset: Some(0),
+        };
+        let context = ViewContext {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            scroll_offset: Some(0),
+            session_id: session_id.clone(),
+            session_index: 0,
+        };
+
+        // Act
+        let opened = show_diff_for_view_session(&mut app, &context).await;
+
+        // Assert
+        assert!(!opened);
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                ref session_id,
+                scroll_offset: Some(0),
                 ..
             } if session_id == &context.session_id
         ));
@@ -1570,9 +1619,10 @@ mod tests {
         };
 
         // Act
-        show_diff_for_view_session(&mut app, &context).await;
+        let opened = show_diff_for_view_session(&mut app, &context).await;
 
         // Assert
+        assert!(opened);
         assert!(matches!(
             app.mode,
             AppMode::Diff {
