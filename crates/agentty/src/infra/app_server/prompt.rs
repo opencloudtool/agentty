@@ -1,7 +1,7 @@
 //! Shared app-server prompt shaping helpers.
 
 use crate::infra::agent;
-use crate::infra::app_server::AppServerTurnRequest;
+use crate::infra::app_server::{AppServerError, AppServerTurnRequest};
 use crate::infra::channel::{AgentRequestKind, TurnPrompt};
 
 /// Reads the latest session output, preferring the live buffer over the
@@ -40,7 +40,7 @@ pub fn turn_prompt_for_runtime(
     request_kind: &AgentRequestKind,
     replay_session_output: Option<&str>,
     context_reset: bool,
-) -> Result<TurnPrompt, String> {
+) -> Result<TurnPrompt, AppServerError> {
     let prompt = prompt.into();
     let turn_prompt = agent::prepare_prompt_text(agent::PromptPreparationRequest {
         prompt: &prompt.text,
@@ -48,7 +48,7 @@ pub fn turn_prompt_for_runtime(
         replay_session_output,
         should_replay_session_output: context_reset,
     })
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| AppServerError::PromptRender(error.to_string()))?;
 
     Ok(TurnPrompt {
         attachments: prompt.attachments,

@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::domain::agent::AgentKind;
 use crate::infra::agent;
 use crate::infra::app_server::{
-    AppServerClient, AppServerFuture, AppServerStreamEvent, AppServerTurnRequest,
+    AppServerClient, AppServerError, AppServerFuture, AppServerStreamEvent, AppServerTurnRequest,
     AppServerTurnResponse,
 };
 
@@ -51,21 +51,22 @@ impl AppServerClient for RoutingAppServerClient {
         &self,
         request: AppServerTurnRequest,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> AppServerFuture<Result<AppServerTurnResponse, String>> {
+    ) -> AppServerFuture<Result<AppServerTurnResponse, AppServerError>> {
         let codex_client = Arc::clone(&self.codex_client);
         let gemini_client = Arc::clone(&self.gemini_client);
         let model = request.model.clone();
 
         Box::pin(async move {
-            let provider_kind = agent::provider_kind_for_model(&model)
-                .map_err(|error| format!("App-server routing failed for {error}"))?;
+            let provider_kind = agent::provider_kind_for_model(&model).map_err(|error| {
+                AppServerError::Provider(format!("App-server routing failed for {error}"))
+            })?;
 
             match provider_kind {
                 AgentKind::Codex => codex_client.run_turn(request, stream_tx).await,
                 AgentKind::Gemini => gemini_client.run_turn(request, stream_tx).await,
-                AgentKind::Claude => {
-                    Err("Claude does not support app-server session execution".to_string())
-                }
+                AgentKind::Claude => Err(AppServerError::Provider(
+                    "Claude does not support app-server session execution".to_string(),
+                )),
             }
         })
     }
@@ -200,11 +201,11 @@ mod tests {
 
         // Act
         let result = app_server_client.run_turn(request, stream_tx).await;
-        let error = result.err().unwrap_or_default();
+        let error = result.expect_err("should fail for unknown model");
 
         // Assert
         assert!(
-            error.contains("unknown model"),
+            error.to_string().contains("unknown model"),
             "error should mention unknown model"
         );
     }

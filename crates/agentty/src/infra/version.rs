@@ -8,6 +8,33 @@ use serde::Deserialize;
 const AGENTTY_NPM_PACKAGE: &str = "agentty";
 const NPM_REGISTRY_LATEST_URL: &str = "https://registry.npmjs.org/agentty/latest";
 
+/// Typed error returned by version infrastructure operations.
+///
+/// Wraps subprocess and I/O failures so callers can distinguish version
+/// command errors without parsing opaque strings.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum VersionError {
+    /// A version command subprocess failed to launch or produce output.
+    #[error("Failed to run `{command}`: {message}")]
+    CommandSpawn {
+        /// The program that was being launched (e.g. `"npm"`, `"curl"`).
+        command: String,
+        /// Human-readable detail from the underlying I/O error.
+        message: String,
+    },
+
+    /// A version command subprocess exited with a non-zero status.
+    #[error("`{command}` exited with status {status}: {stderr}")]
+    NonZeroExit {
+        /// The program that exited unsuccessfully.
+        command: String,
+        /// Stringified process exit status.
+        status: String,
+        /// Combined stderr output from the failed process.
+        stderr: String,
+    },
+}
+
 /// Minimal command output needed by version-resolution logic.
 struct VersionCommandOutput {
     success: bool,
@@ -18,8 +45,11 @@ struct VersionCommandOutput {
 #[cfg_attr(test, mockall::automock)]
 trait VersionCommandRunner: Send + Sync {
     /// Runs one command and returns normalized output for parsing.
-    fn run_command(&self, program: &str, args: Vec<String>)
-    -> Result<VersionCommandOutput, String>;
+    fn run_command(
+        &self,
+        program: &str,
+        args: Vec<String>,
+    ) -> Result<VersionCommandOutput, VersionError>;
 }
 
 /// Production command runner backed by [`std::process::Command`].
@@ -30,11 +60,14 @@ impl VersionCommandRunner for RealVersionCommandRunner {
         &self,
         program: &str,
         args: Vec<String>,
-    ) -> Result<VersionCommandOutput, String> {
+    ) -> Result<VersionCommandOutput, VersionError> {
         let output = Command::new(program)
             .args(&args)
             .output()
-            .map_err(|error| format!("Failed to run `{program}`: {error}"))?;
+            .map_err(|error| VersionError::CommandSpawn {
+                command: program.to_string(),
+                message: error.to_string(),
+            })?;
 
         Ok(VersionCommandOutput {
             success: output.status.success(),
@@ -50,9 +83,9 @@ impl VersionCommandRunner for RealVersionCommandRunner {
 /// the update flow without subprocess execution.
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait UpdateRunner: Send + Sync {
-    /// Runs the update command and returns combined stdout on success or an
-    /// error description on failure.
-    fn run_update(&self, command: &str, args: Vec<String>) -> Result<String, String>;
+    /// Runs the update command and returns combined stdout on success or a
+    /// typed version error on failure.
+    fn run_update(&self, command: &str, args: Vec<String>) -> Result<String, VersionError>;
 }
 
 /// Production update runner backed by [`std::process::Command`].
@@ -61,28 +94,34 @@ pub(crate) struct RealUpdateRunner;
 
 #[cfg(not(test))]
 impl UpdateRunner for RealUpdateRunner {
-    fn run_update(&self, command: &str, args: Vec<String>) -> Result<String, String> {
+    fn run_update(&self, command: &str, args: Vec<String>) -> Result<String, VersionError> {
         let output = Command::new(command)
             .args(&args)
             .output()
-            .map_err(|error| format!("Failed to run `{command}`: {error}"))?;
+            .map_err(|error| VersionError::CommandSpawn {
+                command: command.to_string(),
+                message: error.to_string(),
+            })?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
 
-            Err(format!(
-                "`{command}` exited with status {}: {stderr}",
-                output.status
-            ))
+            Err(VersionError::NonZeroExit {
+                command: command.to_string(),
+                status: output.status.to_string(),
+                stderr: stderr.into_owned(),
+            })
         }
     }
 }
 
 /// Runs `npm i -g agentty@latest` synchronously via the provided
 /// [`UpdateRunner`].
-pub(crate) fn run_npm_update_sync(update_runner: &dyn UpdateRunner) -> Result<String, String> {
+pub(crate) fn run_npm_update_sync(
+    update_runner: &dyn UpdateRunner,
+) -> Result<String, VersionError> {
     update_runner.run_update(
         "npm",
         vec![
@@ -384,10 +423,10 @@ mod tests {
             });
 
         // Act
-        let result = run_npm_update_sync(&update_runner);
+        let output = run_npm_update_sync(&update_runner).expect("update should succeed");
 
         // Assert
-        assert_eq!(result, Ok("added 1 package".to_string()));
+        assert_eq!(output, "added 1 package");
     }
 
     #[test]
@@ -397,12 +436,18 @@ mod tests {
         update_runner
             .expect_run_update()
             .times(1)
-            .returning(|_, _| Err("permission denied".to_string()));
+            .returning(|_, _| {
+                Err(VersionError::NonZeroExit {
+                    command: "npm".to_string(),
+                    status: "exit status: 1".to_string(),
+                    stderr: "permission denied".to_string(),
+                })
+            });
 
         // Act
-        let result = run_npm_update_sync(&update_runner);
+        let error = run_npm_update_sync(&update_runner).expect_err("should propagate runner error");
 
         // Assert
-        assert_eq!(result, Err("permission denied".to_string()));
+        assert!(error.to_string().contains("permission denied"));
     }
 }

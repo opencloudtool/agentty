@@ -168,7 +168,7 @@ impl AgentChannel for AppServerAgentChannel {
                         provider_conversation_id: response.provider_conversation_id,
                     })
                 }
-                Err(error) => Err(AgentError(error)),
+                Err(error) => Err(AgentError(error.to_string())),
             }
         })
     }
@@ -710,7 +710,11 @@ mod tests {
         mock_client
             .expect_run_turn()
             .returning(|_request, _stream_tx| {
-                Box::pin(async { Err("server timeout".to_string()) })
+                Box::pin(async {
+                    Err(crate::infra::app_server::AppServerError::Provider(
+                        "server timeout".to_string(),
+                    ))
+                })
             });
         let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
         let (events_tx, _events_rx) = mpsc::unbounded_channel();

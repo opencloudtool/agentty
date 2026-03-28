@@ -8,6 +8,7 @@ orchestration used by provider-specific app-server clients.
 ## Directory Index
 
 - [`contract.rs`](contract.rs) - Shared app-server trait contracts and request/response types.
+- [`error.rs`](error.rs) - Typed `AppServerError` enum for app-server infrastructure operations.
 - [`prompt.rs`](prompt.rs) - Prompt shaping helpers for transcript replay and context reset.
 - [`registry.rs`](registry.rs) - Per-session app-server runtime process registry.
 - [`retry.rs`](retry.rs) - Restart and retry orchestration with runtime inspector callbacks.

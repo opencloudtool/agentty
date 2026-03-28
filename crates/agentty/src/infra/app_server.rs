@@ -5,6 +5,7 @@
 //! runtime registries, and restart/retry orchestration.
 
 pub mod contract;
+pub mod error;
 pub mod prompt;
 pub mod registry;
 pub mod retry;
@@ -15,6 +16,7 @@ pub use contract::{
     AppServerClient, AppServerFuture, AppServerStreamEvent, AppServerTurnRequest,
     AppServerTurnResponse,
 };
+pub use error::AppServerError;
 pub use prompt::turn_prompt_for_runtime;
 pub use registry::AppServerSessionRegistry;
 pub use retry::{RuntimeInspector, run_turn_with_restart_retry};

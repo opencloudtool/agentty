@@ -7,6 +7,17 @@ use std::pin::Pin;
 /// Boxed async result used by [`FsClient`] trait methods.
 pub type FsFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// Typed error returned by filesystem infrastructure operations.
+///
+/// Wraps I/O failures so callers can distinguish filesystem errors without
+/// parsing opaque strings.
+#[derive(Debug, thiserror::Error)]
+pub enum FsError {
+    /// A filesystem or file I/O operation failed.
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
 /// Async filesystem boundary used by app-layer workflows.
 ///
 /// Production uses [`RealFsClient`], while tests can inject
@@ -17,19 +28,19 @@ pub trait FsClient: Send + Sync {
     ///
     /// # Errors
     /// Returns an error when filesystem creation fails.
-    fn create_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), String>>;
+    fn create_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), FsError>>;
 
     /// Recursively removes `path` and its contents.
     ///
     /// # Errors
     /// Returns an error when filesystem removal fails.
-    fn remove_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), String>>;
+    fn remove_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), FsError>>;
 
     /// Reads one file into bytes without blocking the async runtime.
     ///
     /// # Errors
     /// Returns an error when file read fails.
-    fn read_file(&self, path: PathBuf) -> FsFuture<Result<Vec<u8>, String>>;
+    fn read_file(&self, path: PathBuf) -> FsFuture<Result<Vec<u8>, FsError>>;
 
     /// Removes one file from disk.
     ///
@@ -38,7 +49,7 @@ pub trait FsClient: Send + Sync {
     /// # Errors
     /// Returns an error when filesystem removal fails for any reason other
     /// than the file already being absent.
-    fn remove_file(&self, path: PathBuf) -> FsFuture<Result<(), String>>;
+    fn remove_file(&self, path: PathBuf) -> FsFuture<Result<(), FsError>>;
 
     /// Returns whether `path` currently resolves to an existing directory.
     fn is_dir(&self, path: PathBuf) -> bool;
@@ -48,36 +59,24 @@ pub trait FsClient: Send + Sync {
 pub struct RealFsClient;
 
 impl FsClient for RealFsClient {
-    fn create_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), String>> {
-        Box::pin(async move {
-            tokio::fs::create_dir_all(path)
-                .await
-                .map_err(|error| error.to_string())
-        })
+    fn create_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), FsError>> {
+        Box::pin(async move { tokio::fs::create_dir_all(path).await.map_err(FsError::from) })
     }
 
-    fn remove_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), String>> {
-        Box::pin(async move {
-            tokio::fs::remove_dir_all(path)
-                .await
-                .map_err(|error| error.to_string())
-        })
+    fn remove_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), FsError>> {
+        Box::pin(async move { tokio::fs::remove_dir_all(path).await.map_err(FsError::from) })
     }
 
-    fn read_file(&self, path: PathBuf) -> FsFuture<Result<Vec<u8>, String>> {
-        Box::pin(async move {
-            tokio::fs::read(path)
-                .await
-                .map_err(|error| error.to_string())
-        })
+    fn read_file(&self, path: PathBuf) -> FsFuture<Result<Vec<u8>, FsError>> {
+        Box::pin(async move { tokio::fs::read(path).await.map_err(FsError::from) })
     }
 
-    fn remove_file(&self, path: PathBuf) -> FsFuture<Result<(), String>> {
+    fn remove_file(&self, path: PathBuf) -> FsFuture<Result<(), FsError>> {
         Box::pin(async move {
             match tokio::fs::remove_file(path).await {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(FsError::from(error)),
             }
         })
     }
@@ -131,6 +130,7 @@ mod tests {
             .expect_err("missing file should error");
 
         // Assert
-        assert!(error.contains("No such file") || error.contains("cannot find the path"));
+        let message = error.to_string();
+        assert!(message.contains("No such file") || message.contains("cannot find the path"));
     }
 }

@@ -20,8 +20,8 @@ use tokio::sync::mpsc;
 use crate::domain::agent::AgentKind;
 use crate::infra::agent;
 use crate::infra::app_server::{
-    self, AppServerClient, AppServerFuture, AppServerSessionRegistry, AppServerStreamEvent,
-    AppServerTurnRequest, AppServerTurnResponse,
+    self, AppServerClient, AppServerError, AppServerFuture, AppServerSessionRegistry,
+    AppServerStreamEvent, AppServerTurnRequest, AppServerTurnResponse,
 };
 use crate::infra::app_server_transport::{
     self, extract_json_error_message, response_id_matches, write_json_line,
@@ -123,7 +123,7 @@ impl RealGeminiAcpClient {
         sessions: &AppServerSessionRegistry<GeminiSessionRuntime>,
         request: AppServerTurnRequest,
         stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> Result<AppServerTurnResponse, String> {
+    ) -> Result<AppServerTurnResponse, AppServerError> {
         let stream_tx = stream_tx.clone();
 
         app_server::run_turn_with_restart_retry(
@@ -138,17 +138,25 @@ impl RealGeminiAcpClient {
             |request| {
                 let request = request.clone();
 
-                Box::pin(async move { Self::start_runtime(&request).await })
+                Box::pin(async move {
+                    Self::start_runtime(&request)
+                        .await
+                        .map_err(AppServerError::Provider)
+                })
             },
             move |runtime, prompt| {
                 let stream_tx = stream_tx.clone();
 
-                Box::pin(Self::run_turn_with_runtime(
-                    &mut runtime.transport,
-                    &runtime.session_id,
-                    prompt,
-                    stream_tx,
-                ))
+                Box::pin(async move {
+                    Self::run_turn_with_runtime(
+                        &mut runtime.transport,
+                        &runtime.session_id,
+                        prompt,
+                        stream_tx,
+                    )
+                    .await
+                    .map_err(AppServerError::Provider)
+                })
             },
             |runtime| Box::pin(Self::shutdown_runtime(runtime)),
         )
@@ -566,7 +574,7 @@ impl AppServerClient for RealGeminiAcpClient {
         &self,
         request: AppServerTurnRequest,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> AppServerFuture<Result<AppServerTurnResponse, String>> {
+    ) -> AppServerFuture<Result<AppServerTurnResponse, AppServerError>> {
         let sessions = self.sessions.clone();
 
         Box::pin(async move { Self::run_turn_internal(&sessions, request, &stream_tx).await })

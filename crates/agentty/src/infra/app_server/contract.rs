@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::domain::agent::ReasoningLevel;
+use crate::infra::app_server::AppServerError;
 use crate::infra::channel::{AgentRequestKind, TurnPrompt};
 
 /// Boxed async result used by [`AppServerClient`] trait methods.
@@ -72,6 +73,7 @@ pub struct AppServerTurnRequest {
 }
 
 /// Normalized result for one app-server turn.
+#[derive(Debug)]
 pub struct AppServerTurnResponse {
     pub assistant_message: String,
     pub context_reset: bool,
@@ -94,7 +96,7 @@ pub trait AppServerClient: Send + Sync {
         &self,
         request: AppServerTurnRequest,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> AppServerFuture<Result<AppServerTurnResponse, String>>;
+    ) -> AppServerFuture<Result<AppServerTurnResponse, AppServerError>>;
 
     /// Stops and forgets a session runtime, if one exists.
     fn shutdown_session(&self, session_id: String) -> AppServerFuture<()>;

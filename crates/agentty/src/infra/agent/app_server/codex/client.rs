@@ -10,8 +10,8 @@ use crate::domain::permission::PermissionMode;
 use crate::infra::agent;
 use crate::infra::agent::protocol::{agent_response_output_schema, parse_agent_response_strict};
 use crate::infra::app_server::{
-    self, AppServerClient, AppServerFuture, AppServerSessionRegistry, AppServerStreamEvent,
-    AppServerTurnRequest, AppServerTurnResponse,
+    self, AppServerClient, AppServerError, AppServerFuture, AppServerSessionRegistry,
+    AppServerStreamEvent, AppServerTurnRequest, AppServerTurnResponse,
 };
 use crate::infra::app_server_transport::{
     self, extract_json_error_message, response_id_matches, write_json_line,
@@ -72,7 +72,7 @@ impl RealCodexAppServerClient {
         sessions: &AppServerSessionRegistry<CodexSessionRuntime>,
         request: AppServerTurnRequest,
         stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> Result<AppServerTurnResponse, String> {
+    ) -> Result<AppServerTurnResponse, AppServerError> {
         let stream_tx = stream_tx.clone();
         let reasoning_level = request.reasoning_level;
 
@@ -88,17 +88,20 @@ impl RealCodexAppServerClient {
             |request| {
                 let request = request.clone();
 
-                Box::pin(async move { Self::start_runtime(&request).await })
+                Box::pin(async move {
+                    Self::start_runtime(&request)
+                        .await
+                        .map_err(AppServerError::Provider)
+                })
             },
             move |runtime, prompt| {
                 let stream_tx = stream_tx.clone();
 
-                Box::pin(Self::run_turn_with_runtime(
-                    runtime,
-                    prompt,
-                    reasoning_level,
-                    stream_tx,
-                ))
+                Box::pin(async move {
+                    Self::run_turn_with_runtime(runtime, prompt, reasoning_level, stream_tx)
+                        .await
+                        .map_err(AppServerError::Provider)
+                })
             },
             |runtime| Box::pin(Self::shutdown_runtime(runtime)),
         )
@@ -1089,7 +1092,7 @@ impl AppServerClient for RealCodexAppServerClient {
         &self,
         request: AppServerTurnRequest,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> AppServerFuture<Result<AppServerTurnResponse, String>> {
+    ) -> AppServerFuture<Result<AppServerTurnResponse, AppServerError>> {
         let sessions = self.sessions.clone();
 
         Box::pin(async move { Self::run_turn_internal(&sessions, request, &stream_tx).await })

@@ -18,8 +18,8 @@ Implementations of external interfaces (Database, Git, System).
 - [`app_server_transport.rs`](app_server_transport.rs) - Shared stdio JSON-RPC transport utilities for app-server protocols.
 - [`db.rs`](db.rs) - SQLite database implementation.
 - [`file_index.rs`](file_index.rs) - Gitignore-aware file listing and fuzzy filtering for `@` mentions.
-- [`fs.rs`](fs.rs) - Async filesystem trait boundary and production implementation.
+- [`fs.rs`](fs.rs) - Async filesystem trait boundary (`FsClient`, `FsError`) and production implementation.
 - [`git/`](git/) - Workflow-focused git operation modules (`merge`, `rebase`, `repo`, `sync`, `worktree`).
 - [`git.rs`](git.rs) - Git module root with public API re-exports and `GitClient` wiring.
 - [`tmux.rs`](tmux.rs) - Tmux process boundary and production subprocess-backed client.
-- [`version.rs`](version.rs) - Version checking and background auto-update infrastructure (`UpdateRunner` trait, `UpdateStatus` enum).
+- [`version.rs`](version.rs) - Version checking and background auto-update infrastructure (`UpdateRunner` trait, `VersionError` enum, `UpdateStatus` enum).

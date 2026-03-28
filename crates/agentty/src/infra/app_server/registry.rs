@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::infra::app_server::AppServerError;
+
 /// Shared runtime registry used by app-server providers.
 ///
 /// Each session id maps to one runtime process. Workers temporarily remove a
@@ -25,13 +27,13 @@ impl<Runtime> AppServerSessionRegistry<Runtime> {
     ///
     /// # Errors
     /// Returns an error when the session map lock is poisoned.
-    pub fn take_session(&self, session_id: &str) -> Result<Option<Runtime>, String> {
-        let mut sessions = self.sessions.lock().map_err(|_| {
-            format!(
-                "Failed to lock {} app-server session map",
-                self.provider_name
-            )
-        })?;
+    pub fn take_session(&self, session_id: &str) -> Result<Option<Runtime>, AppServerError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| AppServerError::LockPoisoned {
+                provider: self.provider_name,
+            })?;
 
         Ok(sessions.remove(session_id))
     }
@@ -40,13 +42,17 @@ impl<Runtime> AppServerSessionRegistry<Runtime> {
     ///
     /// # Errors
     /// Returns an error when the session map lock is poisoned.
-    pub fn store_session(&self, session_id: String, session: Runtime) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| {
-            format!(
-                "Failed to lock {} app-server session map",
-                self.provider_name
-            )
-        })?;
+    pub fn store_session(
+        &self,
+        session_id: String,
+        session: Runtime,
+    ) -> Result<(), AppServerError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| AppServerError::LockPoisoned {
+                provider: self.provider_name,
+            })?;
         sessions.insert(session_id, session);
 
         Ok(())
@@ -64,13 +70,14 @@ impl<Runtime> AppServerSessionRegistry<Runtime> {
         &self,
         session_id: String,
         session: Runtime,
-    ) -> Result<(), (String, Runtime)> {
-        let lock_error = format!(
-            "Failed to lock {} app-server session map",
-            self.provider_name
-        );
+    ) -> Result<(), (AppServerError, Runtime)> {
         let Ok(mut sessions) = self.sessions.lock() else {
-            return Err((lock_error, session));
+            return Err((
+                AppServerError::LockPoisoned {
+                    provider: self.provider_name,
+                },
+                session,
+            ));
         };
         sessions.insert(session_id, session);
 

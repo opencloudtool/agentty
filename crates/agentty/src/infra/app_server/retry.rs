@@ -3,6 +3,7 @@
 use super::contract::{
     AppServerFuture, AppServerTurnRequest, AppServerTurnResponse, BorrowedAppServerFuture,
 };
+use super::error::AppServerError;
 use super::prompt::{read_latest_session_output, turn_prompt_for_runtime};
 use super::registry::AppServerSessionRegistry;
 use crate::infra::channel::TurnPrompt;
@@ -43,15 +44,16 @@ pub async fn run_turn_with_restart_retry<Runtime, StartRuntime, RunTurn, Shutdow
     mut start_runtime: StartRuntime,
     mut run_turn_with_runtime: RunTurn,
     mut shutdown_runtime: ShutdownRuntime,
-) -> Result<AppServerTurnResponse, String>
+) -> Result<AppServerTurnResponse, AppServerError>
 where
-    StartRuntime: FnMut(&AppServerTurnRequest) -> AppServerFuture<Result<Runtime, String>>,
-    RunTurn:
-        for<'scope> FnMut(
-            &'scope mut Runtime,
-            &'scope TurnPrompt,
-        )
-            -> BorrowedAppServerFuture<'scope, Result<(String, u64, u64), String>>,
+    StartRuntime: FnMut(&AppServerTurnRequest) -> AppServerFuture<Result<Runtime, AppServerError>>,
+    RunTurn: for<'scope> FnMut(
+        &'scope mut Runtime,
+        &'scope TurnPrompt,
+    ) -> BorrowedAppServerFuture<
+        'scope,
+        Result<(String, u64, u64), AppServerError>,
+    >,
     ShutdownRuntime: for<'scope> FnMut(&'scope mut Runtime) -> BorrowedAppServerFuture<'scope, ()>,
 {
     let session_id = request.session_id.clone();
@@ -109,7 +111,7 @@ where
 
     let first_error = first_attempt
         .err()
-        .unwrap_or_else(|| "App-server turn failed".to_string());
+        .unwrap_or_else(|| AppServerError::Provider("App-server turn failed".to_string()));
     shutdown_runtime(&mut session_runtime).await;
     let mut restarted = start_runtime(&request).await?;
     let retry_replays = needs_replay(false, &request, &inspector, &restarted);
@@ -148,11 +150,11 @@ where
         Err(retry_error) => {
             shutdown_runtime(&mut restarted).await;
 
-            Err(format!(
-                "{} app-server failed, then retry failed after restart: first error: \
-                 {first_error}; retry error: {retry_error}",
-                sessions.provider_name()
-            ))
+            Err(AppServerError::RetryExhausted {
+                provider: sessions.provider_name(),
+                first_error: first_error.to_string(),
+                retry_error: retry_error.to_string(),
+            })
         }
     }
 }
@@ -179,7 +181,7 @@ async fn build_attempt_prompt<Runtime, ShutdownRuntime>(
     replays_context: bool,
     shutdown_runtime: &mut ShutdownRuntime,
     runtime: &mut Runtime,
-) -> Result<TurnPrompt, String>
+) -> Result<TurnPrompt, AppServerError>
 where
     ShutdownRuntime: for<'scope> FnMut(&'scope mut Runtime) -> BorrowedAppServerFuture<'scope, ()>,
 {
@@ -433,7 +435,7 @@ mod tests {
 
                     Box::pin(async move {
                         if attempt == 0 {
-                            return Err("first failure".to_string());
+                            return Err(AppServerError::Provider("first failure".to_string()));
                         }
 
                         if let Ok(mut guard) = captured_retry_prompt.lock() {
@@ -514,7 +516,7 @@ mod tests {
 
                     Box::pin(async move {
                         if attempt == 0 {
-                            return Err("first failure".to_string());
+                            return Err(AppServerError::Provider("first failure".to_string()));
                         }
 
                         Ok(("done".to_string(), 7, 3))
