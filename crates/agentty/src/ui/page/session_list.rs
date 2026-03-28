@@ -369,6 +369,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at: 0,
             folder: PathBuf::new(),
+            follow_up_tasks: Vec::new(),
             id: id.to_string(),
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),

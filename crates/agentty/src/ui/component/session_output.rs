@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use serde_json;
 
-use crate::domain::session::{Session, Status};
+use crate::domain::session::{Session, SessionFollowUpTask, Status};
 use crate::icon::Icon;
 use crate::infra::agent::protocol::AgentResponseSummary;
 use crate::ui::markdown::render_markdown;
@@ -135,6 +135,7 @@ impl<'a> SessionOutput<'a> {
             .saturating_sub(Self::output_horizontal_border_width())
             as usize;
         let mut lines = render_markdown(&output_text, inner_width);
+        Self::append_follow_up_task_lines(&mut lines, &session.follow_up_tasks, inner_width);
 
         if matches!(
             status,
@@ -283,6 +284,41 @@ impl<'a> SessionOutput<'a> {
         }
 
         trimmed_summary
+    }
+
+    /// Appends a rendered follow-up-task section without mutating persisted
+    /// transcript or summary text.
+    fn append_follow_up_task_lines(
+        lines: &mut Vec<Line<'static>>,
+        follow_up_tasks: &[SessionFollowUpTask],
+        inner_width: usize,
+    ) {
+        if follow_up_tasks.is_empty() {
+            return;
+        }
+
+        let follow_up_task_markdown = format!(
+            "## Follow-Up Tasks\n{}",
+            follow_up_tasks
+                .iter()
+                .map(|follow_up_task| format!("- {}", follow_up_task.text))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let mut follow_up_task_lines = render_markdown(&follow_up_task_markdown, inner_width);
+        if follow_up_task_lines.is_empty() {
+            return;
+        }
+
+        while lines.last().is_some_and(|line| line.width() == 0) {
+            lines.pop();
+        }
+
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+
+        lines.append(&mut follow_up_task_lines);
     }
 
     /// Adds visual spacing around user prompt blocks while preserving pasted
@@ -500,6 +536,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at: 0,
             folder: PathBuf::new(),
+            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
@@ -574,6 +611,48 @@ mod tests {
         assert!(text.contains("Added the structured protocol summary."));
         assert!(text.contains("Session output now renders persisted summary markdown."));
         assert!(!text.contains("streamed output"));
+    }
+
+    #[test]
+    /// Ensures rendered output shows follow-up tasks without requiring them
+    /// to be appended to the persisted transcript string.
+    fn test_output_lines_append_follow_up_task_section_without_mutating_output() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = "streamed output".to_string();
+        session.follow_up_tasks = vec![
+            SessionFollowUpTask {
+                id: 1,
+                text: "Document the new shortcut.".to_string(),
+            },
+            SessionFollowUpTask {
+                id: 2,
+                text: "Add a regression test.".to_string(),
+            },
+        ];
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            session.status,
+            DoneSessionOutputMode::Summary,
+            None,
+            None,
+            None,
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert_eq!(session.output, "streamed output");
+        assert!(text.contains("streamed output"));
+        assert!(text.contains("Follow-Up Tasks"));
+        assert!(text.contains("Document the new shortcut."));
+        assert!(text.contains("Add a regression test."));
     }
 
     #[test]

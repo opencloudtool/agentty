@@ -279,10 +279,16 @@ mod tests {
         assert!(
             required_fields
                 .iter()
+                .any(|value| value.as_str() == Some("follow_up_tasks"))
+        );
+        assert!(
+            required_fields
+                .iter()
                 .any(|value| value.as_str() == Some("summary"))
         );
         assert!(properties.contains_key("answer"));
         assert!(properties.contains_key("questions"));
+        assert!(properties.contains_key("follow_up_tasks"));
         assert!(properties.contains_key("summary"));
     }
 

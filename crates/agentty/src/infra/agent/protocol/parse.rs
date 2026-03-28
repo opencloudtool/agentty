@@ -31,7 +31,8 @@ pub(crate) fn normalize_turn_response(
 /// Parses one raw assistant message strictly as protocol payload.
 ///
 /// The final assistant payload must match [`AgentResponse`] and contain at
-/// least one recognized protocol key (`answer`, `questions`, or `summary`).
+/// least one recognized protocol key (`answer`, `questions`,
+/// `follow_up_tasks`, or `summary`).
 ///
 /// When a provider prepends stray prose before the final schema object, this
 /// still recovers the trailing protocol payload as long as nothing except
@@ -139,8 +140,9 @@ pub(crate) fn format_protocol_parse_debug_details(raw: &str) -> String {
 /// Attempts to parse one schema-driven structured JSON response.
 ///
 /// The raw text must parse as a JSON object containing at least one
-/// recognized protocol key (`answer`, `questions`, or `summary`). Returns
-/// `None` when parsing fails or no recognized keys are present.
+/// recognized protocol key (`answer`, `questions`, `follow_up_tasks`, or
+/// `summary`). Returns `None` when parsing fails or no recognized keys are
+/// present.
 fn parse_structured_json_response(raw: &str) -> Option<AgentResponse> {
     parse_structured_json_response_with_reason(raw).ok()
 }
@@ -171,7 +173,7 @@ fn parse_structured_json_response_with_reason(
 }
 
 /// Top-level keys the protocol recognizes in a structured response payload.
-const PROTOCOL_KEYS: &[&str] = &["answer", "questions", "summary"];
+const PROTOCOL_KEYS: &[&str] = &["answer", "questions", "follow_up_tasks", "summary"];
 
 /// Returns whether a parsed JSON value is an object containing at least one
 /// recognized protocol key.
@@ -352,7 +354,7 @@ mod tests {
     /// Strict parsing accepts a complete schema payload.
     fn test_parse_agent_response_strict_structured_json_payload() {
         // Arrange
-        let raw = r#"{"answer":"Here is my analysis.","questions":[],"summary":null}"#;
+        let raw = r#"{"answer":"Here is my analysis.","questions":[],"follow_up_tasks":[],"summary":null}"#;
 
         // Act
         let response = parse_agent_response_strict(raw);
@@ -391,7 +393,7 @@ mod tests {
         // Arrange
         let raw = concat!(
             "Some wrapper text\n",
-            r#"{"answer":"Recovered payload","questions":[],"summary":null}"#
+            r#"{"answer":"Recovered payload","questions":[],"follow_up_tasks":[],"summary":null}"#
         );
 
         // Act
@@ -449,7 +451,9 @@ mod tests {
         assert!(details.contains("direct_json_type: object"));
         assert!(details.contains("direct_json_keys: message"));
         assert!(details.contains("direct_json_recognized_protocol_keys: (none)"));
-        assert!(details.contains("direct_json_missing_protocol_keys: answer, questions, summary"));
+        assert!(details.contains(
+            "direct_json_missing_protocol_keys: answer, questions, follow_up_tasks, summary"
+        ));
     }
 
     #[test]
@@ -518,7 +522,7 @@ mod tests {
         // Arrange
         let raw = concat!(
             "```json\n",
-            r#"{"answer":"Need details.","questions":[],"summary":null}"#,
+            r#"{"answer":"Need details.","questions":[],"follow_up_tasks":[],"summary":null}"#,
             "\n```"
         );
 
@@ -539,7 +543,7 @@ mod tests {
         // Arrange
         let raw = concat!(
             "\n\n```json\n",
-            r#"{"answer":"Recovered.","questions":[],"summary":null}"#,
+            r#"{"answer":"Recovered.","questions":[],"follow_up_tasks":[],"summary":null}"#,
             "\n```\n"
         );
 
@@ -559,7 +563,7 @@ mod tests {
         // Arrange
         let raw = concat!(
             "```\n",
-            r#"{"answer":"Plain fence.","questions":[],"summary":null}"#,
+            r#"{"answer":"Plain fence.","questions":[],"follow_up_tasks":[],"summary":null}"#,
             "\n```"
         );
 
@@ -578,8 +582,7 @@ mod tests {
     /// beyond the protocol schema.
     fn test_parse_agent_response_strict_tolerates_extra_top_level_fields() {
         // Arrange
-        let raw =
-            r#"{"answer":"Hello.","questions":[],"summary":null,"reasoning":"internal thought"}"#;
+        let raw = r#"{"answer":"Hello.","questions":[],"follow_up_tasks":[],"summary":null,"reasoning":"internal thought"}"#;
 
         // Act
         let response = parse_agent_response_strict(raw);
@@ -592,7 +595,7 @@ mod tests {
     /// Strict parsing tolerates extra fields inside nested summary objects.
     fn test_parse_agent_response_strict_tolerates_extra_summary_fields() {
         // Arrange
-        let raw = r#"{"answer":"Done.","questions":[],"summary":{"turn":"Fixed bug","session":"Bug fix session","confidence":"high"}}"#;
+        let raw = r#"{"answer":"Done.","questions":[],"follow_up_tasks":[],"summary":{"turn":"Fixed bug","session":"Bug fix session","confidence":"high"}}"#;
 
         // Act
         let response = parse_agent_response_strict(raw);
@@ -613,7 +616,7 @@ mod tests {
     /// Strict parsing tolerates extra fields inside nested question objects.
     fn test_parse_agent_response_strict_tolerates_extra_question_fields() {
         // Arrange
-        let raw = r#"{"answer":"","questions":[{"text":"Which approach?","options":["A","B"],"priority":"high"}],"summary":null}"#;
+        let raw = r#"{"answer":"","questions":[{"text":"Which approach?","options":["A","B"],"priority":"high"}],"follow_up_tasks":[],"summary":null}"#;
 
         // Act
         let response = parse_agent_response_strict(raw);
@@ -690,7 +693,7 @@ mod tests {
         // Arrange
         let raw = concat!(
             "Some wrapper text\n",
-            r#"{"answer":"Recovered payload","questions":[],"summary":null}"#,
+            r#"{"answer":"Recovered payload","questions":[],"follow_up_tasks":[],"summary":null}"#,
             "\ntrailing wrapper text"
         );
 
@@ -699,5 +702,27 @@ mod tests {
 
         // Assert
         assert!(response.is_err());
+    }
+
+    #[test]
+    /// Parser accepts follow-up-task-only payloads without requiring
+    /// transcript or question fields.
+    fn test_parse_agent_response_strict_accepts_follow_up_tasks_without_answer() {
+        // Arrange
+        let raw = r#"{"follow_up_tasks":["Document the new flag.","Add integration coverage."]}"#;
+
+        // Act
+        let response = parse_agent_response_strict(raw);
+
+        // Assert
+        let response = response.expect("parser should accept follow-up-task-only payload");
+        assert_eq!(response.answer, "");
+        assert_eq!(
+            response.follow_up_task_items(),
+            vec![
+                "Document the new flag.".to_string(),
+                "Add integration coverage.".to_string()
+            ]
+        );
     }
 }

@@ -284,6 +284,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at,
             folder: PathBuf::new(),
+            follow_up_tasks: Vec::new(),
             id: session_id.to_string(),
             model,
             output: String::new(),

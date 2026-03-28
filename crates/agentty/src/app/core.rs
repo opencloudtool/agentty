@@ -1458,11 +1458,13 @@ impl App {
     /// Routes one structured agent response to the currently focused session
     /// UI.
     ///
-    /// At the app layer, only clarification questions require explicit mode
-    /// routing. The top-level `answer` text is already appended to transcript
-    /// output by the session worker before this event is handled. Session
-    /// summaries are persisted as raw `summary` payloads by the worker and
-    /// rendered from refresh-driven database state.
+    /// At the app layer, clarification questions drive mode routing while
+    /// follow-up tasks update the in-memory session snapshot immediately so
+    /// the current view reflects persisted metadata before the next refresh.
+    /// The top-level `answer` text is already appended to transcript output by
+    /// the session worker before this event is handled. Session summaries are
+    /// persisted as raw `summary` payloads by the worker and rendered from
+    /// refresh-driven database state.
     fn apply_agent_response_received(&mut self, session_id: &str, response: &AgentResponse) {
         let Some(session_index) = self
             .sessions
@@ -1474,6 +1476,17 @@ impl App {
         };
 
         let session = &mut self.sessions.sessions[session_index];
+        session.follow_up_tasks = response
+            .follow_up_task_items()
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, text)| crate::domain::session::SessionFollowUpTask {
+                    id: i64::try_from(index).unwrap_or(i64::MAX),
+                    text,
+                },
+            )
+            .collect();
         let questions = response.question_items();
         if questions.is_empty() {
             return;
@@ -2919,6 +2932,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at: 0,
             folder: session_folder,
+            follow_up_tasks: Vec::new(),
             id: "session-1".to_string(),
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
@@ -3932,6 +3946,7 @@ mod tests {
                 QuestionItem::new("Need branch?"),
                 QuestionItem::new("Need tests?"),
             ],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -3940,6 +3955,7 @@ mod tests {
             response: AgentResponse {
                 answer: String::new(),
                 questions: vec![QuestionItem::new("Old question")],
+                follow_up_tasks: Vec::new(),
                 summary: None,
             },
             session_id: "session-1".to_string(),
@@ -4059,6 +4075,7 @@ mod tests {
                     vec!["Yes".to_string(), "No".to_string()],
                 ),
             ],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
         let expected_questions = response.question_items();
@@ -4096,6 +4113,7 @@ mod tests {
         let response = AgentResponse {
             answer: String::new(),
             questions: vec![QuestionItem::new("Need context?")],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -4122,6 +4140,7 @@ mod tests {
         let response = AgentResponse {
             answer: "Implemented the protocol update.".to_string(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: "- Added structured protocol summary fields.".to_string(),
                 session: "- Session output now renders summary markdown separately.".to_string(),
@@ -4137,6 +4156,46 @@ mod tests {
 
         // Assert
         assert!(app.sessions.sessions[0].summary.is_none());
+    }
+
+    #[tokio::test]
+    /// Verifies agent responses update cached follow-up tasks immediately for
+    /// the active session.
+    async fn apply_app_events_agent_response_updates_session_follow_up_tasks() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-follow-up-view")));
+        let response = AgentResponse {
+            answer: String::new(),
+            questions: Vec::new(),
+            follow_up_tasks: vec![
+                "Document the new shortcut.".to_string(),
+                "Add a focused regression test.".to_string(),
+            ],
+            summary: None,
+        };
+
+        // Act
+        app.apply_app_events(AppEvent::AgentResponseReceived {
+            response,
+            session_id: "session-1".to_string(),
+        })
+        .await;
+
+        // Assert
+        assert_eq!(
+            app.sessions.sessions[0]
+                .follow_up_tasks
+                .iter()
+                .map(|task| task.text.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "Document the new shortcut.".to_string(),
+                "Add a focused regression test.".to_string()
+            ]
+        );
     }
 
     #[tokio::test]

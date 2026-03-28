@@ -532,6 +532,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at: 0,
             folder: PathBuf::from(format!("/tmp/{session_id}")),
+            follow_up_tasks: Vec::new(),
             id: session_id.to_string(),
             model: AgentModel::Gemini3FlashPreview,
             output: "Captured output".to_string(),

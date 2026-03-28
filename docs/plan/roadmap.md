@@ -6,7 +6,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 
 | Area | Current state in codebase | Status |
 |------|---------------------------|--------|
-| Follow-up task workflow | Structured follow-up tasks do not exist in the protocol, persistence, or session UI. | Not Started |
+| Follow-up task workflow | Persisted follow-up tasks now flow through the protocol, SQLite storage, and session UI; sibling-session launch behavior remains queued. | Partial |
 | Session activity timing | `session` has no cumulative `InProgress` timing fields, chat shows no timer, and the session list has no time column. | Not Started |
 | Deterministic scenario coverage | Local git tests exist, but there is no shared app-level scenario harness for a full local session workflow. | Partial |
 | Typed errors and hygiene | `DbError` is landed, but git, app-server, remaining infra surfaces, and the app layer still expose string errors; discard comments, missing module tests, and convention cleanup remain open. | Partial |
@@ -30,35 +30,6 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 - Keep tests and documentation attached to the same `Ready Now` step that changes behavior.
 
 ## Ready Now
-
-### [cbf025d6-2d29-4be7-b393-4ed3092ae66d] Workflow: Persist and render emitted follow-up tasks
-
-#### Assignee
-
-`No assignee`
-
-#### Why now
-
-The follow-up-task stream needs a durable response contract and visible session-level output before launch behavior can be layered on top.
-
-#### Usable outcome
-
-After a turn completes, the session shows a persisted list of low-severity follow-up tasks, and that list survives refresh and reopen.
-
-#### Substeps
-
-- [ ] **Extend the structured response protocol.** Add `follow_up_tasks` to the protocol model, schema, parser, prompt instructions, and wire type definitions in `crates/agentty/src/infra/agent/protocol/`.
-- [ ] **Add durable follow-up task storage.** Create the singular `session_follow_up_task` table and thread task loading and replacement through `crates/agentty/src/infra/db.rs` and the session domain model.
-- [ ] **Persist tasks during the existing turn-finalization path.** Update the current session completion flow so parsed follow-up tasks persist alongside summary and question state without introducing a second task-specific write path.
-- [ ] **Render a read-only follow-up task section.** Update session chat and output components so follow-up tasks are visible without being merged into transcript markdown.
-
-#### Tests
-
-- [ ] Add protocol tests, DB round-trip tests, and session workflow/UI tests proving follow-up tasks persist and render without altering transcript output.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md` and `docs/site/content/docs/architecture/module-map.md`.
 
 ### [f9270ba2-0905-4871-9cc9-9f02e041c88d] Platform: Persist cumulative `InProgress` time and render it in session chat
 
@@ -150,11 +121,9 @@ The git modules and `GitClient` return typed `GitError` variants instead of stri
 
 ```mermaid
 flowchart TD
-    R1["[cbf025d6] Workflow: follow-up task persistence"]
     R2["[f9270ba2] Platform: session chat timer"]
     R3["[1c7b7080] Quality: deterministic local session harness"]
     R4["[7b743a5a] Quality: GitError migration"]
-    R1 --> R3
     R2 --> R3
 ```
 
@@ -168,11 +137,11 @@ Launch a follow-up task into a sibling session while keeping launched and open t
 
 #### Promote when
 
-Promote after `Workflow: Persist and render emitted follow-up tasks` lands and the task storage model is stable.
+Promote when the next workflow slot opens and sibling-session launch behavior becomes the highest-priority follow-up slice.
 
 #### Depends on
 
-`[cbf025d6] Workflow: Persist and render emitted follow-up tasks`
+`None`
 
 ### [9f115af0-a382-46f4-8bf9-25886936e252] Platform: Add the timer to the grouped session list
 

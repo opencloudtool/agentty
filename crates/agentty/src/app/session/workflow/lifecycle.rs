@@ -1548,6 +1548,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at: 0,
             folder: PathBuf::from("/tmp/session"),
+            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             model: AgentModel::ClaudeSonnet46,
             output: output.to_string(),

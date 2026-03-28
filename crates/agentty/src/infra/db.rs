@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 use crate::domain::agent::ReasoningLevel;
-use crate::domain::session::{DailyActivity, ReviewRequest, SessionStats};
+use crate::domain::session::{DailyActivity, ReviewRequest, SessionFollowUpTask, SessionStats};
 use crate::domain::setting::SettingName;
 
 /// Typed error returned by [`Database`] operations.
@@ -161,6 +161,26 @@ pub struct SessionRow {
     pub summary: Option<String>,
     pub title: Option<String>,
     pub updated_at: i64,
+}
+
+/// Row returned when loading one persisted `session_follow_up_task`.
+#[derive(Clone, Debug, Eq, PartialEq, sqlx::FromRow)]
+pub struct SessionFollowUpTaskRow {
+    pub id: i64,
+    pub position: i64,
+    pub session_id: String,
+    pub text: String,
+}
+
+impl SessionFollowUpTaskRow {
+    /// Converts one follow-up-task row into the domain snapshot used by the
+    /// UI.
+    pub fn into_session_follow_up_task(self) -> SessionFollowUpTask {
+        SessionFollowUpTask {
+            id: self.id,
+            text: self.text,
+        }
+    }
 }
 
 /// Persisted operation lifecycle state for one session command.
@@ -1007,6 +1027,49 @@ WHERE id = ?
         Ok(())
     }
 
+    /// Replaces the persisted follow-up task list for one session.
+    ///
+    /// Existing task rows are deleted first so the stored task list always
+    /// matches the latest assistant payload exactly.
+    ///
+    /// # Errors
+    /// Returns an error if the replacement transaction fails.
+    pub async fn replace_session_follow_up_tasks(
+        &self,
+        session_id: &str,
+        follow_up_tasks: &[String],
+    ) -> Result<(), DbError> {
+        let mut transaction = self.pool.begin().await?;
+
+        sqlx::query(
+            r"
+DELETE FROM session_follow_up_task
+WHERE session_id = ?
+",
+        )
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await?;
+
+        for (position, follow_up_task) in follow_up_tasks.iter().enumerate() {
+            sqlx::query(
+                r"
+INSERT INTO session_follow_up_task (session_id, position, text)
+VALUES (?, ?, ?)
+",
+            )
+            .bind(session_id)
+            .bind(i64::try_from(position).unwrap_or(i64::MAX))
+            .bind(follow_up_task)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        transaction.commit().await?;
+
+        Ok(())
+    }
+
     /// Updates the saved prompt for a session row.
     ///
     /// # Errors
@@ -1831,6 +1894,30 @@ WHERE id = ?
         Ok(row.flatten())
     }
 
+    /// Loads all persisted session follow-up-task rows in stable display
+    /// order.
+    ///
+    /// # Errors
+    /// Returns an error if the follow-up-task lookup query fails.
+    pub async fn load_session_follow_up_tasks(
+        &self,
+    ) -> Result<Vec<SessionFollowUpTaskRow>, DbError> {
+        let rows = sqlx::query_as::<_, SessionFollowUpTaskRow>(
+            r"
+SELECT id,
+       position,
+       session_id,
+       text
+FROM session_follow_up_task
+ORDER BY session_id, position, id
+",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
     /// Persists the active project identifier in application settings.
     ///
     /// # Errors
@@ -2205,6 +2292,16 @@ WHERE id = ?
             .await
             .expect("failed to update session questions");
         database
+            .replace_session_follow_up_tasks(
+                "session-a",
+                &[
+                    "Document the new shortcut.".to_string(),
+                    "Add a session-view regression test.".to_string(),
+                ],
+            )
+            .await
+            .expect("failed to replace session follow-up tasks");
+        database
             .update_session_prompt("session-a", "Implement the feature")
             .await
             .expect("failed to update session prompt");
@@ -2278,6 +2375,23 @@ WHERE id = ?
             Some("origin/agentty/session-a")
         );
         assert_review_request_row(&session_row);
+
+        let follow_up_tasks = database
+            .load_session_follow_up_tasks()
+            .await
+            .expect("failed to load session follow-up tasks");
+        let follow_up_task_text = follow_up_tasks
+            .into_iter()
+            .filter(|task| task.session_id == "session-a")
+            .map(|task| task.text)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            follow_up_task_text,
+            vec![
+                "Document the new shortcut.".to_string(),
+                "Add a session-view regression test.".to_string()
+            ]
+        );
     }
 
     /// Verifies `load_sessions_for_project()` filters rows by project id.
@@ -3546,6 +3660,61 @@ WHERE model = ?
 
         // Assert
         assert_eq!(loaded_summary.as_deref(), Some("persisted summary"));
+    }
+
+    #[tokio::test]
+    /// Verifies follow-up-task replacement persists rows in display order and
+    /// clears superseded tasks.
+    async fn test_replace_session_follow_up_tasks_round_trips_latest_tasks() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to insert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Done", project_id)
+            .await
+            .expect("failed to insert session");
+        database
+            .replace_session_follow_up_tasks(
+                "session-a",
+                &["Stale task".to_string(), "Remove me".to_string()],
+            )
+            .await
+            .expect("failed to insert initial follow-up tasks");
+
+        // Act
+        database
+            .replace_session_follow_up_tasks(
+                "session-a",
+                &[
+                    "Document the release note.".to_string(),
+                    "Add integration coverage.".to_string(),
+                ],
+            )
+            .await
+            .expect("failed to replace follow-up tasks");
+        let follow_up_tasks = database
+            .load_session_follow_up_tasks()
+            .await
+            .expect("failed to load session follow-up tasks");
+
+        // Assert
+        let follow_up_task_text = follow_up_tasks
+            .into_iter()
+            .filter(|task| task.session_id == "session-a")
+            .map(|task| task.text)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            follow_up_task_text,
+            vec![
+                "Document the release note.".to_string(),
+                "Add integration coverage.".to_string()
+            ]
+        );
     }
 
     #[tokio::test]

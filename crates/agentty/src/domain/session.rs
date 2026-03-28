@@ -237,6 +237,15 @@ pub struct DailyActivity {
     pub session_count: u32,
 }
 
+/// Persisted read-only follow-up task rendered alongside one session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionFollowUpTask {
+    /// Stable database identifier for the persisted follow-up task row.
+    pub id: i64,
+    /// User-visible task text emitted by the agent.
+    pub text: String,
+}
+
 /// In-memory snapshot of one persisted session row used by the UI and app
 /// orchestration layers.
 pub struct Session {
@@ -246,6 +255,8 @@ pub struct Session {
     pub created_at: i64,
     /// Worktree folder path for this session.
     pub folder: PathBuf,
+    /// Persisted read-only follow-up tasks emitted after the latest turn.
+    pub follow_up_tasks: Vec<SessionFollowUpTask>,
     /// Stable session identifier.
     pub id: String,
     /// Agent model selected for this session.
@@ -420,6 +431,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at: 0,
             folder: PathBuf::new(),
+            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
@@ -450,6 +462,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at: 0,
             folder: PathBuf::new(),
+            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
@@ -492,6 +505,7 @@ mod tests {
             base_branch: "main".to_string(),
             created_at: 0,
             folder: PathBuf::new(),
+            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),

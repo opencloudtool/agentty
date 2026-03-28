@@ -137,6 +137,15 @@ pub struct AgentResponse {
                        required. Defaults to an empty array when omitted."
     )]
     pub questions: Vec<QuestionItem>,
+    /// Ordered low-severity follow-up tasks emitted for this turn.
+    #[serde(default)]
+    #[schemars(
+        title = "follow_up_tasks",
+        description = "Ordered low-severity follow-up tasks emitted for this turn. Use this field \
+                       for optional next-step suggestions that should be shown in the session UI \
+                       without blocking the current turn. Defaults to an empty array when omitted."
+    )]
+    pub follow_up_tasks: Vec<String>,
     /// Structured summary for session-discussion turns, or `None` for legacy
     /// payloads and one-shot prompts.
     #[serde(default)]
@@ -175,6 +184,7 @@ impl AgentResponse {
         Self {
             answer: text.into(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: None,
         }
     }
@@ -213,6 +223,21 @@ impl AgentResponse {
     pub fn question_items(&self) -> Vec<QuestionItem> {
         self.questions.iter().take(MAX_QUESTIONS).cloned().collect()
     }
+
+    /// Returns non-empty follow-up task strings in response order.
+    pub fn follow_up_task_items(&self) -> Vec<String> {
+        self.follow_up_tasks
+            .iter()
+            .filter_map(|follow_up_task| {
+                let trimmed_follow_up_task = follow_up_task.trim();
+                if trimmed_follow_up_task.is_empty() {
+                    return None;
+                }
+
+                Some(trimmed_follow_up_task.to_string())
+            })
+            .collect()
+    }
 }
 
 /// Appends non-empty clarification question text in order.
@@ -243,6 +268,7 @@ mod tests {
         let response = AgentResponse {
             answer: "Primary answer".to_string(),
             questions: vec![QuestionItem::new("Need one clarification.")],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -262,6 +288,7 @@ mod tests {
             questions: (0..=MAX_QUESTIONS)
                 .map(|index| QuestionItem::new(format!("Question {index}")))
                 .collect(),
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -270,5 +297,34 @@ mod tests {
 
         // Assert
         assert_eq!(questions.len(), MAX_QUESTIONS);
+    }
+
+    #[test]
+    /// Ensures follow-up task extraction trims blank entries and preserves
+    /// response order.
+    fn test_agent_response_follow_up_task_items_filters_blank_entries() {
+        // Arrange
+        let response = AgentResponse {
+            answer: String::new(),
+            questions: Vec::new(),
+            follow_up_tasks: vec![
+                "Document the new shortcut.".to_string(),
+                "   ".to_string(),
+                "Add a regression test.".to_string(),
+            ],
+            summary: None,
+        };
+
+        // Act
+        let follow_up_tasks = response.follow_up_task_items();
+
+        // Assert
+        assert_eq!(
+            follow_up_tasks,
+            vec![
+                "Document the new shortcut.".to_string(),
+                "Add a regression test.".to_string()
+            ]
+        );
     }
 }

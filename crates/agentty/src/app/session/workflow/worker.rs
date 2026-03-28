@@ -517,10 +517,10 @@ impl SessionManager {
     }
 }
 
-/// Applies the turn result: appends the final response, persists the raw agent
-/// summary payload, updates stats, and runs auto-commit. Returns
-/// `Ok(Status)` on success or `Err(description)` on turn failure after
-/// appending the error to session output.
+/// Applies the turn result: appends the final response, persists follow-up
+/// metadata, updates stats, and runs auto-commit. Returns `Ok(Status)` on
+/// success or `Err(description)` on turn failure after appending the error to
+/// session output.
 ///
 /// The final parsed response appends non-empty protocol `answer` text once the
 /// turn completes. When no `answer` text exists, worker output falls back to
@@ -533,7 +533,8 @@ impl SessionManager {
 /// merge path rewrites the persisted value into markdown with `# Summary` and
 /// `# Commit` sections.
 ///
-/// Clarification questions are persisted to the session row and trigger
+/// Clarification questions are persisted to the session row, follow-up tasks
+/// are replaced through their dedicated table, and question responses trigger
 /// `Status::Question`; all responses are emitted through
 /// `AppEvent::AgentResponseReceived` for reducer-level routing.
 async fn apply_turn_result(
@@ -590,6 +591,12 @@ async fn apply_successful_turn_result(
     let _ = context
         .db
         .update_session_summary(&context.session_id, &summary_text)
+        .await;
+    let follow_up_tasks = assistant_message.follow_up_task_items();
+    // Best-effort: follow-up-task persistence failure is non-critical.
+    let _ = context
+        .db
+        .replace_session_follow_up_tasks(&context.session_id, &follow_up_tasks)
         .await;
 
     let summary_prefix = summary_transcript_prefix(&context.output);
@@ -934,6 +941,7 @@ mod tests {
                 QuestionItem::new("Need a target branch?"),
                 QuestionItem::new("Need migration notes?"),
             ],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -959,6 +967,7 @@ mod tests {
         let agent_response = AgentResponse {
             answer: String::new(),
             questions: vec![QuestionItem::new(numbered_questions)],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -977,6 +986,7 @@ mod tests {
         let response = AgentResponse {
             answer: "Implemented the fix.".to_string(),
             questions: vec![QuestionItem::new("Need me to run tests?")],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -998,6 +1008,7 @@ mod tests {
         let response = AgentResponse {
             answer: String::new(),
             questions: vec![QuestionItem::new("Should I apply the patch?")],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -1018,6 +1029,7 @@ mod tests {
         let response = AgentResponse {
             answer: String::new(),
             questions: vec![QuestionItem::new("\n")],
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -1036,6 +1048,7 @@ mod tests {
         let response = AgentResponse {
             answer: "Implemented the fix.".to_string(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: "Updated the greeting flow.".to_string(),
                 session: "Session now greets users on startup.".to_string(),
@@ -1162,6 +1175,10 @@ mod tests {
             assistant_message: AgentResponse {
                 answer: "Implemented the change.".to_string(),
                 questions: Vec::new(),
+                follow_up_tasks: vec![
+                    "Document the worker summary flow.".to_string(),
+                    "Add a follow-up rendering test.".to_string(),
+                ],
                 summary: Some(AgentResponseSummary {
                     turn: "- Updated the worker flow.".to_string(),
                     session: "- Active review now reloads summary from persistence.".to_string(),
@@ -1192,12 +1209,28 @@ mod tests {
                 turn: "- Updated the worker flow.".to_string(),
             })
         );
+        let follow_up_tasks = db
+            .load_session_follow_up_tasks()
+            .await
+            .expect("failed to load follow-up tasks");
+        assert_eq!(
+            follow_up_tasks
+                .into_iter()
+                .filter(|task| task.session_id == "sess1")
+                .map(|task| task.text)
+                .collect::<Vec<_>>(),
+            vec![
+                "Document the worker summary flow.".to_string(),
+                "Add a follow-up rendering test.".to_string()
+            ]
+        );
         let output = context.output.lock().expect("output lock poisoned");
         assert!(output.contains("## Change Summary"));
         assert!(output.contains("### Current Turn"));
         assert!(output.contains("- Updated the worker flow."));
         assert!(output.contains("### Session Changes"));
         assert!(output.contains("- Active review now reloads summary from persistence."));
+        assert!(!output.contains("Document the worker summary flow."));
     }
 
     #[tokio::test]
@@ -1243,6 +1276,7 @@ mod tests {
             assistant_message: AgentResponse {
                 answer: "Hey! How can I help you today?".to_string(),
                 questions: Vec::new(),
+                follow_up_tasks: Vec::new(),
                 summary: Some(AgentResponseSummary {
                     turn: "No changes".to_string(),
                     session: "No changes".to_string(),
@@ -1272,6 +1306,7 @@ mod tests {
         let assistant_message = AgentResponse {
             answer: String::new(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: "- Added feature X.".to_string(),
                 session: "- Feature X now live on branch.".to_string(),
@@ -1299,6 +1334,7 @@ mod tests {
         let assistant_message = AgentResponse {
             answer: "Done.".to_string(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -1317,6 +1353,7 @@ mod tests {
         let assistant_message = AgentResponse {
             answer: String::new(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: String::new(),
                 session: String::new(),
@@ -1339,6 +1376,7 @@ mod tests {
         let assistant_message = AgentResponse {
             answer: String::new(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: String::new(),
                 session: "- Branch has ongoing changes.".to_string(),
@@ -1361,6 +1399,7 @@ mod tests {
         let assistant_message = AgentResponse {
             answer: String::new(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: "- Fixed the bug.".to_string(),
                 session: String::new(),
@@ -1383,6 +1422,7 @@ mod tests {
         let assistant_message = AgentResponse {
             answer: String::new(),
             questions: Vec::new(),
+            follow_up_tasks: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: "- Fixed the bug.".to_string(),
                 session: "- Session summary stays readable.".to_string(),

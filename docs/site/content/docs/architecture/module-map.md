@@ -36,7 +36,7 @@ also writes a machine-readable workspace summary to
 | Path | What lives here |
 |------|------------------|
 | `crates/agentty/src/app.rs` | App module router and public re-exports for app orchestration APIs. |
-| `crates/agentty/src/app/core.rs` | `App` facade, event reducer, startup loading, background task wiring. |
+| `crates/agentty/src/app/core.rs` | `App` facade, event reducer, startup loading, background task wiring, and reducer-side session follow-up-task updates. |
 | `crates/agentty/src/app/assist.rs` | Shared assistance helpers for commit and rebase recovery loops. |
 | `crates/agentty/src/app/merge_queue.rs` | Merge queue state machine (`Queued`/`Merging` progression rules). |
 | `crates/agentty/src/app/project.rs` | `ProjectManager` - project CRUD and selection orchestration. |
@@ -50,12 +50,12 @@ also writes a machine-readable workspace summary to
 | - `core.rs` | `SessionManager`, session clock boundary, shared constants, and session module tests. |
 | - `workflow/access.rs` | Session lookup helpers. |
 | - `workflow/lifecycle.rs` | Session creation, prompt/reply workflows, and forge review-request publication/open helpers. |
-| - `workflow/load.rs` | Session snapshot loading. |
+| - `workflow/load.rs` | Session snapshot loading, including persisted follow-up-task hydration. |
 | - `workflow/merge.rs` | Merge/rebase workflows. |
 | - `workflow/refresh.rs` | Periodic refresh scheduling plus on-demand forge review-request refresh. |
 | - `workflow/review.rs` | Review transcript replay and review-mode restoration helpers. |
 | - `workflow/task.rs` | Session process execution, session commit-message generation, auto-commit orchestration that keeps one evolving session-branch commit, and status persistence. |
-| - `workflow/worker.rs` | Per-session command queue orchestration, `AgentChannel` turn dispatch. |
+| - `workflow/worker.rs` | Per-session command queue orchestration, `AgentChannel` turn dispatch, and post-turn persistence of summaries, questions, and follow-up tasks. |
 
 ## Domain Layer (`domain/`)
 
@@ -65,14 +65,14 @@ also writes a machine-readable workspace summary to
 | `crates/agentty/src/domain/input.rs` | Input state management. |
 | `crates/agentty/src/domain/permission.rs` | `PermissionMode` and permission logic. |
 | `crates/agentty/src/domain/project.rs` | Project entities and display helpers. |
-| `crates/agentty/src/domain/session.rs` | Session entities, statuses, sizes, stats, persisted review-request linkage wrappers, and re-exports of shared forge review-request types from `ag-forge`. |
+| `crates/agentty/src/domain/session.rs` | Session entities, statuses, sizes, stats, persisted follow-up-task snapshots, review-request linkage wrappers, and re-exports of shared forge review-request types from `ag-forge`. |
 | `crates/agentty/src/domain/setting.rs` | Shared persisted setting keys used across app and infrastructure layers. |
 
 ## Infrastructure Layer (`infra/`)
 
 | Path | What lives here |
 |------|------------------|
-| `crates/agentty/src/infra/db.rs` | SQLite persistence and queries; database open config enables `WAL` and foreign keys. |
+| `crates/agentty/src/infra/db.rs` | SQLite persistence and queries, including session rows, follow-up-task rows, and database open config that enables `WAL` and foreign keys. |
 | `crates/agentty/src/infra/fs.rs` | `FsClient` trait and production async filesystem adapter used by app orchestration. |
 | `crates/agentty/src/infra/git.rs` + `infra/git/` | Git module router plus async git workflow commands (`merge.rs`, `rebase.rs`, `repo.rs`, `sync.rs`, `worktree.rs`), including the single-session-commit sync path that stages changes and amends `HEAD` after the first session commit exists. |
 | `crates/agentty/src/infra/git/client.rs` | `GitClient` trait boundary, `RealGitClient` production adapter, and git client integration tests. |
@@ -90,7 +90,7 @@ also writes a machine-readable workspace summary to
 | - `codex.rs` | Codex backend runtime command construction. |
 | - `gemini.rs` | Gemini backend runtime command construction. |
 | - `prompt.rs` | Shared prompt preparation (`prepare_prompt_text`) for transcript replay and protocol preamble injection. |
-| - `protocol.rs` + `infra/agent/protocol/` | Router plus focused protocol submodules: `model.rs` for the wire contract, `schema.rs` for prompt/transport schema generation, and `parse.rs` for final/stream parsing helpers, including recovery of one trailing schema object from wrapped provider output plus shared debug diagnostics for schema mismatches. |
+| - `protocol.rs` + `infra/agent/protocol/` | Router plus focused protocol submodules: `model.rs` for the wire contract (`answer`, `questions`, `follow_up_tasks`, `summary`), `schema.rs` for prompt/transport schema generation, and `parse.rs` for final/stream parsing helpers, including recovery of one trailing schema object from wrapped provider output plus shared debug diagnostics for schema mismatches. |
 | - `response_parser.rs` | Provider-specific final/stream output parsing and usage extraction for Claude, Gemini, and Codex. |
 | - `submission.rs` | Shared one-shot prompt execution and strict protocol validation for generated titles, session commit messages, assist prompts, and review text, asking each concrete backend to provide either an app-server client or direct CLI execution path. |
 | `crates/agentty/src/infra/app_server.rs` + `infra/app_server/` | Router plus shared app-server contract, prompt shaping, runtime registry, and restart/retry modules. |
@@ -169,7 +169,7 @@ also writes a machine-readable workspace summary to
 | - `info_overlay.rs` | Info overlay component. |
 | - `open_command_overlay.rs` | Open-command selector overlay. |
 | - `publish_branch_overlay.rs` | Session branch-publish overlay. |
-| - `session_output.rs` | Session output display widget. |
+| - `session_output.rs` | Session output display widget, including read-only follow-up-task rendering separate from the persisted transcript. |
 | - `status_bar.rs` | Status bar widget. |
 | - `tab.rs` | Tabs navigation widget. |
 | `crates/agentty/src/ui/state/` | UI state types: |

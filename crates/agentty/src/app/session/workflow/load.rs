@@ -90,8 +90,17 @@ impl SessionManager {
             .load_sessions_for_project(active_project_id)
             .await
             .unwrap_or_default();
+        let persisted_follow_up_tasks = db.load_session_follow_up_tasks().await.unwrap_or_default();
         let stats_activity = db.load_session_activity().await.unwrap_or_default();
         let mut sessions: Vec<Session> = Vec::new();
+        let mut follow_up_tasks_by_session = HashMap::<String, Vec<_>>::new();
+
+        for persisted_follow_up_task in persisted_follow_up_tasks {
+            follow_up_tasks_by_session
+                .entry(persisted_follow_up_task.session_id.clone())
+                .or_default()
+                .push(persisted_follow_up_task.into_session_follow_up_task());
+        }
 
         for row in db_rows {
             let folder = session_folder(base, &row.id);
@@ -148,11 +157,15 @@ impl SessionManager {
                 .as_deref()
                 .and_then(parse_questions_json)
                 .unwrap_or_default();
+            let follow_up_tasks = follow_up_tasks_by_session
+                .remove(&row.id)
+                .unwrap_or_default();
 
             sessions.push(Session {
                 base_branch: row.base_branch,
                 created_at: row.created_at,
                 folder,
+                follow_up_tasks,
                 id: row.id,
                 model: session_model,
                 output: session_output,

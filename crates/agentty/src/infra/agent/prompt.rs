@@ -133,12 +133,13 @@ fn protocol_usage_instructions(profile: ProtocolRequestProfile) -> &'static str 
     match profile {
         ProtocolRequestProfile::SessionTurn => {
             "For this session turn, keep user-facing content in `answer`, emit clarification \
-             prompts through `questions`, and populate `summary` when reporting delivered work."
+             prompts through `questions`, emit low-severity next steps through `follow_up_tasks`, \
+             and populate `summary` when reporting delivered work."
         }
         ProtocolRequestProfile::UtilityPrompt => {
             "For this one-shot utility prompt, return the entire response as a JSON object like \
-             {\"answer\":\"...\",\"questions\":[],\"summary\":null}. Put all useful plain-text \
-             output in `answer`."
+             {\"answer\":\"...\",\"questions\":[],\"follow_up_tasks\":[],\"summary\":null}. Put \
+             all useful plain-text output in `answer`."
         }
     }
 }
@@ -223,6 +224,7 @@ mod tests {
         assert!(rendered_prompt.contains("session"));
         assert!(rendered_prompt.contains("\"answer\""));
         assert!(rendered_prompt.contains("\"questions\""));
+        assert!(rendered_prompt.contains("\"follow_up_tasks\""));
         assert!(rendered_prompt.contains("\"title\""));
         assert!(rendered_prompt.contains("\"description\""));
         assert!(rendered_prompt.contains("summary"));
@@ -262,7 +264,11 @@ mod tests {
         assert!(rendered_prompt.contains("Structured response protocol:"));
         assert!(rendered_prompt.contains("---"));
         assert!(rendered_prompt.contains("For this one-shot utility prompt"));
-        assert!(rendered_prompt.contains(r#"{"answer":"...","questions":[],"summary":null}"#));
+        assert!(
+            rendered_prompt
+                .contains(r#"{"answer":"...","questions":[],"follow_up_tasks":[],"summary":null}"#)
+        );
+        assert!(rendered_prompt.contains("\"follow_up_tasks\""));
         assert!(rendered_prompt.contains("\"summary\""));
         assert!(rendered_prompt.ends_with(prompt));
     }

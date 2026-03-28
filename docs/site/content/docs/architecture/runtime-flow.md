@@ -91,7 +91,7 @@ Reducer behaviors that matter for data flow:
 - `BranchPublishActionCompleted` swaps the session-view popup from loading to success or blocked/failure copy after a manual branch push finishes.
 - `SessionUpdated` marks touched sessions so reducer can call `sync_session_from_handle()` selectively.
 - `SessionProgressUpdated` refreshes transient loader text used by the session view.
-- `AgentResponseReceived` routes question-mode transitions for active view sessions.
+- `AgentResponseReceived` routes question-mode transitions for active view sessions and updates in-memory follow-up-task snapshots for the currently loaded session.
 - After touched-session sync, terminal statuses (`Done`, `Canceled`) drop per-session worker senders so workers can shut down runtimes.
 
 ## Session Turn Data Flow
@@ -109,7 +109,7 @@ From prompt submit to persisted result:
 1. `AgentChannel::run_turn()` streams `TurnEvent` values and returns `TurnResult`.
 1. Worker applies final result:
 1. Append final assistant transcript output when no assistant chunks were already streamed (`answer` text, fallback `question` text).
-1. Persist session questions and emit `AppEvent::AgentResponseReceived`.
+1. Persist session questions, replace persisted follow-up tasks, and emit `AppEvent::AgentResponseReceived`.
 1. Persist stats and per-model usage.
 1. Persist provider conversation id (app-server providers).
 1. Run auto-commit assistance path, which preserves a single evolving commit on the session branch: the first successful file-changing turn creates the commit, later turns regenerate the message from the cumulative diff and amend `HEAD`, and the session `title` is synced from that rewritten commit after success while the structured response `summary` payload remains unchanged.
@@ -179,13 +179,13 @@ Provider conversation id flow:
 <a id="architecture-agent-interaction-protocol"></a>
 Provider output is normalized to one structured response protocol:
 
-1. Prompt builders prepend the shared protocol preamble template and the self-descriptive `schemars` document, so every provider sees the same `answer`/`questions`/optional-`summary` schema and transport-enforced `outputSchema` paths can normalize that same contract separately.
+1. Prompt builders prepend the shared protocol preamble template and the self-descriptive `schemars` document, so every provider sees the same `answer`/`questions`/`follow_up_tasks`/optional-`summary` schema and transport-enforced `outputSchema` paths can normalize that same contract separately.
    `crates/agentty/src/infra/agent/template/protocol_instruction_prompt.md` owns the normal request wrapper, `crates/agentty/src/infra/agent/prompt.rs` owns shared prompt preparation, and `crates/agentty/src/infra/agent/protocol.rs` routes to the authoritative protocol model/schema/parse submodules.
 1. The caller selects one canonical `AgentRequestKind` before transport handoff, and the transport derives the matching `ProtocolRequestProfile` from it. Session turns use `SessionStart` or `SessionResume`, while isolated utility prompts use `UtilityPrompt`.
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts may leave `summary` unused.
 1. Channels emit transient loader updates as `TurnEvent::ThoughtDelta` values when providers surface thought or tool-status text during the turn.
-1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary. The final assistant payload itself must match the shared protocol JSON object, while direct deserialization into the shared wire type still accepts summary-only or otherwise defaulted top-level fields. If a provider prepends prose before one final schema object, parsing now recovers that trailing payload as long as nothing except whitespace follows it. Rejected payloads now surface parse diagnostics including response sizing, JSON parser location/category, and discovered top-level keys.
-1. Worker persists final display text, raw summary payload, and question payloads, then emits `AgentResponseReceived`.
+1. Final output is parsed to protocol `answer`, `questions`, `follow_up_tasks`, and the optional structured summary. The final assistant payload itself must match the shared protocol JSON object, while direct deserialization into the shared wire type still accepts summary-only or otherwise defaulted top-level fields. If a provider prepends prose before one final schema object, parsing now recovers that trailing payload as long as nothing except whitespace follows it. Rejected payloads now surface parse diagnostics including response sizing, JSON parser location/category, and discovered top-level keys.
+1. Worker persists final display text, raw summary payload, question payloads, and follow-up-task rows, then emits `AgentResponseReceived`.
 
 <a id="architecture-agent-interaction-streaming"></a>
 Streaming behavior differs by transport/provider:

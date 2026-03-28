@@ -1057,6 +1057,7 @@ fn preferred_completed_assistant_message(assistant_messages: &[String]) -> Strin
         let response = parse_agent_response_strict(trimmed_message).ok()?;
         if response.answer.trim().is_empty()
             && response.questions.is_empty()
+            && response.follow_up_task_items().is_empty()
             && response.summary.is_none()
         {
             return None;
@@ -2538,7 +2539,7 @@ sleep 5
         // Arrange
         let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
         let turn_result = Ok(());
-        let protocol_payload = r#"{"answer":"Hi.","questions":[],"summary":{"turn":"- Replied to greeting.","session":"- Greeting response added on branch."}}"#;
+        let protocol_payload = r#"{"answer":"Hi.","questions":[],"follow_up_tasks":[],"summary":{"turn":"- Replied to greeting.","session":"- Greeting response added on branch."}}"#;
         let assistant_messages = vec![protocol_payload.to_string(), "Hi.".to_string()];
 
         // Act
@@ -2562,7 +2563,8 @@ sleep 5
         // Arrange
         let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
         let turn_result = Ok(());
-        let protocol_payload = r#"{"answer":"Structured answer","questions":[],"summary":null}"#;
+        let protocol_payload =
+            r#"{"answer":"Structured answer","questions":[],"follow_up_tasks":[],"summary":null}"#;
         let assistant_messages = vec![
             "Draft".to_string(),
             protocol_payload.to_string(),
@@ -2956,6 +2958,7 @@ sleep 5
         );
         assert!(output_schema_properties.contains_key("answer"));
         assert!(output_schema_properties.contains_key("questions"));
+        assert!(output_schema_properties.contains_key("follow_up_tasks"));
         assert!(output_schema_properties.contains_key("summary"));
     }
 
