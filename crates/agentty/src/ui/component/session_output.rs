@@ -42,7 +42,7 @@ impl<'a> SessionOutput<'a> {
         }
     }
 
-    /// Sets transient thinking text rendered in the loader row.
+    /// Sets transient progress text rendered in the loader row.
     #[must_use]
     pub fn active_progress(mut self, active_progress: &'a str) -> Self {
         self.active_progress = Some(active_progress);
@@ -409,8 +409,8 @@ impl<'a> SessionOutput<'a> {
                 .map(str::trim)
                 .filter(|progress| !progress.is_empty())
                 .map_or_else(
-                    || "Thinking...".to_string(),
-                    |progress| format!("Thinking... {progress}"),
+                    || "Working...".to_string(),
+                    |progress| format!("Working... {progress}"),
                 ),
             Status::Queued => "Waiting in merge queue...".to_string(),
             Status::Rebasing => "Rebasing...".to_string(),
@@ -983,7 +983,7 @@ mod tests {
         assert!(lines.len() >= 3);
         let len = lines.len();
         assert!(lines[len - 2].to_string().is_empty());
-        assert!(lines[len - 1].to_string().contains("Thinking..."));
+        assert!(lines[len - 1].to_string().contains("Working..."));
     }
 
     #[test]
@@ -1087,17 +1087,17 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(text.contains("Thinking..."));
+        assert!(text.contains("Working..."));
     }
 
     #[test]
-    fn test_status_message_for_in_progress_includes_thinking_text() {
+    fn test_status_message_for_in_progress_includes_progress_text() {
         // Arrange & Act
         let message =
             SessionOutput::status_message(Status::InProgress, Some("Inspecting changed files"));
 
         // Assert
-        assert_eq!(message, "Thinking... Inspecting changed files");
+        assert_eq!(message, "Working... Inspecting changed files");
     }
 
     #[test]
