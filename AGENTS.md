@@ -344,4 +344,3 @@ Askama templates compiled into the binary that are sent to agent backends automa
 - `docs/site/content/docs/architecture/` contains the canonical module, runtime, and change-path references.
 - `docs/plan/` contains internal planning documents and roadmap workflow guidance.
 - `skills/` contains reusable workflow skills and their discovery notes.
-- `target/agentty/workspace-map.json` is the generated machine-readable workspace map written by `cargo run -p ag-xtask -- workspace-map`.
