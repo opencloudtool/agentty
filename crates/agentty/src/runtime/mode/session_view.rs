@@ -608,6 +608,7 @@ fn prompt_history_entries(output: &str) -> Vec<String> {
             let prompt_line = next_line.strip_prefix("   ").unwrap_or(next_line);
             prompt.push('\n');
             prompt.push_str(prompt_line);
+            // Advance past the consumed continuation line.
             let _ = output_lines.next();
         }
 

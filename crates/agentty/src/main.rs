@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use agentty::app::{AGENTTY_WT_DIR, App, agentty_home};
+use agentty::app::{AGENTTY_WT_DIR, App, AppError, agentty_home};
 use agentty::infra::db::{DB_DIR, DB_FILE, Database};
 use agentty::infra::git::{GitClient, RealGitClient};
 
@@ -26,7 +26,7 @@ async fn main() -> ExitCode {
 /// # Errors
 /// Returns an error if database startup, app construction, or runtime
 /// execution fails.
-async fn run() -> Result<(), String> {
+async fn run() -> Result<(), AppError> {
     let auto_update = !std::env::args().any(|arg| arg == "--no-update");
 
     let home = agentty_home();
@@ -36,11 +36,11 @@ async fn run() -> Result<(), String> {
     let git_branch = git_client.detect_git_info(working_dir.clone()).await;
 
     let db_path = home.join(DB_DIR).join(DB_FILE);
-    let db = Database::open(&db_path).await.map_err(|e| e.to_string())?;
+    let db = Database::open(&db_path).await?;
 
     let mut app = App::new(auto_update, base_path, working_dir, git_branch, db).await?;
 
     agentty::runtime::run(&mut app)
         .await
-        .map_err(|error| format!("Failed to run terminal UI: {error}"))
+        .map_err(|error| AppError::Workflow(format!("Failed to run terminal UI: {error}")))
 }

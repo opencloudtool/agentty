@@ -2836,6 +2836,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("Git branch is required")
         );
         assert!(app.sessions.sessions.is_empty());
@@ -2870,6 +2871,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("git repository root")
         );
     }
@@ -2952,6 +2954,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("No git worktree")
         );
     }
@@ -2970,6 +2973,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("Session not found")
         );
     }
@@ -3117,6 +3121,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("No git worktree")
         );
     }
@@ -3139,6 +3144,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("must be in review")
         );
     }
@@ -3157,6 +3163,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("Session not found")
         );
     }
@@ -3741,6 +3748,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("must be in review")
         );
     }
@@ -3759,6 +3767,7 @@ mod tests {
         assert!(
             result
                 .expect_err("should be error")
+                .to_string()
                 .contains("Session not found")
         );
     }

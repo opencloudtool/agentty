@@ -48,10 +48,10 @@ pub fn centered_horizontal_layout(area: Rect) -> std::rc::Rc<[Rect]> {
 pub fn centered_content_rect(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
-    let x = area.x + area.width.saturating_sub(width) / 2;
-    let y = area.y + area.height.saturating_sub(height) / 2;
+    let origin_x = area.x + area.width.saturating_sub(width) / 2;
+    let origin_y = area.y + area.height.saturating_sub(height) / 2;
 
-    Rect::new(x, y, width, height)
+    Rect::new(origin_x, origin_y, width, height)
 }
 
 /// Calculate the chat input widget height with a capped visible viewport.

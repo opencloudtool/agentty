@@ -208,6 +208,7 @@ pub(crate) fn normalize_pasted_text(pasted_text: &str) -> String {
     while let Some(character) = characters.next() {
         if character == '\r' {
             if matches!(characters.peek(), Some(&'\n')) {
+                // Consume the trailing `\n` from a `\r\n` sequence.
                 let _ = characters.next();
             }
 

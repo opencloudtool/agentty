@@ -20,6 +20,7 @@ Session domain workflows for app-level orchestration.
 - [`workflow/`](workflow/) - Session workflow modules and local docs/index.
 - [`workflow.rs`](workflow.rs) - Session workflow module router.
 - [`core.rs`](core.rs) - Session orchestration implementation (`SessionManager`, clock boundary, constants, and tests).
+- [`error.rs`](error.rs) - Typed `SessionError` enum for session workflow operations.
 - [`AGENTS.md`](AGENTS.md) - Local module guidance and directory index.
 - [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
 - [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.

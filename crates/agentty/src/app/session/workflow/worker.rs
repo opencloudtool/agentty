@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use super::SessionTaskService;
 use crate::app::assist::AssistContext;
+use crate::app::session::SessionError;
 use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{SessionStats, Status};
@@ -151,14 +152,13 @@ impl SessionWorkerService {
         services: &AppServices,
         runtime: SessionWorkerRuntime,
         command: SessionCommand,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let operation_id = command.operation_id().to_string();
         let session_id = runtime.session_id.clone();
         services
             .db()
             .insert_session_operation(&operation_id, &session_id, command.kind())
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         let sender = self.ensure_session_worker(services, &runtime);
         if sender.send(command).is_err() {
@@ -168,7 +168,9 @@ impl SessionWorkerService {
                 .mark_session_operation_failed(&operation_id, "Session worker is not available")
                 .await;
 
-            return Err("Session worker is not available".to_string());
+            return Err(SessionError::Workflow(
+                "Session worker is not available".to_string(),
+            ));
         }
 
         Ok(())
@@ -258,7 +260,7 @@ impl SessionWorkerService {
                         // Best-effort: operation tracking metadata is non-critical.
                         let _ = context
                             .db
-                            .mark_session_operation_failed(&operation_id, &error)
+                            .mark_session_operation_failed(&operation_id, &error.to_string())
                             .await;
                     }
                 }
@@ -279,7 +281,7 @@ impl SessionWorkerService {
     async fn execute_session_command(
         context: &SessionWorkerContext,
         command: SessionCommand,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let SessionCommand::Run {
             request_kind,
             prompt,
@@ -305,7 +307,7 @@ impl SessionWorkerService {
         request_kind: AgentRequestKind,
         prompt: TurnPrompt,
         session_model: AgentModel,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         if matches!(request_kind, AgentRequestKind::SessionResume { .. }) {
             // Best-effort: questions persistence failure is non-critical.
             let _ = context
@@ -472,7 +474,7 @@ impl SessionManager {
         services: &AppServices,
         session_id: &str,
         command: SessionCommand,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let runtime = self.session_worker_runtime_or_err(session_id)?;
 
         self.worker_service_mut()
@@ -516,7 +518,7 @@ impl SessionManager {
     fn session_worker_runtime_or_err(
         &self,
         session_id: &str,
-    ) -> Result<SessionWorkerRuntime, String> {
+    ) -> Result<SessionWorkerRuntime, SessionError> {
         let (session, handles) = self.session_and_handles_or_err(session_id)?;
 
         Ok(SessionWorkerRuntime {
@@ -557,7 +559,7 @@ async fn apply_turn_result(
     session_model: AgentModel,
     turn_result: Result<TurnResult, AgentError>,
     streamed_assistant_content: bool,
-) -> Result<Status, String> {
+) -> Result<Status, SessionError> {
     match turn_result {
         Ok(result) => {
             apply_successful_turn_result(context, session_model, result, streamed_assistant_content)
@@ -574,7 +576,7 @@ async fn apply_turn_result(
             )
             .await;
 
-            Err(error.0)
+            Err(SessionError::Workflow(error.0))
         }
     }
 }
@@ -586,7 +588,7 @@ async fn apply_successful_turn_result(
     session_model: AgentModel,
     result: TurnResult,
     streamed_assistant_content: bool,
-) -> Result<Status, String> {
+) -> Result<Status, SessionError> {
     let TurnResult {
         assistant_message,
         input_tokens,

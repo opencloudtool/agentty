@@ -1,46 +1,42 @@
-//! Shared session lookup helpers and canonical lookup error strings.
+//! Shared session lookup helpers using typed [`SessionError`] results.
 
 use crate::app::SessionManager;
+use crate::app::session::SessionError;
 use crate::domain::session::{Session, SessionHandles};
-
-/// Canonical session-handle-not-found error string used by app workflows.
-pub(crate) const SESSION_HANDLES_NOT_FOUND_ERROR: &str = "Session handles not found";
-/// Canonical session-not-found error string used by app workflows.
-pub(crate) const SESSION_NOT_FOUND_ERROR: &str = "Session not found";
 
 impl SessionManager {
     /// Resolves a session identifier into its current list index.
-    pub(crate) fn session_index_or_err(&self, session_id: &str) -> Result<usize, String> {
+    pub(crate) fn session_index_or_err(&self, session_id: &str) -> Result<usize, SessionError> {
         self.session_index_for_id(session_id)
-            .ok_or_else(|| SESSION_NOT_FOUND_ERROR.to_string())
+            .ok_or(SessionError::NotFound)
     }
 
     /// Resolves an immutable session reference by identifier.
-    pub(crate) fn session_or_err(&self, session_id: &str) -> Result<&Session, String> {
+    pub(crate) fn session_or_err(&self, session_id: &str) -> Result<&Session, SessionError> {
         let session_index = self.session_index_or_err(session_id)?;
 
         self.state()
             .sessions
             .get(session_index)
-            .ok_or_else(|| SESSION_NOT_FOUND_ERROR.to_string())
+            .ok_or(SessionError::NotFound)
     }
 
     /// Resolves runtime handles for a session identifier.
     pub(crate) fn session_handles_or_err(
         &self,
         session_id: &str,
-    ) -> Result<&SessionHandles, String> {
+    ) -> Result<&SessionHandles, SessionError> {
         self.state()
             .handles
             .get(session_id)
-            .ok_or_else(|| SESSION_HANDLES_NOT_FOUND_ERROR.to_string())
+            .ok_or(SessionError::HandlesNotFound)
     }
 
     /// Resolves both immutable session data and runtime handles together.
     pub(crate) fn session_and_handles_or_err(
         &self,
         session_id: &str,
-    ) -> Result<(&Session, &SessionHandles), String> {
+    ) -> Result<(&Session, &SessionHandles), SessionError> {
         let session = self.session_or_err(session_id)?;
         let handles = self.session_handles_or_err(session_id)?;
 

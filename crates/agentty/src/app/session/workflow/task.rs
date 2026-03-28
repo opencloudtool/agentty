@@ -11,6 +11,7 @@ use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, format_detail_lines,
     run_agent_assist,
 };
+use crate::app::session::SessionError;
 use crate::app::{AppEvent, SessionManager};
 use crate::domain::agent::AgentModel;
 use crate::domain::session::{SessionSize, Status};
@@ -169,7 +170,7 @@ impl SessionTaskService {
 
     async fn commit_changes_with_assist(
         context: &AssistContext,
-    ) -> Result<Option<SessionCommitOutcome>, String> {
+    ) -> Result<Option<SessionCommitOutcome>, SessionError> {
         let mut failure_tracker =
             FailureTracker::new(AUTO_COMMIT_ASSIST_POLICY.max_identical_failure_streak);
         // Test repos do not install hooks deterministically; skip hook
@@ -181,7 +182,7 @@ impl SessionTaskService {
                 Ok(commit_outcome) => {
                     return Ok(Some(commit_outcome));
                 }
-                Err(commit_error) if commit_error.contains("Nothing to commit") => {
+                Err(commit_error) if commit_error.to_string().contains("Nothing to commit") => {
                     return Ok(None);
                 }
                 Err(commit_error) => {
@@ -191,24 +192,28 @@ impl SessionTaskService {
                         return Err(commit_error);
                     }
 
-                    if failure_tracker.observe(&commit_error) {
-                        return Err(format!(
+                    let commit_error_str = commit_error.to_string();
+                    if failure_tracker.observe(&commit_error_str) {
+                        return Err(SessionError::Workflow(format!(
                             "Auto-commit assistance made no progress: repeated identical commit \
-                             failure. Last error: {commit_error}"
-                        ));
+                             failure. Last error: {commit_error_str}"
+                        )));
                     }
 
                     if assist_attempt > AUTO_COMMIT_ASSIST_POLICY.max_attempts {
                         return Err(commit_error);
                     }
 
-                    Self::append_commit_assist_header(context, assist_attempt, &commit_error).await;
-                    Self::run_commit_assist_for_error(context, &commit_error).await?;
+                    Self::append_commit_assist_header(context, assist_attempt, &commit_error_str)
+                        .await;
+                    Self::run_commit_assist_for_error(context, &commit_error_str).await?;
                 }
             }
         }
 
-        Err("Failed to auto-commit after assistance attempts".to_string())
+        Err(SessionError::Workflow(
+            "Failed to auto-commit after assistance attempts".to_string(),
+        ))
     }
 
     /// Commits all worktree changes and returns the current `HEAD` short hash.
@@ -222,13 +227,14 @@ impl SessionTaskService {
     async fn commit_changes_with_git_client(
         context: &AssistContext,
         no_verify: bool,
-    ) -> Result<SessionCommitOutcome, String> {
+    ) -> Result<SessionCommitOutcome, SessionError> {
         let base_branch = context
             .db
             .get_session_base_branch(&context.id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Missing session base branch for auto-commit".to_string())?;
+            .await?
+            .ok_or_else(|| {
+                SessionError::Workflow("Missing session base branch for auto-commit".to_string())
+            })?;
 
         Self::commit_session_changes(
             context.git_client.as_ref(),
@@ -261,7 +267,7 @@ impl SessionTaskService {
     async fn run_commit_assist_for_error(
         context: &AssistContext,
         commit_error: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let prompt = Self::auto_commit_assist_prompt(commit_error)?;
         let assist_context = AssistContext {
             app_event_tx: context.app_event_tx.clone(),
@@ -276,20 +282,22 @@ impl SessionTaskService {
 
         run_agent_assist(&assist_context, &prompt)
             .await
-            .map_err(|error| format!("Commit assistance failed: {error}"))
+            .map_err(|error| SessionError::Workflow(format!("Commit assistance failed: {error}")))
     }
 
     /// Renders the commit-assistance prompt from the markdown template.
     ///
     /// # Errors
     /// Returns an error if Askama template rendering fails.
-    fn auto_commit_assist_prompt(commit_error: &str) -> Result<String, String> {
+    fn auto_commit_assist_prompt(commit_error: &str) -> Result<String, SessionError> {
         let commit_error = commit_error.trim();
         let template = AutoCommitAssistPromptTemplate { commit_error };
 
-        template
-            .render()
-            .map_err(|error| format!("Failed to render `auto_commit_assist_prompt.md`: {error}"))
+        template.render().map_err(|error| {
+            SessionError::Workflow(format!(
+                "Failed to render `auto_commit_assist_prompt.md`: {error}"
+            ))
+        })
     }
 
     fn format_commit_error_for_display(commit_error: &str) -> String {
@@ -304,7 +312,7 @@ impl SessionTaskService {
     fn session_commit_message_prompt(
         diff: &str,
         current_commit_message: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<String, SessionError> {
         let stripped_current_commit_message =
             current_commit_message.map_or_else(String::new, strip_agentty_coauthor_trailer);
         let template = SessionCommitMessagePromptTemplate {
@@ -313,7 +321,9 @@ impl SessionTaskService {
         };
 
         template.render().map_err(|error| {
-            format!("Failed to render `session_commit_message_prompt.md`: {error}")
+            SessionError::Workflow(format!(
+                "Failed to render `session_commit_message_prompt.md`: {error}"
+            ))
         })
     }
 
@@ -331,42 +341,36 @@ impl SessionTaskService {
         session_model: AgentModel,
         no_verify: bool,
         include_coauthored_by_agentty: bool,
-    ) -> Result<SessionCommitOutcome, String> {
+    ) -> Result<SessionCommitOutcome, SessionError> {
         if cfg!(test) {
             let folder = folder.to_path_buf();
-            if git_client
-                .is_worktree_clean(folder.clone())
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                return Err("Nothing to commit: no changes detected".to_string());
+            if git_client.is_worktree_clean(folder.clone()).await? {
+                return Err(SessionError::Workflow(
+                    "Nothing to commit: no changes detected".to_string(),
+                ));
             }
 
             let has_session_commit = git_client
                 .has_commits_since(folder.clone(), base_branch.to_string())
-                .await
-                .map_err(|error| error.to_string())?;
+                .await?;
             let current_commit_message = if has_session_commit {
-                git_client
-                    .head_commit_message(folder.clone())
-                    .await
-                    .map_err(|error| error.to_string())?
+                git_client.head_commit_message(folder.clone()).await?
             } else {
                 None
             };
             let Some(current_commit_message) = current_commit_message.as_deref().map(str::trim)
             else {
-                return Err(
+                return Err(SessionError::Workflow(
                     "Session commit generation requires an existing commit message during tests"
                         .to_string(),
-                );
+                ));
             };
             if current_commit_message.is_empty() {
-                return Err(
+                return Err(SessionError::Workflow(
                     "Session commit generation requires a non-blank existing commit message \
                      during tests"
                         .to_string(),
-                );
+                ));
             }
             let commit_message = append_agentty_coauthor_trailer(
                 strip_agentty_coauthor_trailer(current_commit_message).trim(),
@@ -380,12 +384,8 @@ impl SessionTaskService {
                     git::SingleCommitMessageStrategy::Replace,
                     no_verify,
                 )
-                .await
-                .map_err(|error| error.to_string())?;
-            let commit_hash = git_client
-                .head_short_hash(folder)
-                .await
-                .map_err(|error| error.to_string())?;
+                .await?;
+            let commit_hash = git_client.head_short_hash(folder).await?;
 
             return Ok(SessionCommitOutcome {
                 commit_hash,
@@ -422,29 +422,22 @@ impl SessionTaskService {
         backend: &dyn agent::AgentBackend,
         no_verify: bool,
         include_coauthored_by_agentty: bool,
-    ) -> Result<SessionCommitOutcome, String> {
+    ) -> Result<SessionCommitOutcome, SessionError> {
         let folder = folder.to_path_buf();
-        if git_client
-            .is_worktree_clean(folder.clone())
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            return Err("Nothing to commit: no changes detected".to_string());
+        if git_client.is_worktree_clean(folder.clone()).await? {
+            return Err(SessionError::Workflow(
+                "Nothing to commit: no changes detected".to_string(),
+            ));
         }
 
         let diff = git_client
             .diff(folder.clone(), base_branch.to_string())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         let has_session_commit = git_client
             .has_commits_since(folder.clone(), base_branch.to_string())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         let current_commit_message = if has_session_commit {
-            git_client
-                .head_commit_message(folder.clone())
-                .await
-                .map_err(|error| error.to_string())?
+            git_client.head_commit_message(folder.clone()).await?
         } else {
             None
         };
@@ -466,13 +459,9 @@ impl SessionTaskService {
                 git::SingleCommitMessageStrategy::Replace,
                 no_verify,
             )
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
 
-        let commit_hash = git_client
-            .head_short_hash(folder)
-            .await
-            .map_err(|error| error.to_string())?;
+        let commit_hash = git_client.head_short_hash(folder).await?;
 
         Ok(SessionCommitOutcome {
             commit_hash,
@@ -494,7 +483,7 @@ impl SessionTaskService {
         current_commit_message: Option<&str>,
         backend: &dyn agent::AgentBackend,
         include_coauthored_by_agentty: bool,
-    ) -> Result<String, String> {
+    ) -> Result<String, SessionError> {
         let prompt = Self::session_commit_message_prompt(diff, current_commit_message)?;
         let submission = Self::submit_utility_prompt_with_backend(
             session_model,
@@ -512,7 +501,9 @@ impl SessionTaskService {
         let answer_text = submission.response.to_answer_display_text();
         let trimmed_answer_text = answer_text.trim();
         if trimmed_answer_text.is_empty() {
-            return Err("Session commit message model returned blank answer text".to_string());
+            return Err(SessionError::Workflow(
+                "Session commit message model returned blank answer text".to_string(),
+            ));
         }
         validate_generated_commit_message(trimmed_answer_text)?;
 
@@ -530,7 +521,7 @@ impl SessionTaskService {
     /// protocol output.
     pub(crate) async fn run_agent_assist_task(
         input: RunAgentAssistTaskInput,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let backend = agent::create_backend(input.session_model.kind());
 
         Self::run_agent_assist_task_with_backend(input, backend.as_ref()).await
@@ -544,7 +535,7 @@ impl SessionTaskService {
     async fn run_agent_assist_task_with_backend(
         input: RunAgentAssistTaskInput,
         backend: &dyn agent::AgentBackend,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let RunAgentAssistTaskInput {
             app_event_tx,
             child_pid,
@@ -600,24 +591,27 @@ impl SessionTaskService {
         session_model: AgentModel,
         backend: &dyn agent::AgentBackend,
         request: agent::OneShotRequest<'_>,
-    ) -> Result<agent::OneShotSubmission, String> {
+    ) -> Result<agent::OneShotSubmission, SessionError> {
         if agent::transport_mode(session_model.kind()).uses_app_server() {
             let app_server_client = agent::create_app_server_client(session_model.kind(), None)
                 .ok_or_else(|| {
-                    format!(
+                    SessionError::Workflow(format!(
                         "{} provider did not provide an app-server client",
                         session_model.kind()
-                    )
+                    ))
                 })?;
 
             return agent::submit_one_shot_with_app_server_client(
                 app_server_client.as_ref(),
                 request,
             )
-            .await;
+            .await
+            .map_err(SessionError::Workflow);
         }
 
-        agent::submit_one_shot_with_backend(backend, request).await
+        agent::submit_one_shot_with_backend(backend, request)
+            .await
+            .map_err(SessionError::Workflow)
     }
 
     /// Applies a status transition to memory and database when valid.
@@ -718,14 +712,14 @@ fn strip_agentty_coauthor_trailer(commit_message: &str) -> String {
 /// # Errors
 /// Returns an error when the generated message already contains the Agentty
 /// coauthor trailer, which is appended by code instead of model output.
-fn validate_generated_commit_message(commit_message: &str) -> Result<(), String> {
+fn validate_generated_commit_message(commit_message: &str) -> Result<(), SessionError> {
     if commit_message
         .lines()
         .any(|line| line.trim() == SESSION_COMMIT_COAUTHORED_BY_AGENTTY_TRAILER)
     {
-        return Err(
+        return Err(SessionError::Workflow(
             "Session commit message model must not emit the Agentty coauthor trailer".to_string(),
-        );
+        ));
     }
 
     Ok(())
@@ -921,8 +915,16 @@ mod tests {
         .expect_err("plain-text one-shot commit message should fail");
 
         // Assert
-        assert!(error.contains("did not match the required JSON schema"));
-        assert!(error.contains("response:\nRefactor agent prompt and protocol handling"));
+        assert!(
+            error
+                .to_string()
+                .contains("did not match the required JSON schema")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("response:\nRefactor agent prompt and protocol handling")
+        );
     }
 
     #[test]
@@ -970,7 +972,7 @@ mod tests {
 
         // Assert
         assert_eq!(
-            error,
+            error.to_string(),
             "Session commit message model must not emit the Agentty coauthor trailer"
         );
     }
@@ -1252,8 +1254,12 @@ mod tests {
         .expect_err("plain-text utility output should fail");
 
         // Assert
-        assert!(error.contains("did not match the required JSON schema"));
-        assert!(error.contains("response:\nplain text"));
+        assert!(
+            error
+                .to_string()
+                .contains("did not match the required JSON schema")
+        );
+        assert!(error.to_string().contains("response:\nplain text"));
         let output_text = output.lock().map(|buf| buf.clone()).unwrap_or_default();
         assert!(output_text.is_empty());
         let sessions = database
@@ -1300,7 +1306,7 @@ mod tests {
         // Assert
         assert!(result.is_err());
         let error_text = result.expect_err("expected non-zero exit to fail");
-        assert!(error_text.contains("exit code 7"));
-        assert!(error_text.contains("assist failed"));
+        assert!(error_text.to_string().contains("exit code 7"));
+        assert!(error_text.to_string().contains("assist failed"));
     }
 }

@@ -6,6 +6,7 @@ use std::time::Instant;
 use ag_forge as forge;
 
 use super::SESSION_REFRESH_INTERVAL;
+use crate::app::session::SessionError;
 use crate::app::{AppServices, ProjectManager, SessionManager};
 use crate::domain::session::{ForgeKind, ReviewRequest};
 use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode};
@@ -71,15 +72,14 @@ impl SessionManager {
         &mut self,
         services: &AppServices,
         session_id: &str,
-    ) -> Result<ReviewRequest, String> {
+    ) -> Result<ReviewRequest, SessionError> {
         let session_index = self.session_index_or_err(session_id)?;
         let Some(session) = self.state.sessions.get(session_index) else {
-            return Err("Session not found".to_string());
+            return Err(SessionError::NotFound);
         };
-        let linked_review_request = session
-            .review_request
-            .clone()
-            .ok_or_else(|| "Session has no linked review request".to_string())?;
+        let linked_review_request = session.review_request.clone().ok_or_else(|| {
+            SessionError::Workflow("Session has no linked review request".to_string())
+        })?;
         let remote = self
             .review_request_remote(services, session, &linked_review_request)
             .await?;
@@ -87,7 +87,7 @@ impl SessionManager {
             .review_request_client()
             .refresh_review_request(remote, linked_review_request.summary.display_id.clone())
             .await
-            .map_err(|error| error.detail_message())?;
+            .map_err(|error| SessionError::Workflow(error.detail_message()))?;
         self.store_review_request_summary(services, session_id, refreshed_summary)
             .await
     }
@@ -155,7 +155,7 @@ impl SessionManager {
         services: &AppServices,
         session: &crate::domain::session::Session,
         review_request: &ReviewRequest,
-    ) -> Result<forge::ForgeRemote, String> {
+    ) -> Result<forge::ForgeRemote, SessionError> {
         let repo_url = if services.fs_client().is_dir(session.folder.clone()) {
             services
                 .git_client()
@@ -167,13 +167,15 @@ impl SessionManager {
         }
         .or_else(|| Self::review_request_repo_url(review_request))
         .ok_or_else(|| {
-            "Failed to resolve repository remote for linked review request".to_string()
+            SessionError::Workflow(
+                "Failed to resolve repository remote for linked review request".to_string(),
+            )
         })?;
 
         services
             .review_request_client()
             .detect_remote(repo_url)
-            .map_err(|error| error.detail_message())
+            .map_err(|error| SessionError::Workflow(error.detail_message()))
     }
 
     /// Derives a repository URL from one persisted review-request web URL.

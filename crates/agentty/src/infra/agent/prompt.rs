@@ -102,9 +102,8 @@ pub(crate) fn build_resume_prompt(
 ///
 /// # Errors
 /// Returns an error if Askama template rendering fails.
-// TODO: Use `profile` to inject per-request-family protocol guidance once
-// plan step 2 ("Move Request Formatting Rules Out of Task Prompts") lands.
-// See `docs/plan/protocol_request_instructions.md`.
+// Future: expand `profile`-driven guidance to inject per-request-family
+// protocol rules once task-prompt formatting rules are consolidated.
 pub(crate) fn prepend_protocol_instructions(
     prompt: &str,
     profile: ProtocolRequestProfile,

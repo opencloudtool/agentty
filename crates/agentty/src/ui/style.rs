@@ -70,3 +70,80 @@ pub fn status_icon(status: Status) -> Icon {
         Status::Canceled => Icon::Cross,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_color_returns_success_for_done() {
+        // Arrange / Act
+        let color = status_color(Status::Done);
+
+        // Assert
+        assert_eq!(color, palette::SUCCESS);
+    }
+
+    #[test]
+    fn status_color_returns_danger_for_canceled() {
+        // Arrange / Act
+        let color = status_color(Status::Canceled);
+
+        // Assert
+        assert_eq!(color, palette::DANGER);
+    }
+
+    #[test]
+    fn status_color_returns_warning_for_in_progress() {
+        // Arrange / Act
+        let color = status_color(Status::InProgress);
+
+        // Assert
+        assert_eq!(color, palette::WARNING);
+    }
+
+    #[test]
+    fn status_color_returns_info_for_review() {
+        // Arrange / Act
+        let color = status_color(Status::Review);
+
+        // Assert
+        assert_eq!(color, palette::INFO);
+    }
+
+    #[test]
+    fn status_color_returns_accent_for_merging() {
+        // Arrange / Act
+        let color = status_color(Status::Merging);
+
+        // Assert
+        assert_eq!(color, palette::ACCENT);
+    }
+
+    #[test]
+    fn status_icon_returns_check_for_done() {
+        // Arrange / Act
+        let icon = status_icon(Status::Done);
+
+        // Assert
+        assert!(matches!(icon, Icon::Check));
+    }
+
+    #[test]
+    fn status_icon_returns_cross_for_canceled() {
+        // Arrange / Act
+        let icon = status_icon(Status::Canceled);
+
+        // Assert
+        assert!(matches!(icon, Icon::Cross));
+    }
+
+    #[test]
+    fn status_icon_returns_pending_for_new() {
+        // Arrange / Act
+        let icon = status_icon(Status::New);
+
+        // Assert
+        assert!(matches!(icon, Icon::Pending));
+    }
+}

@@ -5,6 +5,7 @@
 
 mod assist;
 mod core;
+mod error;
 mod merge_queue;
 mod project;
 mod service;
@@ -19,9 +20,10 @@ pub use core::{AGENTTY_WT_DIR, App, UpdateStatus, agentty_home};
 pub(crate) use core::{AppClients, MockSyncMainRunner};
 pub(crate) use core::{AppEvent, ReviewCacheEntry, SessionStatsUsage, diff_content_hash};
 
+pub use error::AppError;
 pub use project::ProjectManager;
 pub use service::AppServices;
-pub use session::SessionManager;
+pub use session::{SessionError, SessionManager};
 #[cfg(test)]
 pub(crate) use session::{SyncMainOutcome, SyncSessionStartError};
 pub use session_state::SessionState;

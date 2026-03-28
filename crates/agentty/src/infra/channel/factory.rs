@@ -13,6 +13,11 @@ use crate::infra::channel::contract::AgentChannel;
 ///
 /// CLI providers (Claude) use [`CliAgentChannel`]; app-server providers
 /// (Gemini, Codex) use [`AppServerAgentChannel`].
+///
+/// # Panics
+///
+/// Panics if an app-server transport kind does not provide an app-server
+/// client implementation.
 pub fn create_agent_channel(
     kind: AgentKind,
     app_server_client_override: Option<Arc<dyn AppServerClient>>,
@@ -27,5 +32,37 @@ pub fn create_agent_channel(
         Arc::new(AppServerAgentChannel::new(app_server_client, kind))
     } else {
         Arc::new(CliAgentChannel::with_backend(Arc::from(backend), kind))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_agent_channel_returns_cli_channel_for_claude() {
+        // Arrange / Act
+        let channel = create_agent_channel(AgentKind::Claude, None);
+
+        // Assert
+        assert!(Arc::strong_count(&channel) == 1);
+    }
+
+    #[test]
+    fn create_agent_channel_returns_app_server_channel_for_gemini() {
+        // Arrange / Act
+        let channel = create_agent_channel(AgentKind::Gemini, None);
+
+        // Assert
+        assert!(Arc::strong_count(&channel) == 1);
+    }
+
+    #[test]
+    fn create_agent_channel_returns_app_server_channel_for_codex() {
+        // Arrange / Act
+        let channel = create_agent_channel(AgentKind::Codex, None);
+
+        // Assert
+        assert!(Arc::strong_count(&channel) == 1);
     }
 }

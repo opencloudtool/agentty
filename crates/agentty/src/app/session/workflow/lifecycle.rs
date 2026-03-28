@@ -8,9 +8,9 @@ use askama::Template;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::access::SESSION_NOT_FOUND_ERROR;
 use super::worker::SessionCommand;
 use super::{SessionTaskService, session_branch, session_folder, unix_timestamp_from_system_time};
+use crate::app::session::SessionError;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager, agentty_home, setting};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{ReviewRequest, SESSION_DATA_DIR, Session, Status};
@@ -130,10 +130,10 @@ impl SessionManager {
         &mut self,
         projects: &ProjectManager,
         services: &AppServices,
-    ) -> Result<String, String> {
-        let base_branch = projects
-            .git_branch()
-            .ok_or_else(|| "Git branch is required to create a session".to_string())?;
+    ) -> Result<String, SessionError> {
+        let base_branch = projects.git_branch().ok_or_else(|| {
+            SessionError::Workflow("Git branch is required to create a session".to_string())
+        })?;
         let session_model = self
             .resolve_default_session_model(services, projects.active_project_id())
             .await;
@@ -142,7 +142,9 @@ impl SessionManager {
         let session_id = Uuid::new_v4().to_string();
         let folder = session_folder(services.base_path(), &session_id);
         if folder.exists() {
-            return Err(format!("Session folder {session_id} already exists"));
+            return Err(SessionError::Workflow(format!(
+                "Session folder {session_id} already exists"
+            )));
         }
 
         let worktree_branch = session_branch(&session_id);
@@ -151,7 +153,9 @@ impl SessionManager {
         let repo_root = git_client
             .find_git_repo_root(working_dir)
             .await
-            .ok_or_else(|| "Failed to find git repository root".to_string())?;
+            .ok_or_else(|| {
+                SessionError::Workflow("Failed to find git repository root".to_string())
+            })?;
 
         {
             let folder = folder.clone();
@@ -161,7 +165,9 @@ impl SessionManager {
             git_client
                 .create_worktree(repo_root, folder, worktree_branch, base_branch)
                 .await
-                .map_err(|error| format!("Failed to create git worktree: {error}"))?;
+                .map_err(|error| {
+                    SessionError::Workflow(format!("Failed to create git worktree: {error}"))
+                })?;
         }
 
         let data_dir = folder.join(SESSION_DATA_DIR);
@@ -176,9 +182,9 @@ impl SessionManager {
             )
             .await;
 
-            return Err(format!(
+            return Err(SessionError::Workflow(format!(
                 "Failed to create session metadata directory: {error}"
-            ));
+            )));
         }
 
         if let Err(error) = services
@@ -202,7 +208,9 @@ impl SessionManager {
             )
             .await;
 
-            return Err(format!("Failed to save session metadata: {error}"));
+            return Err(SessionError::Workflow(format!(
+                "Failed to save session metadata: {error}"
+            )));
         }
 
         // Best-effort: activity tracking is non-critical.
@@ -222,7 +230,9 @@ impl SessionManager {
             )
             .await;
 
-            return Err(format!("Failed to setup session backend: {error}"));
+            return Err(SessionError::Workflow(format!(
+                "Failed to setup session backend: {error}"
+            )));
         }
         services.emit_app_event(AppEvent::RefreshSessions);
 
@@ -242,14 +252,14 @@ impl SessionManager {
         services: &AppServices,
         session_id: &str,
         prompt: impl Into<TurnPrompt>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let prompt = prompt.into();
         let session_index = self.session_index_or_err(session_id)?;
         let (persisted_session_id, session_model, title) = {
             let session = self
                 .sessions
                 .get_mut(session_index)
-                .ok_or_else(|| SESSION_NOT_FOUND_ERROR.to_string())?;
+                .ok_or(SessionError::NotFound)?;
 
             session.prompt.clone_from(&prompt.text);
 
@@ -370,7 +380,7 @@ impl SessionManager {
         services: &AppServices,
         session_id: &str,
         session_model: AgentModel,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let session_index = self.session_index_or_err(session_id)?;
         let model_changed = self
             .sessions
@@ -380,23 +390,17 @@ impl SessionManager {
         services
             .db()
             .update_session_model(session_id, session_model.as_str())
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
         if model_changed {
             services
                 .db()
                 .update_session_provider_conversation_id(session_id, None)
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
 
             self.clear_session_worker(session_id);
         }
 
-        let session_project_id = services
-            .db()
-            .load_session_project_id(session_id)
-            .await
-            .map_err(|e| e.to_string())?;
+        let session_project_id = services.db().load_session_project_id(session_id).await?;
 
         if Self::should_persist_last_used_model_as_default(services, session_project_id).await?
             && let Some(project_id) = session_project_id
@@ -408,8 +412,7 @@ impl SessionManager {
                     SettingName::DefaultSmartModel.as_str(),
                     session_model.as_str(),
                 )
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
         }
 
         services.emit_app_event(AppEvent::SessionModelUpdated {
@@ -429,7 +432,7 @@ impl SessionManager {
     async fn should_persist_last_used_model_as_default(
         services: &AppServices,
         project_id: Option<i64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, SessionError> {
         let Some(project_id) = project_id else {
             return Ok(false);
         };
@@ -437,8 +440,7 @@ impl SessionManager {
         let should_persist = services
             .db()
             .get_project_setting(project_id, SettingName::LastUsedModelAsDefault.as_str())
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .and_then(|setting_value| setting_value.parse::<bool>().ok())
             .unwrap_or(false);
 
@@ -486,10 +488,10 @@ impl SessionManager {
         &mut self,
         services: &AppServices,
         session_id: &str,
-    ) -> Result<ReviewRequest, String> {
+    ) -> Result<ReviewRequest, SessionError> {
         let session_index = self.session_index_or_err(session_id)?;
         let Some(session) = self.state.sessions.get(session_index) else {
-            return Err(SESSION_NOT_FOUND_ERROR.to_string());
+            return Err(SessionError::NotFound);
         };
 
         if let Some(review_request) = session.review_request.clone() {
@@ -497,7 +499,9 @@ impl SessionManager {
         }
 
         if session.status != Status::Review {
-            return Err("Session must be in review to create a review request".to_string());
+            return Err(SessionError::Workflow(
+                "Session must be in review to create a review request".to_string(),
+            ));
         }
 
         let folder = session.folder.clone();
@@ -507,27 +511,31 @@ impl SessionManager {
         let published_upstream_ref = git_client
             .push_current_branch(folder.clone())
             .await
-            .map_err(|error| format!("Failed to publish session branch: {error}"))?;
+            .map_err(|error| {
+                SessionError::Workflow(format!("Failed to publish session branch: {error}"))
+            })?;
         self.store_published_upstream_ref(services, session_id, published_upstream_ref)
             .await?;
 
         let repo_url = git_client.repo_url(folder).await.map_err(|error| {
-            format!("Failed to resolve repository remote for review request: {error}")
+            SessionError::Workflow(format!(
+                "Failed to resolve repository remote for review request: {error}"
+            ))
         })?;
         let review_request_client = services.review_request_client();
         let remote = review_request_client
             .detect_remote(repo_url)
-            .map_err(|error| error.detail_message())?;
+            .map_err(|error| SessionError::Workflow(error.detail_message()))?;
         let review_request_summary = match review_request_client
             .find_by_source_branch(remote.clone(), source_branch)
             .await
-            .map_err(|error| error.detail_message())?
+            .map_err(|error| SessionError::Workflow(error.detail_message()))?
         {
             Some(existing_review_request) => existing_review_request,
             None => review_request_client
                 .create_review_request(remote, create_input)
                 .await
-                .map_err(|error| error.detail_message())?,
+                .map_err(|error| SessionError::Workflow(error.detail_message()))?,
         };
         self.store_review_request_summary(services, session_id, review_request_summary)
             .await
@@ -542,17 +550,16 @@ impl SessionManager {
         &self,
         services: &AppServices,
         session_id: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, SessionError> {
         let session = self.session_or_err(session_id)?;
-        let review_request = session
-            .review_request
-            .as_ref()
-            .ok_or_else(|| "Session has no linked review request".to_string())?;
+        let review_request = session.review_request.as_ref().ok_or_else(|| {
+            SessionError::Workflow("Session has no linked review request".to_string())
+        })?;
 
         services
             .review_request_client()
             .review_request_web_url(&review_request.summary)
-            .map_err(|error| error.detail_message())
+            .map_err(|error| SessionError::Workflow(error.detail_message()))
     }
 
     /// Deletes the currently selected session and cleans related resources.
@@ -719,7 +726,7 @@ impl SessionManager {
         services: &AppServices,
         session_id: &str,
         summary: forge::ReviewRequestSummary,
-    ) -> Result<ReviewRequest, String> {
+    ) -> Result<ReviewRequest, SessionError> {
         let session_index = self.session_index_or_err(session_id)?;
         let review_request = self.build_review_request(summary);
 
@@ -736,21 +743,20 @@ impl SessionManager {
         services: &AppServices,
         session_index: usize,
         review_request: ReviewRequest,
-    ) -> Result<ReviewRequest, String> {
+    ) -> Result<ReviewRequest, SessionError> {
         let session_id = self
             .state
             .sessions
             .get(session_index)
             .map(|session| session.id.clone())
-            .ok_or_else(|| SESSION_NOT_FOUND_ERROR.to_string())?;
+            .ok_or(SessionError::NotFound)?;
         services
             .db()
             .update_session_review_request(&session_id, Some(&review_request))
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         let Some(session) = self.state.sessions.get_mut(session_index) else {
-            return Err(SESSION_NOT_FOUND_ERROR.to_string());
+            return Err(SessionError::NotFound);
         };
         session.review_request = Some(review_request.clone());
 
@@ -766,16 +772,15 @@ impl SessionManager {
         services: &AppServices,
         session_id: &str,
         published_upstream_ref: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         services
             .db()
             .update_session_published_upstream_ref(session_id, Some(&published_upstream_ref))
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         let session_index = self.session_index_or_err(session_id)?;
         let Some(session) = self.state.sessions.get_mut(session_index) else {
-            return Err(SESSION_NOT_FOUND_ERROR.to_string());
+            return Err(SessionError::NotFound);
         };
         session.published_upstream_ref = Some(published_upstream_ref);
 
@@ -1323,10 +1328,12 @@ impl SessionManager {
         &self,
         services: &AppServices,
         session_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let session = self.session_or_err(session_id)?;
         if session.status != Status::Review {
-            return Err("Session must be in review to be canceled".to_string());
+            return Err(SessionError::Workflow(
+                "Session must be in review to be canceled".to_string(),
+            ));
         }
 
         let branch_name = session_branch(&session.id);

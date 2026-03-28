@@ -8,6 +8,68 @@ use image::{ExtendedColorType, ImageFormat};
 
 use crate::app::{self, session};
 
+/// Typed error returned by clipboard image capture and persistence operations.
+///
+/// Wraps clipboard access, filesystem, image encoding, and validation failures
+/// so callers can distinguish error categories without parsing opaque strings.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ClipboardError {
+    /// Clipboard access is not available on this system.
+    #[error("Clipboard is unavailable: {reason}")]
+    Unavailable {
+        /// Human-readable reason from the clipboard backend.
+        reason: String,
+    },
+
+    /// Clipboard does not contain image data or a recognizable PNG path.
+    #[error("Clipboard does not contain an image")]
+    NoImage,
+
+    /// A referenced PNG path from clipboard text does not exist on disk.
+    #[error("Clipboard PNG path does not exist")]
+    PngPathNotFound,
+
+    /// Clipboard image dimensions exceed the `u32` range.
+    #[error("Clipboard image {dimension} is too large")]
+    DimensionOverflow {
+        /// Which dimension overflowed (`"width"` or `"height"`).
+        dimension: &'static str,
+    },
+
+    /// A parent directory for the clipboard image is missing from the path.
+    #[error("Missing clipboard image directory")]
+    MissingDirectory,
+
+    /// A filesystem operation during image persistence failed.
+    #[error("{context}: {source}")]
+    Persist {
+        /// Human-readable operation label.
+        context: &'static str,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+
+    /// The image encoding or buffer-save operation failed.
+    #[error("Failed to write pasted image PNG: {0}")]
+    ImageEncode(image::ImageError),
+
+    /// The persisted image path could not be resolved to an absolute path.
+    #[error("Failed to resolve pasted image path: {0}")]
+    PathResolve(std::io::Error),
+
+    /// The session identifier is empty.
+    #[error("Session id is missing for clipboard image temp storage")]
+    EmptySessionId,
+
+    /// The system clock returned a pre-Unix-epoch timestamp.
+    #[error("System clock is before the Unix epoch: {0}")]
+    SystemClock(std::time::SystemTimeError),
+
+    /// The background image capture task panicked or was cancelled.
+    #[error("Clipboard image task failed: {0}")]
+    TaskJoin(tokio::task::JoinError),
+}
+
 /// Persisted clipboard image metadata used by prompt-mode attachment flows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PersistedClipboardImage {
@@ -19,38 +81,45 @@ pub(crate) struct PersistedClipboardImage {
 /// image directory.
 ///
 /// # Errors
-/// Returns an error when clipboard access fails, the clipboard does not expose
-/// an image payload, or the PNG cannot be written.
+/// Returns a [`ClipboardError`] when clipboard access fails, the clipboard
+/// does not expose an image payload, or the PNG cannot be written.
 pub(crate) async fn persist_clipboard_image(
     session_id: &str,
     attachment_number: usize,
-) -> Result<PersistedClipboardImage, String> {
+) -> Result<PersistedClipboardImage, ClipboardError> {
     let session_id = session_id.to_string();
 
     tokio::task::spawn_blocking(move || {
         let image_output_path = build_clipboard_image_path(&session_id, attachment_number)?;
-        let mut clipboard =
-            Clipboard::new().map_err(|error| format!("Clipboard is unavailable: {error}"))?;
+        let mut clipboard = Clipboard::new().map_err(|error| ClipboardError::Unavailable {
+            reason: error.to_string(),
+        })?;
 
         if let Ok(image_data) = clipboard.get_image() {
             std::fs::create_dir_all(
                 image_output_path
                     .parent()
-                    .ok_or_else(|| "Missing clipboard image directory".to_string())?,
+                    .ok_or(ClipboardError::MissingDirectory)?,
             )
-            .map_err(|error| format!("Failed to create clipboard image directory: {error}"))?;
+            .map_err(|source| ClipboardError::Persist {
+                context: "Failed to create clipboard image directory",
+                source,
+            })?;
 
             image::save_buffer_with_format(
                 &image_output_path,
                 image_data.bytes.as_ref(),
                 u32::try_from(image_data.width)
-                    .map_err(|_| "Clipboard image width is too large".to_string())?,
-                u32::try_from(image_data.height)
-                    .map_err(|_| "Clipboard image height is too large".to_string())?,
+                    .map_err(|_| ClipboardError::DimensionOverflow { dimension: "width" })?,
+                u32::try_from(image_data.height).map_err(|_| {
+                    ClipboardError::DimensionOverflow {
+                        dimension: "height",
+                    }
+                })?,
                 ExtendedColorType::Rgba8,
                 ImageFormat::Png,
             )
-            .map_err(|error| format!("Failed to write pasted image PNG: {error}"))?;
+            .map_err(ClipboardError::ImageEncode)?;
 
             Ok(PersistedClipboardImage {
                 local_image_path: canonicalize_persisted_image_path(&image_output_path)?,
@@ -64,45 +133,37 @@ pub(crate) async fn persist_clipboard_image(
         }
     })
     .await
-    .map_err(|error| format!("Clipboard image task failed: {error}"))?
+    .map_err(ClipboardError::TaskJoin)?
 }
 
-/// Normalizes one clipboard-image failure into short prompt-mode status text.
+/// Normalizes one [`ClipboardError`] into short prompt-mode status text.
 #[must_use]
-pub(crate) fn normalize_clipboard_image_error(error: &str) -> String {
-    if error.starts_with("Clipboard is unavailable:") {
-        return "Clipboard is unavailable. Try again after granting clipboard access.".to_string();
+pub(crate) fn normalize_clipboard_image_error(error: &ClipboardError) -> String {
+    match error {
+        ClipboardError::Unavailable { .. } => {
+            "Clipboard is unavailable. Try again after granting clipboard access.".to_string()
+        }
+        ClipboardError::NoImage => "Clipboard does not contain an image.".to_string(),
+        ClipboardError::PngPathNotFound => "Clipboard PNG path does not exist.".to_string(),
+        ClipboardError::Persist { .. }
+        | ClipboardError::ImageEncode(_)
+        | ClipboardError::PathResolve(_)
+        | ClipboardError::MissingDirectory => {
+            "Failed to persist pasted image from the clipboard.".to_string()
+        }
+        ClipboardError::TaskJoin(_) => "Clipboard image capture failed.".to_string(),
+        ClipboardError::DimensionOverflow { .. }
+        | ClipboardError::EmptySessionId
+        | ClipboardError::SystemClock(_) => error.to_string(),
     }
-
-    if error == "Clipboard does not contain an image" {
-        return "Clipboard does not contain an image.".to_string();
-    }
-
-    if error == "Clipboard PNG path does not exist" {
-        return "Clipboard PNG path does not exist.".to_string();
-    }
-
-    if error.contains("Failed to write pasted image PNG")
-        || error.contains("Failed to copy clipboard PNG file")
-        || error.contains("Failed to resolve pasted image path")
-        || error.contains("Failed to create clipboard image directory")
-    {
-        return "Failed to persist pasted image from the clipboard.".to_string();
-    }
-
-    if error.contains("Clipboard image task failed:") {
-        return "Clipboard image capture failed.".to_string();
-    }
-
-    error.to_string()
 }
 
 /// Returns the temp directory used for pasted prompt images for one session
 /// identifier.
 ///
 /// # Errors
-/// Returns an error when `session_id` is empty.
-pub(crate) fn clipboard_image_directory(session_id: &str) -> Result<PathBuf, String> {
+/// Returns [`ClipboardError::EmptySessionId`] when `session_id` is empty.
+pub(crate) fn clipboard_image_directory(session_id: &str) -> Result<PathBuf, ClipboardError> {
     let session_id = session_temp_directory_name(session_id)?;
     let agentty_root = app::agentty_home();
 
@@ -117,7 +178,7 @@ pub(crate) fn clipboard_image_directory(session_id: &str) -> Result<PathBuf, Str
 pub(crate) fn build_clipboard_image_path(
     session_id: &str,
     attachment_number: usize,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, ClipboardError> {
     let clock = session::RealClock;
 
     build_clipboard_image_path_with_clock(session_id, attachment_number, &clock)
@@ -133,11 +194,11 @@ fn build_clipboard_image_path_with_clock(
     session_id: &str,
     attachment_number: usize,
     clock: &dyn session::Clock,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, ClipboardError> {
     let timestamp_millis = clock
         .now_system_time()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("System clock is before the Unix epoch: {error}"))?
+        .map_err(ClipboardError::SystemClock)?
         .as_millis();
     let file_name = format!("image-{attachment_number:03}-{timestamp_millis}.png");
 
@@ -147,10 +208,10 @@ fn build_clipboard_image_path_with_clock(
 /// Returns the directory-name fragment used for one session image temp root.
 ///
 /// # Errors
-/// Returns an error when the session id is empty.
-fn session_temp_directory_name(session_id: &str) -> Result<&str, String> {
+/// Returns [`ClipboardError::EmptySessionId`] when the session id is empty.
+fn session_temp_directory_name(session_id: &str) -> Result<&str, ClipboardError> {
     if session_id.is_empty() {
-        return Err("Session id is missing for clipboard image temp storage".to_string());
+        return Err(ClipboardError::EmptySessionId);
     }
 
     Ok(session_id)
@@ -165,10 +226,8 @@ fn session_temp_directory_name(session_id: &str) -> Result<&str, String> {
 fn try_copy_png_path_from_clipboard_text(
     clipboard: &mut Clipboard,
     image_output_path: &Path,
-) -> Result<(), String> {
-    let clipboard_text = clipboard
-        .get_text()
-        .map_err(|_| "Clipboard does not contain an image".to_string())?;
+) -> Result<(), ClipboardError> {
+    let clipboard_text = clipboard.get_text().map_err(|_| ClipboardError::NoImage)?;
     let source_image_path = PathBuf::from(clipboard_text.trim());
 
     if source_image_path
@@ -176,21 +235,28 @@ fn try_copy_png_path_from_clipboard_text(
         .and_then(|extension| extension.to_str())
         != Some("png")
     {
-        return Err("Clipboard does not contain an image".to_string());
+        return Err(ClipboardError::NoImage);
     }
 
     if !source_image_path.is_file() {
-        return Err("Clipboard PNG path does not exist".to_string());
+        return Err(ClipboardError::PngPathNotFound);
     }
 
     std::fs::create_dir_all(
         image_output_path
             .parent()
-            .ok_or_else(|| "Missing clipboard image directory".to_string())?,
+            .ok_or(ClipboardError::MissingDirectory)?,
     )
-    .map_err(|error| format!("Failed to create clipboard image directory: {error}"))?;
-    std::fs::copy(&source_image_path, image_output_path)
-        .map_err(|error| format!("Failed to copy clipboard PNG file: {error}"))?;
+    .map_err(|source| ClipboardError::Persist {
+        context: "Failed to create clipboard image directory",
+        source,
+    })?;
+    std::fs::copy(&source_image_path, image_output_path).map_err(|source| {
+        ClipboardError::Persist {
+            context: "Failed to copy clipboard PNG file",
+            source,
+        }
+    })?;
 
     Ok(())
 }
@@ -199,10 +265,10 @@ fn try_copy_png_path_from_clipboard_text(
 /// that downstream transports should reference.
 ///
 /// # Errors
-/// Returns an error when the persisted file cannot be resolved from disk.
-fn canonicalize_persisted_image_path(image_output_path: &Path) -> Result<PathBuf, String> {
-    std::fs::canonicalize(image_output_path)
-        .map_err(|error| format!("Failed to resolve pasted image path: {error}"))
+/// Returns [`ClipboardError::PathResolve`] when the persisted file cannot be
+/// resolved from disk.
+fn canonicalize_persisted_image_path(image_output_path: &Path) -> Result<PathBuf, ClipboardError> {
+    std::fs::canonicalize(image_output_path).map_err(ClipboardError::PathResolve)
 }
 
 #[cfg(test)]
@@ -277,7 +343,7 @@ mod tests {
         let result = build_clipboard_image_path_with_clock(session_id, 2, &clock);
 
         // Assert
-        assert!(result.is_err());
+        assert!(matches!(result, Err(ClipboardError::SystemClock(_))));
     }
 
     #[test]
@@ -289,10 +355,7 @@ mod tests {
         let result = clipboard_image_directory(session_id);
 
         // Assert
-        assert_eq!(
-            result,
-            Err("Session id is missing for clipboard image temp storage".to_string())
-        );
+        assert!(matches!(result, Err(ClipboardError::EmptySessionId)));
     }
 
     #[test]
@@ -316,10 +379,12 @@ mod tests {
     #[test]
     fn test_normalize_clipboard_image_error_maps_unavailable_to_actionable_status() {
         // Arrange
-        let error = "Clipboard is unavailable: permission denied";
+        let error = ClipboardError::Unavailable {
+            reason: "permission denied".to_string(),
+        };
 
         // Act
-        let normalized_error = normalize_clipboard_image_error(error);
+        let normalized_error = normalize_clipboard_image_error(&error);
 
         // Assert
         assert_eq!(
@@ -331,10 +396,10 @@ mod tests {
     #[test]
     fn test_normalize_clipboard_image_error_maps_no_image_to_short_status() {
         // Arrange
-        let error = "Clipboard does not contain an image";
+        let error = ClipboardError::NoImage;
 
         // Act
-        let normalized_error = normalize_clipboard_image_error(error);
+        let normalized_error = normalize_clipboard_image_error(&error);
 
         // Assert
         assert_eq!(normalized_error, "Clipboard does not contain an image.");
@@ -343,15 +408,46 @@ mod tests {
     #[test]
     fn test_normalize_clipboard_image_error_maps_encode_failure_to_persist_status() {
         // Arrange
-        let error = "Failed to write pasted image PNG: encoder failed";
+        let error = ClipboardError::ImageEncode(image::ImageError::IoError(std::io::Error::other(
+            "encoder failed",
+        )));
 
         // Act
-        let normalized_error = normalize_clipboard_image_error(error);
+        let normalized_error = normalize_clipboard_image_error(&error);
 
         // Assert
         assert_eq!(
             normalized_error,
             "Failed to persist pasted image from the clipboard."
         );
+    }
+
+    #[test]
+    fn test_normalize_clipboard_image_error_maps_task_join_to_capture_status() {
+        // Arrange / Act
+        let error =
+            ClipboardError::TaskJoin(tokio::runtime::Runtime::new().expect("runtime").block_on(
+                async {
+                    tokio::task::spawn_blocking(|| panic!("test"))
+                        .await
+                        .expect_err("should panic")
+                },
+            ));
+        let normalized_error = normalize_clipboard_image_error(&error);
+
+        // Assert
+        assert_eq!(normalized_error, "Clipboard image capture failed.");
+    }
+
+    #[test]
+    fn test_normalize_clipboard_image_error_passes_through_dimension_overflow() {
+        // Arrange
+        let error = ClipboardError::DimensionOverflow { dimension: "width" };
+
+        // Act
+        let normalized_error = normalize_clipboard_image_error(&error);
+
+        // Assert
+        assert_eq!(normalized_error, "Clipboard image width is too large");
     }
 }

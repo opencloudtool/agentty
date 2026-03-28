@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
-use crate::app::session::{RunAgentAssistTaskInput, SessionTaskService};
+use crate::app::session::{RunAgentAssistTaskInput, SessionError, SessionTaskService};
 use crate::domain::agent::AgentModel;
 use crate::infra::db::Database;
 use crate::infra::git::GitClient;
@@ -118,7 +118,10 @@ pub(super) async fn append_assist_header(
 /// # Errors
 /// Returns an error when the one-shot assist command fails or returns invalid
 /// protocol output.
-pub(super) async fn run_agent_assist(context: &AssistContext, prompt: &str) -> Result<(), String> {
+pub(super) async fn run_agent_assist(
+    context: &AssistContext,
+    prompt: &str,
+) -> Result<(), SessionError> {
     SessionTaskService::run_agent_assist_task(RunAgentAssistTaskInput {
         app_event_tx: context.app_event_tx.clone(),
         child_pid: Arc::clone(&context.child_pid),

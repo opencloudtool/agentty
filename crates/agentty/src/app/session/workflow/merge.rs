@@ -10,12 +10,12 @@ use std::sync::{Arc, Mutex};
 use askama::Template;
 use tokio::sync::mpsc;
 
-use super::access::{SESSION_HANDLES_NOT_FOUND_ERROR, SESSION_NOT_FOUND_ERROR};
 use super::{SessionTaskService, session_branch};
 use crate::app::assist::{
     AssistContext, AssistPolicy, FailureTracker, append_assist_header, format_detail_lines,
     run_agent_assist,
 };
+use crate::app::session::SessionError;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::Status;
@@ -178,7 +178,7 @@ impl RebaseAssistLoopInput {
     async fn load_conflicted_files(
         &self,
         previous_conflict_files: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, SessionError> {
         match self {
             Self::Session(input) => {
                 SessionManager::load_conflicted_files(input, previous_conflict_files).await
@@ -197,7 +197,7 @@ impl RebaseAssistLoopInput {
         &self,
         assist_attempt: usize,
         conflicted_files: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         match self {
             Self::Session(input) => {
                 SessionManager::append_rebase_assist_header(
@@ -222,7 +222,7 @@ impl RebaseAssistLoopInput {
     async fn stage_and_check_for_conflicts(
         &self,
         conflict_files: &[String],
-    ) -> Result<bool, String> {
+    ) -> Result<bool, SessionError> {
         match self {
             Self::Session(input) => {
                 SessionManager::stage_and_check_for_conflicts(input, conflict_files).await
@@ -238,7 +238,7 @@ impl RebaseAssistLoopInput {
     /// # Errors
     /// Returns an error when `git rebase --continue` fails with non-conflict
     /// errors.
-    async fn run_rebase_continue(&self) -> Result<git::RebaseStepResult, String> {
+    async fn run_rebase_continue(&self) -> Result<git::RebaseStepResult, SessionError> {
         match self {
             Self::Session(input) => SessionManager::run_rebase_continue(input).await,
             Self::Project(input) => SessionManager::run_sync_rebase_continue(input).await,
@@ -284,6 +284,7 @@ impl RealSyncAssistClient {
         prompt: String,
         session_model: AgentModel,
     ) -> Result<(), String> {
+        // Success payload unused; run for side effects only.
         let _ = agent::submit_one_shot(agent::OneShotRequest {
             child_pid: None,
             folder: &folder,
@@ -386,12 +387,14 @@ impl SessionMergeService {
         session_id: &str,
         projects: &ProjectManager,
         services: &AppServices,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let session = manager
             .session_or_err(session_id)
-            .map_err(|_| SESSION_NOT_FOUND_ERROR.to_string())?;
+            .map_err(|_| SessionError::NotFound)?;
         if !matches!(session.status, Status::Review | Status::Queued) {
-            return Err("Session must be in review or queued status".to_string());
+            return Err(SessionError::Workflow(
+                "Session must be in review or queued status".to_string(),
+            ));
         }
 
         let db = services.db().clone();
@@ -404,7 +407,7 @@ impl SessionMergeService {
 
         let handles = manager
             .session_handles_or_err(session_id)
-            .map_err(|_| SESSION_HANDLES_NOT_FOUND_ERROR.to_string())?;
+            .map_err(|_| SessionError::HandlesNotFound)?;
         let child_pid = Arc::clone(&handles.child_pid);
         let output = Arc::clone(&handles.output);
         let status = Arc::clone(&handles.status);
@@ -412,7 +415,9 @@ impl SessionMergeService {
         if !SessionTaskService::update_status(&status, &db, &app_event_tx, &id, Status::Merging)
             .await
         {
-            return Err("Invalid status transition to Merging".to_string());
+            return Err(SessionError::Workflow(
+                "Invalid status transition to Merging".to_string(),
+            ));
         }
 
         let base_branch = match db.get_session_base_branch(&id).await {
@@ -428,7 +433,9 @@ impl SessionMergeService {
                 )
                 .await;
 
-                return Err("No git worktree for this session".to_string());
+                return Err(SessionError::Workflow(
+                    "No git worktree for this session".to_string(),
+                ));
             }
             Err(error) => {
                 // Best-effort: status transition failure is non-critical.
@@ -441,7 +448,7 @@ impl SessionMergeService {
                 )
                 .await;
 
-                return Err(error.to_string());
+                return Err(SessionError::Db(error));
             }
         };
 
@@ -452,7 +459,9 @@ impl SessionMergeService {
                 SessionTaskService::update_status(&status, &db, &app_event_tx, &id, Status::Review)
                     .await;
 
-            return Err("Failed to find git repository root".to_string());
+            return Err(SessionError::Workflow(
+                "Failed to find git repository root".to_string(),
+            ));
         };
 
         let merge_task_input = MergeTaskInput {
@@ -487,24 +496,27 @@ impl SessionMergeService {
         manager: &SessionManager,
         services: &AppServices,
         session_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let session = manager
             .session_or_err(session_id)
-            .map_err(|_| SESSION_NOT_FOUND_ERROR.to_string())?;
+            .map_err(|_| SessionError::NotFound)?;
         if session.status != Status::Review {
-            return Err("Session must be in review status".to_string());
+            return Err(SessionError::Workflow(
+                "Session must be in review status".to_string(),
+            ));
         }
 
         let base_branch = services
             .db()
             .get_session_base_branch(&session.id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "No git worktree for this session".to_string())?;
+            .await?
+            .ok_or_else(|| {
+                SessionError::Workflow("No git worktree for this session".to_string())
+            })?;
 
         let handles = manager
             .session_handles_or_err(session_id)
-            .map_err(|_| SESSION_HANDLES_NOT_FOUND_ERROR.to_string())?;
+            .map_err(|_| SessionError::HandlesNotFound)?;
         let child_pid = Arc::clone(&handles.child_pid);
         let output = Arc::clone(&handles.output);
 
@@ -523,7 +535,9 @@ impl SessionMergeService {
         )
         .await
         {
-            return Err("Invalid status transition to Rebasing".to_string());
+            return Err(SessionError::Workflow(
+                "Invalid status transition to Rebasing".to_string(),
+            ));
         }
 
         let id = session.id.clone();
@@ -562,7 +576,7 @@ impl SessionManager {
         session_id: &str,
         projects: &ProjectManager,
         services: &AppServices,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         self.merge_service()
             .merge_session(self, session_id, projects, services)
             .await
@@ -586,7 +600,7 @@ impl SessionManager {
     /// Returns an error when the rebase step fails, the canonical session
     /// commit message cannot be loaded, squash-merge git commands fail, status
     /// transitions are invalid, or worktree cleanup fails.
-    async fn execute_merge_workflow(input: MergeTaskInput) -> Result<String, String> {
+    async fn execute_merge_workflow(input: MergeTaskInput) -> Result<String, SessionError> {
         let rebase_input = Self::merge_rebase_input(&input);
         let MergeTaskInput {
             app_event_tx,
@@ -607,7 +621,9 @@ impl SessionManager {
         // includes all recent changes. This also handles auto-commit and
         // conflict resolution via the agent.
         if let Err(error) = Self::execute_rebase_workflow(rebase_input).await {
-            return Err(format!("Merge failed during rebase step: {error}"));
+            return Err(SessionError::Workflow(format!(
+                "Merge failed during rebase step: {error}"
+            )));
         }
 
         let squash_diff = Self::load_squash_diff(
@@ -636,8 +652,7 @@ impl SessionManager {
 
             git_client
                 .squash_merge(repo_root, source_branch, base_branch, commit_message)
-                .await
-                .map_err(|error| error.to_string())?
+                .await?
         } else {
             git::SquashMergeOutcome::AlreadyPresentInTarget
         };
@@ -650,7 +665,11 @@ impl SessionManager {
             Some(repo_root),
         )
         .await
-        .map_err(|error| format!("Merged successfully but failed to remove worktree: {error}"))?;
+        .map_err(|error| {
+            SessionError::Workflow(format!(
+                "Merged successfully but failed to remove worktree: {error}"
+            ))
+        })?;
 
         if let Some(commit_message) = authoritative_commit_message {
             Self::update_session_title_from_commit_message(
@@ -665,7 +684,9 @@ impl SessionManager {
 
         if !SessionTaskService::update_status(&status, &db, &app_event_tx, &id, Status::Done).await
         {
-            return Err("Invalid status transition to Done".to_string());
+            return Err(SessionError::Workflow(
+                "Invalid status transition to Done".to_string(),
+            ));
         }
 
         Ok(Self::merge_success_message(
@@ -700,11 +721,13 @@ impl SessionManager {
         repo_root: PathBuf,
         source_branch: String,
         base_branch: String,
-    ) -> Result<String, String> {
+    ) -> Result<String, SessionError> {
         git_client
             .squash_merge_diff(repo_root, source_branch, base_branch)
             .await
-            .map_err(|error| format!("Failed to inspect merge diff: {error}"))
+            .map_err(|error| {
+                SessionError::Workflow(format!("Failed to inspect merge diff: {error}"))
+            })
     }
 
     /// Loads the canonical session commit message from the worktree `HEAD` for
@@ -716,24 +739,25 @@ impl SessionManager {
     async fn load_authoritative_session_commit_message(
         git_client: &dyn GitClient,
         folder: PathBuf,
-    ) -> Result<String, String> {
-        let commit_message = git_client
-            .head_commit_message(folder)
-            .await
-            .map_err(|error| error.to_string())?;
+    ) -> Result<String, SessionError> {
+        let commit_message = git_client.head_commit_message(folder).await?;
         let Some(commit_message) = commit_message else {
-            return Err("Session branch has no commit message to reuse for merge".to_string());
+            return Err(SessionError::Workflow(
+                "Session branch has no commit message to reuse for merge".to_string(),
+            ));
         };
         let trimmed_commit_message = commit_message.trim();
         if trimmed_commit_message.is_empty() {
-            return Err("Session branch has a blank commit message to reuse for merge".to_string());
+            return Err(SessionError::Workflow(
+                "Session branch has a blank commit message to reuse for merge".to_string(),
+            ));
         }
 
         Ok(trimmed_commit_message.to_string())
     }
 
     async fn finalize_merge_task(
-        merge_result: Result<String, String>,
+        merge_result: Result<String, SessionError>,
         output: &Arc<Mutex<String>>,
         db: &Database,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
@@ -795,7 +819,7 @@ impl SessionManager {
         &self,
         services: &AppServices,
         session_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         self.merge_service()
             .rebase_session(self, services, session_id)
             .await
@@ -931,7 +955,7 @@ impl SessionManager {
     async fn run_sync_rebase_assist_loop(
         input: SyncRebaseAssistInput,
         initial_conflict_detail: String,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, SessionError> {
         Self::run_rebase_assist_loop_core(
             RebaseAssistLoopInput::Project(input),
             Some(initial_conflict_detail),
@@ -960,19 +984,17 @@ impl SessionManager {
     async fn load_sync_conflicted_files(
         input: &SyncRebaseAssistInput,
         previous_conflict_files: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, SessionError> {
         let folder = input.folder.clone();
         let mut conflicted = input
             .git_client
             .list_conflicted_files(folder.clone())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
 
         let staged_with_markers = input
             .git_client
             .list_staged_conflict_marker_files(folder, previous_conflict_files.to_vec())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         for file in staged_with_markers {
             if !conflicted.contains(&file) {
                 conflicted.push(file);
@@ -990,13 +1012,15 @@ impl SessionManager {
     async fn run_sync_rebase_assist_agent(
         input: &SyncRebaseAssistInput,
         conflicted_files: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let prompt = Self::rebase_assist_prompt(&input.base_branch, conflicted_files)?;
         input
             .sync_assist_client
             .resolve_rebase_conflicts(input.folder.clone(), prompt, input.session_model)
             .await
-            .map_err(|error| format!("Sync rebase assistance failed: {error}"))
+            .map_err(|error| {
+                SessionError::Workflow(format!("Sync rebase assistance failed: {error}"))
+            })
     }
 
     /// Stages sync edits and checks whether rebase conflicts remain.
@@ -1006,21 +1030,12 @@ impl SessionManager {
     async fn stage_and_check_for_sync_conflicts(
         input: &SyncRebaseAssistInput,
         conflict_files: &[String],
-    ) -> Result<bool, String> {
+    ) -> Result<bool, SessionError> {
         let folder = input.folder.clone();
-        input
-            .git_client
-            .stage_all(folder)
-            .await
-            .map_err(|error| error.to_string())?;
+        input.git_client.stage_all(folder).await?;
 
         let folder = input.folder.clone();
-        if input
-            .git_client
-            .has_unmerged_paths(folder)
-            .await
-            .map_err(|error| error.to_string())?
-        {
+        if input.git_client.has_unmerged_paths(folder).await? {
             return Ok(true);
         }
 
@@ -1028,8 +1043,7 @@ impl SessionManager {
         let staged_with_markers = input
             .git_client
             .list_staged_conflict_marker_files(folder, conflict_files.to_vec())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
 
         Ok(!staged_with_markers.is_empty())
     }
@@ -1041,13 +1055,9 @@ impl SessionManager {
     /// errors.
     async fn run_sync_rebase_continue(
         input: &SyncRebaseAssistInput,
-    ) -> Result<git::RebaseStepResult, String> {
+    ) -> Result<git::RebaseStepResult, SessionError> {
         let folder = input.folder.clone();
-        let result = input
-            .git_client
-            .rebase_continue(folder)
-            .await
-            .map_err(|error| error.to_string())?;
+        let result = input.git_client.rebase_continue(folder).await?;
 
         Ok(result)
     }
@@ -1074,7 +1084,7 @@ impl SessionManager {
             status,
         } = input;
 
-        let rebase_result: Result<String, String> = async {
+        let rebase_result: Result<String, SessionError> = async {
             let rebase_input = RebaseAssistInput {
                 app_event_tx: app_event_tx.clone(),
                 base_branch: base_branch.clone(),
@@ -1106,7 +1116,7 @@ impl SessionManager {
     ///
     /// Emits user-visible commit output before rebase starts so users can see
     /// whether pending changes were committed or there was nothing to commit.
-    async fn execute_rebase_workflow(input: RebaseAssistInput) -> Result<String, String> {
+    async fn execute_rebase_workflow(input: RebaseAssistInput) -> Result<String, SessionError> {
         // Auto-commit any pending changes before rebasing to avoid
         // "cannot rebase: You have unstaged changes".
         let include_coauthored_by_agentty =
@@ -1142,7 +1152,7 @@ impl SessionManager {
                 )
                 .await;
             }
-            Err(error) if error.contains("Nothing to commit") => {
+            Err(error) if error.to_string().contains("Nothing to commit") => {
                 let commit_message = "\n[Commit] No changes to commit.\n";
                 SessionTaskService::append_session_output(
                     &input.output,
@@ -1154,16 +1164,16 @@ impl SessionManager {
                 .await;
             }
             Err(error) => {
-                return Err(format!(
+                return Err(SessionError::Workflow(format!(
                     "Failed to commit pending changes before rebase: {error}"
-                ));
+                )));
             }
         }
 
         if let Err(error) = Self::run_rebase_assist_loop(input.clone()).await {
             Self::abort_rebase_after_assist_failure(&input).await;
 
-            return Err(format!("Failed to rebase: {error}"));
+            return Err(SessionError::Workflow(format!("Failed to rebase: {error}")));
         }
 
         let source_branch = session_branch(&input.id);
@@ -1175,7 +1185,7 @@ impl SessionManager {
     }
 
     async fn finalize_rebase_task(
-        rebase_result: Result<String, String>,
+        rebase_result: Result<String, SessionError>,
         output: &Arc<Mutex<String>>,
         db: &Database,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
@@ -1294,7 +1304,7 @@ impl SessionManager {
     /// # Errors
     /// Returns an error when conflict resolution fails after all attempts or
     /// when git/agent operations fail.
-    async fn run_rebase_assist_loop(input: RebaseAssistInput) -> Result<(), String> {
+    async fn run_rebase_assist_loop(input: RebaseAssistInput) -> Result<(), SessionError> {
         let rebase_in_progress = Self::is_rebase_in_progress(&input).await?;
         if !rebase_in_progress {
             let initial_step = Self::run_rebase_start(&input).await?;
@@ -1319,12 +1329,13 @@ impl SessionManager {
     async fn run_rebase_assist_loop_core(
         assist_input: RebaseAssistLoopInput,
         initial_conflict_detail: Option<String>,
-    ) -> Result<RebaseAssistOutcome, String> {
-        let assist_result: Result<RebaseAssistOutcome, String> = async {
+    ) -> Result<RebaseAssistOutcome, SessionError> {
+        let assist_result: Result<RebaseAssistOutcome, SessionError> = async {
             let mut failure_tracker =
                 FailureTracker::new(REBASE_ASSIST_POLICY.max_identical_failure_streak);
             let mut assist_outcome = RebaseAssistOutcome::empty();
             if let Some(initial_conflict_detail) = initial_conflict_detail {
+                // Seed the tracker with the initial conflict fingerprint.
                 let _ = failure_tracker.observe(&initial_conflict_detail);
             }
 
@@ -1342,11 +1353,15 @@ impl SessionManager {
                         }
                         git::RebaseStepResult::Conflict { detail } => {
                             if failure_tracker.observe(&detail) {
-                                return Err(assist_input.repeated_conflict_state_error(&detail));
+                                return Err(SessionError::Workflow(
+                                    assist_input.repeated_conflict_state_error(&detail),
+                                ));
                             }
 
                             if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
-                                return Err(assist_input.still_conflicted_error(&detail));
+                                return Err(SessionError::Workflow(
+                                    assist_input.still_conflicted_error(&detail),
+                                ));
                             }
                         }
                     }
@@ -1361,7 +1376,9 @@ impl SessionManager {
                 )
                 .await;
                 if failure_tracker.observe(&conflict_fingerprint) {
-                    return Err(assist_input.unchanged_conflict_files_error());
+                    return Err(SessionError::Workflow(
+                        assist_input.unchanged_conflict_files_error(),
+                    ));
                 }
                 assist_outcome.extend_resolved_conflict_files(&conflicted_files);
 
@@ -1375,9 +1392,10 @@ impl SessionManager {
                 previous_conflict_files = conflicted_files;
                 if still_has_conflicts {
                     if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
-                        return Err("Conflicts remain unresolved after maximum assistance \
-                                    attempts"
-                            .to_string());
+                        return Err(SessionError::Workflow(
+                            "Conflicts remain unresolved after maximum assistance attempts"
+                                .to_string(),
+                        ));
                     }
 
                     continue;
@@ -1390,17 +1408,21 @@ impl SessionManager {
                     }
                     git::RebaseStepResult::Conflict { detail } => {
                         if failure_tracker.observe(&detail) {
-                            return Err(assist_input.repeated_conflict_state_error(&detail));
+                            return Err(SessionError::Workflow(
+                                assist_input.repeated_conflict_state_error(&detail),
+                            ));
                         }
 
                         if assist_attempt == REBASE_ASSIST_POLICY.max_attempts {
-                            return Err(assist_input.still_conflicted_error(&detail));
+                            return Err(SessionError::Workflow(
+                                assist_input.still_conflicted_error(&detail),
+                            ));
                         }
                     }
                 }
             }
 
-            Err(assist_input.exhausted_error())
+            Err(SessionError::Workflow(assist_input.exhausted_error()))
         }
         .await;
 
@@ -1418,13 +1440,9 @@ impl SessionManager {
     ///
     /// # Errors
     /// Returns an error if git state cannot be queried.
-    async fn is_rebase_in_progress(input: &RebaseAssistInput) -> Result<bool, String> {
+    async fn is_rebase_in_progress(input: &RebaseAssistInput) -> Result<bool, SessionError> {
         let folder = input.folder.clone();
-        let is_rebase_in_progress = input
-            .git_client
-            .is_rebase_in_progress(folder)
-            .await
-            .map_err(|error| error.to_string())?;
+        let is_rebase_in_progress = input.git_client.is_rebase_in_progress(folder).await?;
 
         Ok(is_rebase_in_progress)
     }
@@ -1438,7 +1456,9 @@ impl SessionManager {
     /// # Errors
     /// Returns an error if spawning the git process fails or git returns a
     /// non-conflict failure that cannot be recovered.
-    async fn run_rebase_start(input: &RebaseAssistInput) -> Result<git::RebaseStepResult, String> {
+    async fn run_rebase_start(
+        input: &RebaseAssistInput,
+    ) -> Result<git::RebaseStepResult, SessionError> {
         let folder = input.folder.clone();
         let base_branch = input.base_branch.clone();
         match input
@@ -1450,7 +1470,7 @@ impl SessionManager {
             Err(error) => {
                 let error_string = error.to_string();
                 if !Self::is_stale_rebase_state_error(&error_string) {
-                    return Err(error_string);
+                    return Err(SessionError::Workflow(error_string));
                 }
 
                 Self::recover_from_stale_rebase_start_error(input, &error_string).await?;
@@ -1459,7 +1479,7 @@ impl SessionManager {
                     .git_client
                     .rebase_start(folder, base_branch)
                     .await
-                    .map_err(|error| error.to_string())
+                    .map_err(SessionError::Git)
             }
         }
     }
@@ -1480,17 +1500,17 @@ impl SessionManager {
     async fn recover_from_stale_rebase_start_error(
         input: &RebaseAssistInput,
         start_error: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let folder = input.folder.clone();
         input
             .git_client
             .abort_rebase(folder)
             .await
             .map_err(|abort_error| {
-                format!(
+                SessionError::Workflow(format!(
                     "Detected stale rebase metadata after failed rebase start: {start_error}. \
                      Cleanup with `git rebase --abort` failed: {abort_error}"
-                )
+                ))
             })?;
 
         Ok(())
@@ -1514,19 +1534,17 @@ impl SessionManager {
     async fn load_conflicted_files(
         input: &RebaseAssistInput,
         previous_conflict_files: &[String],
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, SessionError> {
         let folder = input.folder.clone();
         let mut conflicted = input
             .git_client
             .list_conflicted_files(folder.clone())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
 
         let staged_with_markers = input
             .git_client
             .list_staged_conflict_marker_files(folder, previous_conflict_files.to_vec())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         for file in staged_with_markers {
             if !conflicted.contains(&file) {
                 conflicted.push(file);
@@ -1562,13 +1580,13 @@ impl SessionManager {
     async fn run_rebase_assist_agent(
         input: &RebaseAssistInput,
         conflicted_files: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let prompt = Self::rebase_assist_prompt(&input.base_branch, conflicted_files)?;
         let assist_context = Self::assist_context(input);
 
         run_agent_assist(&assist_context, &prompt)
             .await
-            .map_err(|error| format!("Rebase assistance failed: {error}"))
+            .map_err(|error| SessionError::Workflow(format!("Rebase assistance failed: {error}")))
     }
 
     /// Stages all worktree edits and checks whether any conflicts remain.
@@ -1587,21 +1605,12 @@ impl SessionManager {
     async fn stage_and_check_for_conflicts(
         input: &RebaseAssistInput,
         conflict_files: &[String],
-    ) -> Result<bool, String> {
+    ) -> Result<bool, SessionError> {
         let folder = input.folder.clone();
-        input
-            .git_client
-            .stage_all(folder)
-            .await
-            .map_err(|error| error.to_string())?;
+        input.git_client.stage_all(folder).await?;
 
         let folder = input.folder.clone();
-        if input
-            .git_client
-            .has_unmerged_paths(folder)
-            .await
-            .map_err(|error| error.to_string())?
-        {
+        if input.git_client.has_unmerged_paths(folder).await? {
             return Ok(true);
         }
 
@@ -1609,8 +1618,7 @@ impl SessionManager {
         let staged_with_markers = input
             .git_client
             .list_staged_conflict_marker_files(folder, conflict_files.to_vec())
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
 
         Ok(!staged_with_markers.is_empty())
     }
@@ -1621,13 +1629,9 @@ impl SessionManager {
     /// Returns an error if git reports a non-conflict failure.
     async fn run_rebase_continue(
         input: &RebaseAssistInput,
-    ) -> Result<git::RebaseStepResult, String> {
+    ) -> Result<git::RebaseStepResult, SessionError> {
         let folder = input.folder.clone();
-        let result = input
-            .git_client
-            .rebase_continue(folder)
-            .await
-            .map_err(|error| error.to_string())?;
+        let result = input.git_client.rebase_continue(folder).await?;
 
         Ok(result)
     }
@@ -1639,16 +1643,18 @@ impl SessionManager {
     fn rebase_assist_prompt(
         base_branch: &str,
         conflicted_files: &[String],
-    ) -> Result<String, String> {
+    ) -> Result<String, SessionError> {
         let conflicted_files = Self::format_conflicted_file_list(conflicted_files);
         let template = RebaseAssistPromptTemplate {
             base_branch,
             conflicted_files: &conflicted_files,
         };
 
-        template
-            .render()
-            .map_err(|error| format!("Failed to render `rebase_assist_prompt.md`: {error}"))
+        template.render().map_err(|error| {
+            SessionError::Workflow(format!(
+                "Failed to render `rebase_assist_prompt.md`: {error}"
+            ))
+        })
     }
 
     /// Formats conflicted file paths as a bullet list for prompt rendering.
@@ -1718,22 +1724,16 @@ impl SessionManager {
         git_client: Arc<dyn GitClient>,
         source_branch: String,
         repo_root: Option<PathBuf>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let repo_root = match repo_root {
             Some(repo_root) => Some(repo_root),
             None => git_client.main_repo_root(folder.clone()).await.ok(),
         };
 
-        git_client
-            .remove_worktree(folder.clone())
-            .await
-            .map_err(|error| error.to_string())?;
+        git_client.remove_worktree(folder.clone()).await?;
 
         if let Some(repo_root) = repo_root {
-            git_client
-                .delete_branch(repo_root, source_branch)
-                .await
-                .map_err(|error| error.to_string())?;
+            git_client.delete_branch(repo_root, source_branch).await?;
         }
 
         // Best-effort cleanup: worktree directory may already be removed.
@@ -2165,10 +2165,8 @@ mod tests {
         let result = SessionManager::execute_merge_workflow(input).await;
 
         // Assert
-        assert_eq!(
-            result,
-            Ok("Successfully merged agentty/session-123 into main".to_string())
-        );
+        let message = result.expect("merge workflow should succeed");
+        assert_eq!(message, "Successfully merged agentty/session-123 into main");
     }
 
     #[tokio::test]
@@ -2214,9 +2212,10 @@ mod tests {
         let result = SessionManager::execute_merge_workflow(input).await;
 
         // Assert
+        let message = result.expect("merge workflow should succeed for empty diff");
         assert_eq!(
-            result,
-            Ok("Session changes from agentty/session-123 are already present in main".to_string(),)
+            message,
+            "Session changes from agentty/session-123 are already present in main"
         );
     }
 
@@ -2240,7 +2239,6 @@ mod tests {
         };
 
         // Act
-        #[allow(clippy::clone_on_copy)] // Explicit clone to test derivation
         let cloned_input = input.clone();
 
         // Assert
@@ -2301,7 +2299,9 @@ mod tests {
         // Assert
         let error = result.expect_err("rebase workflow should fail");
         assert!(
-            error.contains("Failed to rebase: state query failed"),
+            error
+                .to_string()
+                .contains("Failed to rebase: state query failed"),
             "workflow error should include assist-loop failure reason"
         );
     }
@@ -2339,7 +2339,7 @@ mod tests {
 
         // Assert
         let error = result.expect_err("assist loop should fail");
-        assert_eq!(error, "failed to list conflicts");
+        assert_eq!(error.to_string(), "failed to list conflicts");
     }
 
     /// Verifies session rebase assistance stops when the same conflict detail
@@ -2390,7 +2390,7 @@ mod tests {
         // Assert
         let error = result.expect_err("assist loop should stop on repeated conflict detail");
         assert_eq!(
-            error,
+            error.to_string(),
             format!(
                 "Rebase assistance made no progress: repeated identical conflict state. Last \
                  detail: {repeated_detail}"
@@ -2452,7 +2452,7 @@ mod tests {
         // Assert
         let error = result.expect_err("assist loop should report the final retry conflict");
         assert_eq!(
-            error,
+            error.to_string(),
             "Rebase still has conflicts after assistance: CONFLICT (content): Merge conflict in \
              README.md"
         );
@@ -2492,7 +2492,8 @@ mod tests {
         let result = SessionManager::run_rebase_start(&input).await;
 
         // Assert
-        assert_eq!(result, Ok(git::RebaseStepResult::Completed));
+        let step_result = result.expect("rebase start should succeed");
+        assert_eq!(step_result, git::RebaseStepResult::Completed);
     }
 
     #[tokio::test]
@@ -2528,7 +2529,9 @@ mod tests {
         // Assert
         let error = result.expect_err("cleanup failure should stop retry flow");
         assert!(
-            error.contains("Cleanup with `git rebase --abort` failed: abort failed"),
+            error
+                .to_string()
+                .contains("Cleanup with `git rebase --abort` failed: abort failed"),
             "error should include abort failure detail"
         );
     }
@@ -2567,7 +2570,8 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(result, Err("delete failed".to_string()));
+        let error = result.expect_err("cleanup should fail on branch deletion error");
+        assert_eq!(error.to_string(), "delete failed");
     }
 
     #[test]
@@ -2814,13 +2818,14 @@ mod tests {
         let conflicted_files = SessionManager::load_sync_conflicted_files(&input, &[]).await;
 
         // Assert
+        let files = conflicted_files.expect("load_sync_conflicted_files should succeed");
         assert_eq!(
-            conflicted_files,
-            Ok(vec![
+            files,
+            vec![
                 "src/a.rs".to_string(),
                 "src/b.rs".to_string(),
                 "src/c.rs".to_string(),
-            ])
+            ]
         );
     }
 
@@ -2864,7 +2869,8 @@ mod tests {
                 .await;
 
         // Assert
-        assert_eq!(still_has_conflicts, Ok(true));
+        let has_conflicts = still_has_conflicts.expect("stage_and_check should succeed");
+        assert!(has_conflicts);
     }
 
     /// Verifies sync assistance aborts when the conflicted file fingerprint
@@ -2930,7 +2936,7 @@ mod tests {
 
         // Assert
         assert_eq!(
-            result,
+            result.map_err(|error| error.to_string()),
             Err(
                 "Sync rebase assistance made no progress: conflicted files did not change"
                     .to_string()

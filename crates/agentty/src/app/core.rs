@@ -27,6 +27,7 @@ use ratatui::widgets::TableState;
 use session::{SessionTaskService, SyncMainOutcome, SyncSessionStartError};
 use tokio::sync::mpsc;
 
+use super::AppError;
 use crate::app::session;
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::input::InputState;
@@ -507,7 +508,7 @@ impl App {
         working_dir: PathBuf,
         git_branch: Option<String>,
         db: Database,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, AppError> {
         let clients = AppClients::new();
 
         Self::new_with_options(auto_update, base_path, working_dir, git_branch, db, clients).await
@@ -528,7 +529,7 @@ impl App {
         git_branch: Option<String>,
         db: Database,
         clients: AppClients,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, AppError> {
         Self::new_with_options(false, base_path, working_dir, git_branch, db, clients).await
     }
 
@@ -544,7 +545,7 @@ impl App {
         git_branch: Option<String>,
         db: Database,
         clients: AppClients,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, AppError> {
         let current_project_id =
             Self::persist_startup_project(&db, working_dir.as_path(), git_branch.as_deref())
                 .await?;
@@ -635,24 +636,24 @@ impl App {
         db: &Database,
         working_dir: &Path,
         git_branch: Option<&str>,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, AppError> {
         let current_project_id = db
             .upsert_project(&working_dir.to_string_lossy(), git_branch)
             .await
             .map_err(|error| {
-                format!(
+                AppError::Workflow(format!(
                     "Failed to persist startup project `{}`: {error}",
                     working_dir.display()
-                )
+                ))
             })?;
 
         db.backfill_session_project(current_project_id)
             .await
             .map_err(|error| {
-                format!(
+                AppError::Workflow(format!(
                     "Failed to backfill startup sessions for project `{}`: {error}",
                     working_dir.display()
-                )
+                ))
             })?;
 
         Ok(current_project_id)
@@ -831,11 +832,11 @@ impl App {
     /// # Errors
     /// Returns an error if there is no selected project or project switching
     /// fails.
-    pub async fn switch_selected_project(&mut self) -> Result<(), String> {
+    pub async fn switch_selected_project(&mut self) -> Result<(), AppError> {
         let selected_project_id = self
             .projects
             .selected_project_id()
-            .ok_or_else(|| "No project selected".to_string())?;
+            .ok_or_else(|| AppError::Workflow("No project selected".to_string()))?;
 
         self.switch_project(selected_project_id).await
     }
@@ -844,15 +845,16 @@ impl App {
     ///
     /// # Errors
     /// Returns an error if the project does not exist or session refresh fails.
-    pub async fn switch_project(&mut self, project_id: i64) -> Result<(), String> {
+    pub async fn switch_project(&mut self, project_id: i64) -> Result<(), AppError> {
         let project = self
             .services
             .db()
             .get_project(project_id)
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .map(Self::project_from_row)
-            .ok_or_else(|| format!("Project with id `{project_id}` was not found"))?;
+            .ok_or_else(|| {
+                AppError::Workflow(format!("Project with id `{project_id}` was not found"))
+            })?;
         let git_branch = self
             .services
             .git_client()
@@ -906,7 +908,7 @@ impl App {
     ///
     /// # Errors
     /// Returns an error if worktree or persistence setup fails.
-    pub async fn create_session(&mut self) -> Result<String, String> {
+    pub async fn create_session(&mut self) -> Result<String, AppError> {
         let session_id = self
             .sessions
             .create_session(&self.projects, &self.services)
@@ -933,10 +935,11 @@ impl App {
         &mut self,
         session_id: &str,
         prompt: impl Into<TurnPrompt>,
-    ) -> Result<(), String> {
-        self.sessions
+    ) -> Result<(), AppError> {
+        Ok(self
+            .sessions
             .start_session(&self.services, session_id, prompt)
-            .await
+            .await?)
     }
 
     /// Submits a follow-up prompt for an existing session.
@@ -954,7 +957,7 @@ impl App {
         &mut self,
         session_id: &str,
         session_model: AgentModel,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         self.sessions
             .set_session_model(&self.services, session_id, session_model)
             .await?;
@@ -1025,10 +1028,11 @@ impl App {
     ///
     /// # Errors
     /// Returns an error if the session is not found or not in review status.
-    pub async fn cancel_session(&self, session_id: &str) -> Result<(), String> {
-        self.sessions
+    pub async fn cancel_session(&self, session_id: &str) -> Result<(), AppError> {
+        Ok(self
+            .sessions
             .cancel_session(&self.services, session_id)
-            .await
+            .await?)
     }
 
     /// Opens the selected session worktree in tmux and optionally runs the
@@ -1184,7 +1188,7 @@ impl App {
     /// # Errors
     /// Returns an error if session is not mergeable, queueing fails, or
     /// immediate merge start fails while the queue is idle.
-    pub async fn merge_session(&mut self, session_id: &str) -> Result<(), String> {
+    pub async fn merge_session(&mut self, session_id: &str) -> Result<(), AppError> {
         if self.merge_queue.is_queued_or_active(session_id) {
             return Ok(());
         }
@@ -1206,10 +1210,11 @@ impl App {
     ///
     /// # Errors
     /// Returns an error if session cannot start rebasing.
-    pub async fn rebase_session(&self, session_id: &str) -> Result<(), String> {
-        self.sessions
+    pub async fn rebase_session(&self, session_id: &str) -> Result<(), AppError> {
+        Ok(self
+            .sessions
             .rebase_session(&self.services, session_id)
-            .await
+            .await?)
     }
 
     /// Starts selected-project branch sync in the background and immediately
@@ -1826,10 +1831,12 @@ impl App {
     /// # Errors
     /// Returns an error when the session does not exist or has an ineligible
     /// status.
-    fn validate_merge_request(&self, session_id: &str) -> Result<(), String> {
+    fn validate_merge_request(&self, session_id: &str) -> Result<(), AppError> {
         let session = self.sessions.session_or_err(session_id)?;
         if !matches!(session.status, Status::Review | Status::Queued) {
-            return Err("Session must be in review or queued status".to_string());
+            return Err(AppError::Workflow(
+                "Session must be in review or queued status".to_string(),
+            ));
         }
 
         Ok(())
@@ -1839,7 +1846,7 @@ impl App {
     ///
     /// # Errors
     /// Returns an error when status transition to `Queued` is invalid.
-    async fn mark_session_as_queued_for_merge(&self, session_id: &str) -> Result<(), String> {
+    async fn mark_session_as_queued_for_merge(&self, session_id: &str) -> Result<(), AppError> {
         let handles = self.sessions.session_handles_or_err(session_id)?;
         let app_event_tx = self.services.event_sender();
         let status_updated = SessionTaskService::update_status(
@@ -1852,7 +1859,9 @@ impl App {
         .await;
 
         if !status_updated {
-            return Err("Invalid status transition to Queued".to_string());
+            return Err(AppError::Workflow(
+                "Invalid status transition to Queued".to_string(),
+            ));
         }
 
         Ok(())
@@ -1864,7 +1873,7 @@ impl App {
             .sessions
             .session_or_err(session_id)
             .map(|session| session.status);
-        if session_status != Ok(Status::Queued) {
+        if !matches!(session_status, Ok(Status::Queued)) {
             return;
         }
 
@@ -1891,7 +1900,7 @@ impl App {
     /// # Errors
     /// Returns an error when starting a queued merge fails and
     /// `stop_on_failure` is enabled.
-    async fn start_next_merge_from_queue(&mut self, stop_on_failure: bool) -> Result<(), String> {
+    async fn start_next_merge_from_queue(&mut self, stop_on_failure: bool) -> Result<(), AppError> {
         if self.merge_queue.has_active() {
             return Ok(());
         }
@@ -1916,7 +1925,7 @@ impl App {
                         .await;
 
                     if stop_on_failure {
-                        return Err(error);
+                        return Err(error.into());
                     }
                 }
             }
@@ -2207,7 +2216,7 @@ impl App {
             Vec<ProjectListItem>,
             String,
         ),
-        String,
+        AppError,
     > {
         let startup_active_project_id =
             Self::resolve_startup_active_project_id(db, fs_client, current_project_id).await;
@@ -2239,26 +2248,26 @@ impl App {
             )
             .await
             .map_err(|error| {
-                format!(
+                AppError::Workflow(format!(
                     "Failed to persist active startup project `{}`: {error}",
                     startup_working_dir.display()
-                )
+                ))
             })?;
         db.set_active_project_id(active_project_id)
             .await
             .map_err(|error| {
-                format!(
+                AppError::Workflow(format!(
                     "Failed to store active startup project `{}`: {error}",
                     startup_working_dir.display()
-                )
+                ))
             })?;
         db.touch_project_last_opened(active_project_id)
             .await
             .map_err(|error| {
-                format!(
+                AppError::Workflow(format!(
                     "Failed to update startup project activity for `{}`: {error}",
                     startup_working_dir.display()
-                )
+                ))
             })?;
         Self::refresh_project_catalog_on_startup(db).await;
 
@@ -3157,7 +3166,11 @@ mod tests {
             .expect("expected startup project upsert failure");
 
         // Assert
-        assert!(error.contains("Failed to persist startup project"));
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to persist startup project")
+        );
     }
 
     #[tokio::test]
@@ -3180,7 +3193,11 @@ mod tests {
             .expect("expected startup active project persistence failure");
 
         // Assert
-        assert!(error.contains("Failed to store active startup project"));
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to store active startup project")
+        );
     }
 
     /// Builds a test app with one selected session, configurable open command,

@@ -44,6 +44,7 @@ When app orchestration or session lifecycle behavior changes, update:
 
 - [`assist.rs`](assist.rs) - Shared assistance helpers for commit/rebase recovery loops.
 - [`core.rs`](core.rs) - App orchestration implementation (`App`, `AppEvent`, startup wiring, reducers, and tests).
+- [`error.rs`](error.rs) - Typed `AppError` enum for top-level app orchestration operations.
 - [`merge_queue.rs`](merge_queue.rs) - Session merge queue orchestration and background workflow helpers.
 - [`project.rs`](project.rs) - Project discovery and switching logic.
 - [`session/`](session/) - Session workflows and their local docs/index.
