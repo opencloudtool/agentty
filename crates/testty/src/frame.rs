@@ -41,10 +41,10 @@ impl CellColor {
 /// Style flags for a terminal cell, stored as a compact bitfield.
 ///
 /// Each flag occupies one bit: bold (0x01), italic (0x02), underline (0x04),
-/// inverse (0x08).
+/// inverse (0x08), dim (0x10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CellStyle {
-    /// Packed bit flags for bold, italic, underline, and inverse.
+    /// Packed bit flags for bold, italic, underline, inverse, and dim.
     flags: u8,
 }
 
@@ -56,12 +56,14 @@ const ITALIC_FLAG: u8 = 0x02;
 const UNDERLINE_FLAG: u8 = 0x04;
 /// Bit flag for inverse style.
 const INVERSE_FLAG: u8 = 0x08;
+/// Bit flag for dim (faint) style.
+const DIM_FLAG: u8 = 0x10;
 
 impl CellStyle {
     /// Create a `CellStyle` from raw flag bits.
     ///
     /// Bits: bold = `0x01`, italic = `0x02`, underline = `0x04`,
-    /// inverse = `0x08`.
+    /// inverse = `0x08`, dim = `0x10`.
     pub fn from_raw(flags: u8) -> Self {
         Self { flags }
     }
@@ -80,6 +82,9 @@ impl CellStyle {
         }
         if cell.inverse() {
             flags |= INVERSE_FLAG;
+        }
+        if cell.dim() {
+            flags |= DIM_FLAG;
         }
 
         Self { flags }
@@ -103,6 +108,11 @@ impl CellStyle {
     /// Whether foreground and background colors are swapped.
     pub fn inverse(self) -> bool {
         self.flags & INVERSE_FLAG != 0
+    }
+
+    /// Whether the cell is rendered with diminished intensity.
+    pub fn dim(self) -> bool {
+        self.flags & DIM_FLAG != 0
     }
 }
 
@@ -168,6 +178,28 @@ impl TerminalFrame {
         }
 
         lines.join("\n")
+    }
+
+    /// Return ANSI-formatted bytes that reproduce the current screen state.
+    ///
+    /// The returned bytes include escape sequences for colors and styles,
+    /// so passing them to [`TerminalFrame::new()`] with the same dimensions
+    /// produces a frame with identical cell metadata.
+    pub fn contents_formatted(&self) -> Vec<u8> {
+        self.parser.screen().contents_formatted()
+    }
+
+    /// Return the text content of a single cell without region overhead.
+    ///
+    /// Returns `" "` for out-of-bounds cells or wide-character continuation
+    /// cells that produce no content. This is cheaper than
+    /// [`text_in_region()`](Self::text_in_region) with a 1×1 region because
+    /// it avoids `Vec`/join/trim allocation.
+    pub fn cell_text(&self, row: u16, col: u16) -> &str {
+        self.parser.screen().cell(row, col).map_or(" ", |cell| {
+            let text = cell.contents();
+            if text.is_empty() { " " } else { text }
+        })
     }
 
     /// Extract text only from cells within the given region.
@@ -537,6 +569,60 @@ mod tests {
 
         // Assert
         assert!(style.is_some_and(CellStyle::bold));
+    }
+
+    #[test]
+    fn cell_text_returns_character() {
+        // Arrange
+        let frame = TerminalFrame::new(80, 24, b"Hello");
+
+        // Act / Assert
+        assert_eq!(frame.cell_text(0, 0), "H");
+        assert_eq!(frame.cell_text(0, 4), "o");
+    }
+
+    #[test]
+    fn cell_text_returns_space_for_empty_cell() {
+        // Arrange
+        let frame = TerminalFrame::new(80, 24, b"A");
+
+        // Act — cell beyond written content should be a space.
+        let text = frame.cell_text(0, 5);
+
+        // Assert
+        assert_eq!(text, " ");
+    }
+
+    #[test]
+    fn dim_style_is_detected() {
+        // Arrange — ANSI SGR 2 = dim/faint.
+        let data = b"\x1b[2mDim\x1b[0m";
+
+        // Act
+        let frame = TerminalFrame::new(80, 24, data);
+        let style = frame.cell_style(0, 0);
+
+        // Assert
+        assert!(style.is_some_and(CellStyle::dim));
+        assert!(!style.is_some_and(CellStyle::bold));
+    }
+
+    #[test]
+    fn contents_formatted_roundtrips_colors() {
+        // Arrange — red foreground via ANSI escape.
+        let data = b"\x1b[31mRed\x1b[0m Plain";
+        let frame = TerminalFrame::new(80, 24, data);
+
+        // Act — reconstruct from formatted bytes.
+        let formatted = frame.contents_formatted();
+        let reconstructed = TerminalFrame::new(80, 24, &formatted);
+
+        // Assert — color and text are preserved.
+        assert_eq!(
+            reconstructed.fg_color(0, 0),
+            Some(CellColor::new(128, 0, 0))
+        );
+        assert_eq!(reconstructed.row_text(0), frame.row_text(0));
     }
 
     #[test]

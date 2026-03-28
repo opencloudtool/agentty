@@ -27,7 +27,7 @@ clap = { version = "4", features = ["derive"] }
 crossterm = "0.29.0"
 dirs = "6.0"
 ignore = "0.4"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
 mockall = "0.14"
 portable-pty = "0.9"
 pulldown-cmark = "0.13.1"

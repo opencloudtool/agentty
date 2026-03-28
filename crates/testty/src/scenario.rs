@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::journey::Journey;
+use crate::proof::report::ProofReport;
 use crate::session::{PtySession, PtySessionBuilder, PtySessionError};
 use crate::step::Step;
 use crate::vhs::VhsTape;
@@ -75,6 +77,25 @@ impl Scenario {
         self.step(Step::capture())
     }
 
+    /// Capture the current terminal state with a label and description.
+    ///
+    /// Labeled captures are collected into a
+    /// [`crate::proof::report::ProofReport`] when running with
+    /// `run_with_proof()`.
+    pub fn capture_labeled(self, label: impl Into<String>, description: impl Into<String>) -> Self {
+        self.step(Step::capture_labeled(label, description))
+    }
+
+    /// Append all steps from a journey to this scenario.
+    ///
+    /// Enables declarative test building by composing reusable
+    /// building blocks.
+    pub fn compose(mut self, journey: &Journey) -> Self {
+        self.steps.extend(journey.steps.iter().cloned());
+
+        self
+    }
+
     /// Execute this scenario in a PTY session and return the final frame.
     ///
     /// # Errors
@@ -85,6 +106,39 @@ impl Scenario {
         session: &mut PtySession,
     ) -> Result<crate::frame::TerminalFrame, PtySessionError> {
         session.execute_steps(&self.steps)
+    }
+
+    /// Execute this scenario in a PTY session with proof collection.
+    ///
+    /// Returns both the final frame and a [`ProofReport`] containing all
+    /// labeled captures encountered during execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any step fails.
+    pub fn execute_in_pty_with_proof(
+        &self,
+        session: &mut PtySession,
+    ) -> Result<(crate::frame::TerminalFrame, ProofReport), PtySessionError> {
+        let mut report = ProofReport::new(&self.name);
+        let mut last_frame = None;
+
+        for step in &self.steps {
+            match step {
+                Step::CaptureLabeled { label, description } => {
+                    let frame = session.capture_frame();
+                    report.add_capture(label, description, &frame);
+                    last_frame = Some(frame);
+                }
+                _ => {
+                    last_frame = Some(session.execute_steps(std::slice::from_ref(step))?);
+                }
+            }
+        }
+
+        let final_frame = last_frame.unwrap_or_else(|| session.capture_frame());
+
+        Ok((final_frame, report))
     }
 
     /// Execute this scenario against a binary, creating a new PTY session
@@ -100,6 +154,24 @@ impl Scenario {
         let mut session = builder.spawn()?;
 
         self.execute_in_pty(&mut session)
+    }
+
+    /// Execute this scenario with proof collection, creating a new PTY
+    /// session with the given builder configuration.
+    ///
+    /// Returns both the final frame and a [`ProofReport`] containing all
+    /// labeled captures.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if spawning or execution fails.
+    pub fn run_with_proof(
+        &self,
+        builder: PtySessionBuilder,
+    ) -> Result<(crate::frame::TerminalFrame, ProofReport), PtySessionError> {
+        let mut session = builder.spawn()?;
+
+        self.execute_in_pty_with_proof(&mut session)
     }
 
     /// Compile this scenario into a VHS tape.
@@ -168,5 +240,47 @@ mod tests {
         // Assert
         assert!(content.contains("Screenshot"));
         assert!(content.contains("Sleep"));
+    }
+
+    #[test]
+    fn scenario_capture_labeled_adds_step() {
+        // Arrange / Act
+        let scenario = Scenario::new("labeled")
+            .capture_labeled("init", "Initial state")
+            .capture_labeled("done", "Final state");
+
+        // Assert
+        assert_eq!(scenario.steps.len(), 2);
+    }
+
+    #[test]
+    fn scenario_compose_appends_journey_steps() {
+        // Arrange
+        let startup = Journey::wait_for_startup(300, 5000);
+        let navigate = Journey::navigate_with_key("Tab", "Sessions", 3000);
+
+        // Act
+        let scenario = Scenario::new("composed")
+            .compose(&startup)
+            .compose(&navigate)
+            .capture();
+
+        // Assert — 1 from startup + 2 from navigate + 1 capture = 4.
+        assert_eq!(scenario.steps.len(), 4);
+    }
+
+    #[test]
+    fn scenario_compose_preserves_existing_steps() {
+        // Arrange
+        let journey = Journey::type_and_confirm("hello");
+
+        // Act
+        let scenario = Scenario::new("mixed")
+            .sleep_ms(100)
+            .compose(&journey)
+            .capture();
+
+        // Assert — 1 sleep + 2 from journey + 1 capture = 4.
+        assert_eq!(scenario.steps.len(), 4);
     }
 }

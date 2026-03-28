@@ -7,11 +7,15 @@
 pub mod artifact;
 pub mod assertion;
 pub mod calibration;
+pub mod diff;
 pub mod frame;
+pub mod journey;
 pub mod locator;
 pub mod overlay;
+pub mod proof;
 pub mod recipe;
 pub mod region;
+pub mod renderer;
 pub mod scenario;
 pub mod session;
 pub mod snapshot;

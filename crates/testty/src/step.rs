@@ -41,6 +41,18 @@ pub enum Step {
 
     /// Capture the current terminal state for assertions.
     Capture,
+
+    /// Capture the current terminal state with a label and description.
+    ///
+    /// Labeled captures are collected into a
+    /// [`crate::proof::report::ProofReport`] during execution, enabling
+    /// annotated proof output that documents each step of a test journey.
+    CaptureLabeled {
+        /// Short identifier for this capture (used in headings and file names).
+        label: String,
+        /// Human-readable description of what this capture documents.
+        description: String,
+    },
 }
 
 impl Step {
@@ -84,6 +96,17 @@ impl Step {
     pub fn capture() -> Self {
         Self::Capture
     }
+
+    /// Create a labeled capture step.
+    ///
+    /// The `label` is a short identifier used in headings, and the
+    /// `description` explains what this capture documents.
+    pub fn capture_labeled(label: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::CaptureLabeled {
+            label: label.into(),
+            description: description.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -112,6 +135,19 @@ mod tests {
             unreachable!("Expected Sleep variant");
         };
         assert_eq!(duration, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn capture_labeled_stores_label_and_description() {
+        // Arrange / Act
+        let step = Step::capture_labeled("startup", "App launched");
+
+        // Assert
+        let Step::CaptureLabeled { label, description } = step else {
+            unreachable!("Expected CaptureLabeled variant");
+        };
+        assert_eq!(label, "startup");
+        assert_eq!(description, "App launched");
     }
 
     #[test]

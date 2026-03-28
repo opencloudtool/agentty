@@ -13,6 +13,7 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
+base64.workspace = true
 image.workspace = true
 portable-pty.workspace = true
 tempfile.workspace = true

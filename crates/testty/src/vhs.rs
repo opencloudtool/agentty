@@ -243,7 +243,7 @@ fn compile_step(tape: &mut String, step: &Step, screenshot_path: &Path) {
             // Approximate by sleeping for the stable duration.
             let _ = writeln!(tape, "Sleep {stable_ms}ms");
         }
-        Step::Capture => {
+        Step::Capture | Step::CaptureLabeled { .. } => {
             let _ = writeln!(
                 tape,
                 "Screenshot \"{}\"",

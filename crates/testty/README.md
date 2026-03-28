@@ -95,6 +95,7 @@ Each `Step` represents a single user action or wait condition:
 | `WaitForText` | Poll until text appears | `.wait_for_text("Ready", 5000)` |
 | `WaitForStableFrame` | Wait for rendering to stabilize | `.wait_for_stable_frame(500, 5000)` |
 | `Capture` | Snapshot the current terminal state | `.capture()` |
+| `CaptureLabeled` | Labeled snapshot for proof reports | `.capture_labeled("init", "App launched")` |
 
 **Supported key names:** `Enter`, `Tab`, `Escape` / `Esc`, `Backspace`,
 `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `Delete`, `PageUp`, `PageDown`,
@@ -303,12 +304,116 @@ let config = SnapshotConfig::new("tests/baselines", "tests/artifacts")
     );
 ```
 
+## Proof pipeline
+
+The proof pipeline captures labeled terminal states during scenario execution
+and renders them through swappable backends. Use `capture_labeled()` steps
+and `run_with_proof()` to collect a `ProofReport`:
+
+```rust
+use testty::scenario::Scenario;
+use testty::session::PtySessionBuilder;
+use testty::proof::frame_text::FrameTextBackend;
+use testty::proof::strip::ScreenshotStripBackend;
+use testty::proof::gif::GifBackend;
+use testty::proof::html::HtmlBackend;
+
+let scenario = Scenario::new("startup_proof")
+    .wait_for_stable_frame(300, 5000)
+    .capture_labeled("launched", "App reached stable state")
+    .press_key("Tab")
+    .wait_for_stable_frame(200, 3000)
+    .capture_labeled("navigated", "Switched to second tab");
+
+let builder = PtySessionBuilder::new("/path/to/binary").size(80, 24);
+let (_frame, report) = scenario.run_with_proof(builder).expect("failed");
+
+// Render through any backend:
+report.save(&FrameTextBackend, Path::new("proof.txt")).unwrap();
+report.save(&ScreenshotStripBackend, Path::new("proof.png")).unwrap();
+report.save(&GifBackend::new(), Path::new("proof.gif")).unwrap();
+report.save(&HtmlBackend, Path::new("proof.html")).unwrap();
+```
+
+### Proof formats
+
+| Format | Backend | Output | Use case |
+|--------|---------|--------|----------|
+| Frame text | `FrameTextBackend` | `.txt` | CI logs, quick inspection |
+| PNG strip | `ScreenshotStripBackend` | `.png` | Review comments, docs |
+| Animated GIF | `GifBackend` | `.gif` | PR descriptions, demos |
+| HTML report | `HtmlBackend` | `.html` | Detailed review with diffs and assertions |
+
+## Composable journeys
+
+`Journey` provides reusable building blocks for declarative scenario authoring.
+Instead of repeating low-level step sequences, compose scenarios from
+pre-built journeys:
+
+```rust
+use testty::journey::Journey;
+use testty::scenario::Scenario;
+
+let startup = Journey::wait_for_startup(300, 5000);
+let navigate = Journey::navigate_with_key("Tab", "Settings", 3000);
+let input = Journey::type_and_confirm("search query");
+let snapshot = Journey::capture_labeled("final", "End state");
+
+let scenario = Scenario::new("settings_search")
+    .compose(&startup)
+    .compose(&navigate)
+    .compose(&input)
+    .compose(&snapshot);
+```
+
+### Built-in journeys
+
+| Journey | Steps | Description |
+|---------|-------|-------------|
+| `wait_for_startup(stable_ms, timeout_ms)` | 1 | Wait for app to render and stabilize |
+| `navigate_with_key(key, expected, timeout)` | 2 | Press key, wait for expected text |
+| `type_and_confirm(text)` | 2 | Type text and press Enter |
+| `press_and_wait(key, ms)` | 2 | Press key and sleep briefly |
+| `capture_labeled(label, desc)` | 1 | Capture with label for proofs |
+
+## Frame diffing
+
+The diff engine computes cell-level differences between terminal frames
+and generates human-readable change summaries:
+
+```rust
+use testty::diff::FrameDiff;
+use testty::frame::TerminalFrame;
+
+let before = TerminalFrame::new(80, 24, b"Counter: 0");
+let after = TerminalFrame::new(80, 24, b"Counter: 42");
+
+let diff = FrameDiff::compute(&before, &after);
+assert!(!diff.is_identical());
+
+// Get changed regions with row/col spans
+for region in diff.changed_regions() {
+    println!("Row {}, cols {}..{}: {:?}",
+        region.region.row, region.region.col,
+        region.region.col + region.region.width,
+        region.change_type);
+}
+
+// Human-readable summaries
+for line in diff.summary() {
+    println!("{line}");
+}
+```
+
+Diffs are automatically computed between consecutive captures in a
+`ProofReport` and displayed in the HTML proof backend.
+
 ## Module overview
 
 | Module | Purpose |
 |--------|---------|
 | `scenario` | Fluent builder for composing test scenarios from steps |
-| `step` | Step enum: `WriteText`, `PressKey`, `Sleep`, `WaitForText`, `WaitForStableFrame`, `Capture` |
+| `step` | Step enum: `WriteText`, `PressKey`, `Sleep`, `WaitForText`, `WaitForStableFrame`, `Capture`, `CaptureLabeled` |
 | `session` | PTY executor: `PtySession` + `PtySessionBuilder` |
 | `frame` | Terminal state parser: `TerminalFrame`, `CellColor`, `CellStyle` |
 | `region` | Rectangular region definitions with named anchors |
@@ -320,6 +425,10 @@ let config = SnapshotConfig::new("tests/baselines", "tests/artifacts")
 | `calibration` | Cell-to-pixel geometry mapping for overlay rendering |
 | `artifact` | Failure artifact directory and capture storage |
 | `overlay` | Pixel-level drawing on screenshots for visual debugging |
+| `proof` | Proof pipeline: report collector, backend trait, and format implementations |
+| `renderer` | Native bitmap font renderer for terminal frames to PNG images |
+| `diff` | Cell-level frame diffing with changed region detection |
+| `journey` | Composable journey building blocks for declarative test authoring |
 
 ## Full example
 
@@ -358,6 +467,21 @@ fn tab_key_switches_tabs() {
     snapshot::assert_frame_snapshot_matches(&config, "tab_switch", &frame.all_text())
         .expect("frame snapshot should match");
 }
+```
+
+## Examples
+
+Run the showcase examples to see the framework features in action:
+
+```sh
+# Full proof pipeline: captures → frame-text, PNG strip, GIF, HTML
+cargo run --example proof_pipeline -p testty
+
+# Frame diffing with changed region detection
+cargo run --example frame_diffing -p testty
+
+# Composable journeys and scenario building
+cargo run --example journey_composition -p testty
 ```
 
 ## Tips

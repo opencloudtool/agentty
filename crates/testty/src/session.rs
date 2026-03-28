@@ -291,7 +291,7 @@ impl PtySession {
                     let timeout = Duration::from_millis(u64::from(*timeout_ms));
                     last_frame = Some(self.wait_for_stable_frame(stable, timeout)?);
                 }
-                Step::Capture => {
+                Step::Capture | Step::CaptureLabeled { .. } => {
                     last_frame = Some(self.capture_frame());
                 }
             }
