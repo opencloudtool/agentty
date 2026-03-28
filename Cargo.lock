@@ -26,6 +26,7 @@ dependencies = [
  "clap",
  "mockall",
  "pulldown-cmark",
+ "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",

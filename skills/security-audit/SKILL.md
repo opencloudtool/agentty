@@ -12,12 +12,12 @@ Agentty is a local TUI tool that spawns agent backends (Claude CLI, Codex, Gemin
 ## Workflow
 
 1. **Read Project Context**
-   - Read the root `AGENTS.md` for project conventions, architecture, and directory index.
+   - Read the root `AGENTS.md` for project conventions, architecture references, and boundary rules.
    - Identify the target directories or modules to audit (use the user's scope if provided, otherwise audit the full project).
 
 2. **Traverse Target Directories**
-   - For each target directory, read its local `AGENTS.md` to understand module purpose and file layout before inspecting source files.
-   - Follow directory indexes to navigate into sub-modules.
+   - For each target directory, read the nearest available `AGENTS.md` to understand module purpose, entry points, and change boundaries before inspecting source files.
+   - Follow the architecture docs and router modules to navigate into sub-modules when there is no deeper local guide.
 
 3. **Analyze Security Concerns**
 

@@ -2,11 +2,11 @@
 
 Reusable skills available to agents in this repository.
 
-## Directory Index
+## Available Skills
 
-- [`git-commit/`](git-commit/) - Guide for preparing git commits in this repository, including context gathering and repository-specific commit message conventions.
-- [`implementation-plan/`](implementation-plan/) - Guide for creating and maintaining implementation plans under `docs/plan/`.
-- [`release/`](release/) - Guide for releasing a new version of the project, including version bumping, changelog updates, and tagging.
-- [`review/`](review/) - Guide for reviewing code changes, existing code, and the project in general, and generating a structured review report.
-- [`security-audit/`](security-audit/) - Audit subprocess execution, path handling, SQL queries, panic conditions, and dependency risks.
-- [`tech-debt/`](tech-debt/) - Sweep the codebase for tech debt and return a prioritized markdown task list of findings.
+- `git-commit` covers commit-message and commit-preparation workflow.
+- `implementation-plan` owns roadmap authoring and roadmap hygiene.
+- `release` covers version bumping, changelog updates, and release tagging.
+- `review` covers structured code-review workflow.
+- `security-audit` covers threat-model-driven project auditing.
+- `tech-debt` covers maintenance and cleanup sweeps.

@@ -12,12 +12,12 @@ The user may scope the sweep to specific directories or modules (e.g., "sweep `c
 ## Workflow
 
 1. **Read Project Context**
-   - Read the root `AGENTS.md` for project conventions, directory index, and style rules.
+   - Read the root `AGENTS.md` for project conventions, architecture references, and style rules.
    - Identify which directories and modules are relevant to the sweep (respecting any user-provided scope).
 
 2. **Traverse Target Directories**
-   - Navigate into each target directory and read its `AGENTS.md` for local conventions and file purposes.
-   - Use the directory index to prioritize which files and modules to inspect.
+   - Navigate into each target directory and read the nearest available `AGENTS.md` for local conventions, entry points, and change guidance.
+   - Use the architecture docs and module routers to prioritize which files and modules to inspect when no deeper local guide exists.
 
 3. **Analyze for Tech Debt**
    - **TODOs and FIXMEs:** Find `TODO`, `FIXME`, `HACK`, and `XXX` comments that indicate deferred work.

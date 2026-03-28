@@ -4,22 +4,15 @@
 
 Implementations of external interfaces (Database, Git, System).
 
-## Directory Index
+## Entry Points
 
-- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
-- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
-- [`agent/`](agent/) - Provider-specific backend builders and response parsing modules.
-- [`agent.rs`](agent.rs) - Agent module root that wires provider modules under `agent/`.
-- [`app_server/`](app_server/) - Shared app-server contract, prompt, registry, and retry modules.
-- [`app_server.rs`](app_server.rs) - Router-only app-server module with shared public re-exports.
-- [`channel/`](channel/) - Provider-agnostic `AgentChannel` trait and CLI/app-server adapters.
-- [`channel.rs`](channel.rs) - Channel module root with `AgentChannel` trait, types, and factory.
-- [`app_server_router.rs`](app_server_router.rs) - Routes app-server turn execution to the provider-specific client for each model.
-- [`app_server_transport.rs`](app_server_transport.rs) - Shared stdio JSON-RPC transport utilities for app-server protocols.
-- [`db.rs`](db.rs) - SQLite database implementation.
-- [`file_index.rs`](file_index.rs) - Gitignore-aware file listing and fuzzy filtering for `@` mentions.
-- [`fs.rs`](fs.rs) - Async filesystem trait boundary (`FsClient`, `FsError`) and production implementation.
-- [`git/`](git/) - Workflow-focused git operation modules (`merge`, `rebase`, `repo`, `sync`, `worktree`).
-- [`git.rs`](git.rs) - Git module root with public API re-exports and `GitClient` wiring.
-- [`tmux.rs`](tmux.rs) - Tmux process boundary and production subprocess-backed client.
-- [`version.rs`](version.rs) - Version checking and background auto-update infrastructure (`UpdateRunner` trait, `VersionError` enum, `UpdateStatus` enum).
+- `db.rs` owns SQLite persistence and query execution.
+- `git.rs` and `git/` own git operations behind `GitClient`.
+- `channel.rs` and `agent.rs` own provider transport and prompt execution.
+- `app_server.rs` and `app_server/` own shared app-server runtime infrastructure.
+- `file_index.rs` owns gitignore-aware file traversal used by `@` mentions and explorer features.
+
+## Change Guidance
+
+- Keep new external integrations behind trait boundaries.
+- Route subprocess, filesystem, and time access through existing infrastructure boundaries instead of introducing direct calls in orchestration layers.

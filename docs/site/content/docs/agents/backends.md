@@ -48,8 +48,10 @@ of inlining repository guidance into prompts.
 - Gemini CLI loads `GEMINI.md`.
 
 This repository keeps `CLAUDE.md` and `GEMINI.md` as symlinks to the canonical
-root `AGENTS.md`, so all three backends see the same project instructions when
-they run in the session worktree.
+root `AGENTS.md`, and keeps additional `AGENTS.md` files only at major module
+boundaries. This gives all three backends shared repo-wide instructions plus a
+small amount of higher-signal local guidance without maintaining per-directory
+file inventories.
 
 ## Claude Authentication
 

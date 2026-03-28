@@ -2,6 +2,6 @@
 
 Codex-specific repository settings.
 
-## Directory Index
+## Purpose
 
-- [`skills`](skills) - Symlink to the shared `skills/` directory.
+- `skills/` is a symlink to the shared repository skill set used by Codex-specific tooling.

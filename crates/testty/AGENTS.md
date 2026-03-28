@@ -3,11 +3,9 @@
 Rust-native TUI end-to-end testing framework using PTY-driven semantic
 assertions and VHS screenshot capture.
 
-## Directory Index
+## Entry Points
 
-- [`src/`](src/) - Source code directory.
-- [`AGENTS.md`](AGENTS.md) - Crate documentation.
-- [`Cargo.toml`](Cargo.toml) - Crate dependencies and metadata.
-- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
-- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
-- [`README.md`](README.md) - Framework usage guide with API examples.
+- `src/lib.rs` is the public crate root.
+- `src/session.rs` owns PTY execution and runtime driving.
+- `src/scenario.rs`, `src/step.rs`, and `src/assertion.rs` own the user-facing test API.
+- `README.md` is the primary usage guide and should stay aligned with the public API.

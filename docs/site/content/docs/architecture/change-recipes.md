@@ -57,6 +57,7 @@ layer boundaries.
 1. New external boundaries should get a trait with `#[cfg_attr(test, mockall::automock)]`.
 1. Update docs in `docs/site/content/docs/` whenever user-facing behavior changes.
 1. Update `docs/site/content/docs/architecture/module-map.md`, `docs/site/content/docs/architecture/runtime-flow.md`, and `docs/site/content/docs/architecture/testability-boundaries.md` when architecture responsibilities change.
+1. Keep the nearest semantic `AGENTS.md` guides aligned when a major module's purpose, invariants, or change-routing guidance changes.
 1. When adding/removing files in `runtime/mode/`, update the runtime-mode file list in `docs/site/content/docs/architecture/module-map.md`.
 1. When changing `TurnRequest`/`TurnEvent`/`TurnResult` shapes in `crates/agentty/src/infra/channel/contract.rs` (re-exported by `crates/agentty/src/infra/channel.rs`), update the key-types table in `docs/site/content/docs/architecture/runtime-flow.md`.
 1. When adding/removing `#[cfg_attr(test, mockall::automock)]` external-boundary traits, update `docs/site/content/docs/architecture/testability-boundaries.md`.

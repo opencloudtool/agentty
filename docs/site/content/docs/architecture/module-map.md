@@ -8,6 +8,10 @@ weight = 3
 This guide maps source paths to responsibilities so contributors can quickly
 choose the correct module when implementing changes.
 
+For tooling and agent exploration, `cargo run -p ag-xtask -- workspace-map`
+also writes a machine-readable workspace summary to
+`target/agentty/workspace-map.json`.
+
 <!-- more -->
 
 ## Workspace Crates
@@ -17,7 +21,7 @@ choose the correct module when implementing changes.
 | `crates/ag-forge/` | Shared forge review-request library crate with normalized review-request types, remote detection, and provider-specific `gh`/`glab` adapters. |
 | `crates/agentty/` | Main TUI application crate with composition root, application, domain, infrastructure, runtime, and UI layers. |
 | `crates/testty/` | Rust-native TUI end-to-end testing framework: PTY-driven semantic assertions, VHS screenshot capture, calibration, overlay rendering, and snapshot workflows. |
-| `crates/ag-xtask/` | Workspace maintenance commands and automation helpers. |
+| `crates/ag-xtask/` | Workspace maintenance commands and automation helpers, including generated workspace-map output for tooling. |
 
 ## Composition Root
 

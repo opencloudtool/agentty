@@ -9,9 +9,9 @@ TUI tool to manage agents.
 
 - **Document Code:** Document all added or updated code using docstrings. When touching existing code, add or refresh docstrings so the changed behavior is clearly described.
 - **Update AGENTS.md:** Update the relevant `AGENTS.md` file only when a user instruction establishes a critical, persistent preference, convention, or workflow rule. Do not update it for one-off tasks.
-- **Directory Indexing:** Maintain the "Directory Index" section in the local `AGENTS.md`. If you create, rename, or delete a file/directory, update the index immediately. Wrap every index link label in backticks (for example, `` [`file_name.rs`](file_name.rs) ``) so markdown-special characters render correctly.
-- **Local Paths Only:** In `AGENTS.md`, do not use parent-directory relative paths. Each file should document only files and folders in its own directory.
-- **Context First:** Before listing a directory or reading source code, ALWAYS read the local `AGENTS.md` first. This provides immediate context on the folder structure and file purposes, reducing the need for broad discovery actions.
+- **Semantic Guidance Only:** Keep `AGENTS.md` files focused on purpose, entry points, invariants, change routing, and docs-sync notes. Do not maintain exhaustive per-directory file inventories.
+- **Local Paths Only:** In `AGENTS.md`, do not use parent-directory relative paths. Each file should describe only its own directory or module boundary.
+- **Context First:** Before broad exploration, read the nearest available `AGENTS.md`. If the current directory does not have one, fall back to the closest ancestor guide and the architecture docs in `docs/site/content/docs/architecture/`.
 - **Context7 First:** If Context7 is connected as an MCP server, use it to retrieve the latest documentation and API details for the tools and libraries used in the task.
 - **Test Isolation for External Commands:** Keep isolated single-command tests real when they validate one external command call, but for higher-level flows that involve multiple external command calls, always extract trait boundaries and mock them with `mockall` (`#[cfg_attr(test, mockall::automock)]`) to reduce runtime and flakiness.
 
@@ -294,7 +294,7 @@ git worktree prune
 
 ## Skills
 
-- Skills are available under `skills/`, with the canonical index in `skills/AGENTS.md`.
+- Skills are available under `skills/`, with the summary catalog in `skills/AGENTS.md`.
 - Read `skills/AGENTS.md` to discover available skills before selecting one.
 - Activate a skill when the user explicitly names it or the task intent matches the skill description.
 - Use the minimal set of skills needed for the current turn.
@@ -338,28 +338,10 @@ Askama templates compiled into the binary that are sent to agent backends automa
 | `protocol_instruction_prompt.md` | `ProtocolInstructionPromptTemplate` | Every agent turn | Wrap prompts with structured JSON response protocol and file-path rules. |
 | `resume_with_session_output_prompt.md` | `ResumeWithSessionOutputPromptTemplate` | Model switch | Replay prior session transcript for context continuity. |
 
-## Directory Index
+## Workspace Map
 
-- [`.claude/`](.claude/) - Claude AI specific settings.
-- [`.codex/`](.codex/) - Codex AI specific settings.
-- [`.gemini/`](.gemini/) - Gemini AI specific settings.
-- [`.git-town.toml`](.git-town.toml) - Git Town configuration.
-- [`.github/`](.github/) - GitHub configuration files.
-- [`.gitignore`](.gitignore) - Git ignore patterns.
-- [`.pre-commit-config.yaml`](.pre-commit-config.yaml) - Pre-commit hooks configuration.
-- [`.rustfmt.toml`](.rustfmt.toml) - Rustfmt configuration.
-- [`clippy.toml`](clippy.toml) - Clippy lint configuration.
-- [`crates/`](crates/) - Workspace member crates.
-- [`docs/`](docs/) - Documentation and assets.
-- [`AGENTS.md`](AGENTS.md) - Context and instructions for AI agents.
-- [`Cargo.lock`](Cargo.lock) - Exact version pins for dependencies.
-- [`Cargo.toml`](Cargo.toml) - Workspace root configuration and dependency definitions.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) - Contribution guide and development checks.
-- [`CHANGELOG.md`](CHANGELOG.md) - Project changelog.
-- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
-- [`dist-workspace.toml`](dist-workspace.toml) - Release configuration for cargo-dist.
-- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
-- [`LICENSE`](LICENSE) - Project license file.
-- [`README.md`](README.md) - Main project documentation.
-- [`rust-toolchain.toml`](rust-toolchain.toml) - Rust toolchain version pinning.
-- [`skills/`](skills/) - Shared agent skills.
+- `crates/` contains all workspace crates.
+- `docs/site/content/docs/architecture/` contains the canonical module, runtime, and change-path references.
+- `docs/plan/` contains internal planning documents and roadmap workflow guidance.
+- `skills/` contains reusable workflow skills and their discovery notes.
+- `target/agentty/workspace-map.json` is the generated machine-readable workspace map written by `cargo run -p ag-xtask -- workspace-map`.

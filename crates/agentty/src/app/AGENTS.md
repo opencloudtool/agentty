@@ -40,17 +40,9 @@ When app orchestration or session lifecycle behavior changes, update:
 - `docs/site/content/docs/usage/keybindings.md` — user-visible actions available per mode/state.
 - `docs/site/content/docs/architecture/runtime-flow.md` — app orchestration and worker/channel runtime flow.
 
-## Directory Index
+## Entry Points
 
-- [`assist.rs`](assist.rs) - Shared assistance helpers for commit/rebase recovery loops.
-- [`core.rs`](core.rs) - App orchestration implementation (`App`, `AppEvent`, startup wiring, reducers, and tests).
-- [`error.rs`](error.rs) - Typed `AppError` enum for top-level app orchestration operations.
-- [`merge_queue.rs`](merge_queue.rs) - Session merge queue orchestration and background workflow helpers.
-- [`project.rs`](project.rs) - Project discovery and switching logic.
-- [`session/`](session/) - Session workflows and their local docs/index.
-- [`session.rs`](session.rs) - Session module router with re-exports for session orchestration APIs.
-- [`service.rs`](service.rs) - Shared app dependency container (`Database`, base path, app event sender).
-- [`setting.rs`](setting.rs) - Settings management and persistence.
-- [`session_state.rs`](session_state.rs) - Session state management.
-- [`tab.rs`](tab.rs) - Top-level tab definitions and tab selection state management.
-- [`task.rs`](task.rs) - App-wide background pollers (git status and version checks).
+- `core.rs` owns the main `App` facade and reducer wiring.
+- `session.rs` and `session/` own session lifecycle and worker orchestration.
+- `project.rs`, `setting.rs`, and `tab.rs` own project, settings, and top-level navigation concerns.
+- `task.rs` and `merge_queue.rs` own detached workflows and queue orchestration.

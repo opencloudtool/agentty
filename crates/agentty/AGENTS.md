@@ -3,14 +3,16 @@
 Modular TUI application for managing agent sessions.
 The main binary is named `agentty`.
 
-## Directory Index
+## Entry Points
 
-- [`.sqlx/`](.sqlx/) - Checked-in SQLx offline query metadata for compile-time macro validation.
-- [`migrations/`](migrations/) - SQLite schema migrations for SQLx.
-- [`src/`](src/) - Source code directory.
-- [`tests/`](tests/) - Integration tests for live provider behavior and protocol compliance.
-- [`AGENTS.md`](AGENTS.md) - Crate documentation.
-- [`askama.toml`](askama.toml) - Askama template discovery configuration for embedded prompt resources.
-- [`Cargo.toml`](Cargo.toml) - Crate dependencies and metadata.
-- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
-- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
+- `src/main.rs` is the binary composition root.
+- `src/lib.rs` exposes the crate modules.
+- `src/` contains the layered application code.
+- `migrations/` contains embedded SQLx migrations.
+- `tests/` contains integration tests for live provider behavior and protocol compliance.
+
+## Architecture References
+
+- `docs/site/content/docs/architecture/module-map.md` is the canonical path-ownership map.
+- `docs/site/content/docs/architecture/runtime-flow.md` documents runtime orchestration and channel flow.
+- `docs/site/content/docs/architecture/testability-boundaries.md` tracks external trait boundaries.

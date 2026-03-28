@@ -26,7 +26,7 @@ Agentty runtime design is built around these constraints:
 |------|----------------|
 | `crates/ag-forge/` | Shared forge review-request library crate for normalized review-request types, remote detection, and `gh`/`glab` adapter orchestration. |
 | `crates/agentty/` | Main TUI application crate (`agentty`) with runtime, app orchestration, domain, infrastructure, and UI modules. |
-| `crates/ag-xtask/` | Workspace maintenance commands (index checks, migration checks, automation helpers). |
+| `crates/ag-xtask/` | Workspace maintenance commands (migration checks, workspace-map generation, automation helpers). |
 | `docs/site/content/docs/` | End-user and contributor documentation published at `/docs/`. |
 
 ## Main Runtime Flow

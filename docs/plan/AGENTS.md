@@ -10,6 +10,7 @@ Keep size budgeting in the skill workflow only; do not render `### Size` section
 Require every roadmap step heading title to use the exact format `[UUID] Stream: Title`, then start the body with `#### Assignee` using a GitHub handle in `@assignee` format or `No assignee` before `#### Why now`.
 For the current direct-to-`main` workflow, an engineer claims a step by landing and pushing a dedicated commit that changes only that step's exact `#### Assignee` field, then starts implementation in later commits.
 
-## Directory Index
+## Planning Surface
 
-- [`roadmap.md`](roadmap.md) - Canonical single-file project roadmap that consolidates the active implementation planning inventory.
+- `roadmap.md` is the canonical active roadmap.
+- Keep planning guidance semantic and process-focused; do not reintroduce local file inventories here.

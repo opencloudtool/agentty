@@ -25,17 +25,10 @@ When changing architecture-level behavior under `src/`, update:
 - Keep the key-type tables/field descriptions in `runtime-flow.md` aligned with `infra/channel/contract.rs` (re-exported by `infra/channel.rs`) for `TurnRequest`, `TurnEvent`, and `TurnResult`.
 - Keep `testability-boundaries.md` aligned with active `#[cfg_attr(test, mockall::automock)]` trait boundaries that guard external/time/process integrations.
 
-## Directory Index
+## Major Areas
 
-- [`app/`](app/) - Application state and workflows split by concern (`session`, `project`, `task`).
-- [`app.rs`](app.rs) - App module router and public re-exports for app orchestration APIs.
-- [`domain/`](domain/) - Domain layer entities and logic.
-- [`domain.rs`](domain.rs) - Domain module root and submodule declarations.
-- [`infra/`](infra/) - Infrastructure layer implementations.
-- [`infra.rs`](infra.rs) - Infrastructure module root and submodule declarations.
-- [`runtime/`](runtime/) - Runtime event loop, terminal integration, and mode key handling.
-- [`runtime.rs`](runtime.rs) - Runtime module router with public runtime entry exports.
-- [`ui/`](ui/) - User Interface module.
-- [`ui.rs`](ui.rs) - UI module root with shared exports and submodule declarations.
-- [`lib.rs`](lib.rs) - Library entry point, exports modules.
-- [`main.rs`](main.rs) - Binary composition root for DB bootstrap and runtime launch.
+- `app.rs` and `app/` own orchestration and workflow state.
+- `domain.rs` and `domain/` own business entities and enums.
+- `infra.rs` and `infra/` own external integrations and persistence.
+- `runtime.rs` and `runtime/` own terminal lifecycle and event dispatch.
+- `ui.rs` and `ui/` own rendering, layout, and interaction widgets.

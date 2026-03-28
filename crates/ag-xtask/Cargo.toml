@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 clap.workspace = true
 pulldown-cmark.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

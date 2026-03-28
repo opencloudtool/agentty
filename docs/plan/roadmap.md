@@ -234,7 +234,7 @@ The git modules and `GitClient` return typed `GitError` variants instead of stri
 - [ ] **Define and re-export `GitError`.** Add `crates/agentty/src/infra/git/error.rs` and re-export the enum from `crates/agentty/src/infra/git.rs`.
 - [ ] **Migrate the git modules.** Convert `sync.rs`, `rebase.rs`, `repo.rs`, `merge.rs`, and `worktree.rs` to return `GitError`.
 - [ ] **Update `GitClient` and `RealGitClient`.** Move the trait and production implementation to typed git errors and keep temporary app bridges only where still required.
-- [ ] **Maintain touched docs and indexes.** Add `///` doc comments for the new error type and update the relevant local `AGENTS.md` directory index.
+- [ ] **Maintain touched docs and semantic guides.** Add `///` doc comments for the new error type and refresh the nearest semantic `AGENTS.md` guidance when the module boundary changes.
 
 #### Tests
 
@@ -242,7 +242,7 @@ The git modules and `GitClient` return typed `GitError` variants instead of stri
 
 #### Docs
 
-- [ ] Keep the new error type documented in code and the touched directory index synchronized with the new file layout.
+- [ ] Keep the new error type documented in code and the touched semantic guidance aligned with the new file layout.
 
 ### [3e7f1a92-4b8d-4c6e-9a15-d2f8e0b71c34] Testty: Labeled captures and proof report core
 
@@ -272,7 +272,7 @@ A testty scenario can collect labeled captures into a `ProofReport` and output a
 
 #### Docs
 
-- [ ] Update `crates/testty/README.md` with proof report usage examples and `crates/testty/AGENTS.md` with the new `proof/` directory index.
+- [ ] Update `crates/testty/README.md` with proof report usage examples and refresh `crates/testty/AGENTS.md` with the new proof-module guidance.
 
 ### [7c2d5f18-9e3a-4b7c-8d61-a4f9c3e2b508] Testty: Proof backend trait and frame-text backend
 
@@ -506,14 +506,14 @@ Agents and contributors compose test scenarios from reusable `Journey` building 
 
 #### Docs
 
-- [ ] Update `crates/testty/README.md` with journey composition examples and `crates/testty/AGENTS.md` with the `journey.rs` file entry.
+- [ ] Update `crates/testty/README.md` with journey composition examples and refresh `crates/testty/AGENTS.md` with the new journey-module guidance.
 
 ## Cross-Stream Notes
 
 - The `Workflow` follow-up-task launch flow depends on the persisted task storage from step 1. Step 2 should reuse the same stored task content instead of adding a second prompt source.
 - The `Platform` timer stream should keep `session` timing math shared between step 3 and step 4 so chat and list views cannot drift.
 - The `Quality` deterministic local scenario from step 5 should exercise the default in-process session flow that steps 1 through 4 rely on.
-- The typed-error stream must keep local `AGENTS.md` directory indexes and `///` doc comments synchronized whenever it adds files such as `error.rs`.
+- The typed-error stream must keep the nearest semantic `AGENTS.md` guidance and `///` doc comments synchronized whenever it adds files such as `error.rs`.
 - The `Testty` stream is fully independent of `Workflow`, `Platform`, and `Quality`. It operates on `crates/testty/` only and does not touch `crates/agentty/` internals.
 - Within `Testty`, the native frame renderer (T3) and frame diffing engine (T5) can proceed in parallel after the proof report core (T1) lands. The three visual backends (strip T4, GIF T6, HTML T7) each need the renderer (T3) and trait (T2) but are independent of each other.
 - Test tiering (T8) and composable journeys (T9) only depend on T1 and can proceed in parallel with the visual backend work.

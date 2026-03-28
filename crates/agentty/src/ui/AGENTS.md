@@ -40,26 +40,10 @@ When working within `crates/agentty/src/ui/`:
 - **Unit Tests**: Focus heavily on `util.rs`. Test layout logic, string manipulation, and input height calculations.
 - **Integration**: Verifying actual `render` output is difficult. Rely on visual verification for broad changes, but ensure the underlying logic in `util` is rock-solid with comprehensive tests.
 
-## Directory Index
+## Entry Points
 
-- [`component/`](component/) - Reusable UI components.
-- [`component.rs`](component.rs) - UI components module root and exports.
-- [`page/`](page/) - Full-screen page implementations.
-- [`page.rs`](page.rs) - UI pages module root and exports.
-- [`AGENTS.md`](AGENTS.md) - UI specific instructions.
-- [`CLAUDE.md`](CLAUDE.md) - Symlink to AGENTS.md.
-- [`GEMINI.md`](GEMINI.md) - Symlink to AGENTS.md.
-- [`activity_heatmap.rs`](activity_heatmap.rs) - Activity day-key and heatmap utility logic.
-- [`diff_util.rs`](diff_util.rs) - Unified diff parsing and wrapping helpers.
-- [`icon.rs`](icon.rs) - UI icons.
-- [`layout.rs`](layout.rs) - Input and layout calculation helpers.
-- [`markdown.rs`](markdown.rs) - Styled markdown renderer for session output.
-- [`overlay.rs`](overlay.rs) - Overlay renderers and overlay-specific background composition.
-- [`README.md`](README.md) - Additional documentation.
-- [`render.rs`](render.rs) - Top-level frame rendering orchestration and shared UI traits/context.
-- [`router.rs`](router.rs) - Mode router for content-area rendering.
-- [`state/`](state/) - UI state definitions.
-- [`state.rs`](state.rs) - UI state module root and exports.
-- [`style.rs`](style.rs) - UI styling constants.
-- [`text_util.rs`](text_util.rs) - Text wrapping and compact formatting helpers.
-- [`util.rs`](util.rs) - Backward-compatible re-exports for UI utility modules.
+- `render.rs` and `router.rs` own frame composition and page dispatch.
+- `page.rs` and `page/` own full-screen pages.
+- `component.rs` and `component/` own reusable widgets and overlays.
+- `state.rs` and `state/` own UI mode and prompt state.
+- `style.rs`, `layout.rs`, `markdown.rs`, and `util.rs` own shared presentation helpers.
