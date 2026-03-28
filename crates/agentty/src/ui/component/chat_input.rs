@@ -6,30 +6,41 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::ui::util::{
     CHAT_INPUT_MAX_VISIBLE_LINES, calculate_input_viewport, compute_input_layout,
-    input_cursor_position, placeholder_cursor_position, slash_menu_dropdown_height,
+    input_cursor_position, placeholder_cursor_position, suggestion_dropdown_height,
 };
 use crate::ui::{Component, style};
 
-/// A single slash-command dropdown option.
-pub struct SlashMenuOption {
-    pub description: String,
+/// One row rendered inside a prompt suggestion dropdown.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuggestionItem {
+    /// Optional compact badge rendered before the main label.
+    pub badge: Option<String>,
+    /// Optional explanatory text rendered after the label.
+    pub detail: Option<String>,
+    /// Primary row label used for selection and insertion.
     pub label: String,
+    /// Optional trailing metadata rendered with subdued styling.
+    pub metadata: Option<String>,
 }
 
-/// Slash-command dropdown rendered above the prompt input block.
-pub struct SlashMenu<'a> {
-    pub options: Vec<SlashMenuOption>,
+/// Suggestion dropdown rendered above or alongside the prompt input block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuggestionList {
+    /// Dropdown rows in display order.
+    pub items: Vec<SuggestionItem>,
+    /// Highlighted row index in `items`.
     pub selected_index: usize,
-    pub title: &'a str,
+    /// Dropdown title shown in the rounded border chrome.
+    pub title: String,
 }
 
-/// Prompt input component with optional slash-command dropdown.
+/// Prompt input component with optional rich suggestion dropdown.
 pub struct ChatInput<'a> {
     pub placeholder: &'a str,
     active: bool,
     cursor: usize,
     input: &'a str,
-    slash_menu: Option<SlashMenu<'a>>,
+    suggestion_list: Option<&'a SuggestionList>,
     title: &'a str,
 }
 
@@ -41,7 +52,7 @@ impl<'a> ChatInput<'a> {
             active: true,
             cursor,
             input,
-            slash_menu: None,
+            suggestion_list: None,
             title,
         }
     }
@@ -63,10 +74,10 @@ impl<'a> ChatInput<'a> {
         self
     }
 
-    /// Sets the slash command menu.
+    /// Sets the suggestion dropdown shown next to the prompt input.
     #[must_use]
-    pub fn slash_menu(mut self, slash_menu: SlashMenu<'a>) -> Self {
-        self.slash_menu = Some(slash_menu);
+    pub fn suggestion_list(mut self, suggestion_list: &'a SuggestionList) -> Self {
+        self.suggestion_list = Some(suggestion_list);
         self
     }
 
@@ -113,8 +124,7 @@ impl<'a> ChatInput<'a> {
         Style::default().fg(style::palette::BORDER)
     }
 
-    /// Returns the shared block styling for slash-command and file suggestion
-    /// dropdowns.
+    /// Returns the shared block styling for prompt suggestion dropdowns.
     fn dropdown_block(title: &str) -> Block<'_> {
         let title = format!(" {title} ");
 
@@ -128,17 +138,21 @@ impl<'a> ChatInput<'a> {
             ))
     }
 
-    /// Renders the slash-command dropdown using the shared chat input chrome.
+    /// Renders the suggestion dropdown using the shared chat input chrome.
     ///
     /// This method is also used by the question-mode panel to render the
     /// at-mention file dropdown as an overlay above the input area.
-    pub(crate) fn render_slash_dropdown(f: &mut Frame, area: Rect, slash_menu: &SlashMenu<'_>) {
-        let rows = slash_menu
-            .options
+    pub(crate) fn render_suggestion_dropdown(
+        f: &mut Frame,
+        area: Rect,
+        suggestion_list: &SuggestionList,
+    ) {
+        let rows = suggestion_list
+            .items
             .iter()
             .enumerate()
-            .map(|(index, option)| {
-                let is_selected = index == slash_menu.selected_index;
+            .map(|(index, item)| {
+                let is_selected = index == suggestion_list.selected_index;
                 let prefix = if is_selected { ">" } else { " " };
                 let label_style = if is_selected {
                     Style::default()
@@ -153,14 +167,28 @@ impl<'a> ChatInput<'a> {
                     Style::default().fg(style::palette::TEXT_SUBTLE)
                 };
 
-                Line::from(vec![
-                    Span::styled(format!("{prefix} {}", option.label), label_style),
-                    Span::styled(format!("  {}", option.description), description_style),
-                ])
+                let mut spans = Vec::new();
+                spans.push(Span::styled(format!("{prefix} "), label_style));
+
+                if let Some(badge) = &item.badge {
+                    spans.push(Span::styled(format!("[{badge}] "), description_style));
+                }
+
+                spans.push(Span::styled(item.label.as_str(), label_style));
+
+                if let Some(metadata) = &item.metadata {
+                    spans.push(Span::styled(format!("  {metadata}"), description_style));
+                }
+
+                if let Some(detail) = &item.detail {
+                    spans.push(Span::styled(format!("  {detail}"), description_style));
+                }
+
+                Line::from(spans)
             })
             .collect::<Vec<_>>();
 
-        let dropdown = Paragraph::new(rows).block(Self::dropdown_block(slash_menu.title));
+        let dropdown = Paragraph::new(rows).block(Self::dropdown_block(&suggestion_list.title));
 
         f.render_widget(Clear, area);
         f.render_widget(dropdown, area);
@@ -230,13 +258,13 @@ impl<'a> ChatInput<'a> {
 
 impl Component for ChatInput<'_> {
     fn render(&self, f: &mut Frame, area: Rect) {
-        if let Some(slash_menu) = &self.slash_menu {
-            let dropdown_height = slash_menu_dropdown_height(slash_menu.options.len());
+        if let Some(suggestion_list) = &self.suggestion_list {
+            let dropdown_height = suggestion_dropdown_height(suggestion_list.items.len());
             let sections = Layout::default()
                 .constraints([Constraint::Length(dropdown_height), Constraint::Min(0)])
                 .split(area);
 
-            Self::render_slash_dropdown(f, sections[0], slash_menu);
+            Self::render_suggestion_dropdown(f, sections[0], suggestion_list);
             self.render_input(f, sections[1]);
 
             return;
@@ -267,27 +295,27 @@ mod tests {
         let input = "Hello";
         let cursor = 5;
         let placeholder = "Start typing...";
-        let slash_menu = SlashMenu {
-            options: vec![],
+        let suggestion_list = SuggestionList {
+            items: vec![],
             selected_index: 0,
-            title: "Menu",
+            title: "Menu".to_string(),
         };
 
         // Act
         let chat_input = ChatInput::new(title, input, cursor)
             .placeholder(placeholder)
-            .slash_menu(slash_menu);
+            .suggestion_list(&suggestion_list);
 
         // Assert
         assert_eq!(chat_input.title, title);
         assert_eq!(chat_input.input, input);
         assert_eq!(chat_input.cursor, cursor);
         assert_eq!(chat_input.placeholder, placeholder);
-        assert!(chat_input.slash_menu.is_some());
+        assert!(chat_input.suggestion_list.is_some());
         assert_eq!(
             chat_input
-                .slash_menu
-                .expect("slash menu should be set")
+                .suggestion_list
+                .expect("suggestion list should be set")
                 .title,
             "Menu"
         );
@@ -381,15 +409,17 @@ mod tests {
         let width = 40;
         let backend = ratatui::backend::TestBackend::new(width, 8);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
-        let slash_menu = SlashMenu {
-            options: vec![SlashMenuOption {
-                description: "Choose a model".to_string(),
+        let suggestion_list = SuggestionList {
+            items: vec![SuggestionItem {
+                badge: Some("cmd".to_string()),
+                detail: Some("Choose a model".to_string()),
                 label: "/model".to_string(),
+                metadata: Some("Enter".to_string()),
             }],
             selected_index: 0,
-            title: "Slash Command",
+            title: "Prompt Suggestion".to_string(),
         };
-        let chat_input = ChatInput::new("Prompt", "/", 1).slash_menu(slash_menu);
+        let chat_input = ChatInput::new("Prompt", "/", 1).suggestion_list(&suggestion_list);
 
         // Act
         terminal
@@ -402,7 +432,7 @@ mod tests {
         // Assert
         let top_row = buffer_row_text(terminal.backend().buffer(), 0, width);
         assert!(top_row.starts_with("╭"));
-        assert!(top_row.contains(" Slash Command "));
+        assert!(top_row.contains(" Prompt Suggestion "));
         assert!(top_row.contains("╮"));
     }
 }

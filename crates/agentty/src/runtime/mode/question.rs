@@ -1,14 +1,13 @@
 use crossterm::event::{self, KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 
-use crate::app::{App, AppEvent};
+use crate::app::App;
 use crate::domain::input::InputState;
 use crate::domain::session::Status;
 use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::channel::TurnPrompt;
-use crate::infra::file_index;
 use crate::runtime::EventResult;
-use crate::runtime::mode::input_key;
+use crate::runtime::mode::{at_mention, input_key};
 use crate::ui::page::session_chat::SessionChatPage;
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode, QuestionFocus};
 use crate::ui::state::prompt::PromptAtMentionState;
@@ -497,7 +496,7 @@ fn handle_at_mention_key(app: &mut App, key: KeyEvent) -> bool {
 /// dropdown is not yet visible. Resets the selection index when already open.
 /// Dismisses the dropdown when the cursor moves away from any `@` token.
 fn sync_question_at_mention_state(app: &mut App) {
-    let (has_at_mention_query, has_at_mention_state, session_id) = match &app.mode {
+    let (session_id, sync_action) = match &app.mode {
         AppMode::Question {
             at_mention_state,
             input,
@@ -505,32 +504,25 @@ fn sync_question_at_mention_state(app: &mut App) {
             session_id,
             ..
         } => (
-            input.at_mention_query().is_some(),
-            at_mention_state.is_some(),
             session_id.clone(),
+            at_mention::sync_action(input, at_mention_state.as_ref()),
         ),
         _ => return,
     };
 
-    if !has_at_mention_query {
-        dismiss_question_at_mention(app);
-
-        return;
-    }
-
-    if has_at_mention_state {
-        if let AppMode::Question {
-            at_mention_state: Some(state),
-            ..
-        } = &mut app.mode
-        {
-            state.selected_index = 0;
+    match sync_action {
+        at_mention::AtMentionSyncAction::Activate => activate_question_at_mention(app, &session_id),
+        at_mention::AtMentionSyncAction::Dismiss => dismiss_question_at_mention(app),
+        at_mention::AtMentionSyncAction::KeepOpen => {
+            if let AppMode::Question {
+                at_mention_state: Some(state),
+                ..
+            } = &mut app.mode
+            {
+                at_mention::reset_selection(state);
+            }
         }
-
-        return;
     }
-
-    activate_question_at_mention(app, &session_id);
 }
 
 /// Starts asynchronous loading of file entries for the question-mode
@@ -548,17 +540,7 @@ fn activate_question_at_mention(app: &mut App, session_id: &str) {
     let owned_session_id = session_id.to_string();
     let event_tx = app.services.event_sender();
 
-    tokio::spawn(async move {
-        let entries = tokio::task::spawn_blocking(move || file_index::list_files(&session_folder))
-            .await
-            .unwrap_or_default();
-
-        // Fire-and-forget: receiver may be dropped during shutdown.
-        let _ = event_tx.send(AppEvent::AtMentionEntriesLoaded {
-            entries,
-            session_id: owned_session_id,
-        });
-    });
+    at_mention::start_loading_entries(event_tx, session_folder, owned_session_id);
 
     if let AppMode::Question {
         at_mention_state, ..
@@ -574,7 +556,7 @@ fn dismiss_question_at_mention(app: &mut App) {
         at_mention_state, ..
     } = &mut app.mode
     {
-        *at_mention_state = None;
+        at_mention::dismiss(at_mention_state);
     }
 }
 
@@ -585,79 +567,44 @@ fn handle_question_at_mention_up(app: &mut App) {
         ..
     } = &mut app.mode
     {
-        state.selected_index = state.selected_index.saturating_sub(1);
+        at_mention::move_selection_up(state);
     }
 }
 
 /// Moves the at-mention selection down in question mode.
 fn handle_question_at_mention_down(app: &mut App) {
-    let filtered_count = match &app.mode {
-        AppMode::Question {
-            at_mention_state: Some(state),
-            input,
-            ..
-        } => {
-            let query = input
-                .at_mention_query()
-                .map_or(String::new(), |(_, query)| query);
-
-            file_index::filter_entries(&state.all_entries, &query).len()
-        }
-        _ => return,
-    };
-
     if let AppMode::Question {
         at_mention_state: Some(state),
+        input,
         ..
     } = &mut app.mode
     {
-        let max_index = filtered_count.saturating_sub(1);
-        state.selected_index = (state.selected_index + 1).min(max_index);
+        at_mention::move_selection_down(input, state);
     }
 }
 
 /// Selects the currently highlighted file and inserts it into the question
 /// input.
 fn handle_question_at_mention_select(app: &mut App) {
-    let mut should_dismiss = false;
     let replacement = match &app.mode {
         AppMode::Question {
             at_mention_state: Some(state),
             input,
             ..
-        } => {
-            if let Some((at_start, query)) = input.at_mention_query() {
-                let filtered = file_index::filter_entries(&state.all_entries, &query);
-                let clamped_index = state.selected_index.min(filtered.len().saturating_sub(1));
-
-                filtered.get(clamped_index).map(|entry| {
-                    let path = if entry.is_dir {
-                        format!("@{}/ ", entry.path)
-                    } else {
-                        format!("@{} ", entry.path)
-                    };
-
-                    (at_start, input.cursor, path)
-                })
-            } else {
-                should_dismiss = true;
-
-                None
-            }
-        }
+        } => at_mention::selected_replacement(input, state),
         _ => return,
     };
 
-    if should_dismiss {
+    if replacement.is_none() {
         dismiss_question_at_mention(app);
 
         return;
     }
 
-    if let Some((at_start, cursor, text)) = replacement
+    if let Some(selection) = replacement
         && let AppMode::Question { input, .. } = &mut app.mode
     {
-        input.replace_range(at_start, cursor, &text);
+        input.replace_range(selection.at_start, selection.cursor, &selection.text);
     }
 
     sync_question_at_mention_state(app);

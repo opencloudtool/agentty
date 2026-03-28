@@ -4,12 +4,11 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
-use crate::app::{App, AppEvent, SessionStatsUsage};
+use crate::app::{App, SessionStatsUsage};
 use crate::domain::agent::AgentKind;
 use crate::domain::input::InputState;
 use crate::infra::channel::{TurnPrompt, TurnPromptAttachment};
-use crate::infra::file_index;
-use crate::runtime::mode::input_key;
+use crate::runtime::mode::{at_mention, input_key};
 use crate::runtime::{EventResult, clipboard_image};
 use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode};
 use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
@@ -242,38 +241,30 @@ fn sync_prompt_at_mention_state(app: &mut App) {
         return;
     };
 
-    let (has_at_mention_query, has_at_mention_state) = match &app.mode {
+    let sync_action = match &app.mode {
         AppMode::Prompt {
             at_mention_state,
             input,
             ..
-        } => (
-            input.at_mention_query().is_some(),
-            at_mention_state.is_some(),
-        ),
+        } => at_mention::sync_action(input, at_mention_state.as_ref()),
         _ => return,
     };
 
-    if !has_at_mention_query {
-        dismiss_at_mention(app);
-
-        return;
-    }
-
-    if has_at_mention_state {
-        if let AppMode::Prompt {
-            at_mention_state: Some(state),
-            ..
-        } = &mut app.mode
-        {
-            state.selected_index = 0;
+    match sync_action {
+        at_mention::AtMentionSyncAction::Activate if !prompt_context.is_slash_command => {
+            activate_at_mention(app, &prompt_context);
         }
-
-        return;
-    }
-
-    if !prompt_context.is_slash_command {
-        activate_at_mention(app, &prompt_context);
+        at_mention::AtMentionSyncAction::Dismiss => dismiss_at_mention(app),
+        at_mention::AtMentionSyncAction::KeepOpen => {
+            if let AppMode::Prompt {
+                at_mention_state: Some(state),
+                ..
+            } = &mut app.mode
+            {
+                at_mention::reset_selection(state);
+            }
+        }
+        at_mention::AtMentionSyncAction::Activate => {}
     }
 }
 
@@ -1152,17 +1143,7 @@ fn activate_at_mention(app: &mut App, prompt_context: &PromptContext) {
     let session_id = prompt_context.session_id.clone();
     let event_tx = app.services.event_sender();
 
-    tokio::spawn(async move {
-        let entries = tokio::task::spawn_blocking(move || file_index::list_files(&session_folder))
-            .await
-            .unwrap_or_default();
-
-        // Fire-and-forget: receiver may be dropped during shutdown.
-        let _ = event_tx.send(AppEvent::AtMentionEntriesLoaded {
-            entries,
-            session_id,
-        });
-    });
+    at_mention::start_loading_entries(event_tx, session_folder, session_id);
 
     if let AppMode::Prompt {
         at_mention_state, ..
@@ -1178,7 +1159,7 @@ fn dismiss_at_mention(app: &mut App) {
         at_mention_state, ..
     } = &mut app.mode
     {
-        *at_mention_state = None;
+        at_mention::dismiss(at_mention_state);
     }
 }
 
@@ -1189,78 +1170,43 @@ fn handle_at_mention_up(app: &mut App) {
         ..
     } = &mut app.mode
     {
-        state.selected_index = state.selected_index.saturating_sub(1);
+        at_mention::move_selection_up(state);
     }
 }
 
 /// Moves the at-mention selection down.
 fn handle_at_mention_down(app: &mut App) {
-    let filtered_count = match &app.mode {
-        AppMode::Prompt {
-            at_mention_state: Some(state),
-            input,
-            ..
-        } => {
-            let query = input
-                .at_mention_query()
-                .map_or(String::new(), |(_, query)| query);
-
-            file_index::filter_entries(&state.all_entries, &query).len()
-        }
-        _ => return,
-    };
-
     if let AppMode::Prompt {
         at_mention_state: Some(state),
+        input,
         ..
     } = &mut app.mode
     {
-        let max_index = filtered_count.saturating_sub(1);
-        state.selected_index = (state.selected_index + 1).min(max_index);
+        at_mention::move_selection_down(input, state);
     }
 }
 
 /// Selects the currently highlighted file and inserts it into the input.
 fn handle_at_mention_select(app: &mut App) {
-    let mut should_dismiss = false;
     let replacement = match &app.mode {
         AppMode::Prompt {
             at_mention_state: Some(state),
             input,
             ..
-        } => {
-            if let Some((at_start, query)) = input.at_mention_query() {
-                let filtered = file_index::filter_entries(&state.all_entries, &query);
-                let clamped_index = state.selected_index.min(filtered.len().saturating_sub(1));
-
-                filtered.get(clamped_index).map(|entry| {
-                    let path = if entry.is_dir {
-                        format!("@{}/ ", entry.path)
-                    } else {
-                        format!("@{} ", entry.path)
-                    };
-
-                    (at_start, input.cursor, path)
-                })
-            } else {
-                should_dismiss = true;
-
-                None
-            }
-        }
+        } => at_mention::selected_replacement(input, state),
         _ => return,
     };
 
-    if should_dismiss {
+    if replacement.is_none() {
         dismiss_at_mention(app);
 
         return;
     }
 
-    if let Some((at_start, cursor, text)) = replacement
+    if let Some(selection) = replacement
         && let AppMode::Prompt { input, .. } = &mut app.mode
     {
-        input.replace_range(at_start, cursor, &text);
+        input.replace_range(selection.at_start, selection.cursor, &selection.text);
     }
 
     dismiss_at_mention(app);

@@ -21,7 +21,7 @@ pub use crate::ui::layout::{
     CHAT_INPUT_MAX_VISIBLE_LINES, calculate_input_height, calculate_input_viewport,
     centered_content_rect, centered_horizontal_layout, compute_input_layout,
     first_table_column_width, input_cursor_position, move_input_cursor_down, move_input_cursor_up,
-    placeholder_cursor_position, question_panel_layout, slash_menu_dropdown_height,
+    placeholder_cursor_position, question_panel_layout, suggestion_dropdown_height,
 };
 pub use crate::ui::text_util::{
     format_duration_compact, format_token_count, split_trailing_line_block,

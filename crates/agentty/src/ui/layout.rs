@@ -199,8 +199,8 @@ pub fn input_cursor_position(area: Rect, cursor_x: u16, cursor_row: u16) -> (u16
     )
 }
 
-/// Calculates slash-command dropdown height, including top and bottom borders.
-pub fn slash_menu_dropdown_height(option_count: usize) -> u16 {
+/// Calculates suggestion-dropdown height, including top and bottom borders.
+pub fn suggestion_dropdown_height(option_count: usize) -> u16 {
     u16::try_from(option_count)
         .unwrap_or(u16::MAX)
         .saturating_add(SLASH_MENU_BORDER_HEIGHT)
@@ -679,24 +679,24 @@ mod tests {
     }
 
     #[test]
-    fn test_slash_menu_dropdown_height_includes_border_lines() {
+    fn test_suggestion_dropdown_height_includes_border_lines() {
         // Arrange
         let option_count = 4;
 
         // Act
-        let dropdown_height = slash_menu_dropdown_height(option_count);
+        let dropdown_height = suggestion_dropdown_height(option_count);
 
         // Assert
         assert_eq!(dropdown_height, 6);
     }
 
     #[test]
-    fn test_slash_menu_dropdown_height_saturates_at_u16_max() {
+    fn test_suggestion_dropdown_height_saturates_at_u16_max() {
         // Arrange
         let option_count = usize::MAX;
 
         // Act
-        let dropdown_height = slash_menu_dropdown_height(option_count);
+        let dropdown_height = suggestion_dropdown_height(option_count);
 
         // Assert
         assert_eq!(dropdown_height, u16::MAX);
