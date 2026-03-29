@@ -9,7 +9,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 | Follow-up task workflow | Persisted follow-up tasks now launch sibling sessions from session view, and launched/open state survives refresh, reopen, and restart flows. | Landed |
 | Review request publish flow | Review sessions still expose one generic `p` branch-publish action; GitHub only gets a post-push pull-request creation link, while GitLab uses the same publish flow. | Partial |
 | Model availability scoping | `/model` and settings still cycle through the full static backend catalog even when one or more agent CLIs are not installed on the current machine. | Missing |
-| Draft session workflow | `New` sessions are still blank placeholders whose first submitted prompt starts the agent immediately, so users cannot stage multiple draft messages and explicitly launch the session later. | Missing |
+| Draft session workflow | `Shift+A` now creates explicit draft sessions that persist ordered staged draft messages, while `a` keeps the immediate-start first-prompt flow. | Landed |
 | Session activity timing | `session` persists cumulative `InProgress` timing fields, and both chat and the grouped session list now show the same cumulative active-work timer. | Landed |
 | Deterministic scenario coverage | Local git tests exist, but there is no shared app-level scenario harness for a full local session workflow. | Partial |
 | Typed errors and hygiene | `DbError`, `GitError`, `AppServerTransportError`, `AppServerError`, `AgentError`, `SessionError`, and `AppError` enums propagate typed errors through all infra and app-layer boundaries; module-level regression tests cover session access, review replay, agent backend, CLI error formatting, and stdin write helpers; convention cleanup remains open. | Partial |
@@ -93,41 +93,12 @@ Pressing `p` in `Review` creates or refreshes the session pull request for GitHu
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/runtime-flow.md` to explain that `p` creates or refreshes GitHub pull requests while non-GitHub remotes continue to use the branch-publish flow.
 
-### [64c9bb7f-4d11-4c3c-b2ad-4a86db9bd6c9] Workflow: Stage draft session messages and start them explicitly
-
-#### Assignee
-
-`@minev-dev`
-
-#### Why now
-
-`New` sessions still burn the first prompt immediately, which prevents users from staging multi-message context before launch and leaves the follow-up draft-polish card blocked on a missing baseline workflow.
-
-#### Usable outcome
-
-Users can queue ordered draft messages inside a `New` session, reopen that session without losing the staged bundle, and explicitly launch the first agent turn only when the draft is ready.
-
-#### Substeps
-
-- [ ] **Persist staged draft messages for `New` sessions.** Extend `crates/agentty/src/domain/session.rs`, `crates/agentty/src/infra/db.rs`, the required migration under `crates/agentty/migrations/`, and `crates/agentty/src/app/session/workflow/load.rs` so each `Status::New` session can store and reload an ordered draft-message bundle instead of only one transient composer state.
-- [ ] **Switch first-submit behavior from immediate launch to staging.** Update `crates/agentty/src/runtime/mode/prompt.rs`, `crates/agentty/src/app/core.rs`, and `crates/agentty/src/app/session/workflow/lifecycle.rs` so submitting from a `New` session appends one staged `TurnPrompt` entry, while a dedicated start action submits the full staged bundle as the first live agent turn.
-- [ ] **Render staged drafts and the explicit start affordance.** Update `crates/agentty/src/runtime/mode/session_view.rs`, `crates/agentty/src/ui/page/session_chat.rs`, and `crates/agentty/src/ui/state/help_action.rs` so `New` sessions show the queued draft bundle, distinguish staging from sending in composer/help text, and expose a clear explicit-start action.
-
-#### Tests
-
-- [ ] Add or extend coverage in `crates/agentty/src/app/session/workflow/lifecycle.rs`, `crates/agentty/src/app/session/core.rs`, `crates/agentty/src/runtime/mode/prompt.rs`, `crates/agentty/src/infra/db.rs`, and `crates/agentty/src/ui/page/session_chat.rs` for staged-draft persistence, ordered reload, explicit launch, and the `New`-session UI state.
-
-#### Docs
-
-- [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/getting-started/overview.md` for the staged-draft workflow, explicit start action, and the meaning of `New` sessions after this slice lands.
-
 ## Ready Now Execution Order
 
 ```mermaid
 flowchart TD
     R1["[28de2b07] Agents: local model availability"]
     R2["[ca014af3] Forge: GitHub review request publish"]
-    R3["[64c9bb7f] Workflow: staged draft-session launch"]
 ```
 
 ## Queued Next
@@ -140,7 +111,7 @@ Refine the draft-session UX with edit/remove affordances and any transcript/titl
 
 #### Promote when
 
-Promote after `Workflow: Stage draft session messages and start them explicitly` lands and real usage clarifies which draft-editing actions are worth standardizing.
+Promote after the explicit `Shift+A` draft-session baseline sees enough use to clarify which edit/remove affordances are worth standardizing.
 
 #### Depends on
 
@@ -208,7 +179,7 @@ Promote when a `Ready Now` slot opens and the active workflow and model-availabi
 
 - `Forge: Replace GitHub branch publish with create or update pull request` should reuse the existing `ag-forge` review-request create/refresh flow and keep GitLab on the current push-only branch-publish path.
 - `Agents: Scope model lists to locally available backends` should reuse one shared availability snapshot across Settings and `/model` instead of probing CLIs separately in render paths.
-- `Workflow: Stage draft session messages and start them explicitly` should treat `Status::New` as the persisted draft container instead of introducing a second pre-start lifecycle status.
+- `Workflow: Stage draft session messages and start them explicitly` should keep using `Status::New` for draft sessions instead of introducing a second pre-start lifecycle status.
 - The parked local session harness slice should come back only when the active workflow and model-availability changes stop churning the same lifecycle seams.
 - The typed-error migration and module-test backfill are both complete. Convention cleanup remains open in the parked sweep card.
 - `Delivery: Add project commit strategy selection` should define the landing policy at the Agentty project level so merge and publish actions can present the right default path for each managed repository.

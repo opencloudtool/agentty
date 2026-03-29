@@ -25,7 +25,9 @@ When you start a session, Agentty does the operational heavy lifting for workflo
 ## Typical Flow
 
 1. Open a repository and start `agentty`.
-1. Start a new session from the UI and ask for changes.
+1. Press `a` for a regular session or `Shift+A` for a draft session.
+1. For regular sessions, type the first prompt and press `Enter` to start immediately.
+1. For draft sessions, stage one or more draft messages, then press `s` to start the bundle.
 1. Let the agent modify files in its worktree.
 1. Review the diff (`d`) and decide to apply or discard.
 

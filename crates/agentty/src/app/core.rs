@@ -949,6 +949,29 @@ impl App {
             .sessions
             .create_session(&self.projects, &self.services)
             .await?;
+        self.finish_session_creation(&session_id).await;
+
+        Ok(session_id)
+    }
+
+    /// Creates a blank draft session and schedules list refresh through
+    /// events.
+    ///
+    /// # Errors
+    /// Returns an error if worktree or persistence setup fails.
+    pub async fn create_draft_session(&mut self) -> Result<String, AppError> {
+        let session_id = self
+            .sessions
+            .create_draft_session(&self.projects, &self.services)
+            .await?;
+        self.finish_session_creation(&session_id).await;
+
+        Ok(session_id)
+    }
+
+    /// Applies the shared post-create refresh and selection flow for a new
+    /// session.
+    async fn finish_session_creation(&mut self, session_id: &str) {
         self.process_pending_app_events().await;
         self.reload_projects().await;
 
@@ -959,8 +982,6 @@ impl App {
             .position(|session| session.id == session_id)
             .unwrap_or(0);
         self.sessions.table_state.select(Some(index));
-
-        Ok(session_id)
     }
 
     /// Submits the initial prompt for a newly created session.
@@ -975,6 +996,34 @@ impl App {
         Ok(self
             .sessions
             .start_session(&self.services, session_id, prompt)
+            .await?)
+    }
+
+    /// Persists one staged draft message for a `New` session without
+    /// launching the agent.
+    ///
+    /// # Errors
+    /// Returns an error if the session cannot accept more staged drafts.
+    pub async fn stage_draft_message(
+        &mut self,
+        session_id: &str,
+        prompt: impl Into<TurnPrompt>,
+    ) -> Result<(), AppError> {
+        Ok(self
+            .sessions
+            .stage_draft_message(&self.services, session_id, prompt)
+            .await?)
+    }
+
+    /// Starts a `New` session from its persisted staged draft bundle.
+    ///
+    /// # Errors
+    /// Returns an error if the session is missing, has no staged drafts, or
+    /// launch enqueue fails.
+    pub async fn start_staged_session(&mut self, session_id: &str) -> Result<(), AppError> {
+        Ok(self
+            .sessions
+            .start_staged_session(&self.services, session_id)
             .await?)
     }
 
@@ -3127,11 +3176,13 @@ mod tests {
         Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: session_folder,
             follow_up_tasks: Vec::new(),
             id: "session-1".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "test-project".to_string(),

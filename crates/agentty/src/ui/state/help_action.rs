@@ -1,7 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::domain::session::{FollowUpTaskAction, PublishBranchAction};
+use crate::domain::session::{FollowUpTaskAction, PublishBranchAction, Session, Status};
 
 /// One user-visible shortcut entry that can be rendered in the footer and
 /// in the help popup.
@@ -45,6 +45,9 @@ pub enum ViewSessionState {
     /// Session is in merge-queue processing; only read-only navigation
     /// shortcuts are available.
     MergeQueue,
+    /// Session is still collecting staged draft messages before its first
+    /// live turn starts.
+    NewSession,
     /// Session is ready for review; reply, worktree-open, merge, rebase,
     /// review, and diff shortcuts are available.
     Review,
@@ -68,6 +71,22 @@ pub(crate) struct ViewHelpState {
     pub(crate) session_state: ViewSessionState,
 }
 
+/// Maps one session snapshot into the shared view-mode shortcut state used by
+/// both runtime handlers and footer rendering.
+pub(crate) fn session_view_state(session: &Session) -> ViewSessionState {
+    match session.status {
+        Status::Done => ViewSessionState::Done,
+        Status::Canceled => ViewSessionState::Canceled,
+        Status::InProgress => ViewSessionState::InProgress,
+        Status::New if session.is_draft_session() => ViewSessionState::NewSession,
+        Status::New => ViewSessionState::Interactive,
+        Status::Rebasing => ViewSessionState::Rebasing,
+        Status::Merging | Status::Queued => ViewSessionState::MergeQueue,
+        Status::Review => ViewSessionState::Review,
+        _ => ViewSessionState::Interactive,
+    }
+}
+
 /// Returns help actions for the sessions page in list mode.
 /// These entries are used by the help overlay and include all available
 /// actions.
@@ -81,6 +100,11 @@ pub(crate) fn session_list_actions(
         "start new session",
         "a",
         "Start new session",
+    ));
+    actions.push(HelpAction::new(
+        "start draft session",
+        "Shift+A",
+        "Start draft session",
     ));
 
     if can_delete_selected_session {
@@ -132,6 +156,11 @@ pub(crate) fn session_list_footer_actions(can_open_selected_session: bool) -> Ve
         "start new session",
         "a",
         "Start new session",
+    ));
+    actions.push(HelpAction::new(
+        "start draft",
+        "Shift+A",
+        "Start draft session",
     ));
 
     if can_open_selected_session {
@@ -194,12 +223,13 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
         state.session_state,
         ViewSessionState::Interactive
             | ViewSessionState::InProgress
+            | ViewSessionState::NewSession
             | ViewSessionState::Rebasing
             | ViewSessionState::Review
     );
     let can_edit_session = matches!(
         state.session_state,
-        ViewSessionState::Interactive | ViewSessionState::Review
+        ViewSessionState::Interactive | ViewSessionState::NewSession | ViewSessionState::Review
     );
     let can_show_diff = state.session_state == ViewSessionState::Review;
     let can_show_review = state.session_state == ViewSessionState::Review;
@@ -208,7 +238,11 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
     let mut actions = vec![HelpAction::new("back", "q", "Back to list")];
 
     if can_edit_session {
-        actions.push(HelpAction::new("reply", "Enter", "Reply"));
+        actions.push(prompt_action_help_action(state.session_state));
+    }
+
+    if state.session_state == ViewSessionState::NewSession {
+        actions.push(HelpAction::new("start", "s", "Start staged session"));
     }
 
     if can_open_worktree {
@@ -276,26 +310,19 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
         state.session_state,
         ViewSessionState::Interactive
             | ViewSessionState::InProgress
+            | ViewSessionState::NewSession
             | ViewSessionState::Rebasing
             | ViewSessionState::Review
     );
     let can_edit_session = matches!(
         state.session_state,
-        ViewSessionState::Interactive | ViewSessionState::Review
+        ViewSessionState::Interactive | ViewSessionState::NewSession | ViewSessionState::Review
     );
     let can_show_review = state.session_state == ViewSessionState::Review;
 
     let mut actions = vec![HelpAction::new("back", "q", "Back to list")];
 
-    if can_edit_session {
-        actions.push(HelpAction::new("reply", "Enter", "Reply"));
-        actions.push(HelpAction::new(
-            "add to merge queue",
-            "m",
-            "Add to merge queue",
-        ));
-        actions.push(HelpAction::new("rebase", "r", "Rebase"));
-    }
+    append_view_footer_edit_actions(&mut actions, state.session_state, can_edit_session);
 
     if can_open_worktree {
         actions.push(HelpAction::new("open", "o", "Open worktree"));
@@ -334,6 +361,45 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
     actions.push(HelpAction::new("help", "?", "Help"));
 
     actions
+}
+
+/// Appends footer actions that operate on an editable session in their
+/// canonical order.
+///
+/// The explicit draft-session start action stays grouped with the prompt,
+/// merge, and rebase controls so future edits do not accidentally apply a
+/// different guard to one of those related actions.
+fn append_view_footer_edit_actions(
+    actions: &mut Vec<HelpAction>,
+    session_state: ViewSessionState,
+    can_edit_session: bool,
+) {
+    if !can_edit_session {
+        return;
+    }
+
+    actions.push(prompt_action_help_action(session_state));
+
+    if session_state == ViewSessionState::NewSession {
+        actions.push(HelpAction::new("start", "s", "Start staged session"));
+    }
+
+    actions.push(HelpAction::new(
+        "add to merge queue",
+        "m",
+        "Add to merge queue",
+    ));
+    actions.push(HelpAction::new("rebase", "r", "Rebase"));
+}
+
+/// Returns the prompt-entry action label appropriate for the current session
+/// state.
+fn prompt_action_help_action(session_state: ViewSessionState) -> HelpAction {
+    if session_state == ViewSessionState::NewSession {
+        return HelpAction::new("add draft", "Enter", "Add draft");
+    }
+
+    HelpAction::new("reply", "Enter", "Reply")
 }
 
 /// Returns help entries for diff-mode actions.
@@ -466,6 +532,7 @@ mod tests {
 
         // Assert
         assert!(actions.iter().any(|action| action.key == "a"));
+        assert!(actions.iter().any(|action| action.key == "Shift+A"));
     }
 
     #[test]
@@ -488,6 +555,7 @@ mod tests {
 
         // Assert
         assert!(actions.iter().any(|action| action.key == "Enter"));
+        assert!(actions.iter().any(|action| action.key == "Shift+A"));
         assert!(!actions.iter().any(|action| action.key == "d"));
         assert!(!actions.iter().any(|action| action.key == "c"));
         assert!(!actions.iter().any(|action| action.key == "Tab"));
@@ -604,6 +672,28 @@ mod tests {
     }
 
     #[test]
+    fn test_view_actions_new_session_shows_add_draft_and_start() {
+        // Arrange
+        let state = ViewHelpState {
+            follow_up_task_action: None,
+            has_multiple_follow_up_tasks: false,
+            publish_branch_action: None,
+            session_state: ViewSessionState::NewSession,
+        };
+
+        // Act
+        let actions = view_actions(state);
+
+        // Assert
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.key == "Enter" && action.footer_label == "add draft")
+        );
+        assert!(actions.iter().any(|action| action.key == "s"));
+    }
+
+    #[test]
     fn test_view_actions_done_shows_toggle_and_hides_edit_actions() {
         // Arrange
         let state = ViewHelpState {
@@ -666,6 +756,24 @@ mod tests {
         assert!(actions.iter().any(|action| action.key == "p"));
         assert!(!actions.iter().any(|action| action.key == "Ctrl+c"));
         assert!(!actions.iter().any(|action| action.key == "Enter"));
+    }
+
+    #[test]
+    fn test_view_footer_actions_new_session_keeps_edit_actions_grouped() {
+        // Arrange
+        let state = ViewHelpState {
+            follow_up_task_action: None,
+            has_multiple_follow_up_tasks: false,
+            publish_branch_action: None,
+            session_state: ViewSessionState::NewSession,
+        };
+
+        // Act
+        let actions = view_footer_actions(state);
+        let ordered_keys = actions.iter().map(|action| action.key).collect::<Vec<_>>();
+
+        // Assert
+        assert_eq!(&ordered_keys[..5], ["q", "Enter", "s", "m", "r"]);
     }
 
     #[test]

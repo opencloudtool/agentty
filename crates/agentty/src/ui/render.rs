@@ -248,11 +248,13 @@ mod tests {
         Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::from(folder),
             follow_up_tasks: Vec::new(),
             id: session_id.to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "project".to_string(),

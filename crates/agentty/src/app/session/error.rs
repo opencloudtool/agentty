@@ -22,6 +22,10 @@ pub enum SessionError {
     #[error("{0}")]
     Db(#[from] crate::infra::db::DbError),
 
+    /// A filesystem boundary operation failed.
+    #[error("{0}")]
+    Fs(#[from] crate::infra::fs::FsError),
+
     /// An app-server operation failed.
     #[error("{0}")]
     AppServer(#[from] crate::infra::app_server::AppServerError),

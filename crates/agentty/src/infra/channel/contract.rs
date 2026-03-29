@@ -15,7 +15,7 @@ use crate::infra::agent::AgentResponse;
 pub type AgentFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// One local image attachment referenced from a prompt placeholder.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct TurnPromptAttachment {
     /// Inline placeholder token such as `[Image #1]` used in prompt text.
     pub placeholder: String,
@@ -24,7 +24,7 @@ pub struct TurnPromptAttachment {
 }
 
 /// Structured prompt payload for one agent turn.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct TurnPrompt {
     /// Ordered local image attachments referenced by `text`.
     pub attachments: Vec<TurnPromptAttachment>,

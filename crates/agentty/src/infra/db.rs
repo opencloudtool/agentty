@@ -152,6 +152,7 @@ pub struct SessionRow {
     pub in_progress_started_at: Option<i64>,
     pub in_progress_total_seconds: i64,
     pub input_tokens: i64,
+    pub is_draft: bool,
     pub model: String,
     pub output: String,
     pub output_tokens: i64,
@@ -284,6 +285,7 @@ struct SessionJoinRow {
     in_progress_started_at: Option<i64>,
     in_progress_total_seconds: i64,
     input_tokens: i64,
+    is_draft: bool,
     model: String,
     output: String,
     output_tokens: i64,
@@ -319,6 +321,7 @@ impl SessionJoinRow {
             in_progress_started_at,
             in_progress_total_seconds,
             input_tokens,
+            is_draft,
             model,
             output,
             output_tokens,
@@ -364,6 +367,7 @@ impl SessionJoinRow {
             in_progress_started_at,
             in_progress_total_seconds,
             input_tokens,
+            is_draft,
             model,
             output,
             output_tokens,
@@ -636,16 +640,51 @@ WHERE id = ?
         status: &str,
         project_id: i64,
     ) -> Result<(), DbError> {
+        self.insert_session_with_draft_mode(id, model, base_branch, status, false, project_id)
+            .await
+    }
+
+    /// Inserts a newly created draft-session row.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be inserted.
+    pub async fn insert_draft_session(
+        &self,
+        id: &str,
+        model: &str,
+        base_branch: &str,
+        status: &str,
+        project_id: i64,
+    ) -> Result<(), DbError> {
+        self.insert_session_with_draft_mode(id, model, base_branch, status, true, project_id)
+            .await
+    }
+
+    /// Inserts one newly created session row with explicit draft-mode
+    /// persistence.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be inserted.
+    async fn insert_session_with_draft_mode(
+        &self,
+        id: &str,
+        model: &str,
+        base_branch: &str,
+        status: &str,
+        is_draft: bool,
+        project_id: i64,
+    ) -> Result<(), DbError> {
         sqlx::query(
             r"
-INSERT INTO session (id, model, base_branch, status, project_id, prompt, output)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO session (id, model, base_branch, status, is_draft, project_id, prompt, output)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ",
         )
         .bind(id)
         .bind(model)
         .bind(base_branch)
         .bind(status)
+        .bind(is_draft)
         .bind(project_id)
         .bind("")
         .bind("")
@@ -716,6 +755,7 @@ SELECT session.base_branch AS "base_branch!",
        session.in_progress_started_at,
        session.in_progress_total_seconds AS "in_progress_total_seconds!",
        session.input_tokens AS "input_tokens!",
+       session.is_draft AS "is_draft!: bool",
        session.model AS "model!",
        session.output AS "output!",
        session.output_tokens AS "output_tokens!",
@@ -770,6 +810,7 @@ SELECT session.base_branch AS "base_branch!",
        session.in_progress_started_at,
        session.in_progress_total_seconds AS "in_progress_total_seconds!",
        session.input_tokens AS "input_tokens!",
+       session.is_draft AS "is_draft!: bool",
        session.model AS "model!",
        session.output AS "output!",
        session.output_tokens AS "output_tokens!",
@@ -2177,7 +2218,6 @@ mod tests {
     use super::*;
     use crate::agent::AgentModel;
     use crate::domain::session::{ForgeKind, ReviewRequestState, ReviewRequestSummary};
-
     /// Environment flag used to run the DST regression helper in an isolated
     /// subprocess with a fixed timezone.
     const DST_TEST_SUBPROCESS_ENV: &str = "AGENTTY_DST_TEST_SUBPROCESS";
@@ -2322,6 +2362,7 @@ WHERE id = ?
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
             input_tokens: 11,
+            is_draft: false,
             model: "gpt-5.3-codex".to_string(),
             output: "Saved output".to_string(),
             output_tokens: 29,

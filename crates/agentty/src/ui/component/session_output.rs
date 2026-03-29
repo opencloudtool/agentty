@@ -15,6 +15,8 @@ use crate::ui::{Component, style, text_util};
 const USER_PROMPT_PREFIX: &str = " › ";
 const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
 const CLARIFICATION_HEADER_LINE: &str = " › Clarifications:";
+const DRAFT_PREVIEW_HEADER: &str = "## Staged Drafts [Preview]";
+const DRAFT_PREVIEW_NOTE: &str = "Press `s` in session view to start the staged bundle.";
 /// Markdown heading used for synthetic follow-up-task rendering.
 const FOLLOW_UP_TASK_HEADER: &str = "Follow-Up Tasks";
 const TRANSCRIPT_FOOTER_PREFIXES: &[&str] = &["[Commit]", "[Commit Error]"];
@@ -258,6 +260,9 @@ impl<'a> SessionOutput<'a> {
         }
 
         match session.status {
+            Status::New if session.is_draft_session() && session.has_staged_drafts() => {
+                return Self::render_staged_draft_preview(session);
+            }
             Status::Done if done_session_output_mode == DoneSessionOutputMode::Summary => {
                 return Self::render_summary_text(Self::session_summary_text(session));
             }
@@ -275,6 +280,35 @@ impl<'a> SessionOutput<'a> {
         }
 
         session.output.clone()
+    }
+
+    /// Renders the locally staged draft bundle shown while a draft session
+    /// remains in `New`.
+    fn render_staged_draft_preview(session: &Session) -> String {
+        let mut output = format!("{DRAFT_PREVIEW_HEADER}\n\n{DRAFT_PREVIEW_NOTE}\n\n");
+
+        output.push_str(&Self::staged_draft_transcript_block(&session.prompt));
+
+        output
+    }
+
+    /// Formats the staged draft-session prompt using the same transcript
+    /// prompt markers used for persisted user-turn output.
+    fn staged_draft_transcript_block(prompt_text: &str) -> String {
+        let prompt_lines = prompt_text.split('\n').collect::<Vec<_>>();
+        let mut formatted_lines = Vec::with_capacity(prompt_lines.len());
+
+        for (index, prompt_line) in prompt_lines.into_iter().enumerate() {
+            let prefix = if index == 0 {
+                USER_PROMPT_PREFIX
+            } else {
+                USER_PROMPT_CONTINUATION_PREFIX
+            };
+
+            formatted_lines.push(format!("{prefix}{prompt_line}"));
+        }
+
+        format!("{}\n\n", formatted_lines.join("\n"))
     }
 
     /// Returns the persisted raw summary payload or plain-text fallback.
@@ -646,7 +680,6 @@ mod tests {
             selected_follow_up_task_position,
         }
     }
-
     fn summary_fixture() -> String {
         serde_json::to_string(&AgentResponseSummary {
             turn: "- Added the structured protocol summary.".to_string(),
@@ -659,11 +692,13 @@ mod tests {
         Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::new(),
             follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "project".to_string(),
@@ -733,6 +768,32 @@ mod tests {
     }
 
     #[test]
+    fn test_output_lines_render_staged_draft_preview_for_new_session() {
+        // Arrange
+        let mut session = session_fixture();
+        session.is_draft = true;
+        session.prompt = "First draft\n\nSecond draft".to_string();
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            line_context(DoneSessionOutputMode::Summary, None, None, None, None),
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("Staged Drafts [Preview]"));
+        assert!(text.contains("Press s in session view to start the staged bundle."));
+        assert!(text.contains("First draft"));
+        assert!(text.contains("Second draft"));
+    }
+
+    #[test]
     /// Ensures rendered output shows follow-up tasks without requiring them
     /// to be appended to the persisted transcript string.
     fn test_output_lines_append_follow_up_task_section_without_mutating_output() {
@@ -799,12 +860,7 @@ mod tests {
         let lines = SessionOutput::output_lines(
             &session,
             Rect::new(0, 0, 80, 8),
-            None,
-            session.status,
-            DoneSessionOutputMode::Summary,
-            None,
-            None,
-            None,
+            line_context(DoneSessionOutputMode::Summary, None, None, None, None),
         );
         let text = lines
             .iter()

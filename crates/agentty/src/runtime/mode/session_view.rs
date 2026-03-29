@@ -14,7 +14,7 @@ use crate::ui::page::session_chat::SessionChatPage;
 use crate::ui::state::app_mode::{
     AppMode, ConfirmationIntent, ConfirmationViewMode, DoneSessionOutputMode, HelpContext,
 };
-use crate::ui::state::help_action::ViewSessionState;
+use crate::ui::state::help_action::{self, ViewSessionState};
 use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState, PromptSlashState};
 
 #[derive(Clone)]
@@ -63,12 +63,12 @@ struct ViewKeyContext<'a> {
 
 /// Snapshot of session-derived state used by view-mode key handling.
 struct ViewSessionSnapshot {
+    can_start_staged_session: bool,
     can_open_worktree: bool,
     follow_up_task_action: Option<FollowUpTaskAction>,
     has_multiple_follow_up_tasks: bool,
     is_action_allowed: bool,
     publish_branch_action: Option<PublishBranchAction>,
-    session_output: String,
     session_state: ViewSessionState,
     session_status: Status,
 }
@@ -159,6 +159,17 @@ async fn handle_view_key(
 
             return false;
         }
+        KeyCode::Char('s') if view_session_snapshot.can_start_staged_session => {
+            if let Err(error) = app.start_staged_session(&view_context.session_id).await {
+                app.append_output_for_session(
+                    &view_context.session_id,
+                    &format!("\n[Start Error] {error}\n"),
+                )
+                .await;
+            }
+
+            return false;
+        }
         KeyCode::Char('[') if view_session_snapshot.has_multiple_follow_up_tasks => {
             app.select_previous_follow_up_task(&view_context.session_id);
         }
@@ -169,8 +180,8 @@ async fn handle_view_key(
             switch_view_to_prompt(
                 app,
                 view_context,
-                PromptHistoryState::new(prompt_history_entries(
-                    &view_session_snapshot.session_output,
+                PromptHistoryState::new(session_prompt_history_entries(
+                    &app.sessions.sessions[view_context.session_index],
                 )),
                 pending_update.scroll_offset,
             );
@@ -349,14 +360,16 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
     let session_status = session.status;
 
     Some(ViewSessionSnapshot {
+        can_start_staged_session: session.is_draft_session()
+            && session.status == Status::New
+            && session.has_staged_drafts(),
         can_open_worktree: is_view_worktree_open_allowed(session_status)
             && can_open_session_worktree(session_status),
         follow_up_task_action: app.selected_follow_up_task_action(&view_context.session_id),
         has_multiple_follow_up_tasks: app.has_multiple_follow_up_tasks(&view_context.session_id),
         is_action_allowed: is_view_action_allowed(session_status),
         publish_branch_action: session.publish_branch_action(),
-        session_output: session.output.clone(),
-        session_state: view_session_state(session_status),
+        session_state: help_action::session_view_state(session),
         session_status,
     })
 }
@@ -453,19 +466,6 @@ fn can_open_session_worktree(status: Status) -> bool {
         status,
         Status::Done | Status::Canceled | Status::Merging | Status::Queued
     )
-}
-
-/// Maps session status to view help session state.
-fn view_session_state(status: Status) -> ViewSessionState {
-    match status {
-        Status::Done => ViewSessionState::Done,
-        Status::Canceled => ViewSessionState::Canceled,
-        Status::InProgress => ViewSessionState::InProgress,
-        Status::Rebasing => ViewSessionState::Rebasing,
-        Status::Merging | Status::Queued => ViewSessionState::MergeQueue,
-        Status::Review => ViewSessionState::Review,
-        _ => ViewSessionState::Interactive,
-    }
 }
 
 /// Opens the help overlay while preserving the currently viewed session state.
@@ -647,6 +647,18 @@ fn prompt_history_entries(output: &str) -> Vec<String> {
     }
 
     entries
+}
+
+/// Returns prompt-history entries for the session-view prompt composer.
+///
+/// Draft sessions use the staged prompt stored in `prompt` directly because
+/// they have not yet written user prompts into the persisted transcript.
+fn session_prompt_history_entries(session: &crate::domain::session::Session) -> Vec<String> {
+    if session.status == Status::New && session.is_draft_session() {
+        return vec![session.prompt.clone()];
+    }
+
+    prompt_history_entries(&session.output)
 }
 
 fn scroll_offset_down(scroll_offset: Option<u16>, metrics: ViewMetrics, step: u16) -> Option<u16> {
@@ -953,6 +965,34 @@ mod tests {
     /// mocked tmux boundary.
     async fn new_test_app_with_session() -> (App, tempfile::TempDir, String) {
         new_test_app_with_session_and_tmux_client(Arc::new(MockTmuxClient::new())).await
+    }
+
+    /// Builds one minimal session snapshot for pure view-state tests.
+    fn session_fixture(status: Status, is_draft: bool) -> crate::domain::session::Session {
+        crate::domain::session::Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            draft_attachments: Vec::new(),
+            folder: std::env::temp_dir(),
+            follow_up_tasks: Vec::new(),
+            id: "session-id".to_string(),
+            in_progress_started_at: None,
+            in_progress_total_seconds: 0,
+            is_draft,
+            model: crate::domain::agent::AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            project_name: String::new(),
+            prompt: String::new(),
+            published_upstream_ref: None,
+            questions: Vec::new(),
+            review_request: None,
+            size: crate::domain::session::SessionSize::Xs,
+            stats: crate::domain::session::SessionStats::default(),
+            status,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        }
     }
 
     #[test]
@@ -2008,7 +2048,7 @@ mod tests {
         // Act
         let mapped_states: Vec<ViewSessionState> = merge_queue_statuses
             .iter()
-            .map(|status| view_session_state(*status))
+            .map(|status| help_action::session_view_state(&session_fixture(*status, false)))
             .collect();
 
         // Assert
@@ -2023,9 +2063,10 @@ mod tests {
     fn test_view_session_state_maps_rebasing_status() {
         // Arrange
         let status = Status::Rebasing;
+        let session = session_fixture(status, false);
 
         // Act
-        let state = view_session_state(status);
+        let state = help_action::session_view_state(&session);
 
         // Assert
         assert_eq!(state, ViewSessionState::Rebasing);
@@ -2035,9 +2076,10 @@ mod tests {
     fn test_view_session_state_maps_canceled_status() {
         // Arrange
         let status = Status::Canceled;
+        let session = session_fixture(status, false);
 
         // Act
-        let state = view_session_state(status);
+        let state = help_action::session_view_state(&session);
 
         // Assert
         assert_eq!(state, ViewSessionState::Canceled);
@@ -2227,12 +2269,12 @@ mod tests {
         let view_context = view_context(&mut app).expect("expected view context");
         let mut pending_update = ViewPendingUpdate::from_context(&view_context);
         let view_session_snapshot = ViewSessionSnapshot {
+            can_start_staged_session: false,
             can_open_worktree: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             is_action_allowed: false,
             publish_branch_action: None,
-            session_output: String::new(),
             session_state: ViewSessionState::Done,
             session_status: Status::Done,
         };
@@ -2307,7 +2349,10 @@ mod tests {
 
         // Assert
         assert!(matches!(result, EventResult::Continue));
-        assert_eq!(app.sessions.table_state.selected(), Some(0));
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some(sibling_session_id.as_str())
+        );
         assert!(matches!(
             app.mode,
             AppMode::View {
@@ -2347,12 +2392,12 @@ mod tests {
         ] {
             let mut pending_update = ViewPendingUpdate::from_context(&view_context);
             let view_session_snapshot = ViewSessionSnapshot {
+                can_start_staged_session: false,
                 can_open_worktree: false,
                 follow_up_task_action: None,
                 has_multiple_follow_up_tasks: false,
                 is_action_allowed: false,
                 publish_branch_action: None,
-                session_output: String::new(),
                 session_state: ViewSessionState::Done,
                 session_status: Status::Done,
             };

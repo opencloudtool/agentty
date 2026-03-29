@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::session_folder;
+use super::{draft, session_folder};
 use crate::app::SessionManager;
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::session::{
@@ -152,6 +152,8 @@ impl SessionManager {
             };
 
             let review_request = parse_review_request(&row);
+            let draft_attachments =
+                draft::load_staged_draft_attachments(fs_client, base, &row.id).await;
             let questions = row
                 .questions
                 .as_deref()
@@ -164,11 +166,13 @@ impl SessionManager {
             sessions.push(Session {
                 base_branch: row.base_branch,
                 created_at: row.created_at,
+                draft_attachments,
                 folder,
                 follow_up_tasks,
                 id: row.id,
                 in_progress_started_at: row.in_progress_started_at,
                 in_progress_total_seconds: row.in_progress_total_seconds,
+                is_draft: row.is_draft,
                 model: session_model,
                 output: session_output,
                 project_name: project_name.clone(),
@@ -737,6 +741,7 @@ mod tests {
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
             input_tokens: 0,
+            is_draft: false,
             model: "gpt-5.3-codex".to_string(),
             output: String::new(),
             output_tokens: 0,

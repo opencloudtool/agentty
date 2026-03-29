@@ -17,6 +17,7 @@ For session states and transition behavior, see [Workflow](@/docs/usage/workflow
 |-----|--------|
 | `q` | Quit |
 | `a` | Start new session |
+| `Shift+A` | Start draft session |
 | `s` | Sync |
 | `d` | Delete session |
 | `c` | Cancel session (confirmation popup) |
@@ -69,7 +70,8 @@ state:
 | Key | Action |
 |-----|--------|
 | `q` | Exit focused review (when viewing) / Back to list |
-| `Enter` | Reply to agent |
+| `Enter` | Compose the first prompt or reply; in draft sessions it adds a draft |
+| `s` | Start a staged draft session |
 | `o` | Open worktree in tmux |
 | `p` | Publish session branch |
 | `d` | Show diff |
@@ -137,7 +139,7 @@ The diff panel title shows aggregate line-change totals as `+added` and
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Submit prompt |
+| `Enter` | Submit the first prompt in regular `New`, stage one draft in draft `New`, or submit reply/question text elsewhere |
 | `Alt+Enter` or `Shift+Enter` | Insert newline |
 | `Ctrl+V` or `Alt+V` | Paste one clipboard image as an inline `[Image #n]` placeholder |
 | `Cmd+Left` | Move to start of current line |
@@ -156,6 +158,11 @@ composer and send the referenced local image for Codex, Gemini, and Claude
 session models. Codex and Gemini preserve the multimodal ordering at transport
 level, while Claude rewrites the placeholders to local image paths before
 streaming the prompt.
+
+When the current session was created with `Shift+A`, pressing `Enter` stages
+the current composer contents into the draft bundle and returns to session
+view. Use `s` from session view to launch the staged bundle as the first live
+turn. Sessions created with `a` start immediately on the first `Enter`.
 
 ## Question Input — Option Selection
 

@@ -755,11 +755,13 @@ mod tests {
         app.sessions.sessions.push(Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder,
             follow_up_tasks: Vec::new(),
             id: id.to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: String::new(),
@@ -1217,6 +1219,7 @@ mod tests {
         assert!(app.sessions.sessions[0].prompt.is_empty());
         assert_eq!(app.sessions.sessions[0].title, None);
         assert_eq!(app.sessions.sessions[0].display_title(), "No title");
+        assert!(!app.sessions.sessions[0].is_draft_session());
         assert_eq!(app.sessions.sessions[0].status, Status::New);
         assert_eq!(app.sessions.table_state.selected(), Some(0));
         assert_eq!(
@@ -1249,8 +1252,36 @@ mod tests {
             db_sessions[0].model,
             AgentKind::Gemini.default_model().as_str()
         );
+        assert!(!db_sessions[0].is_draft);
         assert_eq!(db_sessions[0].status, "New");
         assert_eq!(activity_timestamps.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_draft_session() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+
+        // Act
+        let session_id = app
+            .create_draft_session()
+            .await
+            .expect("failed to create draft session");
+
+        // Assert
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert_eq!(session_id, app.sessions.sessions[0].id);
+        assert!(app.sessions.sessions[0].is_draft_session());
+        assert_eq!(app.sessions.sessions[0].status, Status::New);
+
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
+        assert!(db_sessions[0].is_draft);
     }
 
     #[tokio::test]
@@ -1456,6 +1487,76 @@ mod tests {
         assert_eq!(db_sessions[0].prompt, "Hello");
         assert_eq!(db_sessions[0].output, " › Hello\n\n");
         assert_eq!(activity_timestamps.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_stage_draft_message_persists_bundle_without_starting_session() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        let session_id = app
+            .create_draft_session()
+            .await
+            .expect("failed to create draft session");
+
+        // Act
+        app.stage_draft_message(&session_id, "First draft")
+            .await
+            .expect("failed to stage first draft");
+        app.stage_draft_message(&session_id, "Second draft")
+            .await
+            .expect("failed to stage second draft");
+
+        // Assert
+        assert_eq!(app.sessions.sessions[0].status, Status::New);
+        assert_eq!(
+            app.sessions.sessions[0].prompt,
+            "First draft\n\nSecond draft"
+        );
+        assert!(app.sessions.sessions[0].draft_attachments.is_empty());
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
+        assert_eq!(db_sessions[0].prompt, "First draft\n\nSecond draft");
+    }
+
+    #[tokio::test]
+    async fn test_start_staged_session_launches_bundle_and_clears_staged_drafts() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        let session_id = app
+            .create_draft_session()
+            .await
+            .expect("failed to create draft session");
+        app.stage_draft_message(&session_id, "First draft")
+            .await
+            .expect("failed to stage first draft");
+        app.stage_draft_message(&session_id, "Second draft")
+            .await
+            .expect("failed to stage second draft");
+
+        // Act
+        app.start_staged_session(&session_id)
+            .await
+            .expect("failed to start staged session");
+
+        // Assert
+        assert_eq!(
+            app.sessions.sessions[0].prompt,
+            "First draft\n\nSecond draft"
+        );
+        assert!(app.sessions.sessions[0].draft_attachments.is_empty());
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
+        assert_eq!(db_sessions[0].prompt, "First draft\n\nSecond draft");
     }
 
     #[tokio::test]

@@ -50,7 +50,7 @@ Session statuses and what you can do in each state:
 
 | Status | Description | Available actions |
 |--------|-------------|-------------------|
-| **New** | Session created, prompt not yet sent. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, scroll, help |
+| **New** | Session created but not yet started. Regular sessions submit their first prompt immediately; draft sessions can stage multiple prompts locally first. | `Enter` compose first prompt or add draft, `s` start staged draft session, `m` add to merge queue, `r` rebase, `o` open worktree, scroll, help |
 | **InProgress** | Agent is actively working. | `o` open worktree, scroll, help |
 | **Review** | Agent finished; changes are ready for review. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
 | **Question** | Agent requested clarification before continuing. | question input mode (`Enter` submit, `Esc` skip, text editing keys) |
@@ -94,7 +94,7 @@ line), pressing `o` opens a selector popup (`j`/`k` to move, `Enter` to open,
 `Esc` to cancel).
 
 In prompt input, `Ctrl+V` and `Alt+V` paste one clipboard image into the
-current new-session prompt or reply. Agentty stores the image under
+current draft or reply. Agentty stores the image under
 `AGENTTY_ROOT/tmp/<session-id>/images/`, inserts a highlighted inline token
 such as `[Image #1]`, and submits the ordered local attachments with the
 prompt. Text paste remains unchanged on the normal terminal paste event path.
@@ -125,10 +125,17 @@ Branch publishing on `p` uses regular Git authentication only:
 - HTTPS remotes need a working credential helper or PAT.
 - SSH remotes need a working SSH key.
 
+From the **Sessions** tab, press `a` to create a regular session or `Shift+A`
+to create a draft session. Regular sessions keep the fast path: type the first
+prompt and press `Enter` to start the agent immediately. Draft sessions stage
+each `Enter` as one ordered draft message, show the staged bundle in session
+view, and start only after you press `s`.
+
 ### Typical Transitions
 
 ```text
-New → InProgress → Review → Done
+New -> InProgress -> Review -> Done
+New (draft) -> New (draft) -> InProgress -> Review -> Done
                          ↘ Canceled
                          ↘ Question → InProgress
                          ↘ Queued → Merging → Done

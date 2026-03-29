@@ -42,6 +42,12 @@ pub trait FsClient: Send + Sync {
     /// Returns an error when file read fails.
     fn read_file(&self, path: PathBuf) -> FsFuture<Result<Vec<u8>, FsError>>;
 
+    /// Writes one byte buffer to `path`, replacing any existing file.
+    ///
+    /// # Errors
+    /// Returns an error when file creation or write fails.
+    fn write_file(&self, path: PathBuf, contents: Vec<u8>) -> FsFuture<Result<(), FsError>>;
+
     /// Removes one file from disk.
     ///
     /// Missing files are treated as a successful no-op.
@@ -69,6 +75,14 @@ impl FsClient for RealFsClient {
 
     fn read_file(&self, path: PathBuf) -> FsFuture<Result<Vec<u8>, FsError>> {
         Box::pin(async move { tokio::fs::read(path).await.map_err(FsError::from) })
+    }
+
+    fn write_file(&self, path: PathBuf, contents: Vec<u8>) -> FsFuture<Result<(), FsError>> {
+        Box::pin(async move {
+            tokio::fs::write(path, contents)
+                .await
+                .map_err(FsError::from)
+        })
     }
 
     fn remove_file(&self, path: PathBuf) -> FsFuture<Result<(), FsError>> {

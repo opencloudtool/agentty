@@ -1,0 +1,194 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT session.base_branch AS \"base_branch!\",\n       session.added_lines AS \"added_lines!\",\n       session.created_at AS \"created_at!\",\n       session.deleted_lines AS \"deleted_lines!\",\n       session.id AS \"id!\",\n       session.in_progress_started_at,\n       session.in_progress_total_seconds AS \"in_progress_total_seconds!\",\n       session.input_tokens AS \"input_tokens!\",\n       session.is_draft AS \"is_draft!: bool\",\n       session.model AS \"model!\",\n       session.output AS \"output!\",\n       session.output_tokens AS \"output_tokens!\",\n       session.project_id,\n       session.prompt AS \"prompt!\",\n       session.published_upstream_ref,\n       session.questions,\n       session_review_request.display_id AS \"review_request_display_id?\",\n       session_review_request.forge_kind AS \"review_request_forge_kind?\",\n       session_review_request.last_refreshed_at AS \"review_request_last_refreshed_at?\",\n       session_review_request.source_branch AS \"review_request_source_branch?\",\n       session_review_request.state AS \"review_request_state?\",\n       session_review_request.status_summary AS \"review_request_status_summary?\",\n       session_review_request.target_branch AS \"review_request_target_branch?\",\n       session_review_request.title AS \"review_request_title?\",\n       session_review_request.web_url AS \"review_request_web_url?\",\n       session.size AS \"size!\",\n       session.status AS \"status!\",\n       session.summary,\n       session.title,\n       session.updated_at AS \"updated_at!\"\nFROM session\nLEFT JOIN session_review_request\nON session_review_request.session_id = session.id\nWHERE session.project_id = ?\nORDER BY session.updated_at DESC, session.id\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "base_branch!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "added_lines!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "deleted_lines!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "id!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "in_progress_started_at",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "in_progress_total_seconds!",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "input_tokens!",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "is_draft!: bool",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "model!",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "output!",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "output_tokens!",
+        "ordinal": 11,
+        "type_info": "Integer"
+      },
+      {
+        "name": "project_id",
+        "ordinal": 12,
+        "type_info": "Integer"
+      },
+      {
+        "name": "prompt!",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "published_upstream_ref",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "questions",
+        "ordinal": 15,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_request_display_id?",
+        "ordinal": 16,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_request_forge_kind?",
+        "ordinal": 17,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_request_last_refreshed_at?",
+        "ordinal": 18,
+        "type_info": "Integer"
+      },
+      {
+        "name": "review_request_source_branch?",
+        "ordinal": 19,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_request_state?",
+        "ordinal": 20,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_request_status_summary?",
+        "ordinal": 21,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_request_target_branch?",
+        "ordinal": 22,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_request_title?",
+        "ordinal": 23,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_request_web_url?",
+        "ordinal": 24,
+        "type_info": "Text"
+      },
+      {
+        "name": "size!",
+        "ordinal": 25,
+        "type_info": "Text"
+      },
+      {
+        "name": "status!",
+        "ordinal": 26,
+        "type_info": "Text"
+      },
+      {
+        "name": "summary",
+        "ordinal": 27,
+        "type_info": "Text"
+      },
+      {
+        "name": "title",
+        "ordinal": 28,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!",
+        "ordinal": 29,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "63e27fc193049aa71d0e75b490a094a5099186ea60e85d3e12f2a82e1157fdb7"
+}

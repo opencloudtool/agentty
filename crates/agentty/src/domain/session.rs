@@ -7,6 +7,7 @@ use ratatui::style::Color;
 
 use super::agent::AgentModel;
 use crate::infra::agent::protocol::QuestionItem;
+use crate::infra::channel::TurnPromptAttachment;
 
 /// Folder name under a project root that stores Agentty session metadata.
 pub const SESSION_DATA_DIR: &str = ".agentty";
@@ -297,6 +298,9 @@ pub struct Session {
     pub base_branch: String,
     /// Session creation timestamp (Unix seconds).
     pub created_at: i64,
+    /// Ordered image attachments staged for the draft-session prompt stored in
+    /// `prompt` while the session remains `New`.
+    pub draft_attachments: Vec<TurnPromptAttachment>,
     /// Worktree folder path for this session.
     pub folder: PathBuf,
     /// Persisted read-only follow-up tasks emitted after the latest turn.
@@ -309,6 +313,9 @@ pub struct Session {
     /// Cumulative active-work time already completed by this session, in whole
     /// seconds.
     pub in_progress_total_seconds: i64,
+    /// Whether the session was created through the explicit draft workflow
+    /// from the sessions list.
+    pub is_draft: bool,
     /// Agent model selected for this session.
     pub model: AgentModel,
     /// Captured output transcript.
@@ -346,6 +353,18 @@ impl Session {
     /// Returns the display title for this session.
     pub fn display_title(&self) -> &str {
         self.title.as_deref().unwrap_or("No title")
+    }
+
+    /// Returns whether the session should use staged-draft behavior before
+    /// its first live turn starts.
+    pub fn is_draft_session(&self) -> bool {
+        self.is_draft
+    }
+
+    /// Returns whether the session currently has one or more staged draft
+    /// prompts waiting for an explicit start action.
+    pub fn has_staged_drafts(&self) -> bool {
+        self.is_draft_session() && self.status == Status::New && !self.prompt.is_empty()
     }
 
     /// Returns whether session chat should render the cumulative active-work
@@ -532,11 +551,13 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         let session = Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::new(),
             follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "project".to_string(),
@@ -565,11 +586,13 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         let session = Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::new(),
             follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: Some(60),
             in_progress_total_seconds: 120,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "project".to_string(),
@@ -610,11 +633,13 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         let session = Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::new(),
             follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 180,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "project".to_string(),
@@ -655,10 +680,12 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         let session = Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::new(),
             id: "session-id".to_string(),
             in_progress_started_at: Some(120),
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "project".to_string(),
@@ -688,10 +715,12 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         let session = Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::new(),
             id: "session-id".to_string(),
             in_progress_started_at: Some(200),
             in_progress_total_seconds: 90,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "project".to_string(),

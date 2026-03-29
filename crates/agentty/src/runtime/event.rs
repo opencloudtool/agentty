@@ -399,11 +399,13 @@ mod tests {
         app.sessions.sessions.push(Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
             follow_up_tasks: Vec::new(),
             id: session_id.clone(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentKind::Gemini.default_model(),
             output: String::new(),
             project_name: "project".to_string(),

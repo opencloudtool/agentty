@@ -9,13 +9,15 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::worker::SessionCommand;
-use super::{SessionTaskService, session_branch, session_folder, unix_timestamp_from_system_time};
+use super::{
+    SessionTaskService, draft, session_branch, session_folder, unix_timestamp_from_system_time,
+};
 use crate::app::session::SessionError;
 use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager, agentty_home, setting};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{ReviewRequest, SESSION_DATA_DIR, Session, Status};
 use crate::domain::setting::SettingName;
-use crate::infra::channel::{AgentRequestKind, TurnPrompt};
+use crate::infra::channel::{AgentRequestKind, TurnPrompt, TurnPromptAttachment};
 use crate::infra::fs::FsClient;
 use crate::infra::{agent, db, git};
 use crate::ui::page::session_list::grouped_session_indexes;
@@ -131,6 +133,39 @@ impl SessionManager {
         projects: &ProjectManager,
         services: &AppServices,
     ) -> Result<String, SessionError> {
+        self.create_session_with_draft_mode(projects, services, false)
+            .await
+    }
+
+    /// Creates a blank draft session that stages prompts until explicitly
+    /// started.
+    ///
+    /// Returns the identifier of the newly created session.
+    ///
+    /// # Errors
+    /// Returns an error if the worktree, session files, database record, or
+    /// backend setup cannot be created.
+    pub async fn create_draft_session(
+        &mut self,
+        projects: &ProjectManager,
+        services: &AppServices,
+    ) -> Result<String, SessionError> {
+        self.create_session_with_draft_mode(projects, services, true)
+            .await
+    }
+
+    /// Creates one blank session using either immediate-start or explicit
+    /// staged-draft first-turn behavior.
+    ///
+    /// # Errors
+    /// Returns an error if the worktree, session files, database record, or
+    /// backend setup cannot be created.
+    async fn create_session_with_draft_mode(
+        &mut self,
+        projects: &ProjectManager,
+        services: &AppServices,
+        is_draft: bool,
+    ) -> Result<String, SessionError> {
         let base_branch = projects.git_branch().ok_or_else(|| {
             SessionError::Workflow("Git branch is required to create a session".to_string())
         })?;
@@ -187,17 +222,31 @@ impl SessionManager {
             )));
         }
 
-        if let Err(error) = services
-            .db()
-            .insert_session(
-                &session_id,
-                session_model.as_str(),
-                base_branch,
-                &Status::New.to_string(),
-                projects.active_project_id(),
-            )
-            .await
-        {
+        let insert_result = if is_draft {
+            services
+                .db()
+                .insert_draft_session(
+                    &session_id,
+                    session_model.as_str(),
+                    base_branch,
+                    &Status::New.to_string(),
+                    projects.active_project_id(),
+                )
+                .await
+        } else {
+            services
+                .db()
+                .insert_session(
+                    &session_id,
+                    session_model.as_str(),
+                    base_branch,
+                    &Status::New.to_string(),
+                    projects.active_project_id(),
+                )
+                .await
+        };
+
+        if let Err(error) = insert_result {
             self.rollback_failed_session_creation(
                 services,
                 &folder,
@@ -237,6 +286,141 @@ impl SessionManager {
         services.emit_app_event(AppEvent::RefreshSessions);
 
         Ok(session_id)
+    }
+
+    /// Appends one staged draft message to a `New` session without launching
+    /// the agent yet.
+    ///
+    /// # Errors
+    /// Returns an error if the session is missing, was not created as a draft
+    /// session, is no longer `New`, or the staged bundle cannot be persisted.
+    pub async fn stage_draft_message(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+        prompt: impl Into<TurnPrompt>,
+    ) -> Result<(), SessionError> {
+        let prompt = prompt.into();
+        let session_index = self.session_index_or_err(session_id)?;
+        let (persisted_session_id, title_to_save, staged_prompt, staged_attachments) = {
+            let session = self
+                .sessions
+                .get(session_index)
+                .ok_or(SessionError::NotFound)?;
+            if !session.is_draft_session() {
+                return Err(SessionError::Workflow(
+                    "Only draft sessions can stage drafts".to_string(),
+                ));
+            }
+            if session.status != Status::New {
+                return Err(SessionError::Workflow(
+                    "Only `New` sessions can stage drafts".to_string(),
+                ));
+            }
+
+            let title_to_save = if session.title.is_none() {
+                Some(prompt.transcript_text())
+            } else {
+                None
+            };
+            let next_attachment_number = session.draft_attachments.len().saturating_add(1);
+            let staged_prompt =
+                Self::append_staged_prompt(&session.prompt, &prompt, next_attachment_number);
+            let mut staged_attachments = session.draft_attachments.clone();
+            staged_attachments
+                .extend(Self::renumbered_attachments(&prompt, next_attachment_number).into_iter());
+
+            (
+                session.id.clone(),
+                title_to_save,
+                staged_prompt,
+                staged_attachments,
+            )
+        };
+
+        draft::store_staged_draft_attachments(
+            services.fs_client().as_ref(),
+            services.base_path(),
+            &persisted_session_id,
+            &staged_attachments,
+        )
+        .await?;
+        services
+            .db()
+            .update_session_prompt(&persisted_session_id, &staged_prompt)
+            .await?;
+
+        if let Some(title_to_save) = title_to_save.as_deref() {
+            services
+                .db()
+                .update_session_title(&persisted_session_id, title_to_save)
+                .await?;
+        }
+
+        if let Some(session) = self.sessions.get_mut(session_index) {
+            if let Some(title_to_save) = title_to_save {
+                session.title = Some(title_to_save);
+            }
+
+            session.prompt = staged_prompt;
+            session.draft_attachments = staged_attachments;
+        }
+
+        Ok(())
+    }
+
+    /// Starts a `New` session from its persisted staged draft bundle.
+    ///
+    /// # Errors
+    /// Returns an error if the session is missing, is not a draft session, no
+    /// drafts are staged, or launching the first turn fails.
+    pub async fn start_staged_session(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+    ) -> Result<(), SessionError> {
+        let prompt = {
+            let session = self.session_or_err(session_id)?;
+            if !session.is_draft_session() {
+                return Err(SessionError::Workflow(
+                    "Only draft sessions can be started from staged drafts".to_string(),
+                ));
+            }
+            if session.status != Status::New {
+                return Err(SessionError::Workflow(
+                    "Only `New` sessions can be started from staged drafts".to_string(),
+                ));
+            }
+            if session.prompt.is_empty() {
+                return Err(SessionError::Workflow(
+                    "Stage at least one draft before starting the session".to_string(),
+                ));
+            }
+
+            TurnPrompt {
+                attachments: session.draft_attachments.clone(),
+                text: session.prompt.clone(),
+            }
+        };
+
+        self.start_session(services, session_id, prompt).await?;
+
+        if let Ok(session_index) = self.session_index_or_err(session_id)
+            && let Some(session) = self.sessions.get_mut(session_index)
+        {
+            session.draft_attachments.clear();
+        }
+
+        // Best-effort: the live session has already started successfully.
+        let _ = draft::store_staged_draft_attachments(
+            services.fs_client().as_ref(),
+            services.base_path(),
+            session_id,
+            &[],
+        )
+        .await;
+
+        Ok(())
     }
 
     /// Submits the first prompt for a blank session and starts the agent.
@@ -1001,6 +1185,55 @@ impl SessionManager {
         format!("{prompt_block}\n\n")
     }
 
+    /// Appends one newly staged prompt onto the persisted draft-session
+    /// prompt text stored in `session.prompt`.
+    ///
+    /// Attachment placeholders are renumbered sequentially so draft sessions
+    /// can keep one flat prompt string while preserving a stable attachment
+    /// order across multiple staging passes.
+    fn append_staged_prompt(
+        existing_prompt: &str,
+        prompt: &TurnPrompt,
+        next_attachment_number: usize,
+    ) -> String {
+        let staged_prompt = Self::renumbered_prompt_text(prompt, next_attachment_number);
+        if existing_prompt.is_empty() {
+            return staged_prompt;
+        }
+
+        format!("{existing_prompt}\n\n{staged_prompt}")
+    }
+
+    /// Returns the staged prompt text after renumbering any attachment
+    /// placeholders to their global draft-session positions.
+    fn renumbered_prompt_text(prompt: &TurnPrompt, next_attachment_number: usize) -> String {
+        let mut prompt_text = prompt.text.clone();
+
+        for (offset, attachment) in prompt.attachments.iter().enumerate() {
+            let placeholder = format!("[Image #{}]", next_attachment_number.saturating_add(offset));
+            prompt_text = replace_first(&prompt_text, &attachment.placeholder, &placeholder);
+        }
+
+        prompt_text
+    }
+
+    /// Returns the prompt attachments rewritten to the global draft-session
+    /// placeholder sequence.
+    fn renumbered_attachments(
+        prompt: &TurnPrompt,
+        next_attachment_number: usize,
+    ) -> Vec<TurnPromptAttachment> {
+        prompt
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(offset, attachment)| TurnPromptAttachment {
+                placeholder: format!("[Image #{}]", next_attachment_number.saturating_add(offset)),
+                local_image_path: attachment.local_image_path.clone(),
+            })
+            .collect()
+    }
+
     /// Builds a queued command for starting or resuming a session interaction.
     ///
     /// Creates a [`SessionCommand::Run`] with
@@ -1466,6 +1699,27 @@ impl SessionManager {
     }
 }
 
+/// Replaces only the first occurrence of `needle` in `haystack`.
+///
+/// If `needle` is absent, the original string is returned unchanged.
+fn replace_first(haystack: &str, needle: &str, replacement: &str) -> String {
+    let Some(match_index) = haystack.find(needle) else {
+        return haystack.to_string();
+    };
+
+    let mut replaced = String::with_capacity(
+        haystack
+            .len()
+            .saturating_sub(needle.len())
+            .saturating_add(replacement.len()),
+    );
+    replaced.push_str(&haystack[..match_index]);
+    replaced.push_str(replacement);
+    replaced.push_str(&haystack[match_index + needle.len()..]);
+
+    replaced
+}
+
 /// Returns the session-scoped temp directory used for pasted prompt images.
 fn session_prompt_temp_directory(session_id: &str) -> PathBuf {
     agentty_home().join("tmp").join(session_id)
@@ -1561,11 +1815,13 @@ mod tests {
         Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::from("/tmp/session"),
             follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentModel::ClaudeSonnet46,
             output: output.to_string(),
             project_name: "project".to_string(),
@@ -1626,16 +1882,29 @@ mod tests {
             .upsert_project("/tmp/project", Some("main"))
             .await
             .expect("failed to upsert project");
-        database
-            .insert_session(
-                &session.id,
-                session.model.as_str(),
-                &session.base_branch,
-                &session.status.to_string(),
-                project_id,
-            )
-            .await
-            .expect("failed to insert session");
+        if session.is_draft {
+            database
+                .insert_draft_session(
+                    &session.id,
+                    session.model.as_str(),
+                    &session.base_branch,
+                    &session.status.to_string(),
+                    project_id,
+                )
+                .await
+                .expect("failed to insert draft session");
+        } else {
+            database
+                .insert_session(
+                    &session.id,
+                    session.model.as_str(),
+                    &session.base_branch,
+                    &session.status.to_string(),
+                    project_id,
+                )
+                .await
+                .expect("failed to insert session");
+        }
         database
             .update_session_prompt(&session.id, &session.prompt)
             .await
@@ -1656,9 +1925,11 @@ mod tests {
         database
     }
 
-    /// Builds app services with caller-provided git and forge boundaries.
-    fn test_services(
+    /// Builds app services with caller-provided filesystem, git, and forge
+    /// boundaries.
+    fn test_services_with_fs_client(
         database: Database,
+        fs_client: Arc<dyn fs::FsClient>,
         git_client: Arc<dyn git::GitClient>,
         review_request_client: Arc<dyn forge::ReviewRequestClient>,
     ) -> AppServices {
@@ -1671,10 +1942,24 @@ mod tests {
             crate::app::service::AppServiceClients {
                 app_server_client_override: Some(mock_app_server()),
                 clock: Arc::new(crate::app::session::RealClock),
-                fs_client: Arc::new(create_passthrough_mock_fs_client()),
+                fs_client,
                 git_client,
                 review_request_client,
             },
+        )
+    }
+
+    /// Builds app services with caller-provided git and forge boundaries.
+    fn test_services(
+        database: Database,
+        git_client: Arc<dyn git::GitClient>,
+        review_request_client: Arc<dyn forge::ReviewRequestClient>,
+    ) -> AppServices {
+        test_services_with_fs_client(
+            database,
+            Arc::new(create_passthrough_mock_fs_client()),
+            git_client,
+            review_request_client,
         )
     }
 
@@ -1833,6 +2118,69 @@ mod tests {
                 .as_deref(),
             Some("origin/agentty/session-id")
         );
+    }
+
+    #[tokio::test]
+    async fn test_stage_draft_message_preserves_persisted_prompt_when_attachment_write_fails() {
+        // Arrange
+        let mut session = test_session("", Status::New, None, "");
+        session.is_draft = true;
+        let database = database_with_session(&session).await;
+        let mut session_manager = session_manager_with_one_session(session);
+        let mut mock_fs_client = fs::MockFsClient::new();
+        mock_fs_client
+            .expect_create_dir_all()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock_fs_client
+            .expect_remove_dir_all()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock_fs_client
+            .expect_read_file()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(Vec::new()) }));
+        mock_fs_client
+            .expect_remove_file()
+            .times(0..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        mock_fs_client
+            .expect_is_dir()
+            .times(0..)
+            .returning(|path| path.is_dir());
+        mock_fs_client.expect_write_file().once().returning(|_, _| {
+            Box::pin(async {
+                Err(fs::FsError::Io(std::io::Error::other(
+                    "simulated attachment write failure",
+                )))
+            })
+        });
+        let services = test_services_with_fs_client(
+            database.clone(),
+            Arc::new(mock_fs_client),
+            Arc::new(git::MockGitClient::new()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-1.png"),
+            }],
+            text: "Review [Image #1]".to_string(),
+        };
+
+        // Act
+        let error = session_manager
+            .stage_draft_message(&services, "session-id", prompt)
+            .await
+            .expect_err("attachment metadata failure should abort draft staging");
+        let persisted_session = load_persisted_session_row(&database).await;
+
+        // Assert
+        assert!(matches!(error, SessionError::Fs(_)));
+        assert!(persisted_session.prompt.is_empty());
+        assert!(session_manager.sessions[0].prompt.is_empty());
+        assert!(session_manager.sessions[0].draft_attachments.is_empty());
     }
 
     #[tokio::test]
@@ -2026,6 +2374,27 @@ mod tests {
 
         // Assert
         assert_eq!(formatted_prompt, " › Review [Image #1]\n\n");
+    }
+
+    #[test]
+    fn test_renumbered_prompt_text_rewrites_only_attachment_occurrences() {
+        // Arrange
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: PathBuf::from("/tmp/image-1.png"),
+            }],
+            text: "Attach [Image #1] but keep literal [Image #1] text".to_string(),
+        };
+
+        // Act
+        let renumbered_prompt = SessionManager::renumbered_prompt_text(&prompt, 2);
+
+        // Assert
+        assert_eq!(
+            renumbered_prompt,
+            "Attach [Image #2] but keep literal [Image #1] text"
+        );
     }
 
     #[tokio::test]

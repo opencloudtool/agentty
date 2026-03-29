@@ -53,6 +53,14 @@ pub struct SessionChatPage<'a> {
 }
 
 impl<'a> SessionChatPage<'a> {
+    /// Fixed prompt-mode actions rendered in the composer help footer while
+    /// staging drafts for an explicit draft session.
+    const NEW_SESSION_PROMPT_FOOTER_ACTIONS: [help_action::HelpAction; 4] = [
+        help_action::HelpAction::new("stage draft", "Enter", "Stage draft"),
+        help_action::HelpAction::new("newline", "Alt+Enter", "Insert newline"),
+        help_action::HelpAction::new("paste image", "Ctrl+V/Alt+V", "Paste image"),
+        help_action::HelpAction::new("cancel", "Esc", "Cancel prompt"),
+    ];
     /// Fixed prompt-mode actions rendered in the composer help footer.
     const PROMPT_FOOTER_ACTIONS: [help_action::HelpAction; 4] = [
         help_action::HelpAction::new("submit", "Enter", "Submit prompt"),
@@ -332,7 +340,7 @@ impl<'a> SessionChatPage<'a> {
         let max_bottom_height = area.height.saturating_sub(1);
 
         Some(PreparedPromptPanel {
-            footer_text: Self::prompt_footer_line(attachment_state.attachments.len()),
+            footer_text: Self::prompt_footer_line(session, attachment_state.attachments.len()),
             suggestion_list,
             title: format!(" [{}] ", session.model.as_str()),
             total_height: desired_bottom_height.min(max_bottom_height),
@@ -585,15 +593,7 @@ impl<'a> SessionChatPage<'a> {
         done_session_output_mode: DoneSessionOutputMode,
         selected_follow_up_task_position: Option<usize>,
     ) -> Vec<help_action::HelpAction> {
-        let session_state = match session.status {
-            Status::Done => ViewSessionState::Done,
-            Status::Canceled => ViewSessionState::Canceled,
-            Status::InProgress => ViewSessionState::InProgress,
-            Status::Rebasing => ViewSessionState::Rebasing,
-            Status::Merging | Status::Queued => ViewSessionState::MergeQueue,
-            Status::Review => ViewSessionState::Review,
-            _ => ViewSessionState::Interactive,
-        };
+        let session_state = help_action::session_view_state(session);
 
         let selected_follow_up_task_position =
             Self::resolved_follow_up_task_position(session, selected_follow_up_task_position);
@@ -643,8 +643,8 @@ impl<'a> SessionChatPage<'a> {
     /// Returns the prompt-mode footer line shown under the composer using the
     /// same highlighted key styling used by other Agentty help text while
     /// appending attachment readiness as muted status text.
-    fn prompt_footer_line(attachment_count: usize) -> Line<'static> {
-        let mut footer_line = help_action::footer_line(Self::prompt_footer_actions());
+    fn prompt_footer_line(session: &Session, attachment_count: usize) -> Line<'static> {
+        let mut footer_line = help_action::footer_line(Self::prompt_footer_actions(session));
 
         if attachment_count > 0 {
             let suffix = if attachment_count == 1 { "" } else { "s" };
@@ -659,7 +659,11 @@ impl<'a> SessionChatPage<'a> {
 
     /// Returns the fixed prompt-mode actions rendered in the composer help
     /// footer.
-    fn prompt_footer_actions() -> &'static [help_action::HelpAction] {
+    fn prompt_footer_actions(session: &Session) -> &'static [help_action::HelpAction] {
+        if session.status == Status::New && session.is_draft_session() {
+            return &Self::NEW_SESSION_PROMPT_FOOTER_ACTIONS;
+        }
+
         &Self::PROMPT_FOOTER_ACTIONS
     }
 
@@ -997,11 +1001,13 @@ mod tests {
         Session {
             base_branch: "main".to_string(),
             created_at: 0,
+            draft_attachments: Vec::new(),
             folder: PathBuf::new(),
             follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
+            is_draft: false,
             model: AgentModel::Gemini3FlashPreview,
             output: String::new(),
             project_name: "project".to_string(),
@@ -1511,15 +1517,17 @@ mod tests {
     }
 
     #[test]
-    fn test_view_help_text_includes_reply_open_and_git_actions() {
+    fn test_view_help_text_new_session_shows_draft_and_start_actions() {
         // Arrange
-        let session = session_fixture();
+        let mut session = session_fixture();
+        session.is_draft = true;
 
         // Act
         let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
 
         // Assert
-        assert!(help_text.contains("Enter: reply"));
+        assert!(help_text.contains("Enter: add draft"));
+        assert!(help_text.contains("s: start"));
         assert!(help_text.contains("o: open"));
         assert!(help_text.contains("m: add to merge queue"));
         assert!(help_text.contains("r: rebase"));
@@ -1646,8 +1654,11 @@ mod tests {
     /// attachment readiness.
     fn test_prompt_footer_line_shows_highlighted_actions_and_attachment_count() {
         // Arrange
+        let session = session_fixture();
+        let attachment_count = 2;
+
         // Act
-        let footer_line = SessionChatPage::prompt_footer_line(2);
+        let footer_line = SessionChatPage::prompt_footer_line(&session, attachment_count);
 
         // Assert
         assert_eq!(
@@ -1678,14 +1689,30 @@ mod tests {
     /// warning.
     fn test_prompt_footer_line_omits_legacy_backend_warning() {
         // Arrange
+        let session = session_fixture();
         let attachment_count = 1;
 
         // Act
-        let footer_line = SessionChatPage::prompt_footer_line(attachment_count);
+        let footer_line = SessionChatPage::prompt_footer_line(&session, attachment_count);
 
         // Assert
         assert!(footer_line.to_string().contains("1 image ready"));
         assert!(!footer_line.to_string().contains("send images with Codex"));
+    }
+
+    #[test]
+    fn test_prompt_footer_line_uses_stage_label_for_new_sessions() {
+        // Arrange
+        let mut session = session_fixture();
+        session.status = Status::New;
+        session.is_draft = true;
+
+        // Act
+        let footer_line = SessionChatPage::prompt_footer_line(&session, 0);
+
+        // Assert
+        assert!(footer_line.to_string().contains("Enter: stage draft"));
+        assert!(!footer_line.to_string().contains("Enter: submit"));
     }
 
     #[test]

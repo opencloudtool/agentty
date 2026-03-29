@@ -15,7 +15,9 @@ use crate::ui::state::prompt::{PromptAtMentionState, PromptSlashStage};
 use crate::ui::util::{format_token_count, move_input_cursor_down, move_input_cursor_up};
 
 struct PromptContext {
+    can_delete_on_cancel: bool,
     is_at_mention: bool,
+    is_draft_session: bool,
     is_new_session: bool,
     is_slash_command: bool,
     scroll_offset: Option<u16>,
@@ -208,14 +210,24 @@ fn prompt_context(app: &mut App) -> Option<PromptContext> {
         return None;
     };
 
-    let is_new_session = app
+    let (can_delete_on_cancel, is_draft_session, is_new_session) = app
         .sessions
         .sessions
         .get(session_index)
-        .is_some_and(|session| session.prompt.is_empty());
+        .map_or((false, false, false), |session| {
+            (
+                session.status == crate::domain::session::Status::New
+                    && !session.is_draft_session()
+                    && !session.has_staged_drafts(),
+                session.is_draft_session(),
+                session.status == crate::domain::session::Status::New,
+            )
+        });
 
     Some(PromptContext {
+        can_delete_on_cancel,
         is_at_mention,
+        is_draft_session,
         is_new_session,
         is_slash_command,
         scroll_offset,
@@ -447,7 +459,19 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
         return;
     }
 
-    if prompt_context.is_new_session {
+    if prompt_context.is_draft_session {
+        if let Err(error) = app
+            .stage_draft_message(&prompt_context.session_id, prompt)
+            .await
+        {
+            append_output_for_session(
+                app,
+                &prompt_context.session_id,
+                &format!("\n[Error] {error}\n"),
+            )
+            .await;
+        }
+    } else if prompt_context.is_new_session {
         if let Err(error) = app.start_session(&prompt_context.session_id, prompt).await {
             append_output_for_session(
                 app,
@@ -647,7 +671,7 @@ async fn handle_prompt_cancel_key(app: &mut App, prompt_context: &PromptContext)
 
     cleanup_prompt_attachment_state(app).await;
 
-    if prompt_context.is_new_session {
+    if prompt_context.can_delete_on_cancel {
         app.delete_selected_session_deferred_cleanup().await;
         app.mode = AppMode::List;
 
@@ -1264,6 +1288,16 @@ mod tests {
         input_text: &str,
         at_mention_state: Option<PromptAtMentionState>,
     ) -> (App, tempfile::TempDir) {
+        new_test_prompt_app_with_session_mode(input_text, at_mention_state, false).await
+    }
+
+    /// Builds one prompt-mode test app backed by either an immediate-start or
+    /// explicit draft session.
+    async fn new_test_prompt_app_with_session_mode(
+        input_text: &str,
+        at_mention_state: Option<PromptAtMentionState>,
+        is_draft_session: bool,
+    ) -> (App, tempfile::TempDir) {
         let base_dir = tempdir().expect("failed to create temp dir");
         let base_path = base_dir.path().to_path_buf();
         setup_test_git_repo(base_dir.path());
@@ -1280,10 +1314,15 @@ mod tests {
         .await
         .expect("failed to build app");
 
-        let session_id = app
-            .create_session()
-            .await
-            .expect("failed to create session");
+        let session_id = if is_draft_session {
+            app.create_draft_session()
+                .await
+                .expect("failed to create draft session")
+        } else {
+            app.create_session()
+                .await
+                .expect("failed to create session")
+        };
         app.mode = AppMode::Prompt {
             at_mention_state,
             attachment_state: PromptAttachmentState::default(),
@@ -1295,6 +1334,15 @@ mod tests {
         };
 
         (app, base_dir)
+    }
+
+    /// Builds one prompt-mode test app whose active session uses the explicit
+    /// staged-draft workflow.
+    async fn new_test_draft_prompt_app(
+        input_text: &str,
+        at_mention_state: Option<PromptAtMentionState>,
+    ) -> (App, tempfile::TempDir) {
+        new_test_prompt_app_with_session_mode(input_text, at_mention_state, true).await
     }
 
     #[test]
@@ -2427,6 +2475,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_prompt_cancel_key_keeps_empty_draft_session() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_draft_prompt_app("", None).await;
+        let prompt_context = prompt_context(&mut app).expect("expected prompt context");
+        assert!(prompt_context.is_new_session);
+        assert!(!prompt_context.can_delete_on_cancel);
+        assert_eq!(app.sessions.sessions.len(), 1);
+
+        // Act
+        handle_prompt_cancel_key(&mut app, &prompt_context).await;
+
+        // Assert
+        assert!(matches!(app.mode, AppMode::View { .. }));
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert_eq!(
+            app.sessions.sessions[0].status,
+            crate::domain::session::Status::New
+        );
+        assert!(app.sessions.sessions[0].prompt.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_handle_prompt_submit_key_ignores_empty_prompt() {
         // Arrange
         let (mut app, _base_dir) = new_test_prompt_app("", None).await;
@@ -2444,6 +2514,31 @@ mod tests {
     #[tokio::test]
     async fn test_handle_prompt_submit_key_drains_supported_image_turn() {
         // Arrange
+        let (mut app, _base_dir) = new_test_draft_prompt_app("Review ", None).await;
+        app.sessions.sessions[0].model = crate::domain::agent::AgentModel::ClaudeSonnet46;
+        insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
+        let prompt_context = prompt_context(&mut app).expect("expected prompt context");
+
+        // Act
+        handle_prompt_submit_key(&mut app, &prompt_context).await;
+
+        // Assert
+        assert!(matches!(app.mode, AppMode::View { .. }));
+        assert_eq!(app.sessions.sessions[0].prompt, "Review [Image #1]");
+        assert_eq!(
+            app.sessions.sessions[0].status,
+            crate::domain::session::Status::New
+        );
+        assert_eq!(app.sessions.sessions[0].draft_attachments.len(), 1);
+        assert_eq!(
+            app.sessions.sessions[0].draft_attachments[0].placeholder,
+            "[Image #1]"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_submit_key_starts_regular_session_with_image_turn() {
+        // Arrange
         let (mut app, _base_dir) = new_test_prompt_app("Review ", None).await;
         app.sessions.sessions[0].model = crate::domain::agent::AgentModel::ClaudeSonnet46;
         insert_pasted_image_placeholder(&mut app, std::path::PathBuf::from("/tmp/image-1.png"));
@@ -2455,6 +2550,26 @@ mod tests {
         // Assert
         assert!(matches!(app.mode, AppMode::View { .. }));
         assert_eq!(app.sessions.sessions[0].prompt, "Review [Image #1]");
+        assert_eq!(
+            app.sessions.sessions[0].title.as_deref(),
+            Some("Review [Image #1]")
+        );
+        assert!(app.sessions.sessions[0].draft_attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_cancel_key_keeps_new_session_with_staged_drafts() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_draft_prompt_app("Another draft", None).await;
+        app.sessions.sessions[0].prompt = "First draft".to_string();
+        let prompt_context = prompt_context(&mut app).expect("expected prompt context");
+
+        // Act
+        handle_prompt_cancel_key(&mut app, &prompt_context).await;
+
+        // Assert
+        assert!(matches!(app.mode, AppMode::View { .. }));
+        assert_eq!(app.sessions.sessions.len(), 1);
     }
 
     #[tokio::test]
