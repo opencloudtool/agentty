@@ -1,6 +1,6 @@
 ---
 name: implementation-plan
-description: Create and maintain the single actionable roadmap in `docs/plan/roadmap.md`. Use when asked to draft or revise the roadmap, convert work into an iterative execution queue, split the backlog into `Ready Now`, `Queued Next`, and `Parked`, and keep only the active execution window fully expanded.
+description: Create and maintain the single actionable roadmap in `docs/plan/roadmap.md`. Use when asked to draft or revise the roadmap, convert work into an iterative execution queue, split the backlog into `Ready Now`, `Queued Next`, and `Parked`, and keep only the active execution window fully expanded while preserving buffered sub-500-line implementation slices.
 ---
 
 # Implementation Plan Workflow
@@ -48,11 +48,15 @@ This skill is the source of truth for roadmap structure and execution-planning r
    - When claiming a step for the current user, resolve the GitHub login with `gh api user --jq .login` first and write that value as `@<login>` instead of guessing from local git config or the OS username.
    - Until lease automation exists, claim work only from `Ready Now`, keep claim edits scoped to the `#### Assignee` field, and land the claim as a dedicated commit before implementation begins.
    - Use size budgeting during roadmap creation, not after the fact. Before finalizing the roadmap, estimate the changed-line scope for each step, split oversized work into additional steps, and keep those size estimates in planning notes or reviewer reasoning rather than rendering a `#### Size` block in `docs/plan/` files.
+   - Treat `500` changed lines as the hard implementation ceiling, not the planning target. Plan each `Ready Now` step with headroom and split it before handoff when the estimate is above `350` changed lines so routine implementation drift does not push the real diff over `500`.
+   - Estimate size by summing the likely changes across production code, tests, and docs instead of counting only the main behavior edit. Use the higher-risk estimate when one slice spans multiple module families or introduces a new boundary plus its first consumer.
    - Treat each `Ready Now` step as one mergeable planned slice. Keep every ready step at `XL` or smaller, and split any step that would be `XXL` before handing off the plan.
    - Define `atomic` as one mergeable acceptance story: the step can land, be tested, documented, and reverted independently without needing a follow-up step just to become coherent or usable.
    - Prefer one primary usable outcome per `Ready Now` step. If the `#### Usable outcome` sentence describes two sibling capabilities, split the step.
-   - Target `2..=5` checklist items under `#### Substeps`. If a `Ready Now` step needs more than `5` implementation items, split it into additional steps or demote part of the work back into `Queued Next`.
+   - Prefer one primary code path plus its required validation/docs per `Ready Now` step. If a slice changes two peer surfaces such as settings plus prompt switching, or persistence plus editor affordances, split those into separate steps unless one surface is only a trivial adoption of an already-landed boundary.
+   - Target `1..=3` checklist items under `#### Substeps`. If a `Ready Now` step needs more than `3` implementation items, split it into additional steps or demote part of the work back into `Queued Next`.
    - Split by executable outcome, not by architecture layer. Prefer steps such as `persist X`, `render X`, `edit X`, or `reconcile X` when they each form their own usable slice, rather than bundling multiple outcomes into one cross-layer bucket.
+   - Use follow-up cards aggressively. When one stream needs a later polish pass, broader UI copy sweep, or secondary adoption path, keep the first usable slice in `Ready Now` and queue the follow-up instead of expanding the current step until it becomes risky.
    - Use titles that name one outcome. If a title needs `and`, `plus`, or multiple verbs to describe separate deliverables, split the work unless those words only clarify one tightly coupled result.
    - Use this size table when labeling a planned step:
 
@@ -62,12 +66,16 @@ This skill is the source of truth for roadmap structure and execution-planning r
      | `S` | `11..=30` |
      | `M` | `31..=80` |
      | `L` | `81..=200` |
-     | `XL` | `201..=500` |
-     | `XXL` | `501+` |
+     | `XL` | `201..=350` |
+     | `XXL` | `351+` |
    - Write each checklist item under `#### Substeps` as a short human-readable title followed by the detailed implementation guidance for that item, preserving the concrete file and constraint details instead of collapsing them into the title alone.
    - Structure `Ready Now` steps as evolving usable slices. Each ready step must include the implementation work plus the tests and documentation needed for that slice before it can be considered complete.
    - Keep implementation checklist items under `#### Substeps`, then extract validation work into `#### Tests` and documentation work into `#### Docs` immediately after `#### Substeps`.
    - Mention every required file directly in the checklist text for the relevant `Ready Now` substep instead of adding a trailing `Primary files` block.
+   - Apply these split heuristics before accepting a large step:
+     - If one step introduces a new boundary and then adopts it in two separate callers, keep the boundary plus first caller in `Ready Now` and queue the second caller.
+     - If one step changes storage shape and interaction polish, land the storage-backed behavior first and queue the editing or copy refinements.
+     - If one step touches runtime orchestration plus multiple UI surfaces, land the smallest working UI surface first and queue the broader copy or affordance sweep.
    - Use the `Stream: Title` portion of each heading to help readers understand what can proceed in parallel.
 
 1. **Define execution sequence and guardrails**
@@ -85,8 +93,9 @@ This skill is the source of truth for roadmap structure and execution-planning r
    - Verify every `Ready Now` step can be executed, validated, and merged independently.
    - Verify every `Ready Now` step answers `What becomes newly possible after only this step lands?` in one sentence.
    - Verify every `Ready Now` step was split using the size table below before handoff, even though the resulting plan should not render a `#### Size` section.
+   - Verify every `Ready Now` step has at least `150` changed lines of buffer beneath the `500`-line hard ceiling; split anything estimated above `350`.
    - Verify no `Ready Now` step is larger than `XL`; split oversized work before handoff.
-   - Verify no `Ready Now` step has more than `5` implementation checklist items under `#### Substeps`; split crowded steps before handoff.
+   - Verify no `Ready Now` step has more than `3` implementation checklist items under `#### Substeps`; split crowded steps before handoff.
    - Verify every item heading uses the exact `[UUID] Stream: Title` format and that the UUID value is valid.
    - Verify every `Ready Now` step starts with explicit `#### Assignee` before `#### Why now`.
    - Verify every `#### Assignee` value uses `@username` or the exact text `No assignee`.
@@ -95,6 +104,7 @@ This skill is the source of truth for roadmap structure and execution-planning r
    - Verify every `Queued Next` or `Parked` card uses only `#### Outcome`, `#### Promote when`, and `#### Depends on`.
    - Verify every `#### Substeps` checklist item starts with a human-readable title while keeping the detailed implementation guidance in the same item.
    - Reject ready steps that bundle multiple acceptance stories behind one title, one `#### Usable outcome`, or one combined validation block.
+   - Reject ready steps whose estimated size assumes best-case edits across several module families without contingency for test churn, router wiring, or docs updates.
    - Reject plans that save most tests/docs for the last step instead of keeping them attached to the relevant behavior changes.
    - Verify the roadmap uses one shared diagram for `Ready Now`.
    - Verify no implemented step remains in `Ready Now`; completed work belongs in snapshot context or should disappear entirely.

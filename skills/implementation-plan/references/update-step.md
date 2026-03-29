@@ -19,5 +19,6 @@ Revise one existing roadmap item while preserving the canonical heading-title fo
 ## Guardrails
 
 - Split the work into a new item instead of overloading one existing step or card with multiple sibling outcomes.
+- Re-split the step if the revision pushes the estimated scope above `350` changed lines or requires more than `3` implementation bullets under `#### Substeps`.
 - Preserve the UUID unless the old item is being removed and replaced by a genuinely new acceptance story.
 - If the revision changes queues, sequencing, or dependencies, manually reconcile `## Active Streams`, `## Ready Now Execution Order`, and `## Context Notes` after updating the item block.

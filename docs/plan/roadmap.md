@@ -29,11 +29,13 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 - Keep no more than `5` fully expanded steps in `Ready Now`.
 - Keep `Queued Next` as the compact promotion queue for the next few outcomes, not as a second fully detailed backlog.
 - Keep `Parked` for strategic work that matters, but should not consume active planning attention yet.
+- Treat `500` changed lines as the hard implementation ceiling and keep `Ready Now` slices estimated at `350` changed lines or less so normal implementation drift still stays reviewable.
 - Run `cargo run -q -p ag-xtask -- roadmap context-digest` before promoting queued or parked work so the decision uses fresh repository context.
 - When a `Ready Now` step lands and queued work remains, promote the next queued card into `Ready Now` instead of leaving the execution window short.
 - Until lease automation exists, only `Ready Now` items can carry an assignee and only `Ready Now` items should be claimed.
 - Claim ownership in a dedicated roadmap-only commit before starting implementation so the roadmap diff advertises who is taking the step, and resolve that assignee with `gh api user --jq .login` before writing `@<login>`.
 - Keep tests and documentation attached to the same `Ready Now` step that changes behavior.
+- Keep `Ready Now` implementation scopes to `1..=3` bullets under `#### Substeps`; when a step needs broader adoption, copy polish, or a second peer surface, queue the follow-up instead of widening the current slice.
 
 ## Ready Now
 
@@ -192,5 +194,6 @@ Promote when a `Ready Now` slot opens and the active workflow and model-availabi
 - Keep only `Ready Now` items fully expanded with `#### Assignee`, `#### Why now`, `#### Usable outcome`, `#### Substeps`, `#### Tests`, and `#### Docs`.
 - Keep `## Queued Next` and `## Parked` as compact promotion cards with `#### Outcome`, `#### Promote when`, and `#### Depends on`.
 - Claim work only from `## Ready Now` by updating that step's `#### Assignee` field in a dedicated commit before implementation starts, using `gh api user --jq .login` to determine the `@<login>` value.
+- Keep each `Ready Now` step estimated at `350` changed lines or less so implementation remains below the `500`-line hard ceiling, and split any wider follow-up into `## Queued Next`.
 - After a `Ready Now` step lands, remove it from `## Ready Now`, refresh any changed snapshot rows, and promote the next queued card whenever `## Queued Next` still has work.
 - If follow-up work remains after a step lands, add or update a compact queued or parked card instead of preserving the completed step.

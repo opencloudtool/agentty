@@ -19,6 +19,8 @@ Insert one new roadmap item into the correct queue in `docs/plan/roadmap.md` usi
 ## Guardrails
 
 - Adding a `Ready Now` step usually also requires manual updates to `## Active Streams`, `## Planning Model`, `## Ready Now Execution Order`, or `## Context Notes` when the new work changes roadmap flow.
+- Treat `500` changed lines as the hard ceiling, but keep new `Ready Now` steps estimated at `350` changed lines or less so the implementation still has room for test, wiring, and docs churn.
 - Keep new `Ready Now` steps at `XL` or smaller and split them before insertion if they would exceed the skill's size budget.
+- Keep new `Ready Now` steps to `1..=3` implementation bullets under `#### Substeps`; if the slice needs a fourth implementation bullet, queue the follow-up instead of widening the step.
 - Prefer `No assignee` for new `Ready Now` steps unless the user explicitly wants to claim the work immediately.
 - Prefer adding backlog work to `## Queued Next` or `## Parked` instead of expanding `## Ready Now` beyond `5` items.
