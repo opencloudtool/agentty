@@ -120,6 +120,34 @@ Pressing `p` in `Review` creates or refreshes the session pull request for GitHu
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/runtime-flow.md` to explain that `p` creates or refreshes GitHub pull requests while non-GitHub remotes continue to use the branch-publish flow.
 
+### [64c9bb7f-4d11-4c3c-b2ad-4a86db9bd6c9] Workflow: Stage draft session messages and start them explicitly
+
+#### Assignee
+
+`@minev-dev`
+
+#### Why now
+
+`New` sessions still burn the first prompt immediately, which prevents users from staging multi-message context before launch and leaves the follow-up draft-polish card blocked on a missing baseline workflow.
+
+#### Usable outcome
+
+Users can queue ordered draft messages inside a `New` session, reopen that session without losing the staged bundle, and explicitly launch the first agent turn only when the draft is ready.
+
+#### Substeps
+
+- [ ] **Persist staged draft messages for `New` sessions.** Extend `crates/agentty/src/domain/session.rs`, `crates/agentty/src/infra/db.rs`, the required migration under `crates/agentty/migrations/`, and `crates/agentty/src/app/session/workflow/load.rs` so each `Status::New` session can store and reload an ordered draft-message bundle instead of only one transient composer state.
+- [ ] **Switch first-submit behavior from immediate launch to staging.** Update `crates/agentty/src/runtime/mode/prompt.rs`, `crates/agentty/src/app/core.rs`, and `crates/agentty/src/app/session/workflow/lifecycle.rs` so submitting from a `New` session appends one staged `TurnPrompt` entry, while a dedicated start action submits the full staged bundle as the first live agent turn.
+- [ ] **Render staged drafts and the explicit start affordance.** Update `crates/agentty/src/runtime/mode/session_view.rs`, `crates/agentty/src/ui/page/session_chat.rs`, and `crates/agentty/src/ui/state/help_action.rs` so `New` sessions show the queued draft bundle, distinguish staging from sending in composer/help text, and expose a clear explicit-start action.
+
+#### Tests
+
+- [ ] Add or extend coverage in `crates/agentty/src/app/session/workflow/lifecycle.rs`, `crates/agentty/src/app/session/core.rs`, `crates/agentty/src/runtime/mode/prompt.rs`, `crates/agentty/src/infra/db.rs`, and `crates/agentty/src/ui/page/session_chat.rs` for staged-draft persistence, ordered reload, explicit launch, and the `New`-session UI state.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/getting-started/overview.md` for the staged-draft workflow, explicit start action, and the meaning of `New` sessions after this slice lands.
+
 ### [7608043e-3ae8-44b4-bcb4-341f8070d0d2] Quality: Introduce typed errors for the remaining infra boundaries
 
 #### Assignee
@@ -156,24 +184,11 @@ flowchart TD
     R1["[8f4402cd] Workflow: sibling-session launch"]
     R2["[28de2b07] Agents: local model availability"]
     R3["[ca014af3] Forge: GitHub review request publish"]
-    R4["[7608043e] Quality: typed infra errors"]
+    R4["[64c9bb7f] Workflow: staged draft-session launch"]
+    R5["[7608043e] Quality: typed infra errors"]
 ```
 
 ## Queued Next
-
-### [64c9bb7f-4d11-4c3c-b2ad-4a86db9bd6c9] Workflow: Stage draft session messages and start them explicitly
-
-#### Outcome
-
-Let `New` sessions retain ordered draft messages across reloads and start the first agent turn only when the staged draft bundle is explicitly launched.
-
-#### Promote when
-
-Promote after a `Ready Now` slot opens and the active workflow/model-availability slices stop competing for the same session lifecycle files.
-
-#### Depends on
-
-`None`
 
 ### [ed9de74b-64c0-4ca6-86b5-d29c8bc26591] Quality: Propagate typed errors through the app layer
 
