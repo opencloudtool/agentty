@@ -25,10 +25,10 @@ Agentty organizes its interface into four tabs, accessible with `Tab`:
 | **Settings** | Configure reasoning level, smart/fast/review model defaults, the optional `Last used model as default` smart-model mode, the session commit coauthor trailer, and `Open Commands` for the active project. |
 
 In session chat view, the status and session title render in a dedicated
-header row above the output panel. Once a session has entered
-**InProgress** at least once, that same row also shows a compact cumulative
-active-work timer. The timer keeps ticking only while the session is actively
-working and freezes between turns.
+header row above the output panel. A second metadata row shows the persisted
+size bucket, current `+added` / `-deleted` line totals, the cumulative
+active-work timer, and token usage. The timer keeps ticking only while the
+session is actively working and freezes between turns.
 
 The grouped **Sessions** tab also shows that same cumulative active-work timer
 in its own `Timer` column, so in-progress rows keep ticking live there while

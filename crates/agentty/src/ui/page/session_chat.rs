@@ -420,13 +420,16 @@ impl<'a> SessionChatPage<'a> {
         header_width: u16,
         wall_clock_unix_seconds: i64,
     ) -> String {
+        let added_lines = session.stats.added_lines;
+        let deleted_lines = session.stats.deleted_lines;
         let timer =
             format_duration_compact(session.in_progress_duration_seconds(wall_clock_unix_seconds));
         let input_tokens = format_token_count(session.stats.input_tokens);
         let output_tokens = format_token_count(session.stats.output_tokens);
         let metadata = format!(
-            "Size: {}  Timer: {timer}  Token usage: {input_tokens} in / {output_tokens} out",
-            session.size
+            "Size: {}  Lines: +{added_lines} / -{deleted_lines}  Timer: {timer}  Token usage: \
+             {input_tokens} in / {output_tokens} out",
+            session.size,
         );
         let metadata_width = usize::from(header_width);
 
@@ -1771,6 +1774,8 @@ mod tests {
         // Arrange
         let mut session = session_fixture();
         session.title = Some("Header Session".to_string());
+        session.stats.added_lines = 12;
+        session.stats.deleted_lines = 4;
         session.stats.input_tokens = 1_250;
         session.stats.output_tokens = 2_500;
         let mode = AppMode::List;
@@ -1796,6 +1801,7 @@ mod tests {
         assert!(header_row.contains("Header Session"));
         assert!(metadata_row.trim_start().starts_with("Size: XS"));
         assert!(metadata_row.contains("Size: XS"));
+        assert!(metadata_row.contains("Lines: +12 / -4"));
         assert!(metadata_row.contains("Timer: 0s"));
         assert!(metadata_row.contains("Token usage: 1.3k in / 2.5k out"));
         assert!(!output_border_row.contains("Header Session"));
@@ -1859,6 +1865,8 @@ mod tests {
     fn test_session_metadata_text_ticks_live_in_progress_timer() {
         // Arrange
         let mut session = session_fixture();
+        session.stats.added_lines = 9;
+        session.stats.deleted_lines = 3;
         session.status = Status::InProgress;
         session.title = Some("Timer Session".to_string());
         session.in_progress_started_at = Some(60);
@@ -1868,6 +1876,7 @@ mod tests {
         let later_metadata = SessionChatPage::session_metadata_text(&session, 80, 3_720);
 
         // Assert
+        assert!(early_metadata.contains("Lines: +9 / -3"));
         assert!(early_metadata.contains("Timer: 30s"));
         assert!(later_metadata.contains("Timer: 1h1m0s"));
     }

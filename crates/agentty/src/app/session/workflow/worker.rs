@@ -388,16 +388,19 @@ impl SessionWorkerService {
 
         let result = apply_turn_result(context, session_model, turn_result).await;
 
-        if let Some(session_size) = SessionTaskService::refresh_persisted_session_size(
-            &context.db,
-            context.git_client.as_ref(),
-            &context.session_id,
-            &context.folder,
-        )
-        .await
+        if let Some((session_size, added_lines, deleted_lines)) =
+            SessionTaskService::refresh_persisted_session_diff_stats(
+                &context.db,
+                context.git_client.as_ref(),
+                &context.session_id,
+                &context.folder,
+            )
+            .await
         {
             // Fire-and-forget: receiver may be dropped during shutdown.
             let _ = context.app_event_tx.send(AppEvent::SessionSizeUpdated {
+                added_lines,
+                deleted_lines,
                 session_id: context.session_id.clone(),
                 session_size,
             });
@@ -665,6 +668,8 @@ async fn apply_successful_turn_result(
     });
 
     let stats = SessionStats {
+        added_lines: 0,
+        deleted_lines: 0,
         input_tokens,
         output_tokens,
     };

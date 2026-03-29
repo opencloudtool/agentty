@@ -144,8 +144,10 @@ pub struct SessionReviewRequestRow {
 /// through the `session_review_request` table when the session has been
 /// published for remote review.
 pub struct SessionRow {
+    pub added_lines: i64,
     pub base_branch: String,
     pub created_at: i64,
+    pub deleted_lines: i64,
     pub id: String,
     pub in_progress_started_at: Option<i64>,
     pub in_progress_total_seconds: i64,
@@ -274,8 +276,10 @@ struct RequiredI64ValueRow {
 /// Row returned when loading one `session` plus aliased
 /// `session_review_request` join columns.
 struct SessionJoinRow {
+    added_lines: i64,
     base_branch: String,
     created_at: i64,
+    deleted_lines: i64,
     id: String,
     in_progress_started_at: Option<i64>,
     in_progress_total_seconds: i64,
@@ -307,8 +311,10 @@ impl SessionJoinRow {
     /// Converts the macro-mapped join row into the public `SessionRow` model.
     fn into_session_row(self) -> SessionRow {
         let Self {
+            added_lines,
             base_branch,
             created_at,
+            deleted_lines,
             id,
             in_progress_started_at,
             in_progress_total_seconds,
@@ -350,8 +356,10 @@ impl SessionJoinRow {
         .into_review_request_row();
 
         SessionRow {
+            added_lines,
             base_branch,
             created_at,
+            deleted_lines,
             id,
             in_progress_started_at,
             in_progress_total_seconds,
@@ -701,7 +709,9 @@ ON CONFLICT(session_id) DO NOTHING
             SessionJoinRow,
             r#"
 SELECT session.base_branch AS "base_branch!",
+       session.added_lines AS "added_lines!",
        session.created_at AS "created_at!",
+       session.deleted_lines AS "deleted_lines!",
        session.id AS "id!",
        session.in_progress_started_at,
        session.in_progress_total_seconds AS "in_progress_total_seconds!",
@@ -753,7 +763,9 @@ ORDER BY session.updated_at DESC, session.id
             SessionJoinRow,
             r#"
 SELECT session.base_branch AS "base_branch!",
+       session.added_lines AS "added_lines!",
        session.created_at AS "created_at!",
+       session.deleted_lines AS "deleted_lines!",
        session.id AS "id!",
        session.in_progress_started_at,
        session.in_progress_total_seconds AS "in_progress_total_seconds!",
@@ -1025,23 +1037,41 @@ FROM session
         Ok(())
     }
 
-    /// Updates the size bucket for a session row.
+    /// Updates persisted diff-derived size and line-count fields for a
+    /// session row.
     ///
-    /// The update is skipped when the stored value already matches `size`.
+    /// The update is skipped when all stored values already match the provided
+    /// diff summary.
     ///
     /// # Errors
-    /// Returns an error if the size update fails.
-    pub async fn update_session_size(&self, id: &str, size: &str) -> Result<(), DbError> {
+    /// Returns an error if the diff-stats update fails.
+    pub async fn update_session_diff_stats(
+        &self,
+        added_lines: u64,
+        deleted_lines: u64,
+        id: &str,
+        size: &str,
+    ) -> Result<(), DbError> {
         sqlx::query(
             r"
 UPDATE session
-SET size = ?
+SET added_lines = ?,
+    deleted_lines = ?,
+    size = ?
 WHERE id = ?
-  AND size <> ?
+  AND (
+      added_lines <> ?
+      OR deleted_lines <> ?
+      OR size <> ?
+  )
 ",
         )
+        .bind(added_lines.cast_signed())
+        .bind(deleted_lines.cast_signed())
         .bind(size)
         .bind(id)
+        .bind(added_lines.cast_signed())
+        .bind(deleted_lines.cast_signed())
         .bind(size)
         .execute(&self.pool)
         .await?;
@@ -2284,8 +2314,10 @@ WHERE id = ?
     /// tests.
     fn session_join_row_fixture() -> SessionJoinRow {
         SessionJoinRow {
+            added_lines: 14,
             base_branch: "main".to_string(),
             created_at: 100,
+            deleted_lines: 6,
             id: "session-a".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -2357,9 +2389,9 @@ WHERE id = ?
             .await
             .expect("failed to update session updated_at");
         database
-            .update_session_size("session-a", "L")
+            .update_session_diff_stats(14, 6, "session-a", "L")
             .await
-            .expect("failed to update session size");
+            .expect("failed to update session diff stats");
         database
             .update_session_questions("session-a", "[\"Need logs?\"]")
             .await
@@ -2390,6 +2422,8 @@ WHERE id = ?
             .update_session_stats(
                 "session-a",
                 &SessionStats {
+                    added_lines: 0,
+                    deleted_lines: 0,
                     input_tokens: 11,
                     output_tokens: 29,
                 },
@@ -2444,6 +2478,8 @@ WHERE id = ?
         assert_eq!(session_row.project_id, Some(project_id));
         assert_eq!(session_row.prompt, "Implement the feature");
         assert_eq!(session_row.output, "First line\nSecond line");
+        assert_eq!(session_row.added_lines, 14);
+        assert_eq!(session_row.deleted_lines, 6);
         assert_eq!(session_row.input_tokens, 11);
         assert_eq!(session_row.output_tokens, 29);
         assert_eq!(session_row.size, "L");
@@ -2674,6 +2710,8 @@ WHERE id = ?
                 "session-a",
                 "claude-opus-4.1",
                 &SessionStats {
+                    added_lines: 0,
+                    deleted_lines: 0,
                     input_tokens: 11,
                     output_tokens: 29,
                 },
@@ -2962,6 +3000,8 @@ WHERE model = ?
         assert_eq!(session_row.id, "session-a");
         assert_eq!(session_row.project_id, Some(7));
         assert_eq!(session_row.status, "Review");
+        assert_eq!(session_row.added_lines, 14);
+        assert_eq!(session_row.deleted_lines, 6);
         assert_eq!(session_row.review_request, None);
     }
 
@@ -2977,6 +3017,8 @@ WHERE model = ?
 
         // Assert
         assert_eq!(session_row.id, "session-a");
+        assert_eq!(session_row.added_lines, 14);
+        assert_eq!(session_row.deleted_lines, 6);
         assert_eq!(session_row.project_id, Some(7));
         assert_eq!(
             session_row.published_upstream_ref.as_deref(),
@@ -3007,6 +3049,8 @@ WHERE model = ?
                 "session-a",
                 "claude-opus-4.1",
                 &SessionStats {
+                    added_lines: 0,
+                    deleted_lines: 0,
                     input_tokens: 11,
                     output_tokens: 29,
                 },
@@ -3018,6 +3062,8 @@ WHERE model = ?
                 "session-a",
                 "claude-opus-4.1",
                 &SessionStats {
+                    added_lines: 0,
+                    deleted_lines: 0,
                     input_tokens: 3,
                     output_tokens: 5,
                 },

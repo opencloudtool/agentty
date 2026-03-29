@@ -178,6 +178,8 @@ impl SessionManager {
                 review_request,
                 size: persisted_size,
                 stats: SessionStats {
+                    added_lines: row.added_lines.cast_unsigned(),
+                    deleted_lines: row.deleted_lines.cast_unsigned(),
                     input_tokens: row.input_tokens.cast_unsigned(),
                     output_tokens: row.output_tokens.cast_unsigned(),
                 },
@@ -191,14 +193,15 @@ impl SessionManager {
         (sessions, stats_activity)
     }
 
-    /// Computes session-size bucket from one worktree folder's diff.
-    pub(crate) async fn session_size_for_folder(
+    /// Computes diff-derived session size and line-count totals from one
+    /// worktree folder.
+    pub(crate) async fn session_diff_stats_for_folder(
         git_client: &dyn GitClient,
         folder: &Path,
         base_branch: &str,
-    ) -> SessionSize {
+    ) -> (SessionSize, u64, u64) {
         if !folder.is_dir() {
-            return SessionSize::Xs;
+            return (SessionSize::Xs, 0, 0);
         }
 
         let folder = folder.to_path_buf();
@@ -209,7 +212,9 @@ impl SessionManager {
             .ok()
             .unwrap_or_default();
 
-        SessionSize::from_diff(&diff)
+        let (added_lines, deleted_lines) = SessionStats::line_change_counts(&diff);
+
+        (SessionSize::from_diff(&diff), added_lines, deleted_lines)
     }
 }
 
@@ -724,8 +729,10 @@ mod tests {
     fn parse_review_request_returns_none_for_invalid_row() {
         // Arrange
         let row = SessionRow {
+            added_lines: 0,
             base_branch: "main".to_string(),
             created_at: 0,
+            deleted_lines: 0,
             id: "session-a".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,

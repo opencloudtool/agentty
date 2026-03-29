@@ -136,8 +136,11 @@ pub(crate) enum AppEvent {
     SyncMainCompleted {
         result: Result<SyncMainOutcome, SyncSessionStartError>,
     },
-    /// Indicates a recomputed session-size bucket for one session.
+    /// Indicates recomputed diff-derived size and line-count totals for one
+    /// session.
     SessionSizeUpdated {
+        added_lines: u64,
+        deleted_lines: u64,
         session_id: String,
         session_size: SessionSize,
     },
@@ -183,7 +186,7 @@ struct AppEventBatch {
     session_ids: HashSet<String>,
     session_model_updates: HashMap<String, AgentModel>,
     session_progress_updates: HashMap<String, Option<String>>,
-    session_size_updates: HashMap<String, SessionSize>,
+    session_size_updates: HashMap<String, (u64, u64, SessionSize)>,
     should_force_reload: bool,
     sync_main_result: Option<Result<SyncMainOutcome, SyncSessionStartError>>,
     update_status: Option<UpdateStatus>,
@@ -1485,9 +1488,15 @@ impl App {
                 .apply_session_model_updated(&session_id, session_model);
         }
 
-        for (session_id, session_size) in event_batch.session_size_updates {
-            self.sessions
-                .apply_session_size_updated(&session_id, session_size);
+        for (session_id, (added_lines, deleted_lines, session_size)) in
+            event_batch.session_size_updates
+        {
+            self.sessions.apply_session_size_updated(
+                &session_id,
+                added_lines,
+                deleted_lines,
+                session_size,
+            );
         }
 
         for (session_id, entries) in event_batch.at_mention_entries_updates {
@@ -3011,10 +3020,13 @@ impl AppEventBatch {
                 self.sync_main_result = Some(result);
             }
             AppEvent::SessionSizeUpdated {
+                added_lines,
+                deleted_lines,
                 session_id,
                 session_size,
             } => {
-                self.session_size_updates.insert(session_id, session_size);
+                self.session_size_updates
+                    .insert(session_id, (added_lines, deleted_lines, session_size));
             }
             AppEvent::BranchPublishActionCompleted {
                 restore_view,
@@ -3754,6 +3766,8 @@ mod tests {
             .await
             .expect("failed to insert session");
         let usage = SessionStats {
+            added_lines: 0,
+            deleted_lines: 0,
             input_tokens: 1_200,
             output_tokens: 650,
         };

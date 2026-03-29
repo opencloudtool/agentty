@@ -340,6 +340,8 @@ fn parse_codex_response(stdout: &str) -> Option<ParsedResponse> {
     }
 
     let stats = SessionStats {
+        added_lines: 0,
+        deleted_lines: 0,
         input_tokens: total_input_tokens,
         output_tokens: total_output_tokens,
     };
@@ -409,6 +411,8 @@ fn parse_claude_response_payload(stdout: &str) -> Option<ParsedResponse> {
     let response = serde_json::from_str::<ClaudeResponse>(stdout).ok()?;
     let content = response.result?;
     let stats = SessionStats {
+        added_lines: 0,
+        deleted_lines: 0,
         input_tokens: response
             .usage
             .as_ref()
@@ -467,6 +471,8 @@ fn extract_claude_usage_stats(stream_event: &serde_json::Value) -> Option<Sessio
     let usage = stream_event.get("usage")?;
 
     Some(SessionStats {
+        added_lines: 0,
+        deleted_lines: 0,
         input_tokens: usage
             .get("input_tokens")
             .and_then(serde_json::Value::as_i64)
@@ -600,6 +606,8 @@ fn extract_gemini_stream_stats(stdout_line: &str) -> Option<SessionStats> {
     let stats = stream_event
         .stats
         .map_or_else(SessionStats::default, |stats| SessionStats {
+            added_lines: 0,
+            deleted_lines: 0,
             input_tokens: stats.input_tokens.unwrap_or(0).cast_unsigned(),
             output_tokens: stats.output_tokens.unwrap_or(0).cast_unsigned(),
         });
@@ -762,6 +770,8 @@ fn extract_gemini_stats(stats: Option<GeminiStats>) -> SessionStats {
     }
 
     SessionStats {
+        added_lines: 0,
+        deleted_lines: 0,
         input_tokens: total_input_tokens,
         output_tokens: total_output_tokens,
     }

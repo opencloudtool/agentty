@@ -297,6 +297,8 @@ mod tests {
             review_request: None,
             size: SessionSize::Xs,
             stats: SessionStats {
+                added_lines: 0,
+                deleted_lines: 0,
                 input_tokens,
                 output_tokens,
             },

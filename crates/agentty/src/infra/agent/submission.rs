@@ -140,6 +140,8 @@ pub(crate) async fn submit_one_shot_with_app_server_client(
     Ok(OneShotSubmission {
         response,
         stats: SessionStats {
+            added_lines: 0,
+            deleted_lines: 0,
             input_tokens: turn_result.input_tokens,
             output_tokens: turn_result.output_tokens,
         },

@@ -74,30 +74,35 @@ pub(crate) struct RunAgentAssistTaskInput {
 }
 
 impl SessionTaskService {
-    /// Recomputes and persists one session size using the session worktree
-    /// diff.
+    /// Recomputes and persists diff-derived size and line-count totals using
+    /// the session worktree diff.
     ///
-    /// Returns the recomputed bucket when the base-branch lookup and
-    /// persistence both succeed.
-    pub(crate) async fn refresh_persisted_session_size(
+    /// Returns the recomputed size plus added/deleted line totals when the
+    /// base-branch lookup and persistence both succeed.
+    pub(crate) async fn refresh_persisted_session_diff_stats(
         db: &Database,
         git_client: &dyn GitClient,
         session_id: &str,
         folder: &Path,
-    ) -> Option<SessionSize> {
+    ) -> Option<(SessionSize, u64, u64)> {
         let base_branch = db
             .get_session_base_branch(session_id)
             .await
             .ok()
             .flatten()?;
 
-        let computed_size =
-            SessionManager::session_size_for_folder(git_client, folder, &base_branch).await;
-        db.update_session_size(session_id, &computed_size.to_string())
-            .await
-            .ok()?;
+        let (computed_size, added_lines, deleted_lines) =
+            SessionManager::session_diff_stats_for_folder(git_client, folder, &base_branch).await;
+        db.update_session_diff_stats(
+            added_lines,
+            deleted_lines,
+            session_id,
+            &computed_size.to_string(),
+        )
+        .await
+        .ok()?;
 
-        Some(computed_size)
+        Some((computed_size, added_lines, deleted_lines))
     }
 
     /// Commits pending worktree changes and appends user-visible outcomes.

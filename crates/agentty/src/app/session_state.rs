@@ -90,8 +90,14 @@ impl SessionState {
         }
     }
 
-    /// Applies one recomputed session-size bucket to the matching snapshot.
-    pub fn apply_session_size_updated(&mut self, session_id: &str, session_size: SessionSize) {
+    /// Applies one recomputed diff summary to the matching snapshot.
+    pub fn apply_session_size_updated(
+        &mut self,
+        session_id: &str,
+        added_lines: u64,
+        deleted_lines: u64,
+        session_size: SessionSize,
+    ) {
         let Some(session) = self
             .sessions
             .iter_mut()
@@ -100,6 +106,8 @@ impl SessionState {
             return;
         };
 
+        session.stats.added_lines = added_lines;
+        session.stats.deleted_lines = deleted_lines;
         session.size = session_size;
     }
 
@@ -472,9 +480,11 @@ mod tests {
         );
 
         // Act
-        state.apply_session_size_updated(&session_id, SessionSize::S);
+        state.apply_session_size_updated(&session_id, 12, 4, SessionSize::S);
 
         // Assert
+        assert_eq!(state.sessions[0].stats.added_lines, 12);
+        assert_eq!(state.sessions[0].stats.deleted_lines, 4);
         assert_eq!(state.sessions[0].size, SessionSize::S);
     }
 

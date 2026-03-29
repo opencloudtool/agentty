@@ -7,9 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::domain::session::Session;
 use crate::ui::component::file_explorer::FileExplorer;
 use crate::ui::state::help_action;
-use crate::ui::util::{
-    DiffLine, DiffLineKind, diff_line_change_totals, parse_diff_lines, selected_diff_lines,
-};
+use crate::ui::util::{DiffLine, DiffLineKind, parse_diff_lines, selected_diff_lines};
 use crate::ui::{Component, Page, diff_util, style};
 
 const SCROLL_X_OFFSET: u16 = 0;
@@ -48,8 +46,8 @@ impl<'a> DiffPage<'a> {
         f: &mut Frame,
         area: Rect,
         parsed: &[DiffLine],
-        total_added_lines: usize,
-        total_removed_lines: usize,
+        total_added_lines: u64,
+        total_removed_lines: u64,
     ) {
         let title = Line::from(vec![
             Span::styled(" (", Style::default().fg(style::palette::WARNING)),
@@ -242,7 +240,6 @@ impl Page for DiffPage<'_> {
         let areas = diff_util::diff_page_areas(area);
 
         let parsed = parse_diff_lines(&self.diff);
-        let (total_added_lines, total_removed_lines) = diff_line_change_totals(&parsed);
         let tree_items = FileExplorer::file_tree_items(&parsed);
 
         FileExplorer::new(&parsed)
@@ -254,8 +251,8 @@ impl Page for DiffPage<'_> {
             f,
             areas.diff_area,
             &filtered,
-            total_added_lines,
-            total_removed_lines,
+            self.session.stats.added_lines,
+            self.session.stats.deleted_lines,
         );
 
         let help_message =
@@ -327,7 +324,9 @@ mod tests {
     #[test]
     fn test_render_shows_updated_diff_help_hint() {
         // Arrange
-        let session = session_fixture();
+        let mut session = session_fixture();
+        session.stats.added_lines = 1;
+        session.stats.deleted_lines = 0;
         let mut diff_page = DiffPage::new(
             &session,
             "diff --git a/src/main.rs b/src/main.rs\n+added".to_string(),
@@ -350,6 +349,35 @@ mod tests {
         assert!(text.contains("(+1 -0) Diff — Diff Session"));
         assert!(text.contains("j/k: select file"));
         assert!(text.contains("Up/Down: scroll file"));
+    }
+
+    #[test]
+    fn test_render_diff_title_uses_persisted_session_line_totals() {
+        // Arrange
+        let mut session = session_fixture();
+        session.stats.added_lines = 9;
+        session.stats.deleted_lines = 4;
+        let mut diff_page = DiffPage::new(
+            &session,
+            "diff --git a/src/main.rs b/src/main.rs\n+added".to_string(),
+            0,
+            0,
+        );
+        let backend = ratatui::backend::TestBackend::new(120, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Page::render(&mut diff_page, frame, area);
+            })
+            .expect("failed to draw diff page");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("(+9 -4) Diff — Diff Session"));
+        assert!(!text.contains("(+1 -0) Diff — Diff Session"));
     }
 
     #[test]

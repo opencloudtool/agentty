@@ -2148,7 +2148,7 @@ mod tests {
             .expect("failed to create session");
         app.services
             .db()
-            .update_session_size(&session_id, "S")
+            .update_session_diff_stats(8, 3, &session_id, "S")
             .await
             .expect("failed to update size");
         let session_index = app
@@ -2185,6 +2185,10 @@ mod tests {
             .find(|session| session.id == session_id)
             .expect("missing persisted session");
         assert_eq!(reloaded_session.size, SessionSize::S);
+        assert_eq!(reloaded_session.stats.added_lines, 8);
+        assert_eq!(reloaded_session.stats.deleted_lines, 3);
+        assert_eq!(db_session.added_lines, 8);
+        assert_eq!(db_session.deleted_lines, 3);
         assert_eq!(db_session.size, "S");
     }
 
@@ -2243,6 +2247,10 @@ mod tests {
             .find(|db_session| db_session.id == session_id)
             .expect("missing persisted session");
         assert_eq!(session.size, SessionSize::S);
+        assert_eq!(session.stats.added_lines, 20);
+        assert_eq!(session.stats.deleted_lines, 0);
+        assert_eq!(db_session.added_lines, 20);
+        assert_eq!(db_session.deleted_lines, 0);
         assert_eq!(db_session.size, "S");
     }
 
@@ -2257,7 +2265,7 @@ mod tests {
             .expect("failed to create session");
         app.services
             .db()
-            .update_session_size(&session_id, "L")
+            .update_session_diff_stats(21, 9, &session_id, "L")
             .await
             .expect("failed to update size");
         app.services
@@ -2300,6 +2308,10 @@ mod tests {
             .expect("missing persisted session");
         assert_eq!(reloaded_session.status, Status::Done);
         assert_eq!(reloaded_session.size, SessionSize::L);
+        assert_eq!(reloaded_session.stats.added_lines, 21);
+        assert_eq!(reloaded_session.stats.deleted_lines, 9);
+        assert_eq!(db_session.added_lines, 21);
+        assert_eq!(db_session.deleted_lines, 9);
         assert_eq!(db_session.size, "L");
     }
 

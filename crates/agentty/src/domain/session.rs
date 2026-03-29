@@ -130,13 +130,9 @@ impl SessionSize {
 
     /// Classifies one git diff into a session size bucket.
     pub fn from_diff(diff: &str) -> Self {
-        let changed_line_count = diff
-            .lines()
-            .filter(|line| {
-                (line.starts_with('+') && !line.starts_with("+++"))
-                    || (line.starts_with('-') && !line.starts_with("---"))
-            })
-            .count();
+        let (added_lines, deleted_lines) = SessionStats::line_change_counts(diff);
+        let changed_line_count =
+            usize::try_from(added_lines.saturating_add(deleted_lines)).unwrap_or(usize::MAX);
 
         Self::from_changed_line_count(changed_line_count)
     }
@@ -223,13 +219,36 @@ pub enum FollowUpTaskAction {
     Open,
 }
 
-/// Per-session token statistics.
+/// Per-session usage and diff statistics.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionStats {
+    /// Added diff lines currently attributed to the session worktree.
+    pub added_lines: u64,
+    /// Deleted diff lines currently attributed to the session worktree.
+    pub deleted_lines: u64,
     /// Input/prompt tokens consumed by this session.
     pub input_tokens: u64,
     /// Output/response tokens produced by this session.
     pub output_tokens: u64,
+}
+
+impl SessionStats {
+    /// Counts added and deleted lines in one git patch while ignoring file
+    /// header markers such as `+++` and `---`.
+    pub fn line_change_counts(diff: &str) -> (u64, u64) {
+        diff.lines()
+            .fold((0_u64, 0_u64), |(added_lines, deleted_lines), line| {
+                if line.starts_with('+') && !line.starts_with("+++") {
+                    return (added_lines.saturating_add(1), deleted_lines);
+                }
+
+                if line.starts_with('-') && !line.starts_with("---") {
+                    return (added_lines, deleted_lines.saturating_add(1));
+                }
+
+                (added_lines, deleted_lines)
+            })
+    }
 }
 
 /// Aggregated activity count for one day key.
@@ -451,6 +470,34 @@ mod tests {
 
         // Assert
         assert!(!can_transition);
+    }
+
+    #[test]
+    fn test_session_stats_line_change_counts_ignore_diff_headers() {
+        // Arrange
+        let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ \
+                    b/src/lib.rs\n@@ -1,2 +1,3 @@\n-old line\n+new line\n+another line\n";
+
+        // Act
+        let (added_lines, deleted_lines) = SessionStats::line_change_counts(diff);
+
+        // Assert
+        assert_eq!(added_lines, 2);
+        assert_eq!(deleted_lines, 1);
+    }
+
+    #[test]
+    fn test_session_size_from_diff_counts_added_and_deleted_lines() {
+        // Arrange
+        let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+another line\n";
+
+        // Act
+        let session_size = SessionSize::from_diff(diff);
+
+        // Assert
+        assert_eq!(session_size, SessionSize::Xs);
     }
 
     #[test]
