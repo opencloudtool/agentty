@@ -12,7 +12,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 | Draft session workflow | `New` sessions are still blank placeholders whose first submitted prompt starts the agent immediately, so users cannot stage multiple draft messages and explicitly launch the session later. | Missing |
 | Session activity timing | `session` persists cumulative `InProgress` timing fields, and both chat and the grouped session list now show the same cumulative active-work timer. | Landed |
 | Deterministic scenario coverage | Local git tests exist, but there is no shared app-level scenario harness for a full local session workflow. | Partial |
-| Typed errors and hygiene | `DbError` and `GitError` are landed; app-server, remaining infra surfaces, and the app layer still expose string errors; discard comments, missing module tests, and convention cleanup remain open. | Partial |
+| Typed errors and hygiene | `DbError`, `GitError`, `AppServerTransportError`, `AppServerError`, and `AgentError` enums are landed across all infra boundaries; the app layer still uses `Result<T, String>` in review-assist, sync-assist, and session-lifecycle helpers; discard comments, missing module tests, and convention cleanup remain open. | Partial |
 | Testty proof pipeline | PTY-driven sessions, VT100 frame parsing, VHS tape compilation, snapshot baselines, overlay renderer, and recipe layer exist. Proof reports, native frame rendering, and scale tooling remain backlog work. | Partial |
 
 ## Active Streams
@@ -120,7 +120,7 @@ Users can queue ordered draft messages inside a `New` session, reopen that sessi
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/getting-started/overview.md` for the staged-draft workflow, explicit start action, and the meaning of `New` sessions after this slice lands.
 
-### [7608043e-3ae8-44b4-bcb4-341f8070d0d2] Quality: Introduce typed errors for the remaining infra boundaries
+### [ed9de74b-64c0-4ca6-86b5-d29c8bc26591] Quality: Propagate typed errors through the app layer
 
 #### Assignee
 
@@ -128,26 +128,26 @@ Users can queue ordered draft messages inside a `New` session, reopen that sessi
 
 #### Why now
 
-`GitError` and `DbError` are already landed and proven. The remaining infra boundaries — app-server transport, Gemini ACP client, Codex app-server client, and the `AgentError` channel contract — still return `Result<T, String>` or wrap errors in an opaque `String` newtype, which collapses failure context before it reaches the app layer.
+The infra boundaries now expose stable typed enums (`AppServerTransportError`, `AppServerError`, `AgentError`, `GitError`, `DbError`), but the app layer still flattens them to `Result<T, String>` in the review-assist pipeline, the sync-assist client trait, and several session-lifecycle helpers, losing the structured failure context before it reaches callers.
 
 #### Usable outcome
 
-Every infra boundary that crosses into the app layer exposes a typed error enum instead of `String`, so the app and session error chains can discriminate failure causes without parsing formatted messages.
+Every app-layer function that crosses an infra boundary propagates typed errors through `AppError` or `SessionError` instead of `String`, so callers can discriminate failure causes without parsing formatted messages.
 
 #### Substeps
 
-- [x] **Introduce `AppServerTransportError` for the shared transport helpers.** Replace the `Result<T, String>` signatures in `crates/agentty/src/infra/app_server_transport.rs` (`write_json_line`, `wait_for_response_line`) with a new `AppServerTransportError` enum covering IO, timeout, and serialization failures; update `crates/agentty/src/infra/app_server/error.rs` to add a `#[from] Transport` variant that wraps this new type instead of holding a plain `String`.
-- [x] **Replace string errors in the Gemini ACP client.** Convert the `Result<T, String>` internal functions in `crates/agentty/src/infra/agent/app_server/gemini/client.rs` to return `AppServerTransportError` or `AppServerError` variants, removing `format!`/`.to_string()` error conversions and preserving causal context through `#[from]` or explicit variant mapping.
-- [x] **Replace string errors in the Codex app-server client.** Apply the same conversion in `crates/agentty/src/infra/agent/app_server/codex/client.rs`, reusing the `AppServerTransportError` and `AppServerError` variants introduced for Gemini so both providers share the same typed transport error surface.
-- [x] **Promote `AgentError` from opaque `String` wrapper to a typed enum.** Replace `pub struct AgentError(pub String)` in `crates/agentty/src/infra/channel/contract.rs` with an enum that carries structured variants (e.g., `AppServer`, `Backend`, `Io`) and update `crates/agentty/src/infra/channel/cli.rs` and `crates/agentty/src/infra/channel/app_server.rs` to construct typed variants instead of formatting strings.
+- [ ] **Replace string errors in the review-assist pipeline.** Convert `review_assist_text`, `review_assist_text_with_submitter`, `review_output_text`, and `review_assist_prompt` in `crates/agentty/src/app/task.rs` from `Result<T, String>` to return `AppError`; update the `ReviewUpdate` result field in `crates/agentty/src/app/core.rs` and the `from_result` helper to carry `AppError` instead of `String`.
+- [ ] **Replace string errors in the sync-assist client boundary.** Convert `SyncAssistClient::resolve_rebase_conflicts` and `run_assist_command` in `crates/agentty/src/app/session/workflow/merge.rs` from `Result<(), String>` to return `SessionError`; update call sites, `SyncSessionStartError`, and the mock implementations to propagate the typed variant.
+- [ ] **Replace string errors in session-lifecycle helpers.** Convert `apply_reply_reply_context` and `session_title_generation_prompt` in `crates/agentty/src/app/session/workflow/lifecycle.rs` from `Result<T, String>` to return `SessionError`; remove the corresponding `map_err(|e| e.to_string())` bridges at the call sites in `crates/agentty/src/app/core.rs`.
+- [ ] **Eliminate remaining `map_err` string bridges.** Audit and replace the remaining `map_err(|error| error.to_string())` and `map_err(|error| format!(...))` conversions in `crates/agentty/src/app/core.rs`, `crates/agentty/src/app/session/workflow/merge.rs`, and `crates/agentty/src/app/session/workflow/task.rs` where the infra typed error can propagate directly through `AppError` or `SessionError` `#[from]` variants.
 
 #### Tests
 
-- [x] Add or extend coverage in `crates/agentty/src/infra/app_server_transport.rs`, `crates/agentty/src/infra/agent/app_server/gemini/client.rs`, `crates/agentty/src/infra/agent/app_server/codex/client.rs`, and `crates/agentty/src/infra/channel/contract.rs` for typed error construction, `Display` output, and `From` conversions across the new enum boundaries.
+- [ ] Add or extend coverage in `crates/agentty/src/app/task.rs`, `crates/agentty/src/app/core.rs`, `crates/agentty/src/app/session/workflow/merge.rs`, and `crates/agentty/src/app/session/workflow/lifecycle.rs` for typed error propagation, `From` conversions, and `Display` output across the refactored app-layer boundaries.
 
 #### Docs
 
-- [x] Update `docs/site/content/docs/architecture/testability-boundaries.md` to reflect the new typed error enums at the app-server transport and agent-channel boundaries.
+- [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` to reflect the typed error propagation through `AppError` and `SessionError` at the app layer.
 
 ## Ready Now Execution Order
 
@@ -156,24 +156,10 @@ flowchart TD
     R1["[28de2b07] Agents: local model availability"]
     R2["[ca014af3] Forge: GitHub review request publish"]
     R3["[64c9bb7f] Workflow: staged draft-session launch"]
-    R4["[7608043e] Quality: typed infra errors"]
+    R4["[ed9de74b] Quality: app-layer typed errors"]
 ```
 
 ## Queued Next
-
-### [ed9de74b-64c0-4ca6-86b5-d29c8bc26591] Quality: Propagate typed errors through the app layer
-
-#### Outcome
-
-Replace app-layer string error bridges with typed errors after the infra boundaries expose stable enums.
-
-#### Promote when
-
-Promote after the remaining infra typed-error step lands and the app-facing shape is clear.
-
-#### Depends on
-
-`[7608043e] Quality: Introduce typed errors for the remaining infra boundaries`
 
 ### [832c9729-acde-45c0-93d8-d31511100082] Quality: Fill the missing module-level regression tests
 
@@ -295,7 +281,7 @@ Promote after the proof fundamentals land and there is enough scenario volume to
 - `Agents: Scope model lists to locally available backends` should reuse one shared availability snapshot across Settings and `/model` instead of probing CLIs separately in render paths.
 - `Workflow: Stage draft session messages and start them explicitly` should treat `Status::New` as the persisted draft container instead of introducing a second pre-start lifecycle status.
 - The parked local session harness slice should come back only when the active workflow and model-availability changes stop churning the same lifecycle seams.
-- The typed-error sequence should stay linear so each layer learns from the previous enum shape instead of reworking multiple error surfaces at once.
+- The typed-error sequence stays linear: infra enums are now stable, so the app-layer propagation step can rely on their shapes without rework risk.
 - `Testty` remains strategically important, but it is independent of the active `agentty` product work and should stay parked until a human intentionally rebalances the queue.
 - Run `cargo run -q -p ag-xtask -- roadmap context-digest` before promoting queued or parked work to `Ready Now`.
 
