@@ -12,7 +12,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 | Draft session workflow | `New` sessions are still blank placeholders whose first submitted prompt starts the agent immediately, so users cannot stage multiple draft messages and explicitly launch the session later. | Missing |
 | Session activity timing | `session` persists cumulative `InProgress` timing fields, and both chat and the grouped session list now show the same cumulative active-work timer. | Landed |
 | Deterministic scenario coverage | Local git tests exist, but there is no shared app-level scenario harness for a full local session workflow. | Partial |
-| Typed errors and hygiene | `DbError`, `GitError`, `AppServerTransportError`, `AppServerError`, `AgentError`, `SessionError`, and `AppError` enums propagate typed errors through all infra and app-layer boundaries; missing module tests and convention cleanup remain open. | Partial |
+| Typed errors and hygiene | `DbError`, `GitError`, `AppServerTransportError`, `AppServerError`, `AgentError`, `SessionError`, and `AppError` enums propagate typed errors through all infra and app-layer boundaries; module-level regression tests cover session access, review replay, agent backend, CLI error formatting, and stdin write helpers; convention cleanup remains open. | Partial |
 | Testty proof pipeline | PTY-driven sessions, VT100 frame parsing, VHS tape compilation, snapshot baselines, overlay renderer, recipe layer, proof reports (labeled captures, four backends: frame-text, PNG strip, GIF, HTML), native bitmap renderer, frame diffing, journey composition, and scale tooling are all landed. | Landed |
 | Project delivery strategy | Review-ready sessions can already merge into the base branch or publish a session branch, but projects configured in Agentty still cannot declare whether their normal landing path should be direct merge to `main` or a pull-request flow. | Missing |
 
@@ -121,36 +121,6 @@ Users can queue ordered draft messages inside a `New` session, reopen that sessi
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/getting-started/overview.md` for the staged-draft workflow, explicit start action, and the meaning of `New` sessions after this slice lands.
 
-### [832c9729-acde-45c0-93d8-d31511100082] Quality: Fill the missing module-level regression tests
-
-#### Assignee
-
-`@andagaev`
-
-#### Why now
-
-The typed-error migration is complete and the active workflow slices have stabilised enough that new module tests will not churn immediately. Five non-router modules still have zero test coverage, and their logic sits on critical session, error-formatting, and transport paths.
-
-#### Usable outcome
-
-Every non-router module under `crates/agentty/src/` with meaningful runtime logic has at least one focused regression test, so future refactors are caught before review.
-
-#### Substeps
-
-- [ ] **Add tests for session-access helpers.** Cover the lookup and error-mapping logic in `crates/agentty/src/app/session/workflow/access.rs` (`session_index_or_err`, `session_or_err`, `session_handles_or_err`, `session_and_handles_or_err`).
-- [ ] **Add tests for provider-aware CLI exit error formatting.** Cover `format_agent_cli_exit_error`, `known_agent_cli_exit_guidance`, `is_claude_authentication_error`, and `agent_cli_output_detail` in `crates/agentty/src/infra/agent/cli/error.rs`.
-- [ ] **Add tests for async stdin write orchestration.** Cover `spawn_optional_stdin_write` and `await_optional_stdin_write` in `crates/agentty/src/infra/agent/cli/stdin.rs`, including broken-pipe and error-propagation paths.
-- [ ] **Add tests for transport type dispatch.** Cover `AgentTransport::uses_app_server`, `Display` for `AgentBackendError`, and key enum variant behaviour in `crates/agentty/src/infra/agent/backend.rs`.
-- [ ] **Add tests for transcript replay tracking.** Cover `startup_history_replay_set`, `mark_history_replay_pending`, and `should_replay_history` in `crates/agentty/src/app/session/workflow/review.rs`.
-
-#### Tests
-
-- [ ] Each substep above delivers its own test module; no additional cross-cutting test work is expected.
-
-#### Docs
-
-- [ ] No doc changes expected — this step adds tests only with no behavioural changes.
-
 ## Ready Now Execution Order
 
 ```mermaid
@@ -158,7 +128,6 @@ flowchart TD
     R1["[28de2b07] Agents: local model availability"]
     R2["[ca014af3] Forge: GitHub review request publish"]
     R3["[64c9bb7f] Workflow: staged draft-session launch"]
-    R4["[832c9729] Quality: module-level regression tests"]
 ```
 
 ## Queued Next
@@ -219,7 +188,7 @@ Promote when the active `Workflow`, `Platform`, and `Quality` steps stop rewriti
 
 #### Depends on
 
-`[832c9729] Quality: Fill the missing module-level regression tests`
+`[832c9729] Quality: Fill the missing module-level regression tests` (landed)
 
 ### [1c7b7080-deaf-4e2c-8e3c-df24e01d9251] Quality: Ship one deterministic local session workflow slice
 
@@ -241,7 +210,7 @@ Promote when a `Ready Now` slot opens and the active workflow and model-availabi
 - `Agents: Scope model lists to locally available backends` should reuse one shared availability snapshot across Settings and `/model` instead of probing CLIs separately in render paths.
 - `Workflow: Stage draft session messages and start them explicitly` should treat `Status::New` as the persisted draft container instead of introducing a second pre-start lifecycle status.
 - The parked local session harness slice should come back only when the active workflow and model-availability changes stop churning the same lifecycle seams.
-- The typed-error migration is complete end-to-end (infra + app layers). The module-test backfill step can now proceed without rework risk from error-type changes.
+- The typed-error migration and module-test backfill are both complete. Convention cleanup remains open in the parked sweep card.
 - `Delivery: Add project commit strategy selection` should define the landing policy at the Agentty project level so merge and publish actions can present the right default path for each managed repository.
 - Testty proof pipeline is fully landed in `crates/testty/`. Future enhancements (e.g., additional proof backends, CI integration, or new recipe types) should be queued as new parked cards referencing that crate.
 - Run `cargo run -q -p ag-xtask -- roadmap context-digest` before promoting queued or parked work to `Ready Now`.
