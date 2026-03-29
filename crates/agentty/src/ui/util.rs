@@ -24,6 +24,6 @@ pub use crate::ui::layout::{
     placeholder_cursor_position, question_panel_layout, suggestion_dropdown_height,
 };
 pub use crate::ui::text_util::{
-    format_duration_compact, format_token_count, split_trailing_line_block,
-    truncate_with_ellipsis, wrap_lines, wrap_styled_line,
+    format_duration_compact, format_token_count, split_trailing_line_block, truncate_with_ellipsis,
+    wrap_lines, wrap_styled_line,
 };

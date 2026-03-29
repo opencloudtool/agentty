@@ -1,9 +1,6 @@
 //! Forge remote detection helpers shared across provider adapters.
 
-use super::{
-    ForgeKind, ForgeRemote, GitHubReviewRequestAdapter, GitLabReviewRequestAdapter,
-    ReviewRequestError,
-};
+use super::{ForgeKind, ForgeRemote, GitHubReviewRequestAdapter, ReviewRequestError};
 
 /// Parsed remote components extracted from one git remote URL.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,26 +32,15 @@ impl ParsedRemote {
             web_url: self.web_url,
         }
     }
-
-    /// Returns whether the hostname clearly identifies a GitLab instance.
-    pub(crate) fn host_is_gitlab(&self) -> bool {
-        strip_port(&self.host)
-            .split('.')
-            .any(|segment| segment == "gitlab")
-    }
 }
 
 /// Detects one supported forge remote from `repo_url`.
 ///
 /// # Errors
 /// Returns [`ReviewRequestError::UnsupportedRemote`] when the repository
-/// remote does not map to GitHub or GitLab.
+/// remote does not map to GitHub.
 pub fn detect_remote(repo_url: &str) -> Result<ForgeRemote, ReviewRequestError> {
     if let Some(remote) = GitHubReviewRequestAdapter::detect_remote(repo_url) {
-        return Ok(remote);
-    }
-
-    if let Some(remote) = GitLabReviewRequestAdapter::detect_remote(repo_url) {
         return Ok(remote);
     }
 
@@ -194,87 +180,6 @@ mod tests {
     }
 
     #[test]
-    fn detect_remote_ignores_https_userinfo_for_gitlab_origin() {
-        // Arrange
-        let repo_url = "https://reviewer:token123@gitlab.com/group/subgroup/project.git";
-
-        // Act
-        let remote =
-            detect_remote(repo_url).expect("gitlab remote with https credentials should work");
-
-        // Assert
-        assert_eq!(remote.forge_kind, ForgeKind::GitLab);
-        assert_eq!(remote.host, "gitlab.com");
-        assert_eq!(remote.namespace, "group/subgroup");
-        assert_eq!(remote.project, "project");
-        assert_eq!(remote.repo_url, repo_url);
-        assert_eq!(remote.web_url, "https://gitlab.com/group/subgroup/project");
-    }
-
-    #[test]
-    fn detect_remote_returns_gitlab_remote_for_https_origin() {
-        // Arrange
-        let repo_url = "https://gitlab.com/group/subgroup/project.git";
-
-        // Act
-        let remote = detect_remote(repo_url).expect("gitlab remote should be supported");
-
-        // Assert
-        assert_eq!(remote.forge_kind, ForgeKind::GitLab);
-        assert_eq!(remote.host, "gitlab.com");
-        assert_eq!(remote.namespace, "group/subgroup");
-        assert_eq!(remote.project, "project");
-    }
-
-    #[test]
-    fn detect_remote_returns_gitlab_remote_for_self_hosted_ssh_origin() {
-        // Arrange
-        let repo_url = "git@gitlab.example.com:team/project.git";
-
-        // Act
-        let remote =
-            detect_remote(repo_url).expect("self-hosted gitlab remote should be supported");
-
-        // Assert
-        assert_eq!(remote.forge_kind, ForgeKind::GitLab);
-        assert_eq!(remote.host, "gitlab.example.com");
-        assert_eq!(remote.web_url, "https://gitlab.example.com/team/project");
-    }
-
-    #[test]
-    fn detect_remote_strips_ssh_transport_port_from_gitlab_host() {
-        // Arrange
-        let repo_url = "ssh://git@gitlab.example.com:2222/team/project.git";
-
-        // Act
-        let remote =
-            detect_remote(repo_url).expect("gitlab ssh remote with transport port should work");
-
-        // Assert
-        assert_eq!(remote.forge_kind, ForgeKind::GitLab);
-        assert_eq!(remote.host, "gitlab.example.com");
-        assert_eq!(remote.web_url, "https://gitlab.example.com/team/project");
-    }
-
-    #[test]
-    fn detect_remote_preserves_https_port_for_gitlab_origin() {
-        // Arrange
-        let repo_url = "https://gitlab.example.com:8443/team/project.git";
-
-        // Act
-        let remote =
-            detect_remote(repo_url).expect("gitlab https remote with api port should work");
-
-        // Assert
-        assert_eq!(remote.forge_kind, ForgeKind::GitLab);
-        assert_eq!(remote.host, "gitlab.example.com:8443");
-        assert_eq!(
-            remote.web_url,
-            "https://gitlab.example.com:8443/team/project"
-        );
-    }
-
-    #[test]
     fn detect_remote_returns_unsupported_remote_error_for_non_forge_origin() {
         // Arrange
         let repo_url = "https://example.com/team/project.git";
@@ -289,7 +194,7 @@ mod tests {
                 repo_url: repo_url.to_string(),
             }
         );
-        assert!(error.detail_message().contains("GitHub and GitLab"));
+        assert!(error.detail_message().contains("GitHub remotes"));
         assert!(error.detail_message().contains("example.com"));
     }
 }

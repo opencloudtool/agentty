@@ -406,7 +406,9 @@ impl<'a> SessionChatPage<'a> {
 
             return self
                 .prepare_prompt_panel(area, session)
-                .map_or(1, |prepared_prompt_panel| prepared_prompt_panel.panel_height());
+                .map_or(1, |prepared_prompt_panel| {
+                    prepared_prompt_panel.panel_height()
+                });
         }
 
         if let AppMode::Question {

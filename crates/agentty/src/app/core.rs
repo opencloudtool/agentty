@@ -2066,11 +2066,11 @@ impl App {
         match review_request_creation_url {
             Some(review_request_creation_url) => format!(
                 "Pushed session branch `{branch_name}`.\n\nOpen this link to create the pull \
-                 request or merge request:\n{review_request_creation_url}"
+                 request:\n{review_request_creation_url}"
             ),
             None => format!(
-                "Pushed session branch `{branch_name}`.\n\nCreate the pull request or merge \
-                 request manually from your forge UI."
+                "Pushed session branch `{branch_name}`.\n\nCreate the pull request manually from \
+                 your forge UI."
             ),
         }
     }
@@ -2715,10 +2715,6 @@ fn detected_forge_kind_from_git_push_error(detail_message: &str) -> Option<forge
         return Some(forge::ForgeKind::GitHub);
     }
 
-    if normalized_detail.contains("gitlab") || normalized_detail.contains("glab") {
-        return Some(forge::ForgeKind::GitLab);
-    }
-
     None
 }
 
@@ -2735,23 +2731,12 @@ fn detected_forge_kind_from_push_auth_url(detail_message: &str) -> Option<forge:
         return Some(forge::ForgeKind::GitHub);
     }
 
-    if is_gitlab_host(host) {
-        return Some(forge::ForgeKind::GitLab);
-    }
-
     None
 }
 
 /// Returns whether `host` is a GitHub-style forge host.
 fn is_github_host(host: &str) -> bool {
     host == "github.com" || host.ends_with(".github.com")
-}
-
-/// Returns whether `host` is a GitLab-style forge host.
-fn is_gitlab_host(host: &str) -> bool {
-    host == "gitlab.com"
-        || host.ends_with(".gitlab.com")
-        || host.split('.').any(|segment| segment == "gitlab")
 }
 
 /// Extracts one remote host from one `git push` authentication prompt.
@@ -2798,11 +2783,6 @@ fn git_push_authentication_message(
         Some(forge::ForgeKind::GitHub) => format!(
             "Git push requires authentication for this repository.\nAuthorize git access, then \
              {retry_action}.\nRun `gh auth login`, or configure credentials with a PAT/SSH key."
-        ),
-        Some(forge::ForgeKind::GitLab) => format!(
-            "Git push requires authentication for this repository.\nAuthorize git access, then \
-             {retry_action}.\nRun `glab auth login` for GitLab CLI access, and configure Git \
-             credentials with a PAT/SSH key or credential helper."
         ),
         None => format!(
             "Git push requires authentication for this repository.\nAuthorize git access, then \
@@ -3285,17 +3265,13 @@ mod tests {
         assert_eq!(loading_label, "Pushing branch...");
         assert_eq!(success_title, "Branch pushed");
         assert!(success_message.contains("Pushed session branch `agentty/session-1`."));
-        assert!(
-            success_message.contains("Open this link to create the pull request or merge request")
-        );
+        assert!(success_message.contains("Open this link to create the pull request"));
         assert!(
             success_message.contains(
                 "https://github.com/org/repo/compare/main...agentty%2Fsession-1?expand=1"
             )
         );
-        assert!(
-            fallback_success_message.contains("Create the pull request or merge request manually")
-        );
+        assert!(fallback_success_message.contains("Create the pull request manually"));
         assert!(matches!(
             popup_mode,
             AppMode::ViewInfoPopup {
@@ -3832,70 +3808,10 @@ mod tests {
     }
 
     #[test]
-    fn sync_main_popup_mode_gitlab_auth_failure_shows_gitlab_guidance() {
-        // Arrange
-        let sync_popup_context = SyncPopupContext {
-            default_branch: "main".to_string(),
-            project_name: "agentty".to_string(),
-        };
-        let sync_error = SyncSessionStartError::Other(
-            "Git push failed: fatal: could not read Username for 'https://gitlab.com': terminal \
-             prompts disabled"
-                .to_string(),
-        );
-
-        // Act
-        let mode = App::sync_main_popup_mode(Err(sync_error), &sync_popup_context);
-
-        // Assert
-        assert!(matches!(
-            mode,
-            AppMode::SyncBlockedPopup {
-                ref default_branch,
-                is_loading: false,
-                ref title,
-                ref message,
-                ref project_name,
-            } if title == "Sync failed"
-                && default_branch.as_deref() == Some("main")
-                && message.contains("Git push requires authentication")
-                && message.contains("`glab auth login`")
-                && message.contains("credential helper")
-                && project_name.as_deref() == Some("agentty")
-        ));
-    }
-
-    #[test]
-    fn sync_push_auth_error_detects_gitlab_from_prompt_url() {
-        // Arrange
-        let detail = "Git push failed: fatal: could not read Username for 'https://gitlab.com/team/project': terminal \
-                        prompts disabled\nConfigured remotes:\n  github.com";
-
-        // Act
-        let forge_kind = detected_forge_kind_from_git_push_error(detail);
-
-        // Assert
-        assert_eq!(forge_kind, Some(forge::ForgeKind::GitLab));
-    }
-
-    #[test]
-    fn sync_push_auth_error_detects_gitlab_from_prompt_url_with_userinfo() {
-        // Arrange
-        let detail = "Git push failed: fatal: could not read Username for 'https://deploy-user@gitlab.example.com/team/project': terminal \
-                        prompts disabled\nConfigured remotes:\n  github.com";
-
-        // Act
-        let forge_kind = detected_forge_kind_from_git_push_error(detail);
-
-        // Assert
-        assert_eq!(forge_kind, Some(forge::ForgeKind::GitLab));
-    }
-
-    #[test]
     fn sync_push_auth_error_detects_github_from_prompt_url() {
         // Arrange
         let detail = "Git push failed: fatal: could not read Password for 'https://github.com/team/project': terminal \
-                        prompts disabled\nConfigured remotes:\n  gitlab.com";
+                        prompts disabled\nConfigured remotes:\n  github.com";
 
         // Act
         let forge_kind = detected_forge_kind_from_git_push_error(detail);
@@ -3907,8 +3823,7 @@ mod tests {
     #[test]
     fn sync_push_auth_error_prefers_github_when_fallback_markers_are_ambiguous() {
         // Arrange
-        let detail = "Git push failed: authentication failed. Configure remotes:\n  github.com\n  \
-                      gitlab.com";
+        let detail = "Git push failed: authentication failed. Configure remotes:\n  github.com";
 
         // Act
         let forge_kind = detected_forge_kind_from_git_push_error(detail);

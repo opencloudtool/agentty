@@ -18,7 +18,7 @@ also writes a machine-readable workspace summary to
 
 | Path | What lives here |
 |------|------------------|
-| `crates/ag-forge/` | Shared forge review-request library crate with normalized review-request types, remote detection, and provider-specific `gh`/`glab` adapters. |
+| `crates/ag-forge/` | Shared forge review-request library crate with normalized review-request types, GitHub remote detection, and the `gh` adapter. |
 | `crates/agentty/` | Main TUI application crate with composition root, application, domain, infrastructure, runtime, and UI layers. |
 | `crates/testty/` | Rust-native TUI end-to-end testing framework: PTY-driven semantic assertions, VHS screenshot capture, calibration, overlay rendering, and snapshot workflows. |
 | `crates/ag-xtask/` | Workspace maintenance commands and automation helpers, including generated workspace-map output for tooling. |
@@ -29,7 +29,7 @@ also writes a machine-readable workspace summary to
 |------|------------------|
 | `crates/agentty/src/main.rs` | Binary entry point: database bootstrap, `App` construction, and runtime launch. |
 | `crates/agentty/src/lib.rs` | Public module exports and crate-level re-exports. |
-| `crates/ag-forge/src/lib.rs` | Shared workspace crate for forge review-request types, CLI boundaries, remote detection, and GitHub/GitLab adapters. |
+| `crates/ag-forge/src/lib.rs` | Shared workspace crate for forge review-request types, CLI boundaries, GitHub remote detection, and the GitHub adapter. |
 
 ## Application Layer (`app/`)
 
@@ -108,7 +108,6 @@ also writes a machine-readable workspace summary to
 | `crates/ag-forge/src/client.rs` | `ReviewRequestClient` trait and `RealReviewRequestClient` provider dispatch. |
 | `crates/ag-forge/src/command.rs` | `ForgeCommandRunner`, command output normalization, and subprocess execution boundary. |
 | `crates/ag-forge/src/github.rs` | GitHub pull-request adapter routed through `gh`. |
-| `crates/ag-forge/src/gitlab.rs` | GitLab merge-request adapter routed through `glab`. |
 | `crates/ag-forge/src/model.rs` | Shared forge domain types (`ForgeKind`, `ReviewRequestSummary`, errors, and create input). |
 | `crates/ag-forge/src/remote.rs` | Repository remote parsing and forge detection helpers. |
 

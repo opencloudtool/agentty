@@ -6,7 +6,7 @@ Workspace library crate for forge review-request orchestration and remote parsin
 
 - `src/lib.rs` is the public crate root.
 - `src/client.rs` owns the review-request client boundary and provider dispatch.
-- `src/github.rs` and `src/gitlab.rs` implement forge-specific adapters.
+- `src/github.rs` implements the GitHub-specific adapter.
 - `src/model.rs` owns the shared forge domain types and errors.
 
 ## Change Guidance

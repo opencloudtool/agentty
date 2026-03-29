@@ -422,9 +422,9 @@ mod tests {
     }
 
     #[test]
-    fn test_forge_kind_from_str_gitlab() {
+    fn test_forge_kind_from_str_github() {
         // Arrange
-        let raw_forge_kind = "GitLab";
+        let raw_forge_kind = "GitHub";
 
         // Act
         let forge_kind = raw_forge_kind
@@ -432,7 +432,7 @@ mod tests {
             .expect("failed to parse review-request forge");
 
         // Assert
-        assert_eq!(forge_kind, ForgeKind::GitLab);
+        assert_eq!(forge_kind, ForgeKind::GitHub);
     }
 
     #[test]

@@ -13,8 +13,6 @@ use url::Url;
 pub enum ForgeKind {
     /// GitHub-hosted pull requests.
     GitHub,
-    /// GitLab-hosted merge requests.
-    GitLab,
 }
 
 impl ForgeKind {
@@ -22,7 +20,6 @@ impl ForgeKind {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::GitHub => "GitHub",
-            Self::GitLab => "GitLab",
         }
     }
 
@@ -30,7 +27,6 @@ impl ForgeKind {
     pub fn cli_name(self) -> &'static str {
         match self {
             Self::GitHub => "gh",
-            Self::GitLab => "glab",
         }
     }
 
@@ -38,7 +34,6 @@ impl ForgeKind {
     pub fn auth_login_command(self) -> &'static str {
         match self {
             Self::GitHub => "gh auth login",
-            Self::GitLab => "glab auth login",
         }
     }
 
@@ -46,7 +41,6 @@ impl ForgeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::GitHub => "GitHub",
-            Self::GitLab => "GitLab",
         }
     }
 }
@@ -63,7 +57,6 @@ impl FromStr for ForgeKind {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "GitHub" => Ok(Self::GitHub),
-            "GitLab" => Ok(Self::GitLab),
             _ => Err(format!("Unknown review-request forge: {value}")),
         }
     }
@@ -119,7 +112,7 @@ impl FromStr for ReviewRequestState {
 /// session deletion should remove this metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewRequestSummary {
-    /// Provider display id such as GitHub `#123` or GitLab `!42`.
+    /// Provider display id such as GitHub `#123`.
     pub display_id: String,
     /// Forge family that owns the linked review request.
     pub forge_kind: ForgeKind,
@@ -167,7 +160,7 @@ impl ForgeRemote {
     }
 
     /// Returns the browser-openable URL that starts one new pull request or
-    /// merge request for `source_branch` into `target_branch`.
+    /// review request for `source_branch` into `target_branch`.
     ///
     /// # Errors
     /// Returns [`ReviewRequestError::OperationFailed`] when the stored
@@ -181,9 +174,6 @@ impl ForgeRemote {
         match self.forge_kind {
             ForgeKind::GitHub => {
                 github_review_request_creation_url(self, source_branch, target_branch)
-            }
-            ForgeKind::GitLab => {
-                gitlab_review_request_creation_url(self, source_branch, target_branch)
             }
         }
     }
@@ -249,8 +239,8 @@ impl ReviewRequestError {
                 forge_kind.display_name(),
             ),
             Self::UnsupportedRemote { repo_url } => format!(
-                "Review requests are only supported for GitHub and GitLab remotes.\nThis \
-                 repository remote is not supported: `{repo_url}`."
+                "Review requests are only supported for GitHub remotes.\nThis repository remote \
+                 is not supported: `{repo_url}`."
             ),
             Self::OperationFailed {
                 forge_kind,
@@ -327,32 +317,6 @@ fn github_review_request_creation_url(
     Ok(url.into())
 }
 
-/// Builds one GitLab merge-request URL with pre-filled source and target
-/// branch query parameters.
-fn gitlab_review_request_creation_url(
-    remote: &ForgeRemote,
-    source_branch: &str,
-    target_branch: &str,
-) -> Result<String, ReviewRequestError> {
-    let mut url = parsed_remote_web_url(remote)?;
-
-    {
-        let mut path_segments = url
-            .path_segments_mut()
-            .map_err(|()| invalid_web_url_error(remote))?;
-        path_segments.pop_if_empty();
-        path_segments.push("-");
-        path_segments.push("merge_requests");
-        path_segments.push("new");
-    }
-
-    url.query_pairs_mut()
-        .append_pair("merge_request[source_branch]", source_branch)
-        .append_pair("merge_request[target_branch]", target_branch);
-
-    Ok(url.into())
-}
-
 /// Parses the stored repository web URL for one forge remote.
 fn parsed_remote_web_url(remote: &ForgeRemote) -> Result<Url, ReviewRequestError> {
     Url::parse(&remote.web_url).map_err(|_| invalid_web_url_error(remote))
@@ -377,19 +341,19 @@ mod tests {
     fn authentication_required_message_includes_original_cli_error_detail() {
         // Arrange
         let error = ReviewRequestError::AuthenticationRequired {
-            detail: Some("HTTP 401 Unauthorized. Run `glab auth login`.".to_string()),
-            forge_kind: ForgeKind::GitLab,
-            host: "gitlab.example.com".to_string(),
+            detail: Some("HTTP 401 Unauthorized. Run `gh auth login`.".to_string()),
+            forge_kind: ForgeKind::GitHub,
+            host: "github.com".to_string(),
         };
 
         // Act
         let message = error.detail_message();
 
         // Assert
-        assert!(message.contains("GitLab review requests require local CLI authentication"));
-        assert!(message.contains("Run `glab auth login` and retry."));
-        assert!(message.contains("Original `glab` error:"));
-        assert!(message.contains("HTTP 401 Unauthorized. Run `glab auth login`."));
+        assert!(message.contains("GitHub review requests require local CLI authentication"));
+        assert!(message.contains("Run `gh auth login` and retry."));
+        assert!(message.contains("Original `gh` error:"));
+        assert!(message.contains("HTTP 401 Unauthorized. Run `gh auth login`."));
         assert!(message.contains("```text"));
     }
 
@@ -431,30 +395,6 @@ mod tests {
         assert_eq!(
             url,
             "https://github.com/agentty-xyz/agentty/compare/main...review%2Fcustom-branch?expand=1"
-        );
-    }
-
-    #[test]
-    fn review_request_creation_url_returns_gitlab_merge_request_link() {
-        // Arrange
-        let remote = ForgeRemote {
-            forge_kind: ForgeKind::GitLab,
-            host: "gitlab.com".to_string(),
-            namespace: "group/subgroup".to_string(),
-            project: "agentty".to_string(),
-            repo_url: "git@gitlab.com:group/subgroup/agentty.git".to_string(),
-            web_url: "https://gitlab.com/group/subgroup/agentty".to_string(),
-        };
-
-        // Act
-        let url = remote
-            .review_request_creation_url("review/custom-branch", "master")
-            .expect("gitlab merge-request URL should be created");
-
-        // Assert
-        assert_eq!(
-            url,
-            "https://gitlab.com/group/subgroup/agentty/-/merge_requests/new?merge_request%5Bsource_branch%5D=review%2Fcustom-branch&merge_request%5Btarget_branch%5D=master"
         );
     }
 

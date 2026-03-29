@@ -186,9 +186,6 @@ impl SessionManager {
             ForgeKind::GitHub => web_url
                 .split_once("/pull/")
                 .map(|(repo_url, _)| repo_url.to_string()),
-            ForgeKind::GitLab => web_url
-                .split_once("/-/merge_requests/")
-                .map(|(repo_url, _)| repo_url.to_string()),
         }
     }
 

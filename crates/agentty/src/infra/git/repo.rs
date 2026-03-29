@@ -371,12 +371,12 @@ mod tests {
         // Act
         let ssh_short = normalize_repo_url("git@github.com:agentty-xyz/agentty.git");
         let ssh_long = normalize_repo_url("ssh://git@github.com/agentty-xyz/agentty.git");
-        let passthrough = normalize_repo_url("https://gitlab.com/agentty-xyz/agentty.git");
+        let passthrough = normalize_repo_url("https://example.com/agentty-xyz/agentty.git");
 
         // Assert
         assert_eq!(ssh_short, "https://github.com/agentty-xyz/agentty");
         assert_eq!(ssh_long, "https://github.com/agentty-xyz/agentty");
-        assert_eq!(passthrough, "https://gitlab.com/agentty-xyz/agentty");
+        assert_eq!(passthrough, "https://example.com/agentty-xyz/agentty");
     }
 
     #[test]

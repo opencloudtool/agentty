@@ -532,10 +532,8 @@ mod tests {
     #[test]
     fn test_popup_width_expands_for_long_link_lines() {
         // Arrange
-        let review_request_url = "https://gitlab.com/minev.dev/gitlab-agentty/-/merge_requests/new?merge_request%5Bsource_branch%5D=test&merge_request%5Btarget_branch%5D=master";
-        let message = format!(
-            "Open this link to create the pull request or merge request:\n{review_request_url}"
-        );
+        let review_request_url = "https://github.com/minev-development/agentty/compare/main...feature%2Fvery-long-review-branch?expand=1";
+        let message = format!("Open this link to create the pull request:\n{review_request_url}");
         let overlay = InfoOverlay::new("Branch pushed", &message);
         let area = Rect::new(0, 0, 160, 20);
 
@@ -566,10 +564,8 @@ mod tests {
         // Arrange
         let backend = ratatui::backend::TestBackend::new(160, 20);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
-        let review_request_url = "https://gitlab.com/minev.dev/gitlab-agentty/-/merge_requests/new?merge_request%5Bsource_branch%5D=test&merge_request%5Btarget_branch%5D=master";
-        let message = format!(
-            "Open this link to create the pull request or merge request:\n{review_request_url}"
-        );
+        let review_request_url = "https://github.com/minev-development/agentty/compare/main...feature%2Fvery-long-review-branch?expand=1";
+        let message = format!("Open this link to create the pull request:\n{review_request_url}");
         let overlay = InfoOverlay::new("Branch pushed", &message);
 
         // Act

@@ -24,7 +24,7 @@ Agentty runtime design is built around these constraints:
 
 | Path | Responsibility |
 |------|----------------|
-| `crates/ag-forge/` | Shared forge review-request library crate for normalized review-request types, remote detection, and `gh`/`glab` adapter orchestration. |
+| `crates/ag-forge/` | Shared forge review-request library crate for normalized review-request types, GitHub remote detection, and `gh` adapter orchestration. |
 | `crates/agentty/` | Main TUI application crate (`agentty`) with runtime, app orchestration, domain, infrastructure, and UI modules. |
 | `crates/ag-xtask/` | Workspace maintenance commands (migration checks, workspace-map generation, automation helpers). |
 | `docs/site/content/docs/` | End-user and contributor documentation published at `/docs/`. |
@@ -369,7 +369,7 @@ Project and session git workflows use shared boundaries (`GitClient`, `FsClient`
 - `sync main`: selected project branch pull/rebase/push, optional assisted conflict resolution, popup result summary.
 - session merge: queue-aware workflow, assisted rebase first, reuse the single evolving session-branch `HEAD` commit message for the squash commit into the base branch, then clean up the worktree and set status `Done`.
 - session rebase: assisted rebase of session branch onto base branch, returns to `Review` after completion/failure reporting.
-- session branch publish: review-ready sessions push the session branch through `GitClient` with `--force-with-lease`; pull request or merge request creation is left to the user's manual forge workflow.
+- session branch publish: review-ready sessions push the session branch through `GitClient` with `--force-with-lease`; pull request creation is left to the user's manual forge workflow.
 
 ## Persistence and Recovery Boundaries
 

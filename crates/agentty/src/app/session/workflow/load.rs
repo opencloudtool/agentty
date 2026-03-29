@@ -529,14 +529,14 @@ mod tests {
         let review_request = ReviewRequest {
             last_refreshed_at: 999,
             summary: ReviewRequestSummary {
-                display_id: "!17".to_string(),
-                forge_kind: ForgeKind::GitLab,
+                display_id: "#17".to_string(),
+                forge_kind: ForgeKind::GitHub,
                 source_branch: "feature/forge".to_string(),
                 state: ReviewRequestState::Closed,
                 status_summary: Some("closed by maintainer".to_string()),
                 target_branch: "main".to_string(),
                 title: "Add forge review support".to_string(),
-                web_url: "https://gitlab.example.com/team/project/-/merge_requests/17".to_string(),
+                web_url: "https://github.com/team/project/pull/17".to_string(),
             },
         };
 

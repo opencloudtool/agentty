@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use super::{
-    CreateReviewRequestInput, ForgeCommandRunner, ForgeFuture, ForgeKind, ForgeRemote,
-    GitHubReviewRequestAdapter, GitLabReviewRequestAdapter, RealForgeCommandRunner,
-    ReviewRequestError, ReviewRequestSummary, detect_remote,
+    CreateReviewRequestInput, ForgeCommandRunner, ForgeFuture, ForgeRemote,
+    GitHubReviewRequestAdapter, RealForgeCommandRunner, ReviewRequestError, ReviewRequestSummary,
+    detect_remote,
 };
 
 /// Async boundary used by app orchestration for forge review requests.
@@ -18,7 +18,7 @@ pub trait ReviewRequestClient: Send + Sync {
     ///
     /// # Errors
     /// Returns [`ReviewRequestError::UnsupportedRemote`] when the remote does
-    /// not map to GitHub or GitLab.
+    /// not map to GitHub.
     fn detect_remote(&self, repo_url: String) -> Result<ForgeRemote, ReviewRequestError>;
 
     /// Finds an existing review request for `source_branch`.
@@ -91,18 +91,9 @@ impl ReviewRequestClient for RealReviewRequestClient {
         remote: ForgeRemote,
         source_branch: String,
     ) -> ForgeFuture<Result<Option<ReviewRequestSummary>, ReviewRequestError>> {
-        match remote.forge_kind {
-            ForgeKind::GitHub => {
-                let adapter = GitHubReviewRequestAdapter::new(Arc::clone(&self.command_runner));
+        let adapter = GitHubReviewRequestAdapter::new(Arc::clone(&self.command_runner));
 
-                Box::pin(async move { adapter.find_by_source_branch(remote, source_branch).await })
-            }
-            ForgeKind::GitLab => {
-                let adapter = GitLabReviewRequestAdapter::new(Arc::clone(&self.command_runner));
-
-                Box::pin(async move { adapter.find_by_source_branch(remote, source_branch).await })
-            }
-        }
+        Box::pin(async move { adapter.find_by_source_branch(remote, source_branch).await })
     }
 
     fn create_review_request(
@@ -110,18 +101,9 @@ impl ReviewRequestClient for RealReviewRequestClient {
         remote: ForgeRemote,
         input: CreateReviewRequestInput,
     ) -> ForgeFuture<Result<ReviewRequestSummary, ReviewRequestError>> {
-        match remote.forge_kind {
-            ForgeKind::GitHub => {
-                let adapter = GitHubReviewRequestAdapter::new(Arc::clone(&self.command_runner));
+        let adapter = GitHubReviewRequestAdapter::new(Arc::clone(&self.command_runner));
 
-                Box::pin(async move { adapter.create_review_request(remote, input).await })
-            }
-            ForgeKind::GitLab => {
-                let adapter = GitLabReviewRequestAdapter::new(Arc::clone(&self.command_runner));
-
-                Box::pin(async move { adapter.create_review_request(remote, input).await })
-            }
-        }
+        Box::pin(async move { adapter.create_review_request(remote, input).await })
     }
 
     fn refresh_review_request(
@@ -129,18 +111,9 @@ impl ReviewRequestClient for RealReviewRequestClient {
         remote: ForgeRemote,
         display_id: String,
     ) -> ForgeFuture<Result<ReviewRequestSummary, ReviewRequestError>> {
-        match remote.forge_kind {
-            ForgeKind::GitHub => {
-                let adapter = GitHubReviewRequestAdapter::new(Arc::clone(&self.command_runner));
+        let adapter = GitHubReviewRequestAdapter::new(Arc::clone(&self.command_runner));
 
-                Box::pin(async move { adapter.refresh_review_request(remote, display_id).await })
-            }
-            ForgeKind::GitLab => {
-                let adapter = GitLabReviewRequestAdapter::new(Arc::clone(&self.command_runner));
-
-                Box::pin(async move { adapter.refresh_review_request(remote, display_id).await })
-            }
-        }
+        Box::pin(async move { adapter.refresh_review_request(remote, display_id).await })
     }
 
     fn review_request_web_url(
