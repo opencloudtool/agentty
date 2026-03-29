@@ -38,7 +38,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 
 #### Assignee
 
-`No assignee`
+`@minev-dev`
 
 #### Why now
 
