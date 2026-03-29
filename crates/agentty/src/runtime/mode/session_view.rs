@@ -2279,7 +2279,7 @@ mod tests {
             .create_session()
             .await
             .expect("failed to create sibling session");
-        app.sessions.sessions[0].follow_up_tasks =
+        app.sessions.sessions[1].follow_up_tasks =
             vec![crate::domain::session::SessionFollowUpTask {
                 id: 1,
                 launched_session_id: Some(sibling_session_id.clone()),
@@ -2307,7 +2307,7 @@ mod tests {
 
         // Assert
         assert!(matches!(result, EventResult::Continue));
-        assert_eq!(app.sessions.table_state.selected(), Some(1));
+        assert_eq!(app.sessions.table_state.selected(), Some(0));
         assert!(matches!(
             app.mode,
             AppMode::View {

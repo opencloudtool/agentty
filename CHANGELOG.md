@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.6.11] - 2026-03-28
+
+### Added
+
+- Launch and reopen sibling sessions from follow-up tasks.
+- Show session active-work timers and metadata in UI lists.
+- Add `testty` E2E proof pipeline with native rendering and frame diffing.
+- Add roadmap queue tooling and planning workflows.
+
+### Changed
+
+- Migrate E2E tests to the `testty` proof pipeline and remove the `check-indexes` hook.
+- Propagate typed errors through app, session, and infra layers.
+- Keep unchanged review sessions in view mode.
+- Remove GitLab review request support.
+- Streamline prompt suggestion handling and question-mode interactions.
+- Replace directory indexes with semantic agent guidance.
+
+### Contributors
+
+- @andagaev
+- @dependabot
+- @minev-dev
+
 ## [v0.6.10] - 2026-03-26
 
 ### Added
