@@ -45,6 +45,7 @@ This skill is the source of truth for roadmap structure and execution-planning r
    - Keep `Ready Now` detailed. Render `Assignee`, `Why now`, `Usable outcome`, `Substeps`, `Tests`, and `Docs` as their own subtopics on separate lines instead of inline bold labels.
    - Keep `Queued Next` and `Parked` intentionally compact. Render `Outcome`, `Promote when`, and `Depends on` as their only subtopics.
    - Render `#### Assignee` as the first subsection in every `Ready Now` step and store the owner there in `@username` format or the exact text `No assignee`.
+   - When claiming a step for the current user, resolve the GitHub login with `gh api user --jq .login` first and write that value as `@<login>` instead of guessing from local git config or the OS username.
    - Until lease automation exists, claim work only from `Ready Now`, keep claim edits scoped to the `#### Assignee` field, and land the claim as a dedicated commit before implementation begins.
    - Use size budgeting during roadmap creation, not after the fact. Before finalizing the roadmap, estimate the changed-line scope for each step, split oversized work into additional steps, and keep those size estimates in planning notes or reviewer reasoning rather than rendering a `#### Size` block in `docs/plan/` files.
    - Treat each `Ready Now` step as one mergeable planned slice. Keep every ready step at `XL` or smaller, and split any step that would be `XXL` before handing off the plan.
@@ -89,6 +90,7 @@ This skill is the source of truth for roadmap structure and execution-planning r
    - Verify every item heading uses the exact `[UUID] Stream: Title` format and that the UUID value is valid.
    - Verify every `Ready Now` step starts with explicit `#### Assignee` before `#### Why now`.
    - Verify every `#### Assignee` value uses `@username` or the exact text `No assignee`.
+   - Verify any newly claimed assignee was derived from `gh api user --jq .login` so the roadmap matches the authenticated GitHub identity.
    - Verify every `Ready Now` step has explicit `#### Tests` and `#### Docs` sections.
    - Verify every `Queued Next` or `Parked` card uses only `#### Outcome`, `#### Promote when`, and `#### Depends on`.
    - Verify every `#### Substeps` checklist item starts with a human-readable title while keeping the detailed implementation guidance in the same item.

@@ -9,7 +9,7 @@ Start the exact planned implementation for one `Ready Now` step without mixing i
 ## Workflow
 
 1. Read `docs/plan/roadmap.md` and find the target step by the UUID in its `[UUID] Stream: Title` heading.
-1. Verify the target lives in `## Ready Now` and that its `#### Assignee` already names the current user.
+1. Run `gh api user --jq .login` to confirm the current authenticated GitHub login, then verify the target lives in `## Ready Now` and that its `#### Assignee` already names that user.
 1. Re-read that step's `#### Why now`, `#### Usable outcome`, `#### Substeps`, `#### Tests`, and `#### Docs` sections before editing code.
 1. Implement the step exactly as written. Treat the roadmap text as the current execution contract instead of rewriting the step while work is in progress.
 1. If implementation reveals a real scope mistake, stop the execution flow and handle that roadmap change separately with `references/update-step.md`.
