@@ -392,7 +392,23 @@ impl<'a> SessionChatPage<'a> {
         format!(" {status_prefix} - {header_title} ")
     }
 
+    /// Returns the reserved bottom-panel height for the active page mode.
+    ///
+    /// Prompt mode mirrors the render-time prompt panel calculation so layout
+    /// tests and the live view stay in sync. Question mode derives its height
+    /// from the question layout helper and the visible option list. All other
+    /// modes reserve a single footer row.
     fn bottom_height(&self, area: Rect) -> u16 {
+        if matches!(self.mode, AppMode::Prompt { .. }) {
+            let Some(session) = self.sessions.get(self.session_index) else {
+                return 1;
+            };
+
+            return self
+                .prepare_prompt_panel(area, session)
+                .map_or(1, |prepared_prompt_panel| prepared_prompt_panel.panel_height());
+        }
+
         if let AppMode::Question {
             questions,
             current_index,
