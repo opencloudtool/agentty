@@ -120,6 +120,35 @@ Pressing `p` in `Review` creates or refreshes the session pull request for GitHu
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/runtime-flow.md` to explain that `p` creates or refreshes GitHub pull requests while non-GitHub remotes continue to use the branch-publish flow.
 
+### [7608043e-3ae8-44b4-bcb4-341f8070d0d2] Quality: Introduce typed errors for the remaining infra boundaries
+
+#### Assignee
+
+`@andagaev`
+
+#### Why now
+
+`GitError` and `DbError` are already landed and proven. The remaining infra boundaries — app-server transport, Gemini ACP client, Codex app-server client, and the `AgentError` channel contract — still return `Result<T, String>` or wrap errors in an opaque `String` newtype, which collapses failure context before it reaches the app layer.
+
+#### Usable outcome
+
+Every infra boundary that crosses into the app layer exposes a typed error enum instead of `String`, so the app and session error chains can discriminate failure causes without parsing formatted messages.
+
+#### Substeps
+
+- [ ] **Introduce `AppServerTransportError` for the shared transport helpers.** Replace the `Result<T, String>` signatures in `crates/agentty/src/infra/app_server_transport.rs` (`write_json_line`, `wait_for_response_line`) with a new `AppServerTransportError` enum covering IO, timeout, and serialization failures; update `crates/agentty/src/infra/app_server/error.rs` to add a `#[from] Transport` variant that wraps this new type instead of holding a plain `String`.
+- [ ] **Replace string errors in the Gemini ACP client.** Convert the `Result<T, String>` internal functions in `crates/agentty/src/infra/agent/app_server/gemini/client.rs` to return `AppServerTransportError` or `AppServerError` variants, removing `format!`/`.to_string()` error conversions and preserving causal context through `#[from]` or explicit variant mapping.
+- [ ] **Replace string errors in the Codex app-server client.** Apply the same conversion in `crates/agentty/src/infra/agent/app_server/codex/client.rs`, reusing the `AppServerTransportError` and `AppServerError` variants introduced for Gemini so both providers share the same typed transport error surface.
+- [ ] **Promote `AgentError` from opaque `String` wrapper to a typed enum.** Replace `pub struct AgentError(pub String)` in `crates/agentty/src/infra/channel/contract.rs` with an enum that carries structured variants (e.g., `AppServer`, `Backend`, `Io`) and update `crates/agentty/src/infra/channel/cli.rs` and `crates/agentty/src/infra/channel/app_server.rs` to construct typed variants instead of formatting strings.
+
+#### Tests
+
+- [ ] Add or extend coverage in `crates/agentty/src/infra/app_server_transport.rs`, `crates/agentty/src/infra/agent/app_server/gemini/client.rs`, `crates/agentty/src/infra/agent/app_server/codex/client.rs`, and `crates/agentty/src/infra/channel/contract.rs` for typed error construction, `Display` output, and `From` conversions across the new enum boundaries.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` to reflect the new typed error enums at the app-server transport and agent-channel boundaries.
+
 ## Ready Now Execution Order
 
 ```mermaid
@@ -127,6 +156,7 @@ flowchart TD
     R1["[8f4402cd] Workflow: sibling-session launch"]
     R2["[28de2b07] Agents: local model availability"]
     R3["[ca014af3] Forge: GitHub review request publish"]
+    R4["[7608043e] Quality: typed infra errors"]
 ```
 
 ## Queued Next
@@ -144,20 +174,6 @@ Promote after a `Ready Now` slot opens and the active workflow/model-availabilit
 #### Depends on
 
 `None`
-
-### [7608043e-3ae8-44b4-bcb4-341f8070d0d2] Quality: Introduce typed errors for the remaining infra boundaries
-
-#### Outcome
-
-Replace stringly typed errors in the remaining infra boundaries so the app layer can consume typed failures consistently.
-
-#### Promote when
-
-Promote after `Quality: Introduce GitError for infra/git/ and GitClient` lands and the git boundary pattern is reusable. `GitError` has landed.
-
-#### Depends on
-
-`None` (predecessor `[7b743a5a] Quality: GitError` has landed)
 
 ### [ed9de74b-64c0-4ca6-86b5-d29c8bc26591] Quality: Propagate typed errors through the app layer
 
