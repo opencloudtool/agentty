@@ -593,6 +593,8 @@ impl<'a> SessionChatPage<'a> {
             _ => ViewSessionState::Interactive,
         };
 
+        let selected_follow_up_task_position =
+            Self::resolved_follow_up_task_position(session, selected_follow_up_task_position);
         let selected_follow_up_task_action = selected_follow_up_task_position
             .and_then(|position| session.follow_up_task(position))
             .map(crate::domain::session::SessionFollowUpTask::action);
@@ -612,6 +614,20 @@ impl<'a> SessionChatPage<'a> {
         }
 
         actions
+    }
+
+    /// Returns the selected follow-up task position for session-view footer
+    /// affordances, defaulting to the first task when no explicit selection
+    /// has been stored yet.
+    fn resolved_follow_up_task_position(
+        session: &Session,
+        selected_follow_up_task_position: Option<usize>,
+    ) -> Option<usize> {
+        if let Some(selected_follow_up_task_position) = selected_follow_up_task_position {
+            return Some(selected_follow_up_task_position);
+        }
+
+        session.follow_up_tasks.first().map(|task| task.position)
     }
 
     /// Returns the `t` footer label for `Status::Done` output mode toggling.
@@ -1028,6 +1044,27 @@ mod tests {
             None,
         ))
         .to_string()
+    }
+
+    #[test]
+    /// Shows the launch shortcut in the footer when follow-up tasks exist but
+    /// the UI has not stored an explicit task selection yet.
+    fn test_view_help_text_defaults_first_follow_up_task_to_launch_action() {
+        // Arrange
+        let mut session = session_fixture();
+        session.follow_up_tasks = vec![crate::domain::session::SessionFollowUpTask {
+            id: 1,
+            launched_session_id: None,
+            position: 0,
+            text: "Launch the sibling task.".to_string(),
+        }];
+
+        // Act
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
+
+        // Assert
+        assert!(help_text.contains("launch task"));
+        assert!(help_text.contains("l"));
     }
 
     #[test]

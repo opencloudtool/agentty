@@ -16,7 +16,7 @@ const USER_PROMPT_PREFIX: &str = " › ";
 const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
 const CLARIFICATION_HEADER_LINE: &str = " › Clarifications:";
 /// Markdown heading used for synthetic follow-up-task rendering.
-const FOLLOW_UP_TASK_HEADER: &str = "Follow-Up Tasks [Preview]";
+const FOLLOW_UP_TASK_HEADER: &str = "Follow-Up Tasks";
 const TRANSCRIPT_FOOTER_PREFIXES: &[&str] = &["[Commit]", "[Commit Error]"];
 
 /// Session chat output panel renderer.
@@ -338,6 +338,10 @@ impl<'a> SessionOutput<'a> {
         }
 
         Self::append_markdown_lines(lines, &format!("## {FOLLOW_UP_TASK_HEADER}"), inner_width);
+        let selected_follow_up_task_position = Self::resolved_follow_up_task_position(
+            follow_up_tasks,
+            selected_follow_up_task_position,
+        );
 
         for follow_up_task in follow_up_tasks {
             let is_selected = selected_follow_up_task_position == Some(follow_up_task.position);
@@ -376,6 +380,24 @@ impl<'a> SessionOutput<'a> {
         }
 
         lines.append(&mut rendered_lines);
+    }
+
+    /// Returns the selected follow-up task position for rendering, defaulting
+    /// to the first task so launch affordances stay visible before any
+    /// explicit task-navigation input.
+    fn resolved_follow_up_task_position(
+        follow_up_tasks: &[SessionFollowUpTask],
+        selected_follow_up_task_position: Option<usize>,
+    ) -> Option<usize> {
+        if follow_up_tasks.is_empty() {
+            return None;
+        }
+
+        if let Some(selected_follow_up_task_position) = selected_follow_up_task_position {
+            return Some(selected_follow_up_task_position);
+        }
+
+        Some(follow_up_tasks[0].position)
     }
 
     /// Appends one wrapped follow-up-task row with a selected launch/open
@@ -745,6 +767,51 @@ mod tests {
     }
 
     #[test]
+    /// Defaults the rendered follow-up selection to the first task when the
+    /// UI has not stored an explicit task position yet.
+    fn test_output_lines_defaults_first_follow_up_task_to_selected() {
+        // Arrange
+        let mut session = session_fixture();
+        session.follow_up_tasks = vec![
+            SessionFollowUpTask {
+                id: 1,
+                launched_session_id: None,
+                position: 0,
+                text: "Launch the sibling session.".to_string(),
+            },
+            SessionFollowUpTask {
+                id: 2,
+                launched_session_id: None,
+                position: 1,
+                text: "Document the outcome.".to_string(),
+            },
+        ];
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            None,
+            session.status,
+            DoneSessionOutputMode::Summary,
+            None,
+            None,
+            None,
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("> [Launch] Launch the sibling session."));
+        assert!(text.contains("- Document the outcome."));
+    }
+
+    #[test]
+    /// Marks the explicitly selected follow-up task with the launch
+    /// affordance.
     fn test_output_lines_marks_selected_follow_up_task_with_launch_affordance() {
         // Arrange
         let mut session = session_fixture();
