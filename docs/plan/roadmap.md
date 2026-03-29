@@ -61,34 +61,6 @@ Selecting a persisted follow-up task can launch it into a sibling session, and t
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` for launching follow-up tasks into sibling sessions and the resulting task-state behavior.
 
-### [1c7b7080-deaf-4e2c-8e3c-df24e01d9251] Quality: Ship one deterministic local session workflow slice
-
-#### Assignee
-
-`No assignee`
-
-#### Why now
-
-The quality stream needs one full app-level scenario that exercises the default local path before the remaining cleanup work keeps landing around it.
-
-#### Usable outcome
-
-A deterministic scenario test can create a disposable repo, run one scripted local agent turn through the app-facing workflow, and verify the resulting commit, worktree, transcript output, and terminal session state.
-
-#### Substeps
-
-- [ ] **Add the minimal local-session harness.** Create the smallest reusable harness under `crates/agentty/tests/support/` for temp repos, fake CLIs, and workflow assertions.
-- [ ] **Add one deterministic local-session scenario.** Add `crates/agentty/tests/local_session_workflow.rs` to exercise a full local session journey without live credentials.
-- [ ] **Refactor only the boundaries the scenario needs.** Keep any workflow refactors constrained to explicit boundaries rather than shell-heavy test-only helpers.
-
-#### Tests
-
-- [ ] Run the new local-session scenario and the touched workflow-module tests to confirm the harness covers the full local path.
-
-#### Docs
-
-- [ ] Update `CONTRIBUTING.md` with the deterministic local-session scenario command and the expectation that fake CLIs cover the default workflow path.
-
 ### [28de2b07-70a0-442a-821b-8b1946a1cea4] Agents: Scope model lists to locally available backends
 
 #### Assignee
@@ -122,8 +94,7 @@ The `/model` picker and persisted default-model selectors only offer models whos
 ```mermaid
 flowchart TD
     R1["[8f4402cd] Workflow: sibling-session launch"]
-    R2["[1c7b7080] Quality: deterministic local session harness"]
-    R3["[28de2b07] Agents: local model availability"]
+    R2["[28de2b07] Agents: local model availability"]
 ```
 
 ## Queued Next
@@ -228,6 +199,20 @@ Promote when the active `Workflow`, `Platform`, and `Quality` steps stop rewriti
 
 `[832c9729] Quality: Fill the missing module-level regression tests`
 
+### [1c7b7080-deaf-4e2c-8e3c-df24e01d9251] Quality: Ship one deterministic local session workflow slice
+
+#### Outcome
+
+Add one deterministic local-session scenario plus the minimal reusable harness so the default in-process workflow path can be validated without live credentials.
+
+#### Promote when
+
+Promote when a `Ready Now` slot opens and the active workflow and model-availability slices stop competing for the same session lifecycle boundaries.
+
+#### Depends on
+
+`None`
+
 ### [3e7f1a92-4b8d-4c6e-9a15-d2f8e0b71c34] Testty: Land proof report fundamentals
 
 #### Outcome
@@ -275,7 +260,7 @@ Promote after the proof fundamentals land and there is enough scenario volume to
 - `Workflow: Launch sibling sessions from follow-up tasks and retain task state` should reuse the same stored task content that the persistence slice lands.
 - `Agents: Scope model lists to locally available backends` should reuse one shared availability snapshot across Settings and `/model` instead of probing CLIs separately in render paths.
 - `Workflow: Stage draft session messages and start them explicitly` should treat `Status::New` as the persisted draft container instead of introducing a second pre-start lifecycle status.
-- The local session harness should keep validating the default in-process workflow path that the active workflow slices depend on.
+- The parked local session harness slice should come back only when the active workflow and model-availability changes stop churning the same lifecycle seams.
 - The typed-error sequence should stay linear so each layer learns from the previous enum shape instead of reworking multiple error surfaces at once.
 - `Testty` remains strategically important, but it is independent of the active `agentty` product work and should stay parked until a human intentionally rebalances the queue.
 - Run `cargo run -q -p ag-xtask -- roadmap context-digest` before promoting queued or parked work to `Ready Now`.
