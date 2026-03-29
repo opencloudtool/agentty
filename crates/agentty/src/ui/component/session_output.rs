@@ -156,7 +156,7 @@ impl<'a> SessionOutput<'a> {
             .width
             .saturating_sub(Self::output_horizontal_border_width())
             as usize;
-        let mut lines = render_markdown(&output_text, inner_width);
+        let mut lines = render_markdown(output_text, inner_width);
         if Self::shows_follow_up_tasks(done_session_output_mode) {
             Self::append_follow_up_task_lines(
                 &mut lines,

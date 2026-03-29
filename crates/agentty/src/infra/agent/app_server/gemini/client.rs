@@ -24,7 +24,7 @@ use crate::infra::app_server::{
     AppServerStreamEvent, AppServerTurnRequest, AppServerTurnResponse,
 };
 use crate::infra::app_server_transport::{
-    self, extract_json_error_message, response_id_matches, write_json_line,
+    self, AppServerTransportError, extract_json_error_message, response_id_matches, write_json_line,
 };
 use crate::infra::channel::{TurnPrompt, TurnPromptAttachment, TurnPromptContentPart};
 
@@ -39,16 +39,21 @@ type GeminiTransportFuture<'scope, T> = Pin<Box<dyn Future<Output = T> + Send + 
 #[cfg_attr(test, mockall::automock)]
 trait GeminiRuntimeTransport {
     /// Writes one JSON-RPC payload to runtime stdin.
-    fn write_json_line(&mut self, payload: Value) -> GeminiTransportFuture<'_, Result<(), String>>;
+    fn write_json_line(
+        &mut self,
+        payload: Value,
+    ) -> GeminiTransportFuture<'_, Result<(), AppServerTransportError>>;
 
     /// Waits for one JSON-RPC response line matching `response_id`.
     fn wait_for_response_line(
         &mut self,
         response_id: String,
-    ) -> GeminiTransportFuture<'_, Result<String, String>>;
+    ) -> GeminiTransportFuture<'_, Result<String, AppServerTransportError>>;
 
     /// Reads the next raw stdout line from the runtime.
-    fn next_stdout(&mut self) -> GeminiTransportFuture<'_, Result<Option<String>, String>>;
+    fn next_stdout(
+        &mut self,
+    ) -> GeminiTransportFuture<'_, Result<Option<String>, AppServerTransportError>>;
 }
 
 /// Production ACP transport backed by Gemini child process stdio streams.
@@ -68,12 +73,18 @@ impl GeminiStdioTransport {
 }
 
 impl GeminiRuntimeTransport for GeminiStdioTransport {
-    fn write_json_line(&mut self, payload: Value) -> GeminiTransportFuture<'_, Result<(), String>> {
+    fn write_json_line(
+        &mut self,
+        payload: Value,
+    ) -> GeminiTransportFuture<'_, Result<(), AppServerTransportError>> {
         Box::pin(async move {
             let stdin = self
                 .stdin
                 .as_mut()
-                .ok_or_else(|| "Gemini ACP stdin is unavailable".to_string())?;
+                .ok_or_else(|| AppServerTransportError::Io {
+                    context: "Gemini ACP stdin is unavailable".to_string(),
+                    source: std::io::Error::new(std::io::ErrorKind::NotConnected, "stdin closed"),
+                })?;
 
             write_json_line(stdin, &payload).await
         })
@@ -82,18 +93,23 @@ impl GeminiRuntimeTransport for GeminiStdioTransport {
     fn wait_for_response_line(
         &mut self,
         response_id: String,
-    ) -> GeminiTransportFuture<'_, Result<String, String>> {
+    ) -> GeminiTransportFuture<'_, Result<String, AppServerTransportError>> {
         Box::pin(async move {
             app_server_transport::wait_for_response_line(&mut self.stdout_lines, &response_id).await
         })
     }
 
-    fn next_stdout(&mut self) -> GeminiTransportFuture<'_, Result<Option<String>, String>> {
+    fn next_stdout(
+        &mut self,
+    ) -> GeminiTransportFuture<'_, Result<Option<String>, AppServerTransportError>> {
         Box::pin(async move {
             self.stdout_lines
                 .next_line()
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|source| AppServerTransportError::Io {
+                    context: "Failed reading Gemini ACP stdout".to_string(),
+                    source,
+                })
         })
     }
 }
@@ -104,6 +120,7 @@ pub(crate) struct RealGeminiAcpClient {
 }
 
 /// Normalized data extracted from one ACP `session/prompt` completion response.
+#[derive(Debug)]
 struct PromptCompletion {
     assistant_message: Option<String>,
     input_tokens: u64,
@@ -138,11 +155,7 @@ impl RealGeminiAcpClient {
             |request| {
                 let request = request.clone();
 
-                Box::pin(async move {
-                    Self::start_runtime(&request)
-                        .await
-                        .map_err(AppServerError::Provider)
-                })
+                Box::pin(async move { Self::start_runtime(&request).await })
             },
             move |runtime, prompt| {
                 let stream_tx = stream_tx.clone();
@@ -155,7 +168,6 @@ impl RealGeminiAcpClient {
                         stream_tx,
                     )
                     .await
-                    .map_err(AppServerError::Provider)
                 })
             },
             |runtime| Box::pin(Self::shutdown_runtime(runtime)),
@@ -167,7 +179,9 @@ impl RealGeminiAcpClient {
     ///
     /// If bootstrap fails after spawn, the child is shut down before returning
     /// the error to avoid leaking an orphaned runtime process.
-    async fn start_runtime(request: &AppServerTurnRequest) -> Result<GeminiSessionRuntime, String> {
+    async fn start_runtime(
+        request: &AppServerTurnRequest,
+    ) -> Result<GeminiSessionRuntime, AppServerError> {
         let request_kind = crate::infra::channel::AgentRequestKind::SessionStart;
         let command = agent::create_backend(AgentKind::Gemini)
             .build_command(agent::BuildCommandRequest {
@@ -179,7 +193,9 @@ impl RealGeminiAcpClient {
                 reasoning_level: request.reasoning_level,
             })
             .map_err(|error| {
-                format!("Failed to build `gemini --experimental-acp` command: {error}")
+                AppServerError::Provider(format!(
+                    "Failed to build `gemini --experimental-acp` command: {error}"
+                ))
             })?;
         let mut command = tokio::process::Command::from(command);
         command
@@ -188,17 +204,17 @@ impl RealGeminiAcpClient {
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
 
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("Failed to spawn `gemini --experimental-acp`: {error}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Gemini ACP stdin is unavailable".to_string())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "Gemini ACP stdout is unavailable".to_string())?;
+        let mut child = command.spawn().map_err(|error| {
+            AppServerError::Provider(format!(
+                "Failed to spawn `gemini --experimental-acp`: {error}"
+            ))
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            AppServerError::Provider("Gemini ACP stdin is unavailable".to_string())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            AppServerError::Provider("Gemini ACP stdout is unavailable".to_string())
+        })?;
         let mut session = GeminiSessionRuntime {
             child,
             folder: request.folder.clone(),
@@ -227,7 +243,7 @@ impl RealGeminiAcpClient {
     async fn bootstrap_runtime_session<Transport: GeminiRuntimeTransport>(
         transport: &mut Transport,
         folder: &Path,
-    ) -> Result<String, String> {
+    ) -> Result<String, AppServerError> {
         Self::initialize_runtime(transport).await?;
 
         Self::start_session(transport, folder).await
@@ -236,7 +252,7 @@ impl RealGeminiAcpClient {
     /// Sends the ACP initialize handshake.
     async fn initialize_runtime<Transport: GeminiRuntimeTransport>(
         transport: &mut Transport,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppServerError> {
         let initialization_request_id = format!("init-{}", uuid::Uuid::new_v4());
         let initialization_request =
             Self::build_initialize_request_payload(&initialization_request_id)?;
@@ -245,10 +261,16 @@ impl RealGeminiAcpClient {
             .wait_for_response_line(initialization_request_id)
             .await?;
         let initialize_response = serde_json::from_str::<Value>(&initialize_response_line)
-            .map_err(|error| format!("Failed to parse Gemini ACP initialize response: {error}"))?;
+            .map_err(|error| {
+                AppServerError::Provider(format!(
+                    "Failed to parse Gemini ACP initialize response: {error}"
+                ))
+            })?;
         if initialize_response.get("error").is_some() {
-            return Err(extract_json_error_message(&initialize_response)
-                .unwrap_or_else(|| "Gemini ACP returned an error for `initialize`".to_string()));
+            return Err(AppServerError::Provider(
+                extract_json_error_message(&initialize_response)
+                    .unwrap_or_else(|| "Gemini ACP returned an error for `initialize`".to_string()),
+            ));
         }
         Self::parse_json_rpc_result::<InitializeResponse>(&initialize_response, "`initialize`")?;
 
@@ -269,7 +291,7 @@ impl RealGeminiAcpClient {
     /// To prevent unsupported `fs/*` and `terminal/*` calls from being sent to
     /// this client, this function overwrites `clientCapabilities` with an empty
     /// object after typed serialization.
-    fn build_initialize_request_payload(request_id: &str) -> Result<Value, String> {
+    fn build_initialize_request_payload(request_id: &str) -> Result<Value, AppServerError> {
         let initialize_params = InitializeRequest::new(ProtocolVersion::LATEST);
         let mut initialize_payload = Self::build_json_rpc_request_payload(
             request_id,
@@ -277,12 +299,14 @@ impl RealGeminiAcpClient {
             initialize_params,
         )?;
         let Some(params) = initialize_payload.get_mut("params") else {
-            return Err("Failed to build Gemini ACP `initialize` request params".to_string());
+            return Err(AppServerError::Provider(
+                "Failed to build Gemini ACP `initialize` request params".to_string(),
+            ));
         };
         let Some(params) = params.as_object_mut() else {
-            return Err(
+            return Err(AppServerError::Provider(
                 "Failed to build Gemini ACP `initialize` request params object".to_string(),
-            );
+            ));
         };
         params.insert(
             "clientCapabilities".to_string(),
@@ -297,9 +321,12 @@ impl RealGeminiAcpClient {
         request_id: &str,
         method: &str,
         params: T,
-    ) -> Result<Value, String> {
-        let params_value = serde_json::to_value(params)
-            .map_err(|error| format!("Failed to serialize `{method}` request params: {error}"))?;
+    ) -> Result<Value, AppServerError> {
+        let params_value = serde_json::to_value(params).map_err(|error| {
+            AppServerError::Provider(format!(
+                "Failed to serialize `{method}` request params: {error}"
+            ))
+        })?;
 
         Ok(serde_json::json!({
             "jsonrpc": "2.0",
@@ -313,14 +340,16 @@ impl RealGeminiAcpClient {
     fn parse_json_rpc_result<T: serde::de::DeserializeOwned>(
         response_value: &Value,
         method: &str,
-    ) -> Result<T, String> {
-        let result_value = response_value
-            .get("result")
-            .cloned()
-            .ok_or_else(|| format!("Gemini ACP `{method}` response missing `result`"))?;
+    ) -> Result<T, AppServerError> {
+        let result_value = response_value.get("result").cloned().ok_or_else(|| {
+            AppServerError::Provider(format!("Gemini ACP `{method}` response missing `result`"))
+        })?;
 
-        serde_json::from_value::<T>(result_value)
-            .map_err(|error| format!("Failed to parse Gemini ACP `{method}` result: {error}"))
+        serde_json::from_value::<T>(result_value).map_err(|error| {
+            AppServerError::Provider(format!(
+                "Failed to parse Gemini ACP `{method}` result: {error}"
+            ))
+        })
     }
 
     /// Creates one ACP session and returns the assigned `sessionId`.
@@ -330,7 +359,7 @@ impl RealGeminiAcpClient {
     async fn start_session<Transport: GeminiRuntimeTransport>(
         transport: &mut Transport,
         folder: &Path,
-    ) -> Result<String, String> {
+    ) -> Result<String, AppServerError> {
         let session_new_id = format!("session-new-{}", uuid::Uuid::new_v4());
         let session_new_payload = Self::build_json_rpc_request_payload(
             &session_new_id,
@@ -339,8 +368,11 @@ impl RealGeminiAcpClient {
         )?;
         transport.write_json_line(session_new_payload).await?;
         let response_line = transport.wait_for_response_line(session_new_id).await?;
-        let response_value = serde_json::from_str::<Value>(&response_line)
-            .map_err(|error| format!("Failed to parse session/new response JSON: {error}"))?;
+        let response_value = serde_json::from_str::<Value>(&response_line).map_err(|error| {
+            AppServerError::Provider(format!(
+                "Failed to parse session/new response JSON: {error}"
+            ))
+        })?;
 
         Self::parse_session_new_response(&response_value)
     }
@@ -349,17 +381,23 @@ impl RealGeminiAcpClient {
     ///
     /// Returns a JSON-RPC error message when present; otherwise extracts
     /// `result.sessionId`.
-    fn parse_session_new_response(response_value: &Value) -> Result<String, String> {
+    fn parse_session_new_response(response_value: &Value) -> Result<String, AppServerError> {
         if response_value.get("error").is_some() {
-            return Err(extract_json_error_message(response_value)
-                .unwrap_or_else(|| "Gemini ACP returned an error for `session/new`".to_string()));
+            return Err(AppServerError::Provider(
+                extract_json_error_message(response_value).unwrap_or_else(|| {
+                    "Gemini ACP returned an error for `session/new`".to_string()
+                }),
+            ));
         }
 
         let session_new_result =
             Self::parse_json_rpc_result::<NewSessionResponse>(response_value, "`session/new`")
                 .map_err(|error| {
-                    if error.contains("missing field `sessionId`") {
-                        return "Gemini ACP `session/new` response missing `sessionId`".to_string();
+                    let error_message = error.to_string();
+                    if error_message.contains("missing field `sessionId`") {
+                        return AppServerError::Provider(
+                            "Gemini ACP `session/new` response missing `sessionId`".to_string(),
+                        );
                     }
 
                     error
@@ -377,7 +415,7 @@ impl RealGeminiAcpClient {
         session_id: &str,
         prompt: impl Into<TurnPrompt>,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> Result<(String, u64, u64), String> {
+    ) -> Result<(String, u64, u64), AppServerError> {
         let prompt = prompt.into();
         let content_blocks = build_prompt_content_blocks(&prompt).await?;
         let prompt_id = format!("session-prompt-{}", uuid::Uuid::new_v4());
@@ -391,13 +429,11 @@ impl RealGeminiAcpClient {
         let mut assistant_message = String::new();
         tokio::time::timeout(app_server_transport::TURN_TIMEOUT, async {
             loop {
-                let stdout_line = transport
-                    .next_stdout()
-                    .await
-                    .map_err(|error| format!("Failed reading Gemini ACP stdout: {error}"))?
-                    .ok_or_else(|| {
-                        "Gemini ACP terminated before prompt completion response".to_string()
-                    })?;
+                let stdout_line = transport.next_stdout().await?.ok_or_else(|| {
+                    AppServerError::Provider(
+                        "Gemini ACP terminated before prompt completion response".to_string(),
+                    )
+                })?;
 
                 if stdout_line.trim().is_empty() {
                     continue;
@@ -417,8 +453,10 @@ impl RealGeminiAcpClient {
 
                 if response_id_matches(&response_value, &prompt_id) {
                     if response_value.get("error").is_some() {
-                        return Err(extract_json_error_message(&response_value).unwrap_or_else(
-                            || "Gemini ACP returned an error for `session/prompt`".to_string(),
+                        return Err(AppServerError::Provider(
+                            extract_json_error_message(&response_value).unwrap_or_else(|| {
+                                "Gemini ACP returned an error for `session/prompt`".to_string()
+                            }),
                         ));
                     }
                     let prompt_completion = parse_prompt_completion_response(&response_value)?;
@@ -447,10 +485,10 @@ impl RealGeminiAcpClient {
         })
         .await
         .map_err(|_| {
-            format!(
+            AppServerError::Provider(format!(
                 "Timed out waiting for Gemini ACP prompt completion after {} seconds",
                 app_server_transport::TURN_TIMEOUT.as_secs()
-            )
+            ))
         })?
     }
 
@@ -482,17 +520,23 @@ impl RealGeminiAcpClient {
 ///
 /// Text spans are interleaved with inline image attachments in placeholder
 /// order so Gemini receives the same multimodal sequence the composer shows.
-async fn build_prompt_content_blocks(prompt: &TurnPrompt) -> Result<Vec<ContentBlock>, String> {
+async fn build_prompt_content_blocks(
+    prompt: &TurnPrompt,
+) -> Result<Vec<ContentBlock>, AppServerError> {
     let prompt = prompt.clone();
 
     tokio::task::spawn_blocking(move || build_prompt_content_blocks_blocking(&prompt))
         .await
-        .map_err(|error| format!("Gemini prompt-image task failed: {error}"))?
+        .map_err(|error| {
+            AppServerError::Provider(format!("Gemini prompt-image task failed: {error}"))
+        })?
 }
 
 /// Builds Gemini ACP content blocks for one prompt on a blocking worker
 /// thread.
-fn build_prompt_content_blocks_blocking(prompt: &TurnPrompt) -> Result<Vec<ContentBlock>, String> {
+fn build_prompt_content_blocks_blocking(
+    prompt: &TurnPrompt,
+) -> Result<Vec<ContentBlock>, AppServerError> {
     if !prompt.has_attachments() {
         return Ok(vec![ContentBlock::Text(TextContent::new(
             prompt.text.clone(),
@@ -530,12 +574,14 @@ fn push_text_content_block(content_blocks: &mut Vec<ContentBlock>, text: &str) {
 /// This helper performs blocking filesystem I/O with `std::fs::read`, so it
 /// must only be called from the blocking worker used by
 /// `build_prompt_content_blocks()`.
-fn build_image_content_block(attachment: &TurnPromptAttachment) -> Result<ContentBlock, String> {
+fn build_image_content_block(
+    attachment: &TurnPromptAttachment,
+) -> Result<ContentBlock, AppServerError> {
     let image_bytes = std::fs::read(&attachment.local_image_path).map_err(|error| {
-        format!(
+        AppServerError::Provider(format!(
             "Failed to read Gemini prompt image `{}`: {error}",
             attachment.local_image_path.display()
-        )
+        ))
     })?;
     let mime_type = prompt_image_mime_type(&attachment.local_image_path);
 
@@ -793,10 +839,14 @@ fn select_preferred_assistant_message(
 }
 
 /// Parses one completed `session/prompt` response into normalized turn fields.
-fn parse_prompt_completion_response(response_value: &Value) -> Result<PromptCompletion, String> {
-    let result = response_value
-        .get("result")
-        .ok_or_else(|| "Gemini ACP `session/prompt` response missing `result`".to_string())?;
+fn parse_prompt_completion_response(
+    response_value: &Value,
+) -> Result<PromptCompletion, AppServerError> {
+    let result = response_value.get("result").ok_or_else(|| {
+        AppServerError::Provider(
+            "Gemini ACP `session/prompt` response missing `result`".to_string(),
+        )
+    })?;
     let (input_tokens, output_tokens) = extract_prompt_usage_tokens(result);
     let assistant_message = extract_prompt_result_text(result);
 
@@ -1334,7 +1384,10 @@ mod tests {
         let initialize_result = RealGeminiAcpClient::initialize_runtime(&mut transport).await;
 
         // Assert
-        assert_eq!(initialize_result, Ok(()));
+        assert!(
+            initialize_result.is_ok(),
+            "initialize should succeed: {initialize_result:?}"
+        );
     }
 
     #[tokio::test]
@@ -1369,7 +1422,10 @@ mod tests {
         let initialize_result = RealGeminiAcpClient::initialize_runtime(&mut transport).await;
 
         // Assert
-        assert_eq!(initialize_result, Err("initialize failed".to_string()));
+        let error_message = initialize_result
+            .expect_err("JSON-RPC error should fail initialization")
+            .to_string();
+        assert_eq!(error_message, "initialize failed");
     }
 
     /// Verifies initialize handshake surfaces malformed JSON responses with a
@@ -1394,11 +1450,12 @@ mod tests {
         let initialize_result = RealGeminiAcpClient::initialize_runtime(&mut transport).await;
 
         // Assert
+        let error_message = initialize_result
+            .expect_err("invalid JSON should fail initialization")
+            .to_string();
         assert!(
-            initialize_result
-                .expect_err("invalid JSON should fail initialization")
-                .contains("Failed to parse Gemini ACP initialize response"),
-            "error should mention initialize JSON parsing"
+            error_message.contains("Failed to parse Gemini ACP initialize response"),
+            "error should mention initialize JSON parsing, got: {error_message}"
         );
     }
 
@@ -1447,7 +1504,10 @@ mod tests {
         let session_id = RealGeminiAcpClient::start_session(&mut transport, &folder).await;
 
         // Assert
-        assert_eq!(session_id, Ok("session-123".to_string()));
+        assert_eq!(
+            session_id.expect("start_session should succeed"),
+            "session-123"
+        );
     }
 
     #[tokio::test]
@@ -1515,7 +1575,7 @@ mod tests {
             RealGeminiAcpClient::bootstrap_runtime_session(&mut transport, folder.as_path()).await;
 
         // Assert
-        assert_eq!(session_id, Ok("session-123".to_string()));
+        assert_eq!(session_id.expect("bootstrap should succeed"), "session-123");
     }
 
     #[tokio::test]
@@ -1553,7 +1613,10 @@ mod tests {
             RealGeminiAcpClient::bootstrap_runtime_session(&mut transport, folder.as_path()).await;
 
         // Assert
-        assert_eq!(session_id, Err("initialize failed".to_string()));
+        let error_message = session_id
+            .expect_err("initialize error should propagate")
+            .to_string();
+        assert_eq!(error_message, "initialize failed");
     }
 
     /// Verifies Gemini keeps streamed chunk text when the completion payload
@@ -1582,10 +1645,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(
-            run_turn_result,
-            Ok(("Chunk text".to_string(), 2_u64, 3_u64))
-        );
+        let (message, input_tokens, output_tokens) = run_turn_result.expect("turn should succeed");
+        assert_eq!(message, "Chunk text");
+        assert_eq!(input_tokens, 2);
+        assert_eq!(output_tokens, 3);
         assert_turn_stream_events(&mut stream_rx);
     }
 
@@ -1627,7 +1690,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(run_turn_result, Ok((structured_response, 5_u64, 8_u64)));
+        let (message, input_tokens, output_tokens) = run_turn_result.expect("turn should succeed");
+        assert_eq!(message, structured_response);
+        assert_eq!(input_tokens, 5);
+        assert_eq!(output_tokens, 8);
         let stream_event = stream_rx
             .try_recv()
             .expect("streamed chunk should still be forwarded");
@@ -1668,7 +1734,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(turn_result, Err("prompt failed".to_string()));
+        let error_message = turn_result
+            .expect_err("prompt error should propagate")
+            .to_string();
+        assert_eq!(error_message, "prompt failed");
         assert!(
             stream_rx.try_recv().is_err(),
             "error responses should not stream events"
@@ -1729,7 +1798,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(turn_result, Ok(("Completion fallback".to_string(), 5, 8)));
+        let (message, input_tokens, output_tokens) = turn_result.expect("turn should succeed");
+        assert_eq!(message, "Completion fallback");
+        assert_eq!(input_tokens, 5);
+        assert_eq!(output_tokens, 8);
         assert!(
             stream_rx.try_recv().is_err(),
             "completion fallback should not emit delta chunks"
@@ -1750,7 +1822,7 @@ mod tests {
         let session_id = RealGeminiAcpClient::parse_session_new_response(&response_value);
 
         // Assert
-        assert_eq!(session_id, Ok("session-1".to_string()));
+        assert_eq!(session_id.expect("parse should succeed"), "session-1");
     }
 
     #[test]
@@ -1768,7 +1840,10 @@ mod tests {
         let session_id = RealGeminiAcpClient::parse_session_new_response(&response_value);
 
         // Assert
-        assert_eq!(session_id, Err("Session creation failed".to_string()));
+        let error_message = session_id
+            .expect_err("JSON-RPC error should fail")
+            .to_string();
+        assert_eq!(error_message, "Session creation failed");
     }
 
     #[test]
@@ -1783,9 +1858,12 @@ mod tests {
         let session_id = RealGeminiAcpClient::parse_session_new_response(&response_value);
 
         // Assert
+        let error_message = session_id
+            .expect_err("missing sessionId should fail")
+            .to_string();
         assert_eq!(
-            session_id,
-            Err("Gemini ACP `session/new` response missing `sessionId`".to_string())
+            error_message,
+            "Gemini ACP `session/new` response missing `sessionId`"
         );
     }
 
@@ -2099,9 +2177,12 @@ mod tests {
         let prompt_completion = parse_prompt_completion_response(&response_value);
 
         // Assert
+        let error_message = prompt_completion
+            .expect_err("missing result should fail")
+            .to_string();
         assert_eq!(
-            prompt_completion.err(),
-            Some("Gemini ACP `session/prompt` response missing `result`".to_string())
+            error_message,
+            "Gemini ACP `session/prompt` response missing `result`"
         );
     }
 

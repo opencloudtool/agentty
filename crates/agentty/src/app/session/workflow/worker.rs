@@ -566,7 +566,8 @@ async fn apply_turn_result(
     match turn_result {
         Ok(result) => apply_successful_turn_result(context, session_model, result).await,
         Err(error) => {
-            let message = format!("\n{}\n", error.0.trim());
+            let error_text = error.to_string();
+            let message = format!("\n{}\n", error_text.trim());
             SessionTaskService::append_session_output(
                 &context.output,
                 &context.db,
@@ -576,7 +577,7 @@ async fn apply_turn_result(
             )
             .await;
 
-            Err(SessionError::Workflow(error.0))
+            Err(SessionError::Workflow(error_text))
         }
     }
 }

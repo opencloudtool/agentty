@@ -211,7 +211,9 @@ impl SessionManager {
             .iter()
             .find(|session| session.id == session_id)?;
 
-        session.follow_up_task(position).map(|task| task.action())
+        session
+            .follow_up_task(position)
+            .map(crate::domain::session::SessionFollowUpTask::action)
     }
 
     /// Returns whether one session has more than one follow-up task.

@@ -88,19 +88,13 @@ impl RealCodexAppServerClient {
             |request| {
                 let request = request.clone();
 
-                Box::pin(async move {
-                    Self::start_runtime(&request)
-                        .await
-                        .map_err(AppServerError::Provider)
-                })
+                Box::pin(async move { Self::start_runtime(&request).await })
             },
             move |runtime, prompt| {
                 let stream_tx = stream_tx.clone();
 
                 Box::pin(async move {
-                    Self::run_turn_with_runtime(runtime, prompt, reasoning_level, stream_tx)
-                        .await
-                        .map_err(AppServerError::Provider)
+                    Self::run_turn_with_runtime(runtime, prompt, reasoning_level, stream_tx).await
                 })
             },
             |runtime| Box::pin(Self::shutdown_runtime(runtime)),
@@ -109,7 +103,9 @@ impl RealCodexAppServerClient {
     }
 
     /// Starts `codex app-server`, initializes it, and creates a thread.
-    async fn start_runtime(request: &AppServerTurnRequest) -> Result<CodexSessionRuntime, String> {
+    async fn start_runtime(
+        request: &AppServerTurnRequest,
+    ) -> Result<CodexSessionRuntime, AppServerError> {
         let request_kind = crate::infra::channel::AgentRequestKind::SessionStart;
         let command = agent::create_backend(AgentKind::Codex)
             .build_command(agent::BuildCommandRequest {
@@ -120,7 +116,11 @@ impl RealCodexAppServerClient {
                 model: &request.model,
                 reasoning_level: request.reasoning_level,
             })
-            .map_err(|error| format!("Failed to build `codex app-server` command: {error}"))?;
+            .map_err(|error| {
+                AppServerError::Provider(format!(
+                    "Failed to build `codex app-server` command: {error}"
+                ))
+            })?;
 
         Self::start_runtime_with_built_command(command, request).await
     }
@@ -130,7 +130,7 @@ impl RealCodexAppServerClient {
     async fn start_runtime_with_built_command(
         command: std::process::Command,
         request: &AppServerTurnRequest,
-    ) -> Result<CodexSessionRuntime, String> {
+    ) -> Result<CodexSessionRuntime, AppServerError> {
         let mut command = tokio::process::Command::from(command);
         command
             .stdin(std::process::Stdio::piped())
@@ -138,17 +138,15 @@ impl RealCodexAppServerClient {
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
 
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("Failed to spawn `codex app-server`: {error}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Codex app-server stdin is unavailable".to_string())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "Codex app-server stdout is unavailable".to_string())?;
+        let mut child = command.spawn().map_err(|error| {
+            AppServerError::Provider(format!("Failed to spawn `codex app-server`: {error}"))
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            AppServerError::Provider("Codex app-server stdin is unavailable".to_string())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            AppServerError::Provider("Codex app-server stdout is unavailable".to_string())
+        })?;
         let mut session = CodexSessionRuntime {
             child,
             latest_input_tokens: 0,
@@ -174,7 +172,7 @@ impl RealCodexAppServerClient {
     }
 
     /// Sends the initialize handshake for one app-server process.
-    async fn initialize_runtime(session: &mut CodexSessionRuntime) -> Result<(), String> {
+    async fn initialize_runtime(session: &mut CodexSessionRuntime) -> Result<(), AppServerError> {
         let initialize_id = format!("init-{}", uuid::Uuid::new_v4());
         let initialize_payload = serde_json::json!({
             "method": "initialize",
@@ -216,7 +214,7 @@ impl RealCodexAppServerClient {
         session: &mut CodexSessionRuntime,
         provider_conversation_id: Option<&str>,
         reasoning_level: ReasoningLevel,
-    ) -> Result<(String, bool), String> {
+    ) -> Result<(String, bool), AppServerError> {
         if let Some(provider_conversation_id) = provider_conversation_id
             && let Ok(thread_id) =
                 Self::resume_thread(session, provider_conversation_id, reasoning_level).await
@@ -233,7 +231,7 @@ impl RealCodexAppServerClient {
     async fn start_thread(
         session: &mut CodexSessionRuntime,
         reasoning_level: ReasoningLevel,
-    ) -> Result<String, String> {
+    ) -> Result<String, AppServerError> {
         let thread_start_id = format!("thread-start-{}", uuid::Uuid::new_v4());
         let thread_start_payload = Self::build_thread_start_payload(
             &session.folder,
@@ -248,8 +246,11 @@ impl RealCodexAppServerClient {
             &thread_start_id,
         )
         .await?;
-        let response_value = serde_json::from_str::<Value>(&response_line)
-            .map_err(|error| format!("Failed to parse thread/start response JSON: {error}"))?;
+        let response_value = serde_json::from_str::<Value>(&response_line).map_err(|error| {
+            AppServerError::Provider(format!(
+                "Failed to parse thread/start response JSON: {error}"
+            ))
+        })?;
 
         response_value
             .get("result")
@@ -258,7 +259,10 @@ impl RealCodexAppServerClient {
             .and_then(Value::as_str)
             .map(ToString::to_string)
             .ok_or_else(|| {
-                "Codex app-server `thread/start` response does not include a thread id".to_string()
+                AppServerError::Provider(
+                    "Codex app-server `thread/start` response does not include a thread id"
+                        .to_string(),
+                )
             })
     }
 
@@ -267,7 +271,7 @@ impl RealCodexAppServerClient {
         session: &mut CodexSessionRuntime,
         thread_id: &str,
         reasoning_level: ReasoningLevel,
-    ) -> Result<String, String> {
+    ) -> Result<String, AppServerError> {
         let thread_resume_request_id = format!("thread-resume-{}", uuid::Uuid::new_v4());
         let thread_resume_payload = Self::build_thread_resume_payload(
             &thread_resume_request_id,
@@ -282,8 +286,11 @@ impl RealCodexAppServerClient {
             &thread_resume_request_id,
         )
         .await?;
-        let response_value = serde_json::from_str::<Value>(&response_line)
-            .map_err(|error| format!("Failed to parse thread/resume response JSON: {error}"))?;
+        let response_value = serde_json::from_str::<Value>(&response_line).map_err(|error| {
+            AppServerError::Provider(format!(
+                "Failed to parse thread/resume response JSON: {error}"
+            ))
+        })?;
 
         response_value
             .get("result")
@@ -292,7 +299,10 @@ impl RealCodexAppServerClient {
             .and_then(Value::as_str)
             .map(ToString::to_string)
             .ok_or_else(|| {
-                "Codex app-server `thread/resume` response does not include a thread id".to_string()
+                AppServerError::Provider(
+                    "Codex app-server `thread/resume` response does not include a thread id"
+                        .to_string(),
+                )
             })
     }
 
@@ -359,7 +369,7 @@ impl RealCodexAppServerClient {
         prompt: impl Into<TurnPrompt>,
         reasoning_level: ReasoningLevel,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> Result<(String, u64, u64), String> {
+    ) -> Result<(String, u64, u64), AppServerError> {
         let prompt = prompt.into();
         let auto_compact_threshold = Self::auto_compact_input_token_threshold(&session.model);
 
@@ -381,7 +391,7 @@ impl RealCodexAppServerClient {
 
                 Ok((message, input_tokens, output_tokens))
             }
-            Err(ref error) if is_context_window_exceeded_error(error) => {
+            Err(ref error) if is_context_window_exceeded_error(&error.to_string()) => {
                 // Fire-and-forget: receiver may be dropped during shutdown.
                 let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(
                     "Compacting context".to_string(),
@@ -423,7 +433,7 @@ impl RealCodexAppServerClient {
     /// `turn/*` and `item/*` notifications. This method consumes events until
     /// a `turn/completed` notification is received, indicating compaction has
     /// finished. On success, the runtime's cumulative token counter is reset.
-    async fn send_compact_request(session: &mut CodexSessionRuntime) -> Result<(), String> {
+    async fn send_compact_request(session: &mut CodexSessionRuntime) -> Result<(), AppServerError> {
         Self::send_compact_request_with_timeout(session, app_server_transport::TURN_TIMEOUT).await
     }
 
@@ -432,7 +442,7 @@ impl RealCodexAppServerClient {
     async fn send_compact_request_with_timeout(
         session: &mut CodexSessionRuntime,
         turn_timeout: Duration,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppServerError> {
         let compact_id = format!("compact-{}", uuid::Uuid::new_v4());
         let compact_payload = serde_json::json!({
             "method": "thread/compact/start",
@@ -448,14 +458,7 @@ impl RealCodexAppServerClient {
 
         tokio::time::timeout(turn_timeout, async {
             loop {
-                let stdout_line = session
-                    .stdout_lines
-                    .next_line()
-                    .await
-                    .map_err(|error| {
-                        format!("Failed reading Codex app-server stdout during compaction: {error}")
-                    })?
-                    .ok_or_else(|| "Codex app-server terminated during compaction".to_string())?;
+                let stdout_line = Self::read_stdout_line(session, " during compaction").await?;
 
                 if stdout_line.trim().is_empty() {
                     continue;
@@ -482,7 +485,9 @@ impl RealCodexAppServerClient {
                     let error_message = extract_turn_completed_error_message(&response_value)
                         .unwrap_or_else(|| "Compaction failed".to_string());
 
-                    return Err(format!("Codex context compaction failed: {error_message}"));
+                    return Err(AppServerError::Provider(format!(
+                        "Codex context compaction failed: {error_message}"
+                    )));
                 }
             }
         })
@@ -510,7 +515,7 @@ impl RealCodexAppServerClient {
         prompt: impl Into<TurnPrompt>,
         reasoning_level: ReasoningLevel,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
-    ) -> Result<(String, u64, u64), String> {
+    ) -> Result<(String, u64, u64), AppServerError> {
         let prompt = prompt.into();
         Self::execute_turn_event_loop_with_timeout(
             session,
@@ -530,7 +535,7 @@ impl RealCodexAppServerClient {
         reasoning_level: ReasoningLevel,
         stream_tx: mpsc::UnboundedSender<AppServerStreamEvent>,
         turn_timeout: Duration,
-    ) -> Result<(String, u64, u64), String> {
+    ) -> Result<(String, u64, u64), AppServerError> {
         let prompt = prompt.into();
         let turn_start_id = format!("turn-start-{}", uuid::Uuid::new_v4());
         let turn_start_payload = Self::build_turn_start_payload(
@@ -551,15 +556,9 @@ impl RealCodexAppServerClient {
         let mut completed_turn_usage: Option<(u64, u64)> = None;
         tokio::time::timeout(turn_timeout, async {
             loop {
-                let stdout_line = session
-                    .stdout_lines
-                    .next_line()
-                    .await
-                    .map_err(|error| format!("Failed reading Codex app-server stdout: {error}"))?
-                    .ok_or_else(|| {
-                        "Codex app-server terminated before `turn/completed` was received"
-                            .to_string()
-                    })?;
+                let stdout_line =
+                    Self::read_stdout_line(session, " before `turn/completed` was received")
+                        .await?;
 
                 if stdout_line.trim().is_empty() {
                     continue;
@@ -568,11 +567,12 @@ impl RealCodexAppServerClient {
                 if let Ok(response_value) = serde_json::from_str::<Value>(&stdout_line) {
                     if response_id_matches(&response_value, &turn_start_id) {
                         if response_value.get("error").is_some() {
-                            return Err(extract_json_error_message(&response_value)
-                                .unwrap_or_else(|| {
+                            return Err(AppServerError::Provider(
+                                extract_json_error_message(&response_value).unwrap_or_else(|| {
                                     "Codex app-server returned an error for `turn/start`"
                                         .to_string()
-                                }));
+                                }),
+                            ));
                         }
                         if active_turn_id.is_none() {
                             active_turn_id =
@@ -719,20 +719,20 @@ impl RealCodexAppServerClient {
         })
     }
 
-    /// Builds a stable timeout error string for compaction completion waits.
-    fn compaction_timeout_error(turn_timeout: Duration) -> String {
-        format!(
+    /// Builds a stable timeout error for compaction completion waits.
+    fn compaction_timeout_error(turn_timeout: Duration) -> AppServerError {
+        AppServerError::Provider(format!(
             "Timed out waiting for Codex app-server compaction to complete after {} seconds",
             turn_timeout.as_secs()
-        )
+        ))
     }
 
-    /// Builds a stable timeout error string for turn completion waits.
-    fn turn_completed_timeout_error(turn_timeout: Duration) -> String {
-        format!(
+    /// Builds a stable timeout error for turn completion waits.
+    fn turn_completed_timeout_error(turn_timeout: Duration) -> AppServerError {
+        AppServerError::Provider(format!(
             "Timed out waiting for Codex app-server `turn/completed` after {} seconds",
             turn_timeout.as_secs()
-        )
+        ))
     }
 
     /// Resolves final turn usage by preferring `turn/completed` payload usage
@@ -862,7 +862,7 @@ impl RealCodexAppServerClient {
         stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
         input_tokens: u64,
         output_tokens: u64,
-    ) -> Result<(String, u64, u64), String> {
+    ) -> Result<(String, u64, u64), AppServerError> {
         match turn_result {
             Ok(()) => {
                 let assistant_message = preferred_completed_assistant_message(assistant_messages);
@@ -878,7 +878,7 @@ impl RealCodexAppServerClient {
                     phase: None,
                 });
 
-                Err(error)
+                Err(AppServerError::Provider(error))
             }
         }
     }
@@ -1012,11 +1012,32 @@ impl RealCodexAppServerClient {
     /// error when writes are attempted after shutdown has already started.
     fn runtime_stdin(
         session: &mut CodexSessionRuntime,
-    ) -> Result<&mut tokio::process::ChildStdin, String> {
+    ) -> Result<&mut tokio::process::ChildStdin, AppServerError> {
+        session.stdin.as_mut().ok_or_else(|| {
+            AppServerError::Provider("Codex app-server stdin is unavailable".to_string())
+        })
+    }
+
+    /// Reads the next non-empty stdout line from the app-server runtime.
+    ///
+    /// Returns a provider error when the read fails or the process terminates
+    /// before producing output.
+    async fn read_stdout_line(
+        session: &mut CodexSessionRuntime,
+        context: &str,
+    ) -> Result<String, AppServerError> {
         session
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "Codex app-server stdin is unavailable".to_string())
+            .stdout_lines
+            .next_line()
+            .await
+            .map_err(|error| {
+                AppServerError::Provider(format!(
+                    "Failed reading Codex app-server stdout{context}: {error}"
+                ))
+            })?
+            .ok_or_else(|| {
+                AppServerError::Provider(format!("Codex app-server terminated{context}"))
+            })
     }
 
     /// Terminates one runtime process and waits for process exit.
@@ -1816,9 +1837,10 @@ mod tests {
         let timeout = Duration::from_secs(9_001);
 
         // Act
-        let error_message = RealCodexAppServerClient::turn_completed_timeout_error(timeout);
+        let error = RealCodexAppServerClient::turn_completed_timeout_error(timeout);
 
         // Assert
+        let error_message = error.to_string();
         assert!(error_message.contains("9001"));
         assert!(error_message.contains("turn/completed"));
     }
@@ -1829,9 +1851,10 @@ mod tests {
         let timeout = Duration::from_mins(70);
 
         // Act
-        let error_message = RealCodexAppServerClient::compaction_timeout_error(timeout);
+        let error = RealCodexAppServerClient::compaction_timeout_error(timeout);
 
         // Assert
+        let error_message = error.to_string();
         assert!(error_message.contains("4200"));
         assert!(error_message.contains("compaction"));
     }
@@ -1903,7 +1926,10 @@ cat >/dev/null
             RealCodexAppServerClient::start_thread(&mut session, ReasoningLevel::default()).await;
 
         // Assert
-        assert_eq!(thread_id, Ok("thread-123".to_string()));
+        assert_eq!(
+            thread_id.expect("start_thread should succeed"),
+            "thread-123"
+        );
         app_server_transport::shutdown_child(&mut session.child).await;
     }
 
@@ -1929,12 +1955,10 @@ cat >/dev/null
         .await;
 
         // Assert
+        let error = thread_id.expect_err("resume_thread should fail");
         assert_eq!(
-            thread_id,
-            Err(
-                "Codex app-server `thread/resume` response does not include a thread id"
-                    .to_string()
-            )
+            error.to_string(),
+            "Codex app-server `thread/resume` response does not include a thread id"
         );
         app_server_transport::shutdown_child(&mut session.child).await;
     }
@@ -2036,7 +2060,7 @@ cat >/dev/null
         let compact_result = RealCodexAppServerClient::send_compact_request(&mut session).await;
 
         // Assert
-        assert_eq!(compact_result, Ok(()));
+        compact_result.expect("compact request should succeed");
         assert_eq!(session.latest_input_tokens, 0);
         app_server_transport::shutdown_child(&mut session.child).await;
     }
@@ -2059,9 +2083,10 @@ cat >/dev/null
         let compact_result = RealCodexAppServerClient::send_compact_request(&mut session).await;
 
         // Assert
+        let error = compact_result.expect_err("compact request should fail");
         assert_eq!(
-            compact_result,
-            Err("Codex context compaction failed: compaction boom".to_string())
+            error.to_string(),
+            "Codex context compaction failed: compaction boom"
         );
         assert_eq!(session.latest_input_tokens, 450_000);
         app_server_transport::shutdown_child(&mut session.child).await;
@@ -2088,12 +2113,10 @@ sleep 5
         .await;
 
         // Assert
+        let error = compact_result.expect_err("compact request should time out");
         assert_eq!(
-            compact_result,
-            Err(
-                "Timed out waiting for Codex app-server compaction to complete after 0 seconds"
-                    .to_string()
-            )
+            error.to_string(),
+            "Timed out waiting for Codex app-server compaction to complete after 0 seconds"
         );
         app_server_transport::shutdown_child(&mut session.child).await;
     }
@@ -2132,7 +2155,11 @@ cat >/dev/null
         .await;
 
         // Assert
-        assert_eq!(result, Ok(("Completed after compact".to_string(), 12, 3)));
+        let (message, input_tokens, output_tokens) =
+            result.expect("run_turn_with_runtime should succeed");
+        assert_eq!(message, "Completed after compact");
+        assert_eq!(input_tokens, 12);
+        assert_eq!(output_tokens, 3);
         assert_eq!(session.latest_input_tokens, 12);
         assert_eq!(
             stream_rx.try_recv().ok(),
@@ -2177,7 +2204,11 @@ cat >/dev/null
         .await;
 
         // Assert
-        assert_eq!(result, Ok(("Recovered response".to_string(), 25, 5)));
+        let (message, input_tokens, output_tokens) =
+            result.expect("run_turn_with_runtime should succeed after retry");
+        assert_eq!(message, "Recovered response");
+        assert_eq!(input_tokens, 25);
+        assert_eq!(output_tokens, 5);
         assert_eq!(session.latest_input_tokens, 25);
         assert_eq!(
             stream_rx.try_recv().ok(),
@@ -2222,12 +2253,10 @@ sleep 5
         .await;
 
         // Assert
+        let error = result.expect_err("execute_turn_event_loop should time out");
         assert_eq!(
-            result,
-            Err(
-                "Timed out waiting for Codex app-server `turn/completed` after 0 seconds"
-                    .to_string()
-            )
+            error.to_string(),
+            "Timed out waiting for Codex app-server `turn/completed` after 0 seconds"
         );
         app_server_transport::shutdown_child(&mut session.child).await;
     }
@@ -2528,7 +2557,11 @@ sleep 5
         );
 
         // Assert
-        assert_eq!(result, Ok(("Final response".to_string(), 7, 3)));
+        let (message, input_tokens, output_tokens) =
+            result.expect("finalize_turn_completion should succeed");
+        assert_eq!(message, "Final response");
+        assert_eq!(input_tokens, 7);
+        assert_eq!(output_tokens, 3);
         assert!(stream_rx.try_recv().is_err());
     }
 
@@ -2552,7 +2585,11 @@ sleep 5
         );
 
         // Assert
-        assert_eq!(result, Ok((protocol_payload.to_string(), 11, 4)));
+        let (message, input_tokens, output_tokens) =
+            result.expect("finalize_turn_completion should succeed");
+        assert_eq!(message, protocol_payload);
+        assert_eq!(input_tokens, 11);
+        assert_eq!(output_tokens, 4);
         assert!(stream_rx.try_recv().is_err());
     }
 
@@ -2581,7 +2618,11 @@ sleep 5
         );
 
         // Assert
-        assert_eq!(result, Ok((protocol_payload.to_string(), 5, 2)));
+        let (message, input_tokens, output_tokens) =
+            result.expect("finalize_turn_completion should succeed");
+        assert_eq!(message, protocol_payload);
+        assert_eq!(input_tokens, 5);
+        assert_eq!(output_tokens, 2);
         assert!(stream_rx.try_recv().is_err());
     }
 
@@ -2596,7 +2637,8 @@ sleep 5
             RealCodexAppServerClient::finalize_turn_completion(turn_result, &[], &stream_tx, 0, 0);
 
         // Assert
-        assert_eq!(result, Err("turn interrupted".to_string()));
+        let error = result.expect_err("finalize_turn_completion should fail");
+        assert_eq!(error.to_string(), "turn interrupted");
         assert_eq!(
             stream_rx.try_recv().ok(),
             Some(AppServerStreamEvent::AssistantMessage {

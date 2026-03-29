@@ -405,8 +405,7 @@ fn heading_blocks(content: &str, level: usize) -> Vec<HeadingBlock> {
             .iter()
             .skip(index + 1)
             .find(|next_heading| next_heading.level <= level)
-            .map(|next_heading| next_heading.start)
-            .unwrap_or(content.len());
+            .map_or(content.len(), |next_heading| next_heading.start);
         let body = trim_block(&content[heading.end..next_start]);
         blocks.push(HeadingBlock {
             title: heading.title.clone(),
@@ -648,8 +647,7 @@ fn render_item_lines(items: &[RoadmapItem], include_assignee: bool) -> Vec<Strin
             if include_assignee {
                 let assignee = item
                     .subsection_body("Assignee")
-                    .map(trim_inline_code)
-                    .unwrap_or("No assignee");
+                    .map_or("No assignee", trim_inline_code);
 
                 return format!(
                     "- [{}] {}: {} ({assignee})",
@@ -864,10 +862,10 @@ Promote when product work slows down.
 
         // Act
         let result = validate_section_order(&roadmap)
-            .and_then(|_| validate_unique_ids(&roadmap))
-            .and_then(|_| validate_ready_now(&roadmap))
-            .and_then(|_| validate_candidate_queue(&roadmap.queued_next, QueueKind::QueuedNext))
-            .and_then(|_| validate_candidate_queue(&roadmap.parked, QueueKind::Parked));
+            .and_then(|()| validate_unique_ids(&roadmap))
+            .and_then(|()| validate_ready_now(&roadmap))
+            .and_then(|()| validate_candidate_queue(&roadmap.queued_next, QueueKind::QueuedNext))
+            .and_then(|()| validate_candidate_queue(&roadmap.parked, QueueKind::Parked));
 
         // Assert
         assert!(result.is_ok(), "{result:?}");
@@ -905,7 +903,7 @@ Promote when product work slows down.
     #[test]
     fn lint_rejects_too_many_ready_now_steps() {
         // Arrange
-        let base_step = r#"
+        let base_step = r"
 ### [11111111-1111-4111-8111-111111111111] Workflow: First ready step
 
 #### Assignee
@@ -932,7 +930,7 @@ One usable outcome.
 #### Docs
 
 - [ ] Add docs.
-"#;
+";
         let mut roadmap = roadmap_fixture();
         let repeated_steps = (0..6)
             .map(|index| {

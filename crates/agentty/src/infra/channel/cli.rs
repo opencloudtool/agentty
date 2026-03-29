@@ -96,10 +96,11 @@ impl AgentChannel for CliAgentChannel {
         let kind = self.kind;
 
         Box::pin(async move {
-            let command = build_result
-                .map_err(|error| AgentError(format!("Failed to build command: {error}")))?;
+            let command = build_result.map_err(|error| {
+                AgentError::Backend(format!("Failed to build command: {error}"))
+            })?;
             let stdin_payload = stdin_payload_result.map_err(|error| {
-                AgentError(format!("Failed to build command stdin payload: {error}"))
+                AgentError::Backend(format!("Failed to build command stdin payload: {error}"))
             })?;
 
             let mut tokio_cmd = tokio::process::Command::from(command);
@@ -113,7 +114,7 @@ impl AgentChannel for CliAgentChannel {
 
             let mut child = tokio_cmd
                 .spawn()
-                .map_err(|error| AgentError(format!("Failed to spawn process: {error}")))?;
+                .map_err(|error| AgentError::Io(format!("Failed to spawn process: {error}")))?;
 
             // Notify the consumer of the child PID so cancellation signals can
             // be sent while the process is running.
@@ -124,10 +125,9 @@ impl AgentChannel for CliAgentChannel {
             let raw_stderr = Arc::new(Mutex::new(String::new()));
 
             let stdout_task = {
-                let stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| AgentError("stdout pipe unavailable after spawn".to_string()))?;
+                let stdout = child.stdout.take().ok_or_else(|| {
+                    AgentError::Io("stdout pipe unavailable after spawn".to_string())
+                })?;
                 let raw_stdout = Arc::clone(&raw_stdout);
                 let events = events.clone();
 
@@ -135,10 +135,9 @@ impl AgentChannel for CliAgentChannel {
             };
 
             let stderr_task = {
-                let stderr = child
-                    .stderr
-                    .take()
-                    .ok_or_else(|| AgentError("stderr pipe unavailable after spawn".to_string()))?;
+                let stderr = child.stderr.take().ok_or_else(|| {
+                    AgentError::Io("stderr pipe unavailable after spawn".to_string())
+                })?;
                 let raw_stderr = Arc::clone(&raw_stderr);
 
                 tokio::spawn(async move {
@@ -155,7 +154,7 @@ impl AgentChannel for CliAgentChannel {
                 child.stdin.take(),
                 stdin_payload,
                 "stdin pipe unavailable after spawn",
-                AgentError,
+                AgentError::Io,
             );
 
             // Task join: panic in the spawned task is not recoverable here.
@@ -167,7 +166,7 @@ impl AgentChannel for CliAgentChannel {
             stdin::await_optional_stdin_write(
                 stdin_write_task,
                 "stdin write task failed",
-                AgentError,
+                AgentError::Io,
             )
             .await?;
 
@@ -180,7 +179,7 @@ impl AgentChannel for CliAgentChannel {
                 .is_some_and(|status| status.signal().is_some());
 
             if killed_by_signal {
-                return Err(AgentError(
+                return Err(AgentError::Backend(
                     "[Stopped] Agent interrupted by user.".to_string(),
                 ));
             }
@@ -202,7 +201,7 @@ impl AgentChannel for CliAgentChannel {
                 &parsed.content,
                 req.request_kind.protocol_profile(),
             )
-            .map_err(AgentError)?;
+            .map_err(AgentError::Backend)?;
 
             Ok(TurnResult {
                 assistant_message,
@@ -266,7 +265,7 @@ fn format_cli_turn_exit_error(
     stdout: &str,
     stderr: &str,
 ) -> AgentError {
-    AgentError(error::format_agent_cli_exit_error(
+    AgentError::Backend(error::format_agent_cli_exit_error(
         kind,
         "Agent command",
         exit_code,
@@ -333,7 +332,9 @@ mod tests {
         let result = channel.run_turn("sess-1".to_string(), req, events_tx).await;
 
         // Assert
-        let error_message = result.expect_err("expected Err for spawn failure").0;
+        let error_message = result
+            .expect_err("expected Err for spawn failure")
+            .to_string();
         assert!(
             error_message.contains("Failed to spawn process"),
             "error was: {error_message}"
@@ -368,7 +369,9 @@ mod tests {
         let result = channel.run_turn("sess-1".to_string(), req, events_tx).await;
 
         // Assert
-        let error_message = result.expect_err("expected Err for kill-by-signal").0;
+        let error_message = result
+            .expect_err("expected Err for kill-by-signal")
+            .to_string();
         assert!(
             error_message.contains("[Stopped]"),
             "error was: {error_message}"
@@ -593,11 +596,14 @@ mod tests {
             .expect_err("turn should surface the child exit");
 
         // Assert
-        assert!(error.0.contains("auth failed"), "error was: {}", error.0);
+        let error_message = error.to_string();
         assert!(
-            !error.0.contains("stdin payload"),
-            "stdin write error should not mask child failure: {}",
-            error.0
+            error_message.contains("auth failed"),
+            "error was: {error_message}"
+        );
+        assert!(
+            !error_message.contains("stdin payload"),
+            "stdin write error should not mask child failure: {error_message}"
         );
     }
 
@@ -636,8 +642,9 @@ mod tests {
             .expect_err("invalid structured output should fail");
 
         // Assert
-        assert!(error.0.contains("did not match the required JSON schema"));
-        assert!(error.0.contains("response:\nplain non-json response"));
+        let error_message = error.to_string();
+        assert!(error_message.contains("did not match the required JSON schema"));
+        assert!(error_message.contains("response:\nplain non-json response"));
     }
 
     #[tokio::test]
@@ -666,16 +673,18 @@ mod tests {
         let req = make_turn_request(dir.path().to_path_buf());
 
         // Act
-        let error = channel
+        let error_message = channel
             .run_turn("sess-1".to_string(), req, events_tx)
             .await
             .expect_err("expired Claude auth should fail")
-            .0;
+            .to_string();
 
         // Assert
-        assert!(error.contains("Agent command failed because Claude authentication expired"));
-        assert!(error.contains("`claude auth login`"));
-        assert!(error.contains("`claude auth status`"));
+        assert!(
+            error_message.contains("Agent command failed because Claude authentication expired")
+        );
+        assert!(error_message.contains("`claude auth login`"));
+        assert!(error_message.contains("`claude auth status`"));
     }
 
     #[tokio::test]
@@ -701,15 +710,15 @@ mod tests {
         let req = make_turn_request(dir.path().to_path_buf());
 
         // Act
-        let error = channel
+        let error_message = channel
             .run_turn("sess-1".to_string(), req, events_tx)
             .await
             .expect_err("non-zero exit should fail")
-            .0;
+            .to_string();
 
         // Assert
-        assert!(error.contains("Agent command failed with exit code 7"));
-        assert!(error.contains("assist failed"));
+        assert!(error_message.contains("Agent command failed with exit code 7"));
+        assert!(error_message.contains("assist failed"));
     }
 
     #[tokio::test]

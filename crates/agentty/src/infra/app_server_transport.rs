@@ -11,6 +11,39 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::io::{AsyncWriteExt, BufReader, Lines};
 
+/// Typed error returned by shared app-server transport operations.
+///
+/// Covers the low-level stdio communication failures that can occur when
+/// writing JSON-RPC payloads to a child process or reading responses from
+/// its stdout stream.
+#[derive(Debug, thiserror::Error)]
+pub enum AppServerTransportError {
+    /// An IO error occurred during app-server stdio communication.
+    #[error("{context}: {source}")]
+    Io {
+        /// Human-readable description of the operation that failed.
+        context: String,
+        /// Underlying IO error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The app-server process terminated before sending the expected response.
+    #[error("App-server terminated before sending expected response")]
+    ProcessTerminated,
+
+    /// Timed out waiting for a JSON-RPC response from the app-server.
+    #[error(
+        "Timed out waiting for app-server response `{response_id}` after {timeout_seconds} seconds"
+    )]
+    Timeout {
+        /// The JSON-RPC request identifier that was being awaited.
+        response_id: String,
+        /// Number of seconds elapsed before the timeout fired.
+        timeout_seconds: u64,
+    },
+}
+
 /// Default timeout for initialization handshakes and session creation.
 ///
 /// Gemini ACP cold starts can take materially longer than a typical
@@ -35,21 +68,30 @@ pub const TURN_TIMEOUT: Duration = Duration::from_hours(4);
 pub async fn write_json_line(
     stdin: &mut tokio::process::ChildStdin,
     payload: &Value,
-) -> Result<(), String> {
+) -> Result<(), AppServerTransportError> {
     let serialized_payload = payload.to_string();
 
     stdin
         .write_all(serialized_payload.as_bytes())
         .await
-        .map_err(|error| format!("Failed writing to app-server stdin: {error}"))?;
+        .map_err(|source| AppServerTransportError::Io {
+            context: "Failed writing to app-server stdin".to_string(),
+            source,
+        })?;
     stdin
         .write_all(b"\n")
         .await
-        .map_err(|error| format!("Failed writing newline to app-server stdin: {error}"))?;
+        .map_err(|source| AppServerTransportError::Io {
+            context: "Failed writing newline to app-server stdin".to_string(),
+            source,
+        })?;
     stdin
         .flush()
         .await
-        .map_err(|error| format!("Failed flushing app-server stdin: {error}"))
+        .map_err(|source| AppServerTransportError::Io {
+            context: "Failed flushing app-server stdin".to_string(),
+            source,
+        })
 }
 
 /// Reads stdout lines until a JSON-RPC response carrying `response_id` arrives.
@@ -64,7 +106,7 @@ pub async fn write_json_line(
 pub async fn wait_for_response_line<R>(
     stdout_lines: &mut Lines<BufReader<R>>,
     response_id: &str,
-) -> Result<String, String>
+) -> Result<String, AppServerTransportError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -73,10 +115,11 @@ where
             let stdout_line = stdout_lines
                 .next_line()
                 .await
-                .map_err(|error| format!("Failed reading app-server stdout: {error}"))?
-                .ok_or_else(|| {
-                    "App-server terminated before sending expected response".to_string()
-                })?;
+                .map_err(|source| AppServerTransportError::Io {
+                    context: "Failed reading app-server stdout".to_string(),
+                    source,
+                })?
+                .ok_or(AppServerTransportError::ProcessTerminated)?;
 
             let Ok(response_value) = serde_json::from_str::<Value>(&stdout_line) else {
                 continue;
@@ -87,11 +130,9 @@ where
         }
     })
     .await
-    .map_err(|_| {
-        format!(
-            "Timed out waiting for app-server response `{response_id}` after {} seconds",
-            STARTUP_TIMEOUT.as_secs()
-        )
+    .map_err(|_| AppServerTransportError::Timeout {
+        response_id: response_id.to_string(),
+        timeout_seconds: STARTUP_TIMEOUT.as_secs(),
     })?
 }
 
@@ -304,11 +345,56 @@ mod tests {
         let response_result = wait_for_response_line(&mut stdout_lines, "req-1").await;
 
         // Assert
-        assert_eq!(
-            response_result,
-            Err("App-server terminated before sending expected response".to_string())
+        assert!(
+            matches!(
+                response_result,
+                Err(AppServerTransportError::ProcessTerminated)
+            ),
+            "expected ProcessTerminated, got: {response_result:?}"
         );
         writer_task.await.expect("writer task should finish");
+    }
+
+    #[test]
+    fn io_error_display_includes_context_and_source() {
+        // Arrange
+        let error = AppServerTransportError::Io {
+            context: "Failed writing to app-server stdin".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe closed"),
+        };
+
+        // Act
+        let display = error.to_string();
+
+        // Assert
+        assert_eq!(display, "Failed writing to app-server stdin: pipe closed");
+    }
+
+    #[test]
+    fn process_terminated_display_message() {
+        // Arrange
+        let error = AppServerTransportError::ProcessTerminated;
+
+        // Act / Assert
+        assert_eq!(
+            error.to_string(),
+            "App-server terminated before sending expected response"
+        );
+    }
+
+    #[test]
+    fn timeout_display_includes_response_id_and_seconds() {
+        // Arrange
+        let error = AppServerTransportError::Timeout {
+            response_id: "init-123".to_string(),
+            timeout_seconds: 300,
+        };
+
+        // Act / Assert
+        assert_eq!(
+            error.to_string(),
+            "Timed out waiting for app-server response `init-123` after 300 seconds"
+        );
     }
 
     /// Verifies `shutdown_child()` closes stdin and waits for a cooperative

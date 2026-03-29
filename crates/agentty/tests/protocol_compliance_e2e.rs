@@ -166,7 +166,7 @@ async fn assert_provider_protocol_compliance(
                 model.as_str()
             )
         })?
-        .map_err(|error| format!("failed to start `{}` session: {}", model.as_str(), error.0))?;
+        .map_err(|error| format!("failed to start `{}` session: {}", model.as_str(), error))?;
     let (events_tx, _events_rx) = mpsc::unbounded_channel();
     let turn_request = build_turn_request(folder, model);
     let run_result = timeout(
@@ -183,7 +183,7 @@ async fn assert_provider_protocol_compliance(
             return Err(format!(
                 "channel turn failed for `{}`: {}",
                 model.as_str(),
-                error.0
+                error
             ));
         }
         Err(_) => {
@@ -264,5 +264,5 @@ async fn shutdown_channel_session(
             SHUTDOWN_TIMEOUT.as_secs()
         )
     })?
-    .map_err(|error| format!("failed to shut down session `{session_id}`: {}", error.0))
+    .map_err(|error| format!("failed to shut down session `{session_id}`: {error}"))
 }

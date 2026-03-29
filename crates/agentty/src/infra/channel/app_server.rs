@@ -134,7 +134,7 @@ impl AgentChannel for AppServerAgentChannel {
                         &response.assistant_message,
                         protocol_profile,
                     )
-                    .map_err(AgentError)?;
+                    .map_err(AgentError::Backend)?;
 
                     Ok(TurnResult {
                         assistant_message,
@@ -144,7 +144,7 @@ impl AgentChannel for AppServerAgentChannel {
                         provider_conversation_id: response.provider_conversation_id,
                     })
                 }
-                Err(error) => Err(AgentError(error.to_string())),
+                Err(error) => Err(AgentError::AppServer(error)),
             }
         })
     }
@@ -610,8 +610,9 @@ mod tests {
             .expect_err("invalid structured output should fail");
 
         // Assert
-        assert!(error.0.contains("did not match the required JSON schema"));
-        assert!(error.0.contains("response:\nplain non-json response"));
+        let error_message = error.to_string();
+        assert!(error_message.contains("did not match the required JSON schema"));
+        assert!(error_message.contains("response:\nplain non-json response"));
     }
 
     #[tokio::test]
@@ -670,8 +671,9 @@ mod tests {
             .expect_err("plain-text turn should fail");
 
         // Assert
-        assert!(error.0.contains("did not match the required JSON schema"));
-        assert!(error.0.contains("response:\nplain"));
+        let error_message = error.to_string();
+        assert!(error_message.contains("did not match the required JSON schema"));
+        assert!(error_message.contains("response:\nplain"));
     }
 
     #[tokio::test]
@@ -697,7 +699,9 @@ mod tests {
             .await;
 
         // Assert
-        let error_message = result.expect_err("expected Err on server timeout").0;
+        let error_message = result
+            .expect_err("expected Err on server timeout")
+            .to_string();
         assert!(error_message.contains("server timeout"));
     }
 

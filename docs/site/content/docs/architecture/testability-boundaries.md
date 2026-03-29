@@ -41,6 +41,24 @@ The traits below are mocked with `mockall`. Most use
 | `AppServerClient` retry helpers | `infra/app_server/retry.rs` | Shared restart-and-replay orchestration for provider runtimes without duplicating lifecycle policy in each provider. |
 | `GeminiRuntimeTransport` | `infra/agent/app_server/gemini/client.rs` | ACP stdio transport boundary for Gemini runtime protocol tests. |
 
+### Typed Error Enums at Infra Boundaries
+
+<a id="architecture-typed-error-enums"></a>
+Each infra boundary exposes a typed error enum instead of opaque `String` errors,
+so the app layer can discriminate failure causes without parsing formatted messages.
+
+| Error Type | Module | Variants | Wraps |
+|------------|--------|----------|-------|
+| `DbError` | `infra/db.rs` | `Migration`, `Query`, `Connection` | `sqlx::Error` |
+| `GitError` | `infra/git/error.rs` | `WorktreeCreate`, `WorktreeRemove`, `BranchDelete`, `Command`, etc. | `std::io::Error`, process exit details |
+| `AppServerTransportError` | `infra/app_server_transport.rs` | `Io`, `ProcessTerminated`, `Timeout` | `std::io::Error` |
+| `AppServerError` | `infra/app_server/error.rs` | `Transport`, `Provider`, `SessionNotFound`, `Shutdown` | `AppServerTransportError` via `#[from]` |
+| `AgentError` | `infra/channel/contract.rs` | `AppServer`, `Backend`, `Io` | `AppServerError` via `#[from]` |
+
+The conversion chain `AppServerTransportError` → `AppServerError::Transport` →
+`AgentError::AppServer` allows `?`-propagation through the transport, provider,
+and channel layers without collapsing causal context into formatted strings.
+
 <a id="architecture-boundary-testing-guidance"></a>
 When adding higher-level flows involving multiple external commands, prefer
 injectable trait boundaries and `mockall`-based tests over flaky end-to-end

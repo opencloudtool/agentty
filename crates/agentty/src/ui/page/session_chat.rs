@@ -592,7 +592,7 @@ impl<'a> SessionChatPage<'a> {
 
         let selected_follow_up_task_action = selected_follow_up_task_position
             .and_then(|position| session.follow_up_task(position))
-            .map(|task| task.action());
+            .map(crate::domain::session::SessionFollowUpTask::action);
         let mut actions = help_action::view_footer_actions(ViewHelpState {
             follow_up_task_action: selected_follow_up_task_action,
             has_multiple_follow_up_tasks: session.follow_up_tasks.len() > 1,

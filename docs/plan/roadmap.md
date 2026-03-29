@@ -136,18 +136,18 @@ Every infra boundary that crosses into the app layer exposes a typed error enum 
 
 #### Substeps
 
-- [ ] **Introduce `AppServerTransportError` for the shared transport helpers.** Replace the `Result<T, String>` signatures in `crates/agentty/src/infra/app_server_transport.rs` (`write_json_line`, `wait_for_response_line`) with a new `AppServerTransportError` enum covering IO, timeout, and serialization failures; update `crates/agentty/src/infra/app_server/error.rs` to add a `#[from] Transport` variant that wraps this new type instead of holding a plain `String`.
-- [ ] **Replace string errors in the Gemini ACP client.** Convert the `Result<T, String>` internal functions in `crates/agentty/src/infra/agent/app_server/gemini/client.rs` to return `AppServerTransportError` or `AppServerError` variants, removing `format!`/`.to_string()` error conversions and preserving causal context through `#[from]` or explicit variant mapping.
-- [ ] **Replace string errors in the Codex app-server client.** Apply the same conversion in `crates/agentty/src/infra/agent/app_server/codex/client.rs`, reusing the `AppServerTransportError` and `AppServerError` variants introduced for Gemini so both providers share the same typed transport error surface.
-- [ ] **Promote `AgentError` from opaque `String` wrapper to a typed enum.** Replace `pub struct AgentError(pub String)` in `crates/agentty/src/infra/channel/contract.rs` with an enum that carries structured variants (e.g., `AppServer`, `Backend`, `Io`) and update `crates/agentty/src/infra/channel/cli.rs` and `crates/agentty/src/infra/channel/app_server.rs` to construct typed variants instead of formatting strings.
+- [x] **Introduce `AppServerTransportError` for the shared transport helpers.** Replace the `Result<T, String>` signatures in `crates/agentty/src/infra/app_server_transport.rs` (`write_json_line`, `wait_for_response_line`) with a new `AppServerTransportError` enum covering IO, timeout, and serialization failures; update `crates/agentty/src/infra/app_server/error.rs` to add a `#[from] Transport` variant that wraps this new type instead of holding a plain `String`.
+- [x] **Replace string errors in the Gemini ACP client.** Convert the `Result<T, String>` internal functions in `crates/agentty/src/infra/agent/app_server/gemini/client.rs` to return `AppServerTransportError` or `AppServerError` variants, removing `format!`/`.to_string()` error conversions and preserving causal context through `#[from]` or explicit variant mapping.
+- [x] **Replace string errors in the Codex app-server client.** Apply the same conversion in `crates/agentty/src/infra/agent/app_server/codex/client.rs`, reusing the `AppServerTransportError` and `AppServerError` variants introduced for Gemini so both providers share the same typed transport error surface.
+- [x] **Promote `AgentError` from opaque `String` wrapper to a typed enum.** Replace `pub struct AgentError(pub String)` in `crates/agentty/src/infra/channel/contract.rs` with an enum that carries structured variants (e.g., `AppServer`, `Backend`, `Io`) and update `crates/agentty/src/infra/channel/cli.rs` and `crates/agentty/src/infra/channel/app_server.rs` to construct typed variants instead of formatting strings.
 
 #### Tests
 
-- [ ] Add or extend coverage in `crates/agentty/src/infra/app_server_transport.rs`, `crates/agentty/src/infra/agent/app_server/gemini/client.rs`, `crates/agentty/src/infra/agent/app_server/codex/client.rs`, and `crates/agentty/src/infra/channel/contract.rs` for typed error construction, `Display` output, and `From` conversions across the new enum boundaries.
+- [x] Add or extend coverage in `crates/agentty/src/infra/app_server_transport.rs`, `crates/agentty/src/infra/agent/app_server/gemini/client.rs`, `crates/agentty/src/infra/agent/app_server/codex/client.rs`, and `crates/agentty/src/infra/channel/contract.rs` for typed error construction, `Display` output, and `From` conversions across the new enum boundaries.
 
 #### Docs
 
-- [ ] Update `docs/site/content/docs/architecture/testability-boundaries.md` to reflect the new typed error enums at the app-server transport and agent-channel boundaries.
+- [x] Update `docs/site/content/docs/architecture/testability-boundaries.md` to reflect the new typed error enums at the app-server transport and agent-channel boundaries.
 
 ## Ready Now Execution Order
 

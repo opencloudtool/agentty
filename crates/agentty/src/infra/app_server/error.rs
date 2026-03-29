@@ -1,3 +1,5 @@
+use crate::infra::app_server_transport::AppServerTransportError;
+
 /// Typed error returned by app-server infrastructure operations.
 ///
 /// Wraps transport failures, prompt rendering issues, lock errors, and
@@ -35,8 +37,8 @@ pub enum AppServerError {
     },
 
     /// An stdio transport or process communication failure.
-    #[error("{0}")]
-    Transport(String),
+    #[error(transparent)]
+    Transport(#[from] AppServerTransportError),
 }
 
 #[cfg(test)]
@@ -94,11 +96,29 @@ mod tests {
     }
 
     #[test]
-    fn transport_display_shows_message() {
+    fn transport_display_delegates_to_inner_error() {
         // Arrange
-        let error = AppServerError::Transport("stdin write failed".to_string());
+        let error = AppServerError::Transport(AppServerTransportError::ProcessTerminated);
 
         // Act / Assert
-        assert_eq!(error.to_string(), "stdin write failed");
+        assert_eq!(
+            error.to_string(),
+            "App-server terminated before sending expected response"
+        );
+    }
+
+    #[test]
+    fn transport_from_conversion_wraps_transport_error() {
+        // Arrange
+        let transport_error = AppServerTransportError::Timeout {
+            response_id: "init-1".to_string(),
+            timeout_seconds: 300,
+        };
+
+        // Act
+        let error: AppServerError = transport_error.into();
+
+        // Assert
+        assert!(matches!(error, AppServerError::Transport(_)));
     }
 }

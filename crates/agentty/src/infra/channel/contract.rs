@@ -352,14 +352,24 @@ pub struct StartSessionRequest {
     pub session_id: String,
 }
 
-/// Opaque error type for [`AgentChannel`] operations.
-#[derive(Debug)]
-pub struct AgentError(pub String);
+/// Typed error returned by [`AgentChannel`] operations.
+///
+/// Discriminates failure causes so the app layer can route errors without
+/// parsing formatted messages.
+#[derive(Debug, thiserror::Error)]
+pub enum AgentError {
+    /// An app-server infrastructure failure propagated from a persistent
+    /// provider runtime.
+    #[error(transparent)]
+    AppServer(#[from] crate::infra::app_server::AppServerError),
 
-impl fmt::Display for AgentError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.0)
-    }
+    /// A CLI backend command or process execution failure.
+    #[error("{0}")]
+    Backend(String),
+
+    /// A subprocess IO error such as a spawn failure or unavailable pipe.
+    #[error("{0}")]
+    Io(String),
 }
 
 /// Provider-agnostic session channel for executing agent turns.
