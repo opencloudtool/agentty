@@ -8,6 +8,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 |------|---------------------------|--------|
 | Follow-up task workflow | Persisted follow-up tasks now flow through the protocol, SQLite storage, and session UI, but they still cannot launch sibling sessions or retain launched/open state. | Partial |
 | Model availability scoping | `/model` and settings still cycle through the full static backend catalog even when one or more agent CLIs are not installed on the current machine. | Missing |
+| Draft session workflow | `New` sessions are still blank placeholders whose first submitted prompt starts the agent immediately, so users cannot stage multiple draft messages and explicitly launch the session later. | Missing |
 | Session activity timing | `session` persists cumulative `InProgress` timing fields, chat shows the timer, and the session list still has no time column. | Partial |
 | Deterministic scenario coverage | Local git tests exist, but there is no shared app-level scenario harness for a full local session workflow. | Partial |
 | Typed errors and hygiene | `DbError` is landed, but git, app-server, remaining infra surfaces, and the app layer still expose string errors; discard comments, missing module tests, and convention cleanup remain open. | Partial |
@@ -15,8 +16,8 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 
 ## Active Streams
 
-- `Workflow`: follow-up task persistence and sibling-session launch behavior.
 - `Agents`: machine-scoped model availability for settings and slash-model selection.
+- `Workflow`: follow-up task launch behavior and draft-session staging before the first agent turn.
 - `Platform`: session timing surfaces.
 - `Quality`: deterministic local session coverage, typed-error migration, and hygiene follow-up.
 - `Testty`: proof-driven TUI testing framework and scale tooling for `crates/testty/`.
@@ -187,6 +188,20 @@ flowchart TD
 
 ## Queued Next
 
+### [64c9bb7f-4d11-4c3c-b2ad-4a86db9bd6c9] Workflow: Stage draft session messages and start them explicitly
+
+#### Outcome
+
+Let `New` sessions retain ordered draft messages across reloads and start the first agent turn only when the staged draft bundle is explicitly launched.
+
+#### Promote when
+
+Promote after a `Ready Now` slot opens and the active workflow/model-availability slices stop competing for the same session lifecycle files.
+
+#### Depends on
+
+`None`
+
 ### [7608043e-3ae8-44b4-bcb4-341f8070d0d2] Quality: Introduce typed errors for the remaining infra boundaries
 
 #### Outcome
@@ -228,6 +243,20 @@ Promote after the current `Ready Now` behavioral steps settle enough that the ne
 #### Depends on
 
 `[cbf025d6] Workflow: Persist and render emitted follow-up tasks`, `[ed9de74b] Quality: Propagate typed errors through the app layer`
+
+### [4f491812-f373-4ac5-bd57-b46c4f9d91e3] Workflow: Polish draft-session editing after baseline staging lands
+
+#### Outcome
+
+Refine the draft-session UX with edit/remove affordances and any transcript/title cleanup that proves necessary once the explicit-start baseline is in place.
+
+#### Promote when
+
+Promote after `Workflow: Stage draft session messages and start them explicitly` lands and real usage clarifies which draft-editing actions are worth standardizing.
+
+#### Depends on
+
+`[64c9bb7f] Workflow: Stage draft session messages and start them explicitly`
 
 ## Parked
 
@@ -305,6 +334,7 @@ Promote after the proof fundamentals land and there is enough scenario volume to
 
 - `Workflow: Launch sibling sessions from follow-up tasks and retain task state` should reuse the same stored task content that the persistence slice lands.
 - `Agents: Scope model lists to locally available backends` should reuse one shared availability snapshot across Settings and `/model` instead of probing CLIs separately in render paths.
+- `Workflow: Stage draft session messages and start them explicitly` should treat `Status::New` as the persisted draft container instead of introducing a second pre-start lifecycle status.
 - `Platform: Add the timer to the grouped session list` should reuse `Session::in_progress_duration_seconds()` and the shared render-time wall clock instead of inventing a second timer source.
 - The local session harness should keep validating the default in-process workflow path that `Workflow` and `Platform` depend on.
 - The typed-error sequence should stay linear so each layer learns from the previous enum shape instead of reworking multiple error surfaces at once.
