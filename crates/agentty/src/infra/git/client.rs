@@ -13,12 +13,12 @@ use super::sync::{BranchTrackingMap, PullRebaseResult, SingleCommitMessageStrate
 use super::{
     abort_rebase, branch_tracking_statuses, commit_all, commit_all_preserving_single_commit,
     create_worktree, current_upstream_reference, delete_branch, detect_git_info, diff,
-    fetch_remote, find_git_repo_root, get_ahead_behind, has_commits_since, has_unmerged_paths,
-    head_commit_message, head_short_hash, is_rebase_in_progress, is_worktree_clean,
-    list_conflicted_files, list_local_commit_titles, list_staged_conflict_marker_files,
-    list_upstream_commit_titles, main_repo_root, pull_rebase, push_current_branch,
-    push_current_branch_to_remote_branch, rebase, rebase_continue, rebase_start, remove_worktree,
-    repo_url, squash_merge, squash_merge_diff, stage_all,
+    fetch_remote, find_git_repo_root, get_ahead_behind, get_ref_ahead_behind, has_commits_since,
+    has_unmerged_paths, head_commit_message, head_short_hash, is_rebase_in_progress,
+    is_worktree_clean, list_conflicted_files, list_local_commit_titles,
+    list_staged_conflict_marker_files, list_upstream_commit_titles, main_repo_root, pull_rebase,
+    push_current_branch, push_current_branch_to_remote_branch, rebase, rebase_continue,
+    rebase_start, remove_worktree, repo_url, squash_merge, squash_merge_diff, stage_all,
 };
 
 /// Boxed async result used by [`GitClient`] trait methods.
@@ -278,6 +278,20 @@ pub trait GitClient: Send + Sync {
     /// Returns an error when upstream tracking information is unavailable.
     fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), GitError>>;
 
+    /// Reads ahead/behind commit counts between two explicit refs.
+    ///
+    /// The returned tuple is `(ahead, behind)` from the perspective of
+    /// `left_ref`.
+    ///
+    /// # Errors
+    /// Returns an error when either ref cannot be resolved.
+    fn get_ref_ahead_behind(
+        &self,
+        repo_path: PathBuf,
+        left_ref: String,
+        right_ref: String,
+    ) -> GitFuture<Result<(u32, u32), GitError>>;
+
     /// Reads ahead/behind snapshots for all local branches that track an
     /// upstream.
     ///
@@ -516,6 +530,15 @@ impl GitClient for RealGitClient {
 
     fn get_ahead_behind(&self, repo_path: PathBuf) -> GitFuture<Result<(u32, u32), GitError>> {
         Box::pin(async move { get_ahead_behind(repo_path).await })
+    }
+
+    fn get_ref_ahead_behind(
+        &self,
+        repo_path: PathBuf,
+        left_ref: String,
+        right_ref: String,
+    ) -> GitFuture<Result<(u32, u32), GitError>> {
+        Box::pin(async move { get_ref_ahead_behind(repo_path, left_ref, right_ref).await })
     }
 
     fn branch_tracking_statuses(

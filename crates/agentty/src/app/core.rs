@@ -17,7 +17,7 @@ use app::merge_queue::{MergeQueue, MergeQueueProgress};
 use app::project::ProjectManager;
 use app::service::AppServices;
 use app::session::SessionManager;
-use app::session_state::SessionState;
+use app::session_state::{SessionGitStatus, SessionState};
 use app::setting::SettingsManager;
 use app::tab::TabManager;
 use app::task;
@@ -111,7 +111,7 @@ pub(crate) enum AppEvent {
     /// Indicates the latest project-branch and session-branch ahead/behind
     /// information from the git status worker.
     GitStatusUpdated {
-        session_statuses: HashMap<String, Option<(u32, u32)>>,
+        session_statuses: HashMap<String, SessionGitStatus>,
         status: Option<(u32, u32)>,
     },
     /// Indicates whether a newer stable `agentty` release is available.
@@ -179,7 +179,7 @@ struct AppEventBatch {
     has_latest_available_version_update: bool,
     latest_available_version_update: Option<String>,
     branch_publish_action_update: Option<BranchPublishActionUpdate>,
-    session_git_status_updates: HashMap<String, Option<(u32, u32)>>,
+    session_git_status_updates: HashMap<String, SessionGitStatus>,
     session_ids: HashSet<String>,
     session_model_updates: HashMap<String, AgentModel>,
     session_progress_updates: HashMap<String, Option<String>>,
@@ -1383,18 +1383,16 @@ impl App {
         );
     }
 
-    /// Builds git-status polling targets for published session branches in the
-    /// active project.
+    /// Builds git-status polling targets for active session branches in the
+    /// current project.
     fn session_git_status_targets(sessions: &SessionManager) -> Vec<task::SessionGitStatusTarget> {
         sessions
             .state()
             .sessions
             .iter()
-            .filter(|session| {
-                session.published_upstream_ref.is_some()
-                    && !matches!(session.status, Status::Canceled | Status::Done)
-            })
+            .filter(|session| !matches!(session.status, Status::Canceled | Status::Done))
             .map(|session| task::SessionGitStatusTarget {
+                base_branch: session.base_branch.clone(),
                 branch_name: session::session_branch(&session.id),
                 session_id: session.id.clone(),
             })
@@ -3145,6 +3143,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_git_status_targets_include_active_unpublished_sessions() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let review_session = test_session(PathBuf::from("/tmp/session-review"));
+        let mut done_session = test_session(PathBuf::from("/tmp/session-done"));
+        done_session.id = "session-2".to_string();
+        done_session.status = Status::Done;
+        app.sessions.sessions.push(review_session);
+        app.sessions.sessions.push(done_session);
+
+        // Act
+        let targets = App::session_git_status_targets(&app.sessions);
+
+        // Assert
+        assert_eq!(
+            targets,
+            vec![task::SessionGitStatusTarget {
+                base_branch: "main".to_string(),
+                branch_name: "agentty/session-".to_string(),
+                session_id: "session-1".to_string(),
+            }]
+        );
+    }
+
+    #[tokio::test]
     async fn test_switch_project_reloads_project_scoped_settings() {
         // Arrange
         let base_dir = tempdir().expect("failed to create temp dir");
@@ -4142,7 +4165,13 @@ mod tests {
 
         // Act
         app.apply_app_events(AppEvent::GitStatusUpdated {
-            session_statuses: HashMap::from([("session-1".to_string(), Some((4, 2)))]),
+            session_statuses: HashMap::from([(
+                "session-1".to_string(),
+                SessionGitStatus {
+                    base_status: Some((4, 2)),
+                    remote_status: Some((1, 0)),
+                },
+            )]),
             status: Some((1, 3)),
         })
         .await;
@@ -4151,7 +4180,10 @@ mod tests {
         assert_eq!(app.git_status_info(), Some((1, 3)));
         assert_eq!(
             app.sessions.session_git_statuses().get("session-1"),
-            Some(&Some((4, 2)))
+            Some(&SessionGitStatus {
+                base_status: Some((4, 2)),
+                remote_status: Some((1, 0)),
+            })
         );
     }
 

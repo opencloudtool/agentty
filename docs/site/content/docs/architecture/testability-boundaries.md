@@ -22,7 +22,7 @@ The traits below are mocked with `mockall`. Most use
 | `SyncMainRunner` | `app/core.rs` | App-level async sync orchestration trigger used by list-mode sync flows. |
 | `ReviewRequestClient` | `crates/ag-forge/src/client.rs` | GitHub review-request detection and `gh` orchestration boundary. |
 | `ForgeCommandRunner` | `crates/ag-forge/src/command.rs` | Provider CLI command execution boundary used to unit-test the GitHub review-request adapter without a live `gh` binary. |
-| `GitClient` | `infra/git/client.rs` | Git/process operations (worktree, merge, rebase, diff, push, pull). |
+| `GitClient` | `infra/git/client.rs` | Git/process operations (worktree, merge, rebase, diff, push, pull, and ahead/behind comparisons for both upstream-tracking and session-vs-base-branch status). |
 | `FsClient` | `infra/fs.rs` | Async filesystem operations used by app orchestration, including non-blocking file reads plus session worktree cleanup and prompt-image temp file and directory removal. |
 | `TmuxClient` | `infra/tmux.rs` | Tmux subprocess operations for opening session worktrees and dispatching open commands. |
 | `TmuxCommandRunner` | `infra/tmux.rs` | Internal tmux command boundary that keeps multi-command `send-keys` flows deterministic in unit tests. |

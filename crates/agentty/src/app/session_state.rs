@@ -7,6 +7,15 @@ use ratatui::widgets::TableState;
 use crate::app::session::{Clock, SESSION_REFRESH_INTERVAL};
 use crate::domain::session::{Session, SessionHandles, SessionSize};
 
+/// Cached ahead/behind snapshots for one session branch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SessionGitStatus {
+    /// Ahead/behind counts comparing the session branch to its base branch.
+    pub base_status: Option<(u32, u32)>,
+    /// Ahead/behind counts comparing the session branch to its tracked remote.
+    pub remote_status: Option<(u32, u32)>,
+}
+
 /// Holds all in-memory state related to session listing and refresh tracking.
 pub struct SessionState {
     /// Selected follow-up-task positions keyed by session id for session-view
@@ -18,7 +27,7 @@ pub struct SessionState {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) refresh_deadline: Instant,
     pub(crate) row_count: i64,
-    pub(crate) session_git_statuses: HashMap<String, Option<(u32, u32)>>,
+    pub(crate) session_git_statuses: HashMap<String, SessionGitStatus>,
     pub(crate) updated_at_max: i64,
 }
 
@@ -156,7 +165,7 @@ impl SessionState {
     /// result.
     pub(crate) fn replace_session_git_statuses(
         &mut self,
-        session_git_statuses: HashMap<String, Option<(u32, u32)>>,
+        session_git_statuses: HashMap<String, SessionGitStatus>,
     ) {
         self.session_git_statuses = session_git_statuses;
     }
@@ -520,8 +529,20 @@ mod tests {
             0,
         );
         state.replace_session_git_statuses(HashMap::from([
-            ("session-1".to_string(), Some((1, 0))),
-            ("session-2".to_string(), Some((0, 2))),
+            (
+                "session-1".to_string(),
+                SessionGitStatus {
+                    base_status: Some((1, 0)),
+                    remote_status: Some((0, 1)),
+                },
+            ),
+            (
+                "session-2".to_string(),
+                SessionGitStatus {
+                    base_status: Some((0, 2)),
+                    remote_status: None,
+                },
+            ),
         ]));
         let active_session_ids = HashSet::from(["session-2".to_string()]);
 
@@ -532,7 +553,10 @@ mod tests {
         assert_eq!(state.session_git_statuses.get("session-1"), None);
         assert_eq!(
             state.session_git_statuses.get("session-2"),
-            Some(&Some((0, 2)))
+            Some(&SessionGitStatus {
+                base_status: Some((0, 2)),
+                remote_status: None,
+            })
         );
     }
 

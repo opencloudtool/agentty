@@ -10,6 +10,8 @@ use crate::ui::{Component, style};
 /// Footer widget that renders the working directory and optional git status.
 pub struct FooterBar {
     git_branch: Option<String>,
+    git_base_ref: Option<String>,
+    git_base_status: Option<(u32, u32)>,
     git_status: Option<(u32, u32)>,
     git_upstream_ref: Option<String>,
     working_dir: String,
@@ -20,6 +22,8 @@ impl FooterBar {
     pub fn new(working_dir: String) -> Self {
         Self {
             git_branch: None,
+            git_base_ref: None,
+            git_base_status: None,
             git_status: None,
             git_upstream_ref: None,
             working_dir,
@@ -33,7 +37,25 @@ impl FooterBar {
         self
     }
 
-    /// Sets the git status (ahead, behind) counts.
+    /// Sets the base branch reference label used by session footers.
+    #[must_use]
+    pub fn git_base_ref(mut self, base_ref: Option<String>) -> Self {
+        self.git_base_ref = base_ref;
+        self
+    }
+
+    /// Sets the base-branch comparison `(ahead, behind)` counts for session
+    /// footers.
+    #[must_use]
+    pub fn git_base_status(mut self, status: Option<(u32, u32)>) -> Self {
+        self.git_base_status = status;
+        self
+    }
+
+    /// Sets the git status `(ahead, behind)` counts for the rendered branch.
+    ///
+    /// Project footers typically pass upstream-tracking counts, while session
+    /// footers use this slot for tracked-remote counts.
     #[must_use]
     pub fn git_status(mut self, status: Option<(u32, u32)>) -> Self {
         self.git_status = status;
@@ -54,6 +76,54 @@ impl FooterBar {
             Some(upstream_ref) => format!("{branch} -> {upstream_ref}"),
             None => branch.to_string(),
         }
+    }
+
+    /// Returns the full text rendered after the branch icon.
+    fn branch_text(&self, branch: &str) -> String {
+        if let Some(base_ref) = self.git_base_ref.as_deref() {
+            return self.session_branch_text(branch, base_ref);
+        }
+
+        let status_text = self
+            .git_status
+            .map(|status| Self::format_status(status))
+            .unwrap_or_default();
+
+        format!("{status_text}{}", self.branch_label(branch))
+    }
+
+    /// Returns the compact session footer text with base and optional remote
+    /// or local segments.
+    fn session_branch_text(&self, branch: &str, base_ref: &str) -> String {
+        let mut segments = vec![Self::format_session_segment(self.git_base_status, base_ref)];
+        let remote_label = match self.git_upstream_ref.as_deref() {
+            Some(upstream_ref) => format!("{branch} -> {upstream_ref}"),
+            None => branch.to_string(),
+        };
+        segments.push(Self::format_session_segment(
+            self.git_status,
+            remote_label.as_str(),
+        ));
+
+        segments.join(" | ")
+    }
+
+    /// Formats one session segment as `<stats> <label>`.
+    fn format_session_segment(status: Option<(u32, u32)>, label: &str) -> String {
+        let status_text = status.map_or_else(|| Self::format_status((0, 0)), Self::format_status);
+
+        format!("{status_text}{label}")
+    }
+
+    /// Formats one status segment with no reference label attached.
+    fn format_status(status: (u32, u32)) -> String {
+        let (ahead, behind) = status;
+
+        if ahead == 0 && behind == 0 {
+            return format!("{} ", Icon::Check);
+        }
+
+        format!("{}{behind} {}{ahead} ", Icon::ArrowDown, Icon::ArrowUp)
     }
 }
 
@@ -86,19 +156,10 @@ impl Component for FooterBar {
 
         if let Some(branch) = &self.git_branch {
             let trailing_branch_padding = 1;
-            let status_text = if let Some((ahead, behind)) = self.git_status {
-                if ahead == 0 && behind == 0 {
-                    format!("{} ", Icon::Check)
-                } else {
-                    format!("{}{behind} {}{ahead} ", Icon::ArrowDown, Icon::ArrowUp)
-                }
-            } else {
-                String::new()
-            };
-            let branch_label = self.branch_label(branch);
+            let branch_text = self.branch_text(branch);
 
             let branch_span = Span::styled(
-                format!("{status_text}{} {branch_label}", Icon::GitBranch),
+                format!("{} {branch_text}", Icon::GitBranch),
                 Style::default().fg(style::palette::SUCCESS),
             );
             let branch_width = branch_span.width();
@@ -145,6 +206,8 @@ mod tests {
         // Assert
         assert_eq!(footer.working_dir, path);
         assert_eq!(footer.git_branch, branch);
+        assert_eq!(footer.git_base_ref, None);
+        assert_eq!(footer.git_base_status, None);
         assert_eq!(footer.git_status, None);
         assert_eq!(footer.git_upstream_ref, None);
     }
@@ -160,6 +223,8 @@ mod tests {
         // Assert
         assert_eq!(footer.working_dir, path);
         assert_eq!(footer.git_branch, None);
+        assert_eq!(footer.git_base_ref, None);
+        assert_eq!(footer.git_base_status, None);
         assert_eq!(footer.git_status, None);
         assert_eq!(footer.git_upstream_ref, None);
     }
@@ -245,6 +310,60 @@ mod tests {
         let content = buffer.content();
         let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(text.contains("main -> origin/main"));
+    }
+
+    #[test]
+    fn test_footer_bar_render_with_base_and_remote_statuses() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 3);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let footer = FooterBar::new("/tmp/project".to_string())
+            .git_branch(Some("agentty/session".to_string()))
+            .git_base_ref(Some("main".to_string()))
+            .git_base_status(Some((1, 2)))
+            .git_status(Some((3, 4)))
+            .git_upstream_ref(Some("origin/agentty/session".to_string()));
+
+        // Act
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                Component::render(&footer, f, area);
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let buffer = terminal.backend().buffer();
+        let content = buffer.content();
+        let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(text.contains("↓2 ↑1 main"));
+        assert!(text.contains("| ↓4 ↑3 agentty/session -> origin/agentty/session"));
+    }
+
+    #[test]
+    fn test_footer_bar_render_with_base_and_local_statuses_without_upstream() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 3);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let footer = FooterBar::new("/tmp/project".to_string())
+            .git_branch(Some("agentty/session".to_string()))
+            .git_base_ref(Some("main".to_string()))
+            .git_base_status(Some((1, 2)));
+
+        // Act
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                Component::render(&footer, f, area);
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let buffer = terminal.backend().buffer();
+        let content = buffer.content();
+        let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(text.contains("↓2 ↑1 main"));
+        assert!(text.contains("| ✓ agentty/session"));
     }
 
     #[test]

@@ -13,6 +13,7 @@ use super::workflow::merge::SessionMergeService;
 pub(crate) use super::workflow::merge::{SyncMainOutcome, SyncSessionStartError};
 pub(crate) use super::workflow::task::{RunAgentAssistTaskInput, SessionTaskService};
 use super::workflow::worker::SessionWorkerService;
+use crate::app::session_state::SessionGitStatus;
 use crate::app::{AppServices, SessionState, setting};
 use crate::domain::agent::AgentModel;
 use crate::domain::session::{DailyActivity, FollowUpTaskAction, Session};
@@ -182,14 +183,14 @@ impl SessionManager {
     /// background poll.
     pub(crate) fn replace_session_git_statuses(
         &mut self,
-        session_git_statuses: HashMap<String, Option<(u32, u32)>>,
+        session_git_statuses: HashMap<String, SessionGitStatus>,
     ) {
         self.state
             .replace_session_git_statuses(session_git_statuses);
     }
 
     /// Returns cached session git-status snapshots keyed by session id.
-    pub(crate) fn session_git_statuses(&self) -> &HashMap<String, Option<(u32, u32)>> {
+    pub(crate) fn session_git_statuses(&self) -> &HashMap<String, SessionGitStatus> {
         &self.state.session_git_statuses
     }
 

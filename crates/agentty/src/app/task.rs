@@ -13,6 +13,7 @@ use askama::Template;
 use tokio::sync::mpsc;
 
 use crate::app::error::AppError;
+use crate::app::session_state::SessionGitStatus;
 use crate::app::{AppEvent, UpdateStatus};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::infra::agent;
@@ -23,9 +24,12 @@ use crate::version;
 /// session execution.
 pub(super) struct TaskService;
 
-/// Per-session git-status polling target for one published session branch.
+/// Per-session git-status polling target for one active session branch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SessionGitStatusTarget {
+    /// Base branch the session branch should be compared against, for example
+    /// `main`.
+    pub(super) base_branch: String,
     /// Local branch name tracked for the session, for example
     /// `agentty/1234abcd`.
     pub(super) branch_name: String,
@@ -58,8 +62,10 @@ impl TaskService {
     /// Spawns a background loop that periodically refreshes ahead/behind info.
     ///
     /// The task emits one combined [`AppEvent::GitStatusUpdated`] payload for
-    /// the active project branch and all published session branches instead of
-    /// mutating app state directly.
+    /// the active project branch plus all active session branches instead of
+    /// mutating app state directly. Project status stays upstream-based, while
+    /// session status carries both the base-branch comparison and any tracked
+    /// remote comparison for each session branch.
     pub(super) fn spawn_git_status_task(
         working_dir: &Path,
         project_branch_name: String,
@@ -98,8 +104,11 @@ impl TaskService {
                     .flatten();
                 let session_git_statuses = Self::session_git_statuses(
                     &branch_tracking_statuses,
+                    &repo_root,
                     &session_git_status_targets,
+                    git_client.as_ref(),
                 );
+                let session_git_statuses = session_git_statuses.await;
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
@@ -118,20 +127,37 @@ impl TaskService {
         });
     }
 
-    /// Resolves ahead/behind snapshots for all tracked session branches from
-    /// one repo-level branch-tracking snapshot.
-    fn session_git_statuses(
+    /// Resolves ahead/behind snapshots for all tracked session branches by
+    /// combining each branch's base-branch comparison with any tracked-remote
+    /// snapshot already available from the repo-wide status query.
+    async fn session_git_statuses(
         branch_tracking_statuses: &HashMap<String, Option<(u32, u32)>>,
+        repo_root: &Path,
         session_git_status_targets: &[SessionGitStatusTarget],
-    ) -> HashMap<String, Option<(u32, u32)>> {
+        git_client: &dyn GitClient,
+    ) -> HashMap<String, SessionGitStatus> {
         let mut session_git_statuses = HashMap::with_capacity(session_git_status_targets.len());
 
         for session_git_status_target in session_git_status_targets {
-            let status = branch_tracking_statuses
+            let base_status = git_client
+                .get_ref_ahead_behind(
+                    repo_root.to_path_buf(),
+                    session_git_status_target.branch_name.clone(),
+                    session_git_status_target.base_branch.clone(),
+                )
+                .await
+                .ok();
+            let remote_status = branch_tracking_statuses
                 .get(&session_git_status_target.branch_name)
                 .copied()
                 .flatten();
-            session_git_statuses.insert(session_git_status_target.session_id.clone(), status);
+            session_git_statuses.insert(
+                session_git_status_target.session_id.clone(),
+                SessionGitStatus {
+                    base_status,
+                    remote_status,
+                },
+            );
         }
 
         session_git_statuses
@@ -377,8 +403,11 @@ impl TaskService {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::infra::agent::protocol::AgentResponse;
+    use crate::infra::git::{GitError, MockGitClient};
 
     #[tokio::test]
     /// Ensures test-mode version checks still emit one reducer event without
@@ -492,56 +521,109 @@ mod tests {
         assert_eq!(error.to_string(), "submit failed");
     }
 
-    #[test]
-    /// Verifies session git-status selection maps branch snapshots back to
+    #[tokio::test]
+    /// Verifies session git-status selection maps branch comparisons back to
     /// session ids.
-    fn session_git_statuses_collects_all_target_statuses() {
+    async fn session_git_statuses_collects_all_target_statuses() {
         // Arrange
+        let repo_root = Path::new("/tmp/task-service-session-statuses");
         let branch_tracking_statuses = HashMap::from([
-            ("agentty/session-a".to_string(), Some((2, 1))),
-            ("agentty/session-b".to_string(), Some((0, 0))),
+            ("agentty/session-a".to_string(), Some((7, 0))),
+            ("agentty/session-b".to_string(), Some((0, 4))),
         ]);
         let session_git_status_targets = vec![
             SessionGitStatusTarget {
+                base_branch: "main".to_string(),
                 branch_name: "agentty/session-a".to_string(),
                 session_id: "session-a".to_string(),
             },
             SessionGitStatusTarget {
+                base_branch: "develop".to_string(),
                 branch_name: "agentty/session-b".to_string(),
                 session_id: "session-b".to_string(),
             },
         ];
+        let mut mock_git_client = MockGitClient::new();
+        mock_git_client
+            .expect_get_ref_ahead_behind()
+            .times(2)
+            .returning(|_, left_ref, right_ref| {
+                Box::pin(async move {
+                    match (left_ref.as_str(), right_ref.as_str()) {
+                        ("agentty/session-a", "main") => Ok((2, 1)),
+                        ("agentty/session-b", "develop") => Ok((0, 0)),
+                        _ => Err(GitError::OutputParse("unexpected ref pair".to_string())),
+                    }
+                })
+            });
 
         // Act
         let statuses = TaskService::session_git_statuses(
             &branch_tracking_statuses,
+            repo_root,
             &session_git_status_targets,
-        );
+            &mock_git_client,
+        )
+        .await;
 
         // Assert
-        assert_eq!(statuses.get("session-a"), Some(&Some((2, 1))));
-        assert_eq!(statuses.get("session-b"), Some(&Some((0, 0))));
+        assert_eq!(
+            statuses.get("session-a"),
+            Some(&SessionGitStatus {
+                base_status: Some((2, 1)),
+                remote_status: Some((7, 0)),
+            })
+        );
+        assert_eq!(
+            statuses.get("session-b"),
+            Some(&SessionGitStatus {
+                base_status: Some((0, 0)),
+                remote_status: Some((0, 4)),
+            })
+        );
     }
 
-    #[test]
+    #[tokio::test]
     /// Verifies session branches without tracked status degrade to `None`
     /// without affecting the rest of the snapshot.
-    fn session_git_statuses_keeps_failed_targets_as_none() {
+    async fn session_git_statuses_keeps_failed_targets_as_none() {
         // Arrange
+        let repo_root = Path::new("/tmp/task-service-session-statuses-error");
         let branch_tracking_statuses = HashMap::new();
         let session_git_status_targets = vec![SessionGitStatusTarget {
+            base_branch: "main".to_string(),
             branch_name: "agentty/session-a".to_string(),
             session_id: "session-a".to_string(),
         }];
+        let mut mock_git_client = MockGitClient::new();
+        mock_git_client
+            .expect_get_ref_ahead_behind()
+            .once()
+            .returning(|_, _, _| {
+                Box::pin(async {
+                    Err(GitError::OutputParse(
+                        "failed to compare session branch".to_string(),
+                    ))
+                })
+            });
 
         // Act
         let statuses = TaskService::session_git_statuses(
             &branch_tracking_statuses,
+            repo_root,
             &session_git_status_targets,
-        );
+            &mock_git_client,
+        )
+        .await;
 
         // Assert
-        assert_eq!(statuses.get("session-a"), Some(&None));
+        assert_eq!(
+            statuses.get("session-a"),
+            Some(&SessionGitStatus {
+                base_status: None,
+                remote_status: None,
+            })
+        );
     }
 
     #[test]

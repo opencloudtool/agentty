@@ -558,17 +558,41 @@ pub async fn fetch_remote(repo_path: PathBuf) -> Result<(), GitError> {
 /// Returns a [`GitError`] if `git rev-list` fails or returns unexpected
 /// output.
 pub async fn get_ahead_behind(repo_path: PathBuf) -> Result<(u32, u32), GitError> {
+    get_ref_ahead_behind(repo_path, "HEAD".to_string(), "@{u}".to_string()).await
+}
+
+/// Returns the number of commits `left_ref` is ahead of and behind `right_ref`.
+///
+/// The returned tuple is `(ahead, behind)`, where `ahead` counts commits
+/// reachable from `left_ref` but not `right_ref`, and `behind` counts commits
+/// reachable from `right_ref` but not `left_ref`.
+///
+/// # Errors
+/// Returns a [`GitError`] if `git rev-list` fails or returns unexpected
+/// output.
+pub async fn get_ref_ahead_behind(
+    repo_path: PathBuf,
+    left_ref: String,
+    right_ref: String,
+) -> Result<(u32, u32), GitError> {
     let rev_list_output = run_git_command(
         repo_path,
         vec![
             "rev-list".to_string(),
             "--left-right".to_string(),
             "--count".to_string(),
-            "HEAD...@{u}".to_string(),
+            format!("{left_ref}...{right_ref}"),
         ],
         "Git rev-list failed".to_string(),
     )
     .await?;
+
+    parse_ahead_behind_counts(&rev_list_output)
+}
+
+/// Parses one `git rev-list --left-right --count` output into `(ahead,
+/// behind)`.
+fn parse_ahead_behind_counts(rev_list_output: &str) -> Result<(u32, u32), GitError> {
     let parts: Vec<&str> = rev_list_output.split_whitespace().collect();
     if parts.len() >= 2 {
         let ahead = parts[0].parse().unwrap_or(0);
@@ -1287,6 +1311,35 @@ main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3,
 
         // Assert
         assert_eq!(upstream_reference, "origin/main");
+    }
+
+    #[tokio::test]
+    async fn get_ref_ahead_behind_returns_counts_between_two_local_branches() {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(temp_dir.path());
+        run_git_command(temp_dir.path(), &["checkout", "-b", "agentty/1234abcd"]);
+        fs::write(temp_dir.path().join("session.txt"), "session change\n")
+            .expect("failed to write session file");
+        run_git_command(temp_dir.path(), &["add", "session.txt"]);
+        run_git_command(temp_dir.path(), &["commit", "-m", "Session change"]);
+        run_git_command(temp_dir.path(), &["checkout", "main"]);
+        fs::write(temp_dir.path().join("main.txt"), "main change\n")
+            .expect("failed to write main file");
+        run_git_command(temp_dir.path(), &["add", "main.txt"]);
+        run_git_command(temp_dir.path(), &["commit", "-m", "Main change"]);
+
+        // Act
+        let status = get_ref_ahead_behind(
+            temp_dir.path().to_path_buf(),
+            "agentty/1234abcd".to_string(),
+            "main".to_string(),
+        )
+        .await
+        .expect("failed to compare branch refs");
+
+        // Assert
+        assert_eq!(status, (1, 1));
     }
 
     #[tokio::test]

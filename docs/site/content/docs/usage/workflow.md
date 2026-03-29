@@ -36,10 +36,12 @@ completed sessions retain their frozen total.
 
 The footer always shows the active directory. When the current branch tracks an
 upstream, the footer branch badge renders `local -> remote`, for example
-`main -> origin/main`. For active sessions whose published worktree branch also
-tracks a remote, the footer switches to that session directory and shows the
-session branch's own ahead/behind counts instead of the active project branch
-snapshot.
+`main -> origin/main`. When you open an active session, the footer switches to
+that session directory and shows the session branch's ahead/behind counts
+relative to its base branch (for example `main`). If the session branch already
+tracks a remote, the footer also shows a second ahead/behind segment using the
+compact form `[stats] main | [stats] local -> remote`. Before first publish,
+the same second segment still renders for the local branch as `[stats] local`.
 
 ## Session Lifecycle
 

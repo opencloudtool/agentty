@@ -6,6 +6,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
 use crate::app::session::session_branch;
+use crate::app::session_state::SessionGitStatus;
 use crate::app::{SettingsManager, Tab, UpdateStatus};
 use crate::domain::project::ProjectListItem;
 use crate::domain::session::{DailyActivity, Session};
@@ -47,8 +48,9 @@ pub struct RenderContext<'a> {
     pub project_table_state: &'a mut TableState,
     /// Project rows available for rendering.
     pub projects: &'a [ProjectListItem],
-    /// Latest session-branch ahead/behind snapshots keyed by session id.
-    pub session_git_statuses: &'a HashMap<String, Option<(u32, u32)>>,
+    /// Latest session-branch ahead/behind snapshots keyed by session id,
+    /// including both base-branch and tracked-remote comparisons.
+    pub session_git_statuses: &'a HashMap<String, SessionGitStatus>,
     /// Background thinking messages keyed by session id.
     pub session_progress_messages: &'a HashMap<String, String>,
     /// Mutable project-scoped settings snapshot.
@@ -113,6 +115,10 @@ fn current_version_display_text() -> String {
 
 /// Renders the footer bar with directory, branch, and project- or
 /// session-scoped git status info.
+///
+/// Project branches show upstream-tracking counts. Session branches reuse the
+/// same footer widget but inject counts relative to each session's base
+/// branch and, when available, its tracked remote branch.
 fn render_footer_bar(
     f: &mut Frame,
     footer_bar_area: Rect,
@@ -122,7 +128,7 @@ fn render_footer_bar(
     git_branch: Option<&str>,
     git_upstream_ref: Option<&str>,
     git_status: Option<(u32, u32)>,
-    session_git_statuses: &HashMap<String, Option<(u32, u32)>>,
+    session_git_statuses: &HashMap<String, SessionGitStatus>,
 ) {
     let session_id = match mode {
         AppMode::Confirmation {
@@ -157,23 +163,43 @@ fn render_footer_bar(
             .find(|session| session.id == session_identifier)
     });
 
-    let (footer_dir, footer_branch, footer_upstream_ref, footer_status) = match session_for_footer {
-        Some(session) => (
-            session.folder.to_string_lossy().to_string(),
-            Some(session_branch(&session.id)),
-            session.published_upstream_ref.clone(),
-            session_git_statuses.get(&session.id).copied().flatten(),
-        ),
+    let (
+        footer_dir,
+        footer_branch,
+        footer_base_ref,
+        footer_upstream_ref,
+        footer_base_status,
+        footer_status,
+    ) = match session_for_footer {
+        Some(session) => {
+            let session_status = session_git_statuses
+                .get(&session.id)
+                .copied()
+                .unwrap_or_default();
+
+            (
+                session.folder.to_string_lossy().to_string(),
+                Some(session_branch(&session.id)),
+                Some(session.base_branch.clone()),
+                session.published_upstream_ref.clone(),
+                session_status.base_status,
+                session_status.remote_status,
+            )
+        }
         None => (
             working_dir.to_string_lossy().to_string(),
             git_branch.map(std::string::ToString::to_string),
+            None,
             git_upstream_ref.map(std::string::ToString::to_string),
+            None,
             git_status,
         ),
     };
 
     component::footer_bar::FooterBar::new(footer_dir)
         .git_branch(footer_branch)
+        .git_base_ref(footer_base_ref)
+        .git_base_status(footer_base_status)
         .git_upstream_ref(footer_upstream_ref)
         .git_status(footer_status)
         .render(f, footer_bar_area);
@@ -397,7 +423,13 @@ mod tests {
             scroll_offset: None,
         };
         let sessions = vec![session];
-        let session_git_statuses = HashMap::from([(session_id.to_string(), Some((3, 2)))]);
+        let session_git_statuses = HashMap::from([(
+            session_id.to_string(),
+            SessionGitStatus {
+                base_status: Some((3, 2)),
+                remote_status: Some((1, 4)),
+            },
+        )]);
 
         // Act
         terminal
@@ -418,8 +450,56 @@ mod tests {
 
         // Assert
         let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("↓2 ↑3"));
+        assert!(text.contains("↓2 ↑3 main"));
+        assert!(text.contains("↓4 ↑1 agentty/session- -> origin/agentty/session-status"));
         assert!(!text.contains("↓0"));
+    }
+
+    #[test]
+    fn render_footer_bar_uses_session_git_status_without_published_upstream() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 3);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let session_id = "session-unpublished-status";
+        let session = session_fixture(session_id, "/tmp/session-unpublished-status-folder");
+        let mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            session_id: session_id.to_string(),
+            scroll_offset: None,
+        };
+        let sessions = vec![session];
+        let session_git_statuses = HashMap::from([(
+            session_id.to_string(),
+            SessionGitStatus {
+                base_status: Some((5, 1)),
+                remote_status: None,
+            },
+        )]);
+
+        // Act
+        terminal
+            .draw(|frame| {
+                render_footer_bar(
+                    frame,
+                    frame.area(),
+                    &mode,
+                    &sessions,
+                    Path::new("/tmp/workspace-root"),
+                    Some("main"),
+                    Some("origin/main"),
+                    Some((0, 0)),
+                    &session_git_statuses,
+                );
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("↓1 ↑5 main"));
+        assert!(text.contains("| ✓ agentty/session-"));
+        assert!(!text.contains("origin/agentty/session-unpublished-status"));
     }
 
     #[test]
