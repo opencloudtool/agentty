@@ -228,6 +228,8 @@ mod tests {
         assert!(rendered_prompt.contains("\"title\""));
         assert!(rendered_prompt.contains("\"description\""));
         assert!(rendered_prompt.contains("summary"));
+        assert!(rendered_prompt.contains("changes code or tests"));
+        assert!(rendered_prompt.contains("not standalone command execution"));
         assert!(rendered_prompt.ends_with(prompt));
     }
 
