@@ -13,6 +13,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 | Session activity timing | `session` persists cumulative `InProgress` timing fields, and both chat and the grouped session list now show the same cumulative active-work timer. | Landed |
 | Deterministic scenario coverage | E2E tests live in `crates/agentty/tests/e2e/` multi-file layout with shared `Journey` builders and tests for tab cycling, reverse tab, help overlay, quit confirmation, session empty state, and project page; session-lifecycle and prompt E2E coverage remains open. | Partial |
 | Typed errors and hygiene | `DbError`, `GitError`, `AppServerTransportError`, `AppServerError`, `AgentError`, `SessionError`, and `AppError` enums propagate typed errors through all infra and app-layer boundaries; module-level regression tests cover session access, review replay, agent backend, CLI error formatting, and stdin write helpers; convention cleanup remains open. | Partial |
+| Agent instruction delivery | Claude, Codex, and Gemini still receive the full Agentty-managed protocol wrapper on every turn; app-server sessions persist provider conversation ids, but instruction bootstrap state is not tracked separately from transcript replay. | Missing |
 | Testty proof pipeline | PTY-driven sessions, VT100 frame parsing, VHS tape compilation, snapshot baselines, overlay renderer, recipe layer, proof reports (labeled captures, four backends: frame-text, PNG strip, GIF, HTML), native bitmap renderer, frame diffing, journey composition, and scale tooling are all landed. | Landed |
 | Project delivery strategy | Review-ready sessions can already merge into the base branch or publish a session branch, but projects configured in Agentty still cannot declare whether their normal landing path should be direct merge to `main` or a pull-request flow. | Missing |
 
@@ -23,6 +24,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 - `Workflow`: draft-session staging before the first agent turn.
 - `Quality`: deterministic local session coverage, typed-error migration, and hygiene follow-up.
 - `Delivery`: project-level landing strategy for review-ready sessions, including direct-merge vs. pull-request expectations.
+- `Protocol`: provider-managed session bootstrap instructions and compact context replay without repo-side agent files.
 
 ## Planning Model
 
@@ -122,6 +124,34 @@ E2E tests cover session creation via `a` key, opening a session with `Enter`, se
 
 - [ ] No user-facing behavior changes — no doc updates needed.
 
+### [d9307a06-1a0f-483a-96db-04587dce6dc1] Protocol: Bootstrap direct agent instructions once per app-server session
+
+#### Assignee
+
+No assignee
+
+#### Why now
+
+Codex and Gemini already persist provider-native session identity, so Agentty can cut repeated prompt weight for the persistent transports now without relying on `AGENTS.md` or waiting for Claude-specific session tracking.
+
+#### Usable outcome
+
+Codex and Gemini sessions send the full Agentty-managed instruction contract only on the first turn of a provider context or after a runtime reset, while later turns use a compact refresh reminder and still keep strict per-turn schema enforcement.
+
+#### Substeps
+
+- [ ] **Add one provider-managed instruction delivery planner.** Introduce an instruction-profile and delivery-mode module under `crates/agentty/src/infra/agent/` and route `crates/agentty/src/infra/agent/prompt.rs`, `crates/agentty/src/infra/app_server/prompt.rs`, and `crates/agentty/src/infra/app_server/retry.rs` through explicit `BootstrapFull`, `DeltaOnly`, and `BootstrapWithReplay` decisions instead of unconditionally prepending the full protocol wrapper.
+- [ ] **Persist bootstrap state against the active app-server context.** Extend `crates/agentty/src/infra/db.rs`, `crates/agentty/src/app/session/workflow/worker.rs`, and `crates/agentty/src/infra/channel/app_server.rs` so Codex and Gemini store which instruction-profile version or hash was delivered for the current `provider_conversation_id`, invalidate that state when the runtime restarts or reports `context_reset`, and resend the full bootstrap only when the provider context is new or changed.
+- [ ] **Shrink normal follow-up prompts without weakening validation.** Keep Codex `outputSchema` enforcement in `crates/agentty/src/infra/agent/app_server/codex/client.rs` and the existing strict host-side response parsing, but change ordinary app-server follow-up turns to prepend only a compact refresh reminder instead of the full schema and policy block.
+
+#### Tests
+
+- [ ] Add or extend coverage in `crates/agentty/src/infra/agent/prompt.rs`, `crates/agentty/src/infra/app_server/prompt.rs`, `crates/agentty/src/infra/app_server/retry.rs`, `crates/agentty/src/app/session/workflow/worker.rs`, and the app-server client tests so first-turn bootstrap, same-context follow-up turns, and restart or `context_reset` invalidation all preserve the protocol contract while removing repeated prompt duplication.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/architecture/runtime-flow.md` and `docs/site/content/docs/agents/backends.md` to document that persistent app-server sessions now reuse an Agentty-managed bootstrap instruction contract while still enforcing structured output per turn.
+
 ## Ready Now Execution Order
 
 ```mermaid
@@ -129,6 +159,7 @@ flowchart TD
     R1["[8f4402cd] Workflow: sibling-session launch"]
     R2["[ca014af3] Forge: GitHub review request publish"]
     R3["[33150cab] Quality: session lifecycle + prompt E2E"]
+    R4["[d9307a06] Protocol: app-server instruction bootstrap"]
 ```
 
 ## Queued Next
@@ -174,6 +205,34 @@ Promote when maintainers want review and publish actions to respect the target p
 #### Depends on
 
 `[ca014af3] Forge: Replace GitHub branch publish with create or update pull request`
+
+### [8d03ed45-0f91-4d1d-b761-2d74f7027ef7] Protocol: Track explicit Claude session identity for one-time bootstrap reuse
+
+#### Outcome
+
+Give Claude-backed sessions an explicit provider session identifier so Agentty can safely reuse the same bootstrap-once instruction delivery strategy instead of relying on implicit `claude -c` continuation behavior.
+
+#### Promote when
+
+Promote after `[d9307a06] Protocol: Bootstrap direct agent instructions once per app-server session` lands or sooner if Claude prompt duplication becomes the dominant context cost.
+
+#### Depends on
+
+`[d9307a06] Protocol: Bootstrap direct agent instructions once per app-server session`
+
+### [84aa58cc-8cd0-41cb-a6fc-a97016e85f0d] Protocol: Replace reset replay with compact session memory
+
+#### Outcome
+
+Restarted provider sessions resend a structured session-memory summary of constraints, open questions, and touched files instead of replaying the full transcript whenever a runtime loses native context.
+
+#### Promote when
+
+Promote after `[d9307a06] Protocol: Bootstrap direct agent instructions once per app-server session` stabilizes the normal follow-up path so reset-specific context replay can be optimized independently.
+
+#### Depends on
+
+`[d9307a06] Protocol: Bootstrap direct agent instructions once per app-server session`
 
 ## Parked
 
@@ -223,6 +282,7 @@ Promote when a `Ready Now` slot opens and the active workflow and model-availabi
 
 - `Forge: Replace GitHub branch publish with create or update pull request` should reuse the existing `ag-forge` review-request create/refresh flow and keep GitLab on the current push-only branch-publish path.
 - `Agents: Scope model lists to locally available backends` should reuse one shared availability snapshot across Settings and `/model` instead of probing CLIs separately in render paths.
+- `Protocol: Bootstrap direct agent instructions once per app-server session` should keep the canonical instruction contract inside Agentty-managed prompt construction and persistence, not in user-maintained provider instruction files.
 - `Workflow: Stage draft session messages and start them explicitly` should keep using `Status::New` for draft sessions instead of introducing a second pre-start lifecycle status.
 - The parked local session harness slice should come back only when the active workflow and model-availability changes stop churning the same lifecycle seams.
 - The typed-error migration and module-test backfill are both complete. Convention cleanup remains open in the parked sweep card.
