@@ -424,6 +424,78 @@ svg {
     line-height: 1.6;
 }
 
+.feature-demo-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    margin-top: 2rem;
+}
+
+.feature-demo-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    padding: 1.25rem;
+}
+
+.feature-demo-title {
+    margin: 0 0 0.4rem;
+    color: var(--color-accent);
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.feature-demo-text {
+    margin: 0 0 1rem;
+    color: var(--color-muted);
+    font-size: 0.82rem;
+    line-height: 1.6;
+}
+
+.feature-demo-frame {
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: #1e1e1e;
+}
+
+.feature-demo-frame img,
+.feature-demo-frame video {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.feature-demo-more-link {
+    display: inline-block;
+    margin-top: 1.25rem;
+    color: var(--color-accent);
+    font-size: 0.85rem;
+    text-decoration: none;
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
+
+.feature-demo-header {
+    margin-bottom: 2rem;
+}
+
+.feature-demo-page-title {
+    margin: 0 0 0.5rem;
+    color: var(--color-accent);
+    font-size: 1.6rem;
+    font-weight: 700;
+}
+
+.feature-demo-page-intro {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 0.88rem;
+    line-height: 1.6;
+}
+
 .site-footer-text {
     margin: 0;
     color: var(--color-dim);
