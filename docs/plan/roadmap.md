@@ -128,7 +128,7 @@ E2E tests cover session creation via `a` key, opening a session with `Enter`, se
 
 #### Assignee
 
-No assignee
+`@minev-dev`
 
 #### Why now
 
