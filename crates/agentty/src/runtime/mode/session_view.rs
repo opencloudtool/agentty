@@ -15,7 +15,7 @@ use crate::ui::state::app_mode::{
     AppMode, ConfirmationIntent, ConfirmationViewMode, DoneSessionOutputMode, HelpContext,
 };
 use crate::ui::state::help_action::{self, ViewSessionState};
-use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState, PromptSlashState};
+use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState};
 
 #[derive(Clone)]
 struct ViewContext {
@@ -452,7 +452,7 @@ fn switch_view_to_prompt(
         at_mention_state: None,
         attachment_state: PromptAttachmentState::default(),
         history_state,
-        slash_state: PromptSlashState::new(),
+        slash_state: app.prompt_slash_state(),
         session_id: view_context.session_id.clone(),
         input: InputState::new(),
         scroll_offset,

@@ -84,6 +84,60 @@ impl AgentModel {
     }
 }
 
+/// Returns all selectable models owned by the provided agent kinds in stable
+/// settings and slash-menu order.
+#[must_use]
+pub fn selectable_models_for_agent_kinds(agent_kinds: &[AgentKind]) -> Vec<AgentModel> {
+    agent_kinds
+        .iter()
+        .flat_map(|agent_kind| agent_kind.models())
+        .copied()
+        .collect()
+}
+
+/// Resolves one model against the currently available agent kinds.
+///
+/// When `model` belongs to an unavailable provider, this prefers
+/// `fallback_model` when its provider is available and otherwise falls back to
+/// the first available provider default in `agent_kinds`. When no providers
+/// are available, it returns `fallback_model` unchanged.
+#[must_use]
+pub fn resolve_model_for_available_agent_kinds(
+    model: AgentModel,
+    agent_kinds: &[AgentKind],
+    fallback_model: AgentModel,
+) -> AgentModel {
+    if agent_kinds.contains(&model.kind()) {
+        return model;
+    }
+
+    if agent_kinds.contains(&fallback_model.kind()) {
+        return fallback_model;
+    }
+
+    agent_kinds
+        .first()
+        .copied()
+        .map_or(fallback_model, AgentKind::default_model)
+}
+
+/// Resolves the agent kind used for prompt-side `/model` selection.
+///
+/// This preserves `session_agent_kind` when that backend is still available
+/// and otherwise falls back to the first available backend. When no backends
+/// are available, it returns `None`.
+#[must_use]
+pub fn resolve_prompt_model_agent_kind(
+    session_agent_kind: AgentKind,
+    agent_kinds: &[AgentKind],
+) -> Option<AgentKind> {
+    if agent_kinds.contains(&session_agent_kind) {
+        return Some(session_agent_kind);
+    }
+
+    agent_kinds.first().copied()
+}
+
 impl ReasoningLevel {
     /// All selectable reasoning-effort levels in UI cycle order.
     pub const ALL: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::XHigh];
@@ -368,5 +422,97 @@ mod tests {
         assert_eq!(ReasoningLevel::Medium.claude(), "medium");
         assert_eq!(ReasoningLevel::High.claude(), "high");
         assert_eq!(ReasoningLevel::XHigh.claude(), "max");
+    }
+
+    #[test]
+    /// Ensures selectable-model ordering follows the provided provider order.
+    fn test_selectable_models_for_agent_kinds_uses_provider_order() {
+        // Arrange
+        let agent_kinds = [AgentKind::Codex, AgentKind::Gemini];
+
+        // Act
+        let selectable_models = selectable_models_for_agent_kinds(&agent_kinds);
+
+        // Assert
+        assert_eq!(
+            selectable_models,
+            vec![
+                AgentModel::Gpt54,
+                AgentModel::Gpt53Codex,
+                AgentModel::Gpt53CodexSpark,
+                AgentModel::Gemini31ProPreview,
+                AgentModel::Gemini3FlashPreview,
+            ]
+        );
+    }
+
+    #[test]
+    /// Ensures unavailable models fall back to an available preferred model
+    /// when possible.
+    fn test_resolve_model_for_available_agent_kinds_prefers_available_fallback() {
+        // Arrange
+        let unavailable_model = AgentModel::ClaudeOpus46;
+        let available_agent_kinds = [AgentKind::Codex, AgentKind::Gemini];
+        let fallback_model = AgentModel::Gpt53Codex;
+
+        // Act
+        let resolved_model = resolve_model_for_available_agent_kinds(
+            unavailable_model,
+            &available_agent_kinds,
+            fallback_model,
+        );
+
+        // Assert
+        assert_eq!(resolved_model, AgentModel::Gpt53Codex);
+    }
+
+    #[test]
+    /// Ensures unavailable models fall back to the first available provider
+    /// default when the preferred fallback is also unavailable.
+    fn test_resolve_model_for_available_agent_kinds_uses_first_available_default() {
+        // Arrange
+        let unavailable_model = AgentModel::ClaudeOpus46;
+        let available_agent_kinds = [AgentKind::Codex, AgentKind::Gemini];
+        let unavailable_fallback_model = AgentModel::ClaudeSonnet46;
+
+        // Act
+        let resolved_model = resolve_model_for_available_agent_kinds(
+            unavailable_model,
+            &available_agent_kinds,
+            unavailable_fallback_model,
+        );
+
+        // Assert
+        assert_eq!(resolved_model, AgentKind::Codex.default_model());
+    }
+
+    #[test]
+    /// Ensures prompt model selection keeps the current backend when it is
+    /// still available locally.
+    fn test_resolve_prompt_model_agent_kind_prefers_current_agent() {
+        // Arrange
+        let available_agent_kinds = [AgentKind::Gemini, AgentKind::Codex];
+
+        // Act
+        let resolved_agent_kind =
+            resolve_prompt_model_agent_kind(AgentKind::Codex, &available_agent_kinds);
+
+        // Assert
+        assert_eq!(resolved_agent_kind, Some(AgentKind::Codex));
+    }
+
+    #[test]
+    /// Ensures prompt model selection falls back to the first locally
+    /// available backend when the current backend is unavailable.
+    fn test_resolve_prompt_model_agent_kind_uses_first_available_agent() {
+        // Arrange
+        let available_agent_kinds = [AgentKind::Gemini, AgentKind::Codex];
+
+        // Act
+        let resolved_agent_kind =
+            resolve_prompt_model_agent_kind(AgentKind::Claude, &available_agent_kinds);
+
+        // Assert
+        assert_eq!(resolved_agent_kind, Some(AgentKind::Gemini));
     }
 }

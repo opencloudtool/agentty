@@ -82,6 +82,7 @@ also writes a machine-readable workspace summary to
 | - `cli.rs` | `CliAgentChannel` - CLI subprocess adapter (Claude). |
 | - `app_server.rs` | `AppServerAgentChannel` - app-server RPC adapter (Codex/Gemini). |
 | `crates/agentty/src/infra/agent/` | Per-provider backend command builders and response parsing: |
+| - `availability.rs` | `AgentAvailabilityProbe` plus machine-scoped CLI discovery used to cache which agent kinds are locally runnable. |
 | - `backend.rs` | `AgentBackend` trait and shared backend request/error types. |
 | - `provider.rs` | Central provider registry for transport mode, parser policy, stdin strategy, app-server client factories, and shared schema-mismatch error formatting. |
 | - `cli.rs` + `infra/agent/cli/` | Router plus shared CLI subprocess stdin/error helpers reused by session turns and one-shot prompts. |

@@ -652,17 +652,19 @@ mod tests {
         let base_path = app.services.base_path().to_path_buf();
         let db = app.services.db().clone();
         let event_sender = app.services.event_sender();
+        let available_agent_kinds = app.services.available_agent_kinds();
         let app_server_client_override = app.services.app_server_client_override();
         let fs_client = app.services.fs_client();
         let review_request_client = app.services.review_request_client();
 
         app.services = AppServices::new(
             base_path,
+            app.services.clock(),
             db,
             event_sender,
-            crate::app::service::AppServiceClients {
+            crate::app::service::AppServiceDeps {
                 app_server_client_override,
-                clock: app.services.clock(),
+                available_agent_kinds,
                 fs_client,
                 git_client: Arc::clone(&mock_git_client),
                 review_request_client,

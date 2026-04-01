@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use crate::app::error::AppError;
 use crate::app::session_state::SessionGitStatus;
 use crate::app::{AppEvent, UpdateStatus};
-use crate::domain::agent::{AgentModel, ReasoningLevel};
+use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::infra::agent;
 use crate::infra::git::GitClient;
 use crate::version;
@@ -59,6 +59,16 @@ struct ReviewAssistPromptTemplate<'a> {
 }
 
 impl TaskService {
+    /// Loads one fresh machine-scoped snapshot of locally runnable agent
+    /// kinds behind the injected availability boundary.
+    pub(super) async fn load_agent_availability(
+        availability_probe: Arc<dyn agent::AgentAvailabilityProbe>,
+    ) -> Vec<AgentKind> {
+        tokio::task::spawn_blocking(move || availability_probe.available_agent_kinds())
+            .await
+            .unwrap_or_else(|_| AgentKind::ALL.to_vec())
+    }
+
     /// Spawns a background loop that periodically refreshes ahead/behind info.
     ///
     /// The task emits one combined [`AppEvent::GitStatusUpdated`] payload for

@@ -234,10 +234,18 @@ Choose the backend from the `/model` picker:
 /model
 ```
 
+Agentty now filters that picker to the backend CLIs currently available on the
+machine. If only `codex` is installed, `/model` shows only Codex and its
+models. If none of `codex`, `claude`, or `gemini` are installed, Agentty now
+fails at startup with an error telling you to install a supported CLI on
+`PATH`.
+
 <a id="backends-persistent-defaults"></a>
 For persistent defaults, choose a default model in the **Settings** tab
 (`Tab` to navigate, `Enter` to edit). The selected model determines which
-backend is used for new sessions.
+backend is used for new sessions. Stored defaults that point at an unavailable
+backend automatically fall back to the first available backend default instead
+of leaving the selector on a hidden choice.
 
 <a id="backends-reasoning-level"></a>
 For Codex and Claude sessions, the **Settings** tab also exposes `Reasoning Level`
@@ -278,7 +286,9 @@ quality, and cost.
 <a id="backends-switching-models"></a>
 You can switch the model for the current session using the `/model` slash
 command in the prompt input. This opens a two-step picker: first choose the
-backend, then choose one of its models.
+backend, then choose one of its models. Both steps are filtered to locally
+available backends, and the current session backend remains preselected when it
+is still runnable on the current machine.
 
 <a id="backends-switching-default-model"></a>
 To change the **default model** persistently, use the **Settings** tab

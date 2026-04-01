@@ -15,7 +15,7 @@ use ag_forge as forge;
 use ag_forge::{RealReviewRequestClient, ReviewRequestClient};
 use app::merge_queue::{MergeQueue, MergeQueueProgress};
 use app::project::ProjectManager;
-use app::service::{AppServiceClients, AppServices};
+use app::service::{AppServiceDeps, AppServices};
 use app::session::SessionManager;
 use app::session_state::{SessionGitStatus, SessionState};
 use app::setting::SettingsManager;
@@ -43,7 +43,7 @@ use crate::infra::file_index::FileEntry;
 use crate::infra::fs::{FsClient, RealFsClient};
 use crate::infra::git::{GitClient, RealGitClient, detect_git_info};
 use crate::infra::tmux::{RealTmuxClient, TmuxClient};
-use crate::infra::{app_server, db};
+use crate::infra::{agent, app_server, db};
 use crate::runtime::mode::{question, sync_blocked};
 use crate::ui::page::session_list::preferred_initial_session_index;
 use crate::ui::state::app_mode::{
@@ -353,6 +353,7 @@ impl SyncMainRunner for TokioSyncMainRunner {
 
 /// External clients used to compose [`App`] startup dependencies.
 pub(crate) struct AppClients {
+    agent_availability_probe: Arc<dyn agent::AgentAvailabilityProbe>,
     app_server_client_override: Option<Arc<dyn app_server::AppServerClient>>,
     fs_client: Arc<dyn FsClient>,
     git_client: Arc<dyn GitClient>,
@@ -366,6 +367,7 @@ impl AppClients {
     /// boundary.
     pub(crate) fn new() -> Self {
         Self {
+            agent_availability_probe: Arc::new(agent::RealAgentAvailabilityProbe),
             app_server_client_override: None,
             fs_client: Arc::new(RealFsClient),
             git_client: Arc::new(RealGitClient),
@@ -593,16 +595,22 @@ impl App {
 
         let git_status_cancel = Arc::new(AtomicBool::new(false));
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let available_agent_kinds = task::TaskService::load_agent_availability(Arc::clone(
+            &clients.agent_availability_probe,
+        ))
+        .await;
+        Self::validate_startup_agent_availability(&available_agent_kinds)?;
         let services = AppServices::new(
             base_path.clone(),
+            Arc::clone(&clock),
             db.clone(),
             event_tx.clone(),
-            AppServiceClients {
+            AppServiceDeps {
                 app_server_client_override: clients
                     .app_server_client_override
                     .as_ref()
                     .map(Arc::clone),
-                clock: Arc::clone(&clock),
+                available_agent_kinds,
                 fs_client: Arc::clone(&clients.fs_client),
                 git_client: Arc::clone(&clients.git_client),
                 review_request_client: Arc::clone(&clients.review_request_client),
@@ -652,6 +660,22 @@ impl App {
             sync_main_runner: clients.sync_main_runner,
             tmux_client: clients.tmux_client,
         })
+    }
+
+    /// Returns a startup error when no supported backend CLI is installed on
+    /// the current machine.
+    fn validate_startup_agent_availability(
+        available_agent_kinds: &[AgentKind],
+    ) -> Result<(), AppError> {
+        if available_agent_kinds.is_empty() {
+            return Err(AppError::Workflow(
+                "No supported backend CLI found on `PATH`. Install `codex`, `claude`, or `gemini` \
+                 and restart `agentty`."
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Persists the startup project row and backfills any legacy session
@@ -783,6 +807,14 @@ impl App {
     /// Returns the latest ahead/behind snapshot from reducer-applied events.
     pub fn git_status_info(&self) -> Option<(u32, u32)> {
         self.projects.git_status()
+    }
+
+    /// Builds prompt slash-menu state from the cached machine-scoped agent
+    /// availability snapshot.
+    pub(crate) fn prompt_slash_state(&self) -> crate::ui::state::prompt::PromptSlashState {
+        crate::ui::state::prompt::PromptSlashState::with_available_agent_kinds(
+            self.services.available_agent_kinds(),
+        )
     }
 
     /// Returns the newer stable `agentty` version when an update is available.
@@ -3171,6 +3203,18 @@ mod tests {
         Arc::new(app_server::MockAppServerClient::new())
     }
 
+    /// Startup probe fixture that reports one fixed availability snapshot.
+    struct FixedAgentAvailabilityProbe {
+        available_agent_kinds: Vec<AgentKind>,
+    }
+
+    impl agent::AgentAvailabilityProbe for FixedAgentAvailabilityProbe {
+        /// Returns the fixed startup availability snapshot for the test.
+        fn available_agent_kinds(&self) -> Vec<AgentKind> {
+            self.available_agent_kinds.clone()
+        }
+    }
+
     /// Builds one deterministic session snapshot rooted at `session_folder`.
     fn test_session(session_folder: PathBuf) -> Session {
         Session {
@@ -3220,6 +3264,34 @@ mod tests {
     /// boundary.
     async fn new_test_app() -> App {
         new_test_app_with_tmux_client(Arc::new(MockTmuxClient::new())).await
+    }
+
+    #[tokio::test]
+    async fn test_new_with_clients_fails_when_no_backend_cli_is_available() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let mut clients = AppClients::new()
+            .with_app_server_client_override(mock_app_server())
+            .with_tmux_client(Arc::new(MockTmuxClient::new()));
+        clients.agent_availability_probe = Arc::new(FixedAgentAvailabilityProbe {
+            available_agent_kinds: Vec::new(),
+        });
+
+        // Act
+        let result =
+            App::new_with_clients(base_path.clone(), base_path, None, database, clients).await;
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(AppError::Workflow(message))
+                if message
+                    == "No supported backend CLI found on `PATH`. Install `codex`, `claude`, or `gemini` and restart `agentty`."
+        ));
     }
 
     #[tokio::test]
@@ -4955,17 +5027,19 @@ mod tests {
         let base_path = app.services.base_path().to_path_buf();
         let db = app.services.db().clone();
         let event_sender = app.services.event_sender();
+        let available_agent_kinds = app.services.available_agent_kinds();
         let app_server_client_override = app.services.app_server_client_override();
         let fs_client = app.services.fs_client();
         let review_request_client = app.services.review_request_client();
 
         app.services = AppServices::new(
             base_path,
+            app.services.clock(),
             db,
             event_sender,
-            AppServiceClients {
+            AppServiceDeps {
                 app_server_client_override,
-                clock: app.services.clock(),
+                available_agent_kinds,
                 fs_client,
                 git_client: Arc::clone(&mock_git_client),
                 review_request_client,

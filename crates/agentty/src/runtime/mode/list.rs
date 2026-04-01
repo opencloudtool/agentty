@@ -14,7 +14,7 @@ use crate::ui::state::app_mode::{
 use crate::ui::state::help_action::{
     HelpAction, project_list_actions, session_list_actions, settings_actions, stats_actions,
 };
-use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState, PromptSlashState};
+use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState};
 
 /// Handles key input while the app is in list mode.
 ///
@@ -319,7 +319,7 @@ fn open_session_prompt(app: &mut App, session_id: String) {
         at_mention_state: None,
         attachment_state: PromptAttachmentState::default(),
         history_state: PromptHistoryState::new(Vec::new()),
-        slash_state: PromptSlashState::new(),
+        slash_state: app.prompt_slash_state(),
         session_id,
         input: InputState::new(),
         scroll_offset: None,

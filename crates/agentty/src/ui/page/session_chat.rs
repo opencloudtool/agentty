@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::domain::agent::{AgentKind, AgentSelectionMetadata};
+use crate::domain::agent::{self, AgentKind, AgentSelectionMetadata};
 use crate::domain::input::{self, extract_at_mention_query};
 use crate::domain::session::{Session, Status};
 use crate::infra::agent::protocol::QuestionItem;
@@ -191,6 +191,7 @@ impl<'a> SessionChatPage<'a> {
     /// stage.
     fn build_slash_suggestion_list(
         input: &str,
+        available_agent_kinds: &[AgentKind],
         stage: PromptSlashStage,
         selected_agent: Option<AgentKind>,
         session: &Session,
@@ -218,7 +219,7 @@ impl<'a> SessionChatPage<'a> {
             }
             PromptSlashStage::Agent => (
                 "/model Agent (j/k move, Enter select)",
-                AgentKind::ALL
+                available_agent_kinds
                     .iter()
                     .map(|agent| SuggestionItem {
                         badge: None,
@@ -229,7 +230,13 @@ impl<'a> SessionChatPage<'a> {
                     .collect(),
             ),
             PromptSlashStage::Model => {
-                let session_agent = selected_agent.unwrap_or_else(|| session.model.kind());
+                let Some(session_agent) = Self::resolve_model_stage_agent(
+                    session.model.kind(),
+                    available_agent_kinds,
+                    selected_agent,
+                ) else {
+                    return None;
+                };
                 let models = session_agent
                     .models()
                     .iter()
@@ -281,23 +288,24 @@ impl<'a> SessionChatPage<'a> {
     /// Builds the current prompt suggestion list and clamps the highlighted
     /// row into the visible item window.
     fn build_prompt_suggestion_list(
-        input_text: &str,
-        cursor: usize,
-        slash_stage: PromptSlashStage,
-        selected_agent: Option<AgentKind>,
-        selected_index: usize,
+        input: &input::InputState,
+        slash_state: &crate::ui::state::prompt::PromptSlashState,
         at_mention_state: Option<&PromptAtMentionState>,
         session: &Session,
     ) -> Option<SuggestionList> {
+        let input_text = input.text();
+        let cursor = input.cursor;
+
         if input_text.starts_with('/') {
             let mut suggestion_list = Self::build_slash_suggestion_list(
                 input_text,
-                slash_stage,
-                selected_agent,
+                &slash_state.available_agent_kinds,
+                slash_state.stage,
+                slash_state.selected_agent,
                 session,
             )?;
             let max_index = suggestion_list.items.len().saturating_sub(1);
-            suggestion_list.selected_index = selected_index.min(max_index);
+            suggestion_list.selected_index = slash_state.selected_index.min(max_index);
 
             return Some(suggestion_list);
         }
@@ -321,11 +329,8 @@ impl<'a> SessionChatPage<'a> {
         };
 
         let suggestion_list = Self::build_prompt_suggestion_list(
-            input.text(),
-            input.cursor,
-            slash_state.stage,
-            slash_state.selected_agent,
-            slash_state.selected_index,
+            input,
+            slash_state,
             at_mention_state.as_ref(),
             session,
         );
@@ -344,6 +349,19 @@ impl<'a> SessionChatPage<'a> {
             suggestion_list,
             title: format!(" [{}] ", session.model.as_str()),
             total_height: desired_bottom_height.min(max_bottom_height),
+        })
+    }
+
+    /// Resolves the agent shown for `/model` model selection while
+    /// preserving the current session agent when it is still locally
+    /// runnable.
+    fn resolve_model_stage_agent(
+        session_agent_kind: AgentKind,
+        available_agent_kinds: &[AgentKind],
+        selected_agent: Option<AgentKind>,
+    ) -> Option<AgentKind> {
+        selected_agent.or_else(|| {
+            agent::resolve_prompt_model_agent_kind(session_agent_kind, available_agent_kinds)
         })
     }
 
@@ -1083,6 +1101,7 @@ mod tests {
         // Act
         let menu = SessionChatPage::build_slash_suggestion_list(
             "/m",
+            AgentKind::ALL,
             PromptSlashStage::Command,
             None,
             &session,
@@ -1106,6 +1125,7 @@ mod tests {
         // Act
         let menu = SessionChatPage::build_slash_suggestion_list(
             "/model",
+            AgentKind::ALL,
             PromptSlashStage::Agent,
             None,
             &session,
@@ -1122,6 +1142,26 @@ mod tests {
     }
 
     #[test]
+    fn test_build_slash_suggestion_list_for_agent_stage_filters_available_agents() {
+        // Arrange
+        let session = session_fixture();
+
+        // Act
+        let menu = SessionChatPage::build_slash_suggestion_list(
+            "/model",
+            &[AgentKind::Codex],
+            PromptSlashStage::Agent,
+            None,
+            &session,
+        )
+        .expect("expected suggestion list");
+
+        // Assert
+        assert_eq!(menu.items.len(), 1);
+        assert_eq!(menu.items[0].label, "codex");
+    }
+
+    #[test]
     fn test_build_slash_suggestion_list_for_model_stage_has_model_descriptions() {
         // Arrange
         let session = session_fixture();
@@ -1129,6 +1169,7 @@ mod tests {
         // Act
         let menu = SessionChatPage::build_slash_suggestion_list(
             "/model",
+            AgentKind::ALL,
             PromptSlashStage::Model,
             Some(AgentKind::Codex),
             &session,
@@ -1372,6 +1413,7 @@ mod tests {
         // Act
         let menu = SessionChatPage::build_slash_suggestion_list(
             "/",
+            AgentKind::ALL,
             PromptSlashStage::Command,
             None,
             &session,

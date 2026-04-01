@@ -5,7 +5,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 
 use crate::app::{App, SessionStatsUsage};
-use crate::domain::agent::AgentKind;
+use crate::domain::agent::{self, AgentKind};
 use crate::domain::input::InputState;
 use crate::infra::channel::{TurnPrompt, TurnPromptAttachment};
 use crate::runtime::mode::{at_mention, input_key};
@@ -423,10 +423,12 @@ fn navigate_prompt_history_down(app: &mut App) {
 }
 
 fn advance_prompt_slash_selection(app: &mut App) {
-    let (input_text, selected_agent, selected_index, stage) = match &app.mode {
+    let (available_agent_kinds, input_text, selected_agent, selected_index, stage) = match &app.mode
+    {
         AppMode::Prompt {
             input, slash_state, ..
         } => (
+            slash_state.available_agent_kinds.clone(),
             input.text().to_string(),
             slash_state.selected_agent,
             slash_state.selected_index,
@@ -435,7 +437,8 @@ fn advance_prompt_slash_selection(app: &mut App) {
         _ => return,
     };
 
-    let option_count = prompt_slash_option_count(&input_text, stage, selected_agent);
+    let option_count =
+        prompt_slash_option_count(&input_text, stage, selected_agent, &available_agent_kinds);
     if option_count == 0 {
         return;
     }
@@ -575,10 +578,12 @@ fn take_submitted_turn_prompt(app: &mut App) -> TurnPrompt {
 }
 
 async fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContext) {
-    let (input_text, selected_agent, selected_index, stage) = match &app.mode {
+    let (available_agent_kinds, input_text, selected_agent, selected_index, stage) = match &app.mode
+    {
         AppMode::Prompt {
             input, slash_state, ..
         } => (
+            slash_state.available_agent_kinds.clone(),
             input.text().to_string(),
             slash_state.selected_agent,
             slash_state.selected_index,
@@ -618,7 +623,7 @@ async fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContex
             }
         }
         PromptSlashStage::Agent => {
-            let Some(selected_agent) = AgentKind::ALL.get(selected_index).copied() else {
+            let Some(selected_agent) = available_agent_kinds.get(selected_index).copied() else {
                 return;
             };
 
@@ -633,8 +638,12 @@ async fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContex
                 .sessions
                 .sessions
                 .get(prompt_context.session_index)
-                .map_or(AgentKind::Gemini, |session| session.model.kind());
-            let selected_agent = selected_agent.unwrap_or(fallback_agent);
+                .and_then(|session| {
+                    resolve_prompt_model_agent(session.model.kind(), &available_agent_kinds)
+                });
+            let Some(selected_agent) = selected_agent.or(fallback_agent) else {
+                return;
+            };
             let Some(selected_model) = selected_agent.models().get(selected_index).copied() else {
                 return;
             };
@@ -855,12 +864,24 @@ fn prompt_slash_option_count(
     input: &str,
     stage: PromptSlashStage,
     selected_agent: Option<AgentKind>,
+    available_agent_kinds: &[AgentKind],
 ) -> usize {
     match stage {
         PromptSlashStage::Command => prompt_slash_commands(input).len(),
-        PromptSlashStage::Agent => AgentKind::ALL.len(),
-        PromptSlashStage::Model => selected_agent.unwrap_or(AgentKind::Gemini).models().len(),
+        PromptSlashStage::Agent => available_agent_kinds.len(),
+        PromptSlashStage::Model => selected_agent
+            .or_else(|| available_agent_kinds.first().copied())
+            .map_or(0, |selected_agent| selected_agent.models().len()),
     }
+}
+
+/// Resolves the agent used by `/model` model selection, preserving the
+/// current session agent when it is still locally runnable.
+fn resolve_prompt_model_agent(
+    session_agent_kind: AgentKind,
+    available_agent_kinds: &[AgentKind],
+) -> Option<AgentKind> {
+    agent::resolve_prompt_model_agent_kind(session_agent_kind, available_agent_kinds)
 }
 
 fn prompt_input_width<B: Backend>(terminal: &Terminal<B>) -> io::Result<u16>
@@ -1601,7 +1622,8 @@ mod tests {
     #[test]
     fn test_prompt_slash_option_count_for_agent_stage() {
         // Arrange & Act
-        let count = prompt_slash_option_count("/model", PromptSlashStage::Agent, None);
+        let count =
+            prompt_slash_option_count("/model", PromptSlashStage::Agent, None, AgentKind::ALL);
 
         // Assert
         assert_eq!(count, AgentKind::ALL.len());
@@ -1610,11 +1632,56 @@ mod tests {
     #[test]
     fn test_prompt_slash_option_count_for_model_stage() {
         // Arrange & Act
-        let count =
-            prompt_slash_option_count("/model", PromptSlashStage::Model, Some(AgentKind::Claude));
+        let count = prompt_slash_option_count(
+            "/model",
+            PromptSlashStage::Model,
+            Some(AgentKind::Claude),
+            AgentKind::ALL,
+        );
 
         // Assert
         assert_eq!(count, AgentKind::Claude.models().len());
+    }
+
+    #[test]
+    fn test_prompt_slash_option_count_for_agent_stage_uses_available_agent_kinds() {
+        // Arrange
+        let available_agent_kinds = [AgentKind::Codex];
+
+        // Act
+        let count = prompt_slash_option_count(
+            "/model",
+            PromptSlashStage::Agent,
+            None,
+            &available_agent_kinds,
+        );
+
+        // Assert
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_resolve_prompt_model_agent_prefers_current_session_agent_when_available() {
+        // Arrange
+        let available_agent_kinds = [AgentKind::Gemini, AgentKind::Codex];
+
+        // Act
+        let resolved_agent = resolve_prompt_model_agent(AgentKind::Codex, &available_agent_kinds);
+
+        // Assert
+        assert_eq!(resolved_agent, Some(AgentKind::Codex));
+    }
+
+    #[test]
+    fn test_resolve_prompt_model_agent_falls_back_to_first_available_agent() {
+        // Arrange
+        let available_agent_kinds = [AgentKind::Gemini, AgentKind::Codex];
+
+        // Act
+        let resolved_agent = resolve_prompt_model_agent(AgentKind::Claude, &available_agent_kinds);
+
+        // Assert
+        assert_eq!(resolved_agent, Some(AgentKind::Gemini));
     }
 
     #[tokio::test]

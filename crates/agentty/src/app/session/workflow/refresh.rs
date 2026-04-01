@@ -355,11 +355,12 @@ mod tests {
 
         AppServices::new(
             PathBuf::from("/tmp/agentty-tests"),
+            Arc::new(crate::app::session::RealClock),
             database,
             event_tx,
-            crate::app::service::AppServiceClients {
+            crate::app::service::AppServiceDeps {
                 app_server_client_override: Some(mock_app_server()),
-                clock: Arc::new(crate::app::session::RealClock),
+                available_agent_kinds: crate::domain::agent::AgentKind::ALL.to_vec(),
                 fs_client: Arc::new(create_passthrough_mock_fs_client()),
                 git_client,
                 review_request_client,

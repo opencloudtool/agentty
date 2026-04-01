@@ -9,17 +9,19 @@ use tokio::sync::mpsc;
 use crate::app::AppEvent;
 use crate::app::session::Clock;
 use crate::db::Database;
+use crate::domain::agent::AgentKind;
 use crate::infra::app_server::AppServerClient;
 use crate::infra::fs::FsClient;
 use crate::infra::git::GitClient;
 
-/// External clients and optional overrides bundled into `AppServices`.
-pub(crate) struct AppServiceClients {
+/// External clients and cached machine-scoped availability injected into
+/// [`AppServices`].
+pub(crate) struct AppServiceDeps {
     /// Shared provider-owned app-server client override used by tests and
     /// injected environments.
     pub(crate) app_server_client_override: Option<Arc<dyn AppServerClient>>,
-    /// Shared wall-clock boundary used by session workflows.
-    pub(crate) clock: Arc<dyn Clock>,
+    /// Cached locally runnable backends used to scope model selection.
+    pub(crate) available_agent_kinds: Vec<AgentKind>,
     /// Shared filesystem client for async filesystem operations.
     pub(crate) fs_client: Arc<dyn FsClient>,
     /// Shared git client for async git operations.
@@ -30,6 +32,7 @@ pub(crate) struct AppServiceClients {
 
 /// Shared app dependencies used by managers and background workflows.
 pub struct AppServices {
+    available_agent_kinds: Arc<Vec<AgentKind>>,
     app_server_client_override: Option<Arc<dyn AppServerClient>>,
     base_path: PathBuf,
     clock: Arc<dyn Clock>,
@@ -45,19 +48,21 @@ impl AppServices {
     /// dependencies.
     pub(crate) fn new(
         base_path: PathBuf,
+        clock: Arc<dyn Clock>,
         db: Database,
         event_tx: mpsc::UnboundedSender<AppEvent>,
-        clients: AppServiceClients,
+        deps: AppServiceDeps,
     ) -> Self {
-        let AppServiceClients {
+        let AppServiceDeps {
             app_server_client_override,
-            clock,
+            available_agent_kinds,
             fs_client,
             git_client,
             review_request_client,
-        } = clients;
+        } = deps;
 
         Self {
+            available_agent_kinds: Arc::new(available_agent_kinds),
             app_server_client_override,
             base_path,
             clock,
@@ -72,6 +77,11 @@ impl AppServices {
     /// Returns the session base path.
     pub(crate) fn base_path(&self) -> &Path {
         self.base_path.as_path()
+    }
+
+    /// Returns the cached locally runnable agent kinds.
+    pub(crate) fn available_agent_kinds(&self) -> Vec<AgentKind> {
+        self.available_agent_kinds.as_ref().clone()
     }
 
     /// Returns the application database handle.

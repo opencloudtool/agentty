@@ -200,8 +200,13 @@ Type these in the prompt input to access special actions:
 
 | Command | Description |
 |---------|-------------|
-| `/model` | Switch the model for the current session. |
+| `/model` | Switch the model for the current session using only locally available backend CLIs. |
 | `/stats` | Show token usage statistics for the session. |
+
+Agentty requires at least one supported backend CLI (`codex`, `claude`, or
+`gemini`) on `PATH` at startup. Once launched, `/model` only offers runnable
+backends, and stored default-model settings still fall back to the first
+available backend default when the saved backend is missing locally.
 
 ## Auto-Update
 

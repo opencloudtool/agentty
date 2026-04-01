@@ -5,6 +5,7 @@
 //! standard `agent.rs` + `agent/` module layout.
 
 pub(crate) mod app_server;
+mod availability;
 mod backend;
 mod claude;
 pub(crate) mod cli;
@@ -16,6 +17,7 @@ mod provider;
 mod response_parser;
 mod submission;
 
+pub use availability::{AgentAvailabilityProbe, RealAgentAvailabilityProbe, executable_name};
 pub use backend::{AgentBackend, AgentBackendError, AgentTransport, BuildCommandRequest};
 pub(crate) use prompt::{PromptPreparationRequest, prepare_prompt_text};
 pub(crate) use protocol::AgentResponse;

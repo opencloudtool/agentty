@@ -160,8 +160,10 @@ pub enum PromptSlashStage {
 }
 
 /// UI state for prompt-only slash command selection.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PromptSlashState {
+    /// Agent kinds currently runnable on this machine for `/model`.
+    pub available_agent_kinds: Vec<AgentKind>,
     /// Agent selected for the current slash workflow, when applicable.
     pub selected_agent: Option<AgentKind>,
     /// Highlighted option inside the active slash menu.
@@ -173,10 +175,35 @@ pub struct PromptSlashState {
 impl PromptSlashState {
     /// Creates a new slash state at command selection.
     pub fn new() -> Self {
+        Self::with_available_agent_kinds(AgentKind::ALL.to_vec())
+    }
+
+    /// Creates a new slash state scoped to the provided locally available
+    /// agent kinds.
+    pub fn with_available_agent_kinds(available_agent_kinds: Vec<AgentKind>) -> Self {
         Self {
+            available_agent_kinds,
             selected_agent: None,
             selected_index: 0,
             stage: PromptSlashStage::Command,
+        }
+    }
+
+    /// Replaces the locally available agent kinds while keeping prompt slash
+    /// selection state coherent.
+    pub fn replace_available_agent_kinds(&mut self, available_agent_kinds: Vec<AgentKind>) {
+        self.available_agent_kinds = available_agent_kinds;
+
+        if self
+            .selected_agent
+            .is_some_and(|selected_agent| !self.available_agent_kinds.contains(&selected_agent))
+        {
+            self.selected_agent = None;
+            self.selected_index = 0;
+
+            if matches!(self.stage, PromptSlashStage::Model) {
+                self.stage = PromptSlashStage::Agent;
+            }
         }
     }
 
@@ -277,5 +304,26 @@ mod tests {
                 placeholder: "[Image #2]".to_string(),
             })
         );
+    }
+
+    #[test]
+    /// Ensures replacing available agent kinds clears an unavailable selected
+    /// agent and returns the slash workflow to agent selection.
+    fn test_prompt_slash_state_replace_available_agent_kinds_clears_unavailable_selection() {
+        // Arrange
+        let mut slash_state =
+            PromptSlashState::with_available_agent_kinds(vec![AgentKind::Claude, AgentKind::Codex]);
+        slash_state.selected_agent = Some(AgentKind::Claude);
+        slash_state.selected_index = 2;
+        slash_state.stage = PromptSlashStage::Model;
+
+        // Act
+        slash_state.replace_available_agent_kinds(vec![AgentKind::Codex]);
+
+        // Assert
+        assert_eq!(slash_state.available_agent_kinds, vec![AgentKind::Codex]);
+        assert_eq!(slash_state.selected_agent, None);
+        assert_eq!(slash_state.selected_index, 0);
+        assert_eq!(slash_state.stage, PromptSlashStage::Agent);
     }
 }

@@ -1775,6 +1775,7 @@ mod tests {
     use super::*;
     use crate::app::session::{RealClock, SessionDefaults};
     use crate::app::{AppServices, SessionState};
+    use crate::domain::agent::AgentKind;
     use crate::domain::session::{
         ForgeKind, ReviewRequestState, ReviewRequestSummary, SessionHandles, SessionSize,
         SessionStats,
@@ -1937,12 +1938,13 @@ mod tests {
 
         AppServices::new(
             PathBuf::from("/tmp/agentty-tests"),
+            Arc::new(crate::app::session::RealClock),
             database,
             event_tx,
-            crate::app::service::AppServiceClients {
+            crate::app::service::AppServiceDeps {
                 app_server_client_override: Some(mock_app_server()),
-                clock: Arc::new(crate::app::session::RealClock),
                 fs_client,
+                available_agent_kinds: AgentKind::ALL.to_vec(),
                 git_client,
                 review_request_client,
             },
