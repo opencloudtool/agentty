@@ -569,7 +569,7 @@ impl SessionManager {
                 .db()
                 .upsert_project_setting(
                     project_id,
-                    SettingName::DefaultSmartModel.as_str(),
+                    SettingName::DefaultSmartModel,
                     session_model.as_str(),
                 )
                 .await?;
@@ -599,7 +599,7 @@ impl SessionManager {
 
         let should_persist = services
             .db()
-            .get_project_setting(project_id, SettingName::LastUsedModelAsDefault.as_str())
+            .get_project_setting(project_id, SettingName::LastUsedModelAsDefault)
             .await?
             .and_then(|setting_value| setting_value.parse::<bool>().ok())
             .unwrap_or(false);

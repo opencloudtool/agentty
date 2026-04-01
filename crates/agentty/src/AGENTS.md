@@ -3,6 +3,7 @@
 ## Local Conventions
 
 - Avoid near-identical local variable names in the same function (for example, `gitdir` and `git_dir`). Use one clear naming style with distinct, descriptive names.
+- Persisted keys in `setting` and `project_setting` must come from `domain/setting.rs` `SettingName`; do not introduce ad hoc string keys or legacy aliases.
 - Prefer `module.rs` plus `module/` for nested modules. Avoid `mod.rs` module roots.
 - Session status flow:
   - Status state machine is: `New` -> (`InProgress` | `Rebasing`), (`Review` | `Question`) -> (`InProgress` | `Queued` | `Rebasing` | `Merging` | `Canceled`), `Queued` -> (`Merging` | `Review`), (`InProgress` | `Rebasing`) -> (`Review` | `Question`), and `Merging` -> (`Done` | `Review`).

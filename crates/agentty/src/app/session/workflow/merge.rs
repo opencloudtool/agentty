@@ -1173,17 +1173,25 @@ impl SessionManager {
     ///
     /// Emits user-visible commit output before rebase starts so users can see
     /// whether pending changes were committed or there was nothing to commit.
+    /// The pre-rebase auto-commit reuses the active project's fast-model
+    /// default when generating or repairing the session commit message.
     async fn execute_rebase_workflow(input: RebaseAssistInput) -> Result<String, SessionError> {
         // Auto-commit any pending changes before rebasing to avoid
         // "cannot rebase: You have unstaged changes".
         let include_coauthored_by_agentty =
             SessionTaskService::load_include_coauthored_by_agentty_setting(&input.db, &input.id)
                 .await;
+        let auto_commit_model = SessionTaskService::load_auto_commit_model_setting(
+            &input.db,
+            &input.id,
+            input.session_model,
+        )
+        .await;
         match SessionTaskService::commit_session_changes(
             input.git_client.as_ref(),
             &input.folder,
             &input.base_branch,
-            input.session_model,
+            auto_commit_model,
             true,
             include_coauthored_by_agentty,
         )

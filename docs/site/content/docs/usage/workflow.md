@@ -77,12 +77,15 @@ use `[` / `]` to move between tasks when multiple follow-up tasks are present.
 
 After each successful turn with file changes, Agentty keeps the session branch
 at one evolving commit. It regenerates that commit message from the cumulative
-session diff, applies the active project's `Coauthored by Agentty` setting to
-the final commit trailer, amends `HEAD`, and refreshes the session title from
-the same commit text before merge begins. Once the session reaches **Done**,
-Agentty rewrites the persisted summary into markdown with a `# Summary`
-section sourced from the final agent `summary.session` value and a `# Commit`
-section sourced from the canonical squash-merge commit message.
+session diff using the active project's `Default Fast Model`, applies the
+active project's `Coauthored by Agentty` setting to the final commit trailer,
+amends `HEAD`, and refreshes the session title from the same commit text
+before merge begins. If the auto-commit needs agent assistance to recover from
+a git failure, that recovery prompt also uses the `Default Fast Model`. Once
+the session reaches **Done**, Agentty rewrites the persisted summary into
+markdown with a `# Summary` section sourced from the final agent
+`summary.session` value and a `# Commit` section sourced from the canonical
+squash-merge commit message.
 
 When a session enters **Merging**, Agentty reuses the session branch `HEAD`
 commit message for the final squash commit on the base branch. Merge still

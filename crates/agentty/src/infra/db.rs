@@ -1903,7 +1903,11 @@ WHERE status IN ('queued', 'running')
     ///
     /// # Errors
     /// Returns an error if the setting row cannot be written.
-    pub async fn upsert_setting(&self, name: &str, value: &str) -> Result<(), DbError> {
+    pub(crate) async fn upsert_setting(
+        &self,
+        name: SettingName,
+        value: &str,
+    ) -> Result<(), DbError> {
         sqlx::query(
             r"
 INSERT INTO setting (name, value)
@@ -1912,7 +1916,7 @@ ON CONFLICT(name) DO UPDATE
 SET value = excluded.value
 ",
         )
-        .bind(name)
+        .bind(name.as_str())
         .bind(value)
         .execute(&self.pool)
         .await?;
@@ -1924,10 +1928,10 @@ SET value = excluded.value
     ///
     /// # Errors
     /// Returns an error if the project-setting row cannot be written.
-    pub async fn upsert_project_setting(
+    pub(crate) async fn upsert_project_setting(
         &self,
         project_id: i64,
-        name: &str,
+        name: SettingName,
         value: &str,
     ) -> Result<(), DbError> {
         sqlx::query(
@@ -1939,7 +1943,7 @@ SET value = excluded.value
 ",
         )
         .bind(project_id)
-        .bind(name)
+        .bind(name.as_str())
         .bind(value)
         .execute(&self.pool)
         .await?;
@@ -1951,7 +1955,8 @@ SET value = excluded.value
     ///
     /// # Errors
     /// Returns an error if the setting lookup query fails.
-    pub async fn get_setting(&self, name: &str) -> Result<Option<String>, DbError> {
+    pub(crate) async fn get_setting(&self, name: SettingName) -> Result<Option<String>, DbError> {
+        let setting_name = name.as_str();
         let row = sqlx::query_as!(
             RequiredStringValueRow,
             r#"
@@ -1959,7 +1964,7 @@ SELECT value AS "value!: _"
 FROM setting
 WHERE name = ?
 "#,
-            name
+            setting_name
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -1971,11 +1976,12 @@ WHERE name = ?
     ///
     /// # Errors
     /// Returns an error if the project-setting lookup query fails.
-    pub async fn get_project_setting(
+    pub(crate) async fn get_project_setting(
         &self,
         project_id: i64,
-        name: &str,
+        name: SettingName,
     ) -> Result<Option<String>, DbError> {
+        let setting_name = name.as_str();
         let row = sqlx::query_as!(
             RequiredStringValueRow,
             r#"
@@ -1985,7 +1991,7 @@ WHERE project_id = ?
   AND name = ?
 "#,
             project_id,
-            name
+            setting_name
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -2004,7 +2010,7 @@ WHERE project_id = ?
     ) -> Result<(), DbError> {
         self.upsert_project_setting(
             project_id,
-            SettingName::ReasoningLevel.as_str(),
+            SettingName::ReasoningLevel,
             reasoning_level.codex(),
         )
         .await
@@ -2021,7 +2027,7 @@ WHERE project_id = ?
         project_id: i64,
     ) -> Result<ReasoningLevel, DbError> {
         let setting_value = self
-            .get_project_setting(project_id, SettingName::ReasoningLevel.as_str())
+            .get_project_setting(project_id, SettingName::ReasoningLevel)
             .await?;
 
         let reasoning_level = setting_value
@@ -2040,11 +2046,8 @@ WHERE project_id = ?
         &self,
         reasoning_level: ReasoningLevel,
     ) -> Result<(), DbError> {
-        self.upsert_setting(
-            SettingName::ReasoningLevel.as_str(),
-            reasoning_level.codex(),
-        )
-        .await
+        self.upsert_setting(SettingName::ReasoningLevel, reasoning_level.codex())
+            .await
     }
 
     /// Loads the persisted reasoning-effort setting.
@@ -2054,9 +2057,7 @@ WHERE project_id = ?
     /// # Errors
     /// Returns an error if settings lookup fails.
     pub async fn load_reasoning_level(&self) -> Result<ReasoningLevel, DbError> {
-        let setting_value = self
-            .get_setting(SettingName::ReasoningLevel.as_str())
-            .await?;
+        let setting_value = self.get_setting(SettingName::ReasoningLevel).await?;
 
         let reasoning_level = setting_value
             .as_deref()
@@ -2135,7 +2136,7 @@ ORDER BY session_id, position, id
     /// # Errors
     /// Returns an error if settings persistence fails.
     pub async fn set_active_project_id(&self, project_id: i64) -> Result<(), DbError> {
-        self.upsert_setting("ActiveProjectId", &project_id.to_string())
+        self.upsert_setting(SettingName::ActiveProjectId, &project_id.to_string())
             .await
     }
 
@@ -2144,17 +2145,7 @@ ORDER BY session_id, position, id
     /// # Errors
     /// Returns an error if settings lookup fails.
     pub async fn load_active_project_id(&self) -> Result<Option<i64>, DbError> {
-        let setting_value = sqlx::query_as!(
-            RequiredStringValueRow,
-            r#"
-SELECT value AS "value!: _"
-FROM setting
-WHERE name = 'ActiveProjectId'
-"#
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        .map(|row| row.value);
+        let setting_value = self.get_setting(SettingName::ActiveProjectId).await?;
 
         Ok(setting_value.and_then(|value| value.parse::<i64>().ok()))
     }
@@ -3209,29 +3200,38 @@ WHERE model = ?
             .expect("failed to open in-memory db");
 
         database
-            .upsert_setting("DefaultSmartModel", AgentModel::Gemini31ProPreview.as_str())
+            .upsert_setting(
+                SettingName::DefaultSmartModel,
+                AgentModel::Gemini31ProPreview.as_str(),
+            )
             .await
             .expect("failed to persist default smart model");
         database
-            .upsert_setting("DefaultFastModel", AgentModel::Gpt53Codex.as_str())
+            .upsert_setting(
+                SettingName::DefaultFastModel,
+                AgentModel::Gpt53Codex.as_str(),
+            )
             .await
             .expect("failed to persist default fast model");
         database
-            .upsert_setting("DefaultReviewModel", AgentModel::ClaudeOpus46.as_str())
+            .upsert_setting(
+                SettingName::DefaultReviewModel,
+                AgentModel::ClaudeOpus46.as_str(),
+            )
             .await
             .expect("failed to persist default review model");
 
         // Act
         let default_smart_model = database
-            .get_setting("DefaultSmartModel")
+            .get_setting(SettingName::DefaultSmartModel)
             .await
             .expect("failed to load default smart model");
         let default_fast_model = database
-            .get_setting("DefaultFastModel")
+            .get_setting(SettingName::DefaultFastModel)
             .await
             .expect("failed to load default fast model");
         let default_review_model = database
-            .get_setting("DefaultReviewModel")
+            .get_setting(SettingName::DefaultReviewModel)
             .await
             .expect("failed to load default review model");
 
@@ -3266,29 +3266,21 @@ WHERE model = ?
             .expect("failed to insert second project");
 
         database
-            .upsert_project_setting(
-                first_project_id,
-                SettingName::OpenCommand.as_str(),
-                "npm run dev",
-            )
+            .upsert_project_setting(first_project_id, SettingName::OpenCommand, "npm run dev")
             .await
             .expect("failed to persist first project setting");
         database
-            .upsert_project_setting(
-                second_project_id,
-                SettingName::OpenCommand.as_str(),
-                "cargo test",
-            )
+            .upsert_project_setting(second_project_id, SettingName::OpenCommand, "cargo test")
             .await
             .expect("failed to persist second project setting");
 
         // Act
         let first_project_setting = database
-            .get_project_setting(first_project_id, SettingName::OpenCommand.as_str())
+            .get_project_setting(first_project_id, SettingName::OpenCommand)
             .await
             .expect("failed to load first project setting");
         let second_project_setting = database
-            .get_project_setting(second_project_id, SettingName::OpenCommand.as_str())
+            .get_project_setting(second_project_id, SettingName::OpenCommand)
             .await
             .expect("failed to load second project setting");
 
@@ -3339,11 +3331,7 @@ WHERE model = ?
             .await
             .expect("failed to load default project reasoning level");
         database
-            .upsert_project_setting(
-                project_id,
-                SettingName::ReasoningLevel.as_str(),
-                "unsupported",
-            )
+            .upsert_project_setting(project_id, SettingName::ReasoningLevel, "unsupported")
             .await
             .expect("failed to insert unsupported project reasoning level");
         let invalid_setting_level = database
@@ -3390,7 +3378,7 @@ WHERE model = ?
             .await
             .expect("failed to load default reasoning level");
         database
-            .upsert_setting(SettingName::ReasoningLevel.as_str(), "unsupported")
+            .upsert_setting(SettingName::ReasoningLevel, "unsupported")
             .await
             .expect("failed to insert unsupported reasoning level");
         let invalid_setting_level = database

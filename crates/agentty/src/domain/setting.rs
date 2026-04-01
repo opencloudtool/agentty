@@ -2,9 +2,11 @@
 
 use std::fmt;
 
-/// Stable keys used in the `setting` table.
+/// Stable keys used in the `setting` and `project_setting` tables.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SettingName {
+    /// Persists the active project selection.
+    ActiveProjectId,
     /// Persists the selected reasoning-effort level.
     ReasoningLevel,
     /// Persists the project or global fast-model selection.
@@ -26,6 +28,7 @@ impl SettingName {
     /// Returns the persisted key string for one setting.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::ActiveProjectId => "ActiveProjectId",
             Self::ReasoningLevel => "ReasoningLevel",
             Self::DefaultFastModel => "DefaultFastModel",
             Self::DefaultReviewModel => "DefaultReviewModel",
@@ -52,6 +55,7 @@ mod tests {
     fn test_as_str_returns_persisted_keys() {
         // Arrange
         let settings = [
+            (SettingName::ActiveProjectId, "ActiveProjectId"),
             (SettingName::ReasoningLevel, "ReasoningLevel"),
             (SettingName::DefaultFastModel, "DefaultFastModel"),
             (SettingName::DefaultReviewModel, "DefaultReviewModel"),
@@ -78,6 +82,7 @@ mod tests {
     fn test_display_matches_as_str() {
         // Arrange
         let settings = [
+            SettingName::ActiveProjectId,
             SettingName::ReasoningLevel,
             SettingName::DefaultFastModel,
             SettingName::DefaultReviewModel,

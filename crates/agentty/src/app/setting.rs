@@ -7,8 +7,8 @@ use crate::domain::setting::SettingName;
 
 /// Loads the persisted smart-model default used for new sessions.
 ///
-/// This prefers the new `DefaultSmartModel` key and falls back to the legacy
-/// `DefaultModel` key for backward compatibility.
+/// This prefers the project-scoped `DefaultSmartModel` key and otherwise falls
+/// back to `fallback_model`.
 pub(crate) async fn load_default_smart_model_setting(
     services: &AppServices,
     project_id: Option<i64>,
@@ -21,10 +21,6 @@ pub(crate) async fn load_default_smart_model_setting(
     if let Some(model) =
         load_model_setting(services, project_id, SettingName::DefaultSmartModel).await
     {
-        return resolve_available_model(model, &available_agent_kinds, fallback_model);
-    }
-
-    if let Some(model) = load_legacy_default_smart_model_setting(services).await {
         return resolve_available_model(model, &available_agent_kinds, fallback_model);
     }
 
@@ -177,7 +173,7 @@ impl SettingsManager {
 
         let open_command = services
             .db()
-            .get_project_setting(project_id, SettingName::OpenCommand.as_str())
+            .get_project_setting(project_id, SettingName::OpenCommand)
             .await
             .unwrap_or(None)
             .unwrap_or_default();
@@ -517,7 +513,9 @@ impl SettingsManager {
                 self.toggle_include_coauthored_by_agentty_selector(services)
                     .await;
             }
-            SettingName::OpenCommand | SettingName::LastUsedModelAsDefault => {}
+            SettingName::ActiveProjectId
+            | SettingName::OpenCommand
+            | SettingName::LastUsedModelAsDefault => {}
         }
     }
 
@@ -534,12 +532,13 @@ impl SettingsManager {
                     .db()
                     .upsert_project_setting(
                         self.project_id,
-                        SettingName::OpenCommand.as_str(),
+                        SettingName::OpenCommand,
                         &self.open_command,
                     )
                     .await;
             }
             SettingName::ReasoningLevel
+            | SettingName::ActiveProjectId
             | SettingName::DefaultFastModel
             | SettingName::DefaultReviewModel
             | SettingName::DefaultSmartModel
@@ -631,7 +630,7 @@ impl SettingsManager {
             .db()
             .upsert_project_setting(
                 self.project_id,
-                SettingName::DefaultSmartModel.as_str(),
+                SettingName::DefaultSmartModel,
                 self.default_smart_model.as_str(),
             )
             .await;
@@ -640,7 +639,7 @@ impl SettingsManager {
             .db()
             .upsert_project_setting(
                 self.project_id,
-                SettingName::LastUsedModelAsDefault.as_str(),
+                SettingName::LastUsedModelAsDefault,
                 &last_used_model_as_default_value,
             )
             .await;
@@ -662,7 +661,7 @@ impl SettingsManager {
             .db()
             .upsert_project_setting(
                 self.project_id,
-                SettingName::DefaultFastModel.as_str(),
+                SettingName::DefaultFastModel,
                 self.default_fast_model.as_str(),
             )
             .await;
@@ -675,7 +674,7 @@ impl SettingsManager {
             .db()
             .upsert_project_setting(
                 self.project_id,
-                SettingName::DefaultReviewModel.as_str(),
+                SettingName::DefaultReviewModel,
                 self.default_review_model.as_str(),
             )
             .await;
@@ -691,7 +690,7 @@ impl SettingsManager {
             .db()
             .upsert_project_setting(
                 self.project_id,
-                SettingName::IncludeCoauthoredByAgentty.as_str(),
+                SettingName::IncludeCoauthoredByAgentty,
                 &include_coauthored_by_agentty,
             )
             .await;
@@ -732,7 +731,7 @@ async fn load_project_bool_setting(
 
     services
         .db()
-        .get_project_setting(project_id, setting_name.as_str())
+        .get_project_setting(project_id, setting_name)
         .await
         .unwrap_or(None)
         .and_then(|setting_value| setting_value.parse::<bool>().ok())
@@ -817,7 +816,7 @@ async fn load_model_setting(
 
     services
         .db()
-        .get_project_setting(project_id, setting_name.as_str())
+        .get_project_setting(project_id, setting_name)
         .await
         .unwrap_or(None)
         .and_then(|setting_value| setting_value.parse().ok())
@@ -840,16 +839,6 @@ async fn load_reasoning_level_setting(
         .load_project_reasoning_level(project_id)
         .await
         .unwrap_or_default()
-}
-
-/// Loads the legacy smart-model setting from the previous key name.
-async fn load_legacy_default_smart_model_setting(services: &AppServices) -> Option<AgentModel> {
-    services
-        .db()
-        .get_setting("DefaultModel")
-        .await
-        .unwrap_or(None)
-        .and_then(|setting_value| setting_value.parse().ok())
 }
 
 #[cfg(test)]
@@ -1002,16 +991,11 @@ mod tests {
             .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::DefaultSmartModel.as_str(),
+                SettingName::DefaultSmartModel,
                 AgentModel::Gpt53Codex.as_str(),
             )
             .await
             .expect("failed to persist smart model");
-        services
-            .db()
-            .upsert_setting("DefaultModel", AgentModel::ClaudeOpus46.as_str())
-            .await
-            .expect("failed to persist legacy model");
 
         // Act
         let loaded_model = load_default_smart_model_setting(
@@ -1026,41 +1010,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_default_smart_model_setting_falls_back_to_legacy_and_default() {
+    async fn load_default_smart_model_setting_falls_back_to_default() {
         // Arrange
         let (services, project_id) = test_services().await;
         services
             .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::DefaultSmartModel.as_str(),
+                SettingName::DefaultSmartModel,
                 "not-a-valid-model",
             )
             .await
             .expect("failed to persist invalid smart model");
-        services
-            .db()
-            .upsert_setting("DefaultModel", AgentModel::ClaudeOpus46.as_str())
-            .await
-            .expect("failed to persist legacy model");
-
-        // Act
-        let legacy_loaded_model = load_default_smart_model_setting(
-            &services,
-            Some(project_id),
-            AgentModel::ClaudeHaiku4520251001,
-        )
-        .await;
-
-        // Assert
-        assert_eq!(legacy_loaded_model, AgentModel::ClaudeOpus46);
-
-        // Arrange
-        services
-            .db()
-            .upsert_setting("DefaultModel", "still-not-a-model")
-            .await
-            .expect("failed to overwrite legacy model");
 
         // Act
         let fallback_loaded_model = load_default_smart_model_setting(
@@ -1080,9 +1041,13 @@ mod tests {
         let (services, project_id) = test_services().await;
         services
             .db()
-            .upsert_setting("DefaultModel", AgentModel::ClaudeOpus46.as_str())
+            .upsert_project_setting(
+                project_id,
+                SettingName::DefaultSmartModel,
+                AgentModel::ClaudeOpus46.as_str(),
+            )
             .await
-            .expect("failed to persist legacy smart model");
+            .expect("failed to persist smart model");
 
         // Act
         let fallback_fast_model = load_default_fast_model_setting(
@@ -1100,7 +1065,7 @@ mod tests {
             .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::DefaultFastModel.as_str(),
+                SettingName::DefaultFastModel,
                 AgentModel::Gpt53Codex.as_str(),
             )
             .await
@@ -1124,14 +1089,9 @@ mod tests {
         let (services, project_id) = test_services().await;
         services
             .db()
-            .upsert_setting("DefaultModel", AgentModel::ClaudeHaiku4520251001.as_str())
-            .await
-            .expect("failed to persist legacy smart model");
-        services
-            .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::DefaultSmartModel.as_str(),
+                SettingName::DefaultSmartModel,
                 AgentModel::Gpt53Codex.as_str(),
             )
             .await
@@ -1140,7 +1100,7 @@ mod tests {
             .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::DefaultFastModel.as_str(),
+                SettingName::DefaultFastModel,
                 AgentModel::Gpt53CodexSpark.as_str(),
             )
             .await
@@ -1149,23 +1109,19 @@ mod tests {
             .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::DefaultReviewModel.as_str(),
+                SettingName::DefaultReviewModel,
                 AgentModel::ClaudeOpus46.as_str(),
             )
             .await
             .expect("failed to persist review model");
         services
             .db()
-            .upsert_project_setting(
-                project_id,
-                SettingName::IncludeCoauthoredByAgentty.as_str(),
-                "false",
-            )
+            .upsert_project_setting(project_id, SettingName::IncludeCoauthoredByAgentty, "false")
             .await
             .expect("failed to persist coauthor setting");
         services
             .db()
-            .upsert_project_setting(project_id, SettingName::OpenCommand.as_str(), "nvim .")
+            .upsert_project_setting(project_id, SettingName::OpenCommand, "nvim .")
             .await
             .expect("failed to persist open command");
         services
@@ -1175,11 +1131,7 @@ mod tests {
             .expect("failed to persist reasoning level");
         services
             .db()
-            .upsert_project_setting(
-                project_id,
-                SettingName::LastUsedModelAsDefault.as_str(),
-                "true",
-            )
+            .upsert_project_setting(project_id, SettingName::LastUsedModelAsDefault, "true")
             .await
             .expect("failed to persist last-used-model flag");
 
@@ -1204,7 +1156,7 @@ mod tests {
             .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::LastUsedModelAsDefault.as_str(),
+                SettingName::LastUsedModelAsDefault,
                 "invalid-bool",
             )
             .await
@@ -1225,7 +1177,7 @@ mod tests {
             .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::IncludeCoauthoredByAgentty.as_str(),
+                SettingName::IncludeCoauthoredByAgentty,
                 "invalid-bool",
             )
             .await
@@ -1532,7 +1484,7 @@ mod tests {
         assert_eq!(
             services
                 .db()
-                .get_project_setting(project_id, SettingName::OpenCommand.as_str())
+                .get_project_setting(project_id, SettingName::OpenCommand)
                 .await
                 .expect("failed to load open command"),
             Some("n".to_string())
@@ -1554,7 +1506,7 @@ mod tests {
         assert_eq!(
             services
                 .db()
-                .get_project_setting(project_id, SettingName::IncludeCoauthoredByAgentty.as_str())
+                .get_project_setting(project_id, SettingName::IncludeCoauthoredByAgentty)
                 .await
                 .expect("failed to load coauthor setting"),
             Some("false".to_string())
@@ -1580,7 +1532,7 @@ mod tests {
         assert_eq!(
             services
                 .db()
-                .get_project_setting(project_id, SettingName::OpenCommand.as_str())
+                .get_project_setting(project_id, SettingName::OpenCommand)
                 .await
                 .expect("failed to load open command"),
             None
@@ -1605,7 +1557,7 @@ mod tests {
         assert_eq!(
             services
                 .db()
-                .get_project_setting(project_id, SettingName::LastUsedModelAsDefault.as_str())
+                .get_project_setting(project_id, SettingName::LastUsedModelAsDefault)
                 .await
                 .expect("failed to load last-used flag"),
             Some("true".to_string())
@@ -1620,7 +1572,7 @@ mod tests {
         assert_eq!(
             services
                 .db()
-                .get_project_setting(project_id, SettingName::DefaultSmartModel.as_str())
+                .get_project_setting(project_id, SettingName::DefaultSmartModel)
                 .await
                 .expect("failed to load smart model"),
             Some(models[0].as_str().to_string())
@@ -1628,7 +1580,7 @@ mod tests {
         assert_eq!(
             services
                 .db()
-                .get_project_setting(project_id, SettingName::LastUsedModelAsDefault.as_str())
+                .get_project_setting(project_id, SettingName::LastUsedModelAsDefault)
                 .await
                 .expect("failed to load last-used flag"),
             Some("false".to_string())
@@ -1656,7 +1608,7 @@ mod tests {
             .db()
             .upsert_project_setting(
                 project_id,
-                SettingName::DefaultSmartModel.as_str(),
+                SettingName::DefaultSmartModel,
                 AgentModel::Gemini31ProPreview.as_str(),
             )
             .await

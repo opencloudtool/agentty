@@ -195,7 +195,7 @@ From prompt submit to persisted result:
 1. Persist session questions, replace persisted follow-up tasks, and emit `AppEvent::AgentResponseReceived`.
 1. Persist stats and per-model usage.
 1. Persist provider conversation id (app-server providers).
-1. Run auto-commit assistance path, which preserves a single evolving commit on the session branch: the first successful file-changing turn creates the commit, later turns regenerate the message from the cumulative diff and amend `HEAD`, and the session `title` is synced from that rewritten commit after success while the structured response `summary` payload remains unchanged.
+1. Run auto-commit assistance path, which preserves a single evolving commit on the session branch: the first successful file-changing turn creates the commit, later turns regenerate the message from the cumulative diff with the active project's `Default Fast Model`, auto-commit recovery prompts use that same fast-model selection, and the session `title` is synced from the rewritten commit after success while the structured response `summary` payload remains unchanged.
 1. Refresh persisted session size.
 1. Update final status (`Review` or `Question`; on failure -> `Review`).
 

@@ -1311,7 +1311,7 @@ mod tests {
         let default_smart_model_setting = app
             .services
             .db()
-            .get_project_setting(active_project_id, SettingName::DefaultSmartModel.as_str())
+            .get_project_setting(active_project_id, SettingName::DefaultSmartModel)
             .await
             .expect("failed to load setting");
 
@@ -1361,7 +1361,7 @@ mod tests {
             .db()
             .upsert_project_setting(
                 active_project_id,
-                SettingName::LastUsedModelAsDefault.as_str(),
+                SettingName::LastUsedModelAsDefault,
                 "true",
             )
             .await
@@ -1378,7 +1378,7 @@ mod tests {
         let default_smart_model_setting = app
             .services
             .db()
-            .get_project_setting(active_project_id, SettingName::DefaultSmartModel.as_str())
+            .get_project_setting(active_project_id, SettingName::DefaultSmartModel)
             .await
             .expect("failed to load setting");
         drop(app);
@@ -1412,39 +1412,11 @@ mod tests {
             .db()
             .upsert_project_setting(
                 active_project_id,
-                SettingName::DefaultSmartModel.as_str(),
+                SettingName::DefaultSmartModel,
                 AgentModel::ClaudeHaiku4520251001.as_str(),
             )
             .await
             .expect("failed to upsert default smart model setting");
-
-        // Act
-        let session_id = app
-            .create_session()
-            .await
-            .expect("failed to create session");
-
-        // Assert
-        let created_session = app
-            .sessions
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .expect("missing created session");
-        assert_eq!(created_session.model, AgentModel::ClaudeHaiku4520251001);
-    }
-
-    #[tokio::test]
-    async fn test_create_session_reads_legacy_default_model_setting_when_default_smart_key_is_missing()
-     {
-        // Arrange
-        let dir = tempdir().expect("failed to create temp dir");
-        let mut app = new_test_app_with_git(dir.path()).await;
-        app.services
-            .db()
-            .upsert_setting("DefaultModel", AgentModel::ClaudeHaiku4520251001.as_str())
-            .await
-            .expect("failed to upsert legacy default model setting");
 
         // Act
         let session_id = app
@@ -1840,7 +1812,7 @@ mod tests {
         .expect("failed to insert beta00002");
         db.upsert_project_setting(
             project_id,
-            SettingName::DefaultSmartModel.as_str(),
+            SettingName::DefaultSmartModel,
             AgentModel::ClaudeHaiku4520251001.as_str(),
         )
         .await

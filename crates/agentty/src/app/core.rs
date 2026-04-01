@@ -3355,33 +3355,25 @@ mod tests {
         database
             .upsert_project_setting(
                 first_project_id,
-                SettingName::DefaultSmartModel.as_str(),
+                SettingName::DefaultSmartModel,
                 AgentModel::ClaudeHaiku4520251001.as_str(),
             )
             .await
             .expect("failed to persist first project smart model");
         database
-            .upsert_project_setting(
-                first_project_id,
-                SettingName::OpenCommand.as_str(),
-                "npm run dev",
-            )
+            .upsert_project_setting(first_project_id, SettingName::OpenCommand, "npm run dev")
             .await
             .expect("failed to persist first project open command");
         database
             .upsert_project_setting(
                 second_project_id,
-                SettingName::DefaultSmartModel.as_str(),
+                SettingName::DefaultSmartModel,
                 AgentModel::Gpt53Codex.as_str(),
             )
             .await
             .expect("failed to persist second project smart model");
         database
-            .upsert_project_setting(
-                second_project_id,
-                SettingName::OpenCommand.as_str(),
-                "cargo test",
-            )
+            .upsert_project_setting(second_project_id, SettingName::OpenCommand, "cargo test")
             .await
             .expect("failed to persist second project open command");
         database

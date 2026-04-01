@@ -592,8 +592,9 @@ async fn apply_turn_result(
     }
 }
 
-/// Persists the successful turn payload, emits reducer events, and runs the
-/// auto-commit workflow before returning the next session status.
+/// Persists the successful turn payload, emits reducer events, stores both
+/// provider conversation markers, and runs the auto-commit workflow with the
+/// project's fast-model default before returning the next session status.
 async fn apply_successful_turn_result(
     context: &SessionWorkerContext,
     session_model: AgentModel,
@@ -712,6 +713,12 @@ async fn apply_successful_turn_result(
             instruction_conversation_id.as_deref(),
         )
         .await;
+    let auto_commit_model = SessionTaskService::load_auto_commit_model_setting(
+        &context.db,
+        &context.session_id,
+        session_model,
+    )
+    .await;
 
     SessionTaskService::handle_auto_commit(AssistContext {
         app_event_tx: context.app_event_tx.clone(),
@@ -721,7 +728,7 @@ async fn apply_successful_turn_result(
         git_client: Arc::clone(&context.git_client),
         id: context.session_id.clone(),
         output: Arc::clone(&context.output),
-        session_model,
+        session_model: auto_commit_model,
     })
     .await;
 
@@ -782,7 +789,7 @@ async fn load_project_model_setting(
 ) -> Option<AgentModel> {
     let project_id = project_id?;
 
-    db.get_project_setting(project_id, setting_name.as_str())
+    db.get_project_setting(project_id, setting_name)
         .await
         .ok()
         .flatten()
