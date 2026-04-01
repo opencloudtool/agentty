@@ -278,12 +278,27 @@ Promote when a `Ready Now` slot opens and the active workflow and model-availabi
 
 `None`
 
+### [6bb0cae7-c07c-4fab-ae6b-e74444d3f0f0] Planning: Move roadmap tasks to a single canonical TOML plan
+
+#### Outcome
+
+Let Agentty and `skills/implementation-plan` manage roadmap tasks through one canonical `docs/plan/roadmap.toml` file instead of Markdown-first task editing.
+
+#### Promote when
+
+Promote when maintainers want Agentty to list, claim, reorder, or transition roadmap tasks directly without maintaining both a rendered roadmap document and a separate structured source.
+
+#### Depends on
+
+`None`
+
 ## Context Notes
 
 - `Forge: Replace GitHub branch publish with create or update pull request` should reuse the existing `ag-forge` review-request create/refresh flow and keep GitLab on the current push-only branch-publish path.
 - `Agents: Scope model lists to locally available backends` should reuse one shared availability snapshot across Settings and `/model` instead of probing CLIs separately in render paths.
 - `Protocol: Bootstrap direct agent instructions once per app-server session` should keep the canonical instruction contract inside Agentty-managed prompt construction and persistence, not in user-maintained provider instruction files.
 - `Workflow: Stage draft session messages and start them explicitly` should keep using `Status::New` for draft sessions instead of introducing a second pre-start lifecycle status.
+- The parked `[6bb0cae7] Planning: Move roadmap tasks to a single canonical TOML plan` should make `docs/plan/roadmap.toml` the only roadmap source of truth for Agentty and `skills/implementation-plan`.
 - The parked local session harness slice should come back only when the active workflow and model-availability changes stop churning the same lifecycle seams.
 - The typed-error migration and module-test backfill are both complete. Convention cleanup remains open in the parked sweep card.
 - `Delivery: Add project commit strategy selection` should define the landing policy at the Agentty project level so merge and publish actions can present the right default path for each managed repository.
