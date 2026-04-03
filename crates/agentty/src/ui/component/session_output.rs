@@ -366,11 +366,14 @@ impl<'a> SessionOutput<'a> {
 
     /// Returns whether the output panel should append the structured summary
     /// block outside the persisted transcript string.
+    ///
+    /// Canceled sessions keep the raw transcript visible so interrupted turns
+    /// do not render synthetic summary content that was never finalized.
     fn shows_summary_block(
         status: Status,
         done_session_output_mode: DoneSessionOutputMode,
     ) -> bool {
-        if done_session_output_mode == DoneSessionOutputMode::Review {
+        if done_session_output_mode == DoneSessionOutputMode::Review || status == Status::Canceled {
             return false;
         }
 

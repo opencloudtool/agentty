@@ -2848,6 +2848,8 @@ mod tests {
         ));
     }
 
+    /// Verifies generic and authentication-related branch-push failures map
+    /// to the correct popup severity and current recovery guidance.
     #[test]
     fn branch_push_failure_maps_blocked_and_failed_errors() {
         // Arrange
@@ -2862,7 +2864,8 @@ mod tests {
 
         // Assert
         assert_eq!(blocked.title, "Branch push blocked");
-        assert!(blocked.message.contains("Configure Git credentials"));
+        assert!(blocked.message.contains("Git push requires authentication"));
+        assert!(blocked.message.contains("gh auth login"));
         assert_eq!(failed.title, "Branch push failed");
         assert!(
             failed
@@ -2871,6 +2874,8 @@ mod tests {
         );
     }
 
+    /// Verifies pushing a review session surfaces forge-specific git
+    /// authentication guidance when the remote rejects credentials.
     #[tokio::test]
     async fn push_session_branch_auth_failure_shows_git_guidance() {
         // Arrange
@@ -2905,7 +2910,8 @@ mod tests {
                 ref title,
                 ref message,
             }) if title == "Branch push blocked"
-                && message.contains("Configure Git credentials")
+                && message.contains("Git push requires authentication")
+                && message.contains("gh auth login")
         ));
     }
 
