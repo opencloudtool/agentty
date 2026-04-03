@@ -36,7 +36,11 @@ also writes a machine-readable workspace summary to
 | Path | What lives here |
 |------|------------------|
 | `crates/agentty/src/app.rs` | App module router and public re-exports for app orchestration APIs. |
-| `crates/agentty/src/app/core.rs` | `App` facade, event reducer, startup loading, background task wiring, and reducer-side session follow-up-task updates. |
+| `crates/agentty/src/app/core.rs` | `App` facade and thin orchestration entry points that compose startup, reducer, review, and branch-publish helpers. |
+| `crates/agentty/src/app/startup.rs` | `AppStartup` - startup project resolution, initial session hydration, and project catalog refresh helpers. |
+| `crates/agentty/src/app/reducer.rs` | `AppEventReducer` and `AppEventBatch` - app-event draining and batch coalescing for one runtime tick. |
+| `crates/agentty/src/app/review.rs` | Focused review cache updates plus background review-assist orchestration helpers. |
+| `crates/agentty/src/app/branch_publish.rs` | Branch-publish task payloads, git-push auth guidance, and branch publish background helpers. |
 | `crates/agentty/src/app/assist.rs` | Shared assistance helpers for commit and rebase recovery loops. |
 | `crates/agentty/src/app/merge_queue.rs` | Merge queue state machine (`Queued`/`Merging` progression rules). |
 | `crates/agentty/src/app/project.rs` | `ProjectManager` - project CRUD and selection orchestration. |
@@ -72,7 +76,9 @@ also writes a machine-readable workspace summary to
 
 | Path | What lives here |
 |------|------------------|
-| `crates/agentty/src/infra/db.rs` | SQLite persistence and queries, including session rows, follow-up-task rows, and database open config that enables `WAL` and foreign keys. |
+| `crates/agentty/src/infra/db.rs` | SQLite database types, shared row models, session queries, and database open config that enables `WAL` and foreign keys. |
+| `crates/agentty/src/infra/project_repository.rs` | Aggregate-specific `Database` impl for project persistence and project list queries. |
+| `crates/agentty/src/infra/setting_repository.rs` | Aggregate-specific `Database` impl for global and project-scoped settings queries. |
 | `crates/agentty/src/infra/fs.rs` | `FsClient` trait and production async filesystem adapter used by app orchestration. |
 | `crates/agentty/src/infra/git.rs` + `infra/git/` | Git module router plus async git workflow commands (`merge.rs`, `rebase.rs`, `repo.rs`, `sync.rs`, `worktree.rs`), including the single-session-commit sync path that stages changes and amends `HEAD` after the first session commit exists. |
 | `crates/agentty/src/infra/git/client.rs` | `GitClient` trait boundary, `RealGitClient` production adapter, and git client integration tests. |

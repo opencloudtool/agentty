@@ -4,24 +4,29 @@
 //! orchestration types and functions.
 
 mod assist;
+mod branch_publish;
 mod core;
 mod error;
 mod merge_queue;
 mod project;
+mod reducer;
+mod review;
 mod service;
 pub(crate) mod session;
 pub mod session_state;
 pub(crate) mod setting;
+mod startup;
 pub(crate) mod tab;
 mod task;
 
 pub use core::{AGENTTY_WT_DIR, App, UpdateStatus, agentty_home};
 #[cfg(test)]
 pub(crate) use core::{AppClients, MockSyncMainRunner};
-pub(crate) use core::{AppEvent, ReviewCacheEntry, SessionStatsUsage, diff_content_hash};
+pub(crate) use core::{AppEvent, SessionStatsUsage};
 
 pub use error::AppError;
 pub use project::ProjectManager;
+pub(crate) use review::{ReviewCacheEntry, diff_content_hash};
 pub use service::AppServices;
 pub use session::{SessionError, SessionManager};
 #[cfg(test)]

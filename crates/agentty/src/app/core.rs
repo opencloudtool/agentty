@@ -3,27 +3,41 @@
 //! This module wires app submodules and exposes [`App`] used by runtime mode
 //! handlers.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
+#[cfg(test)]
 use ag_forge as forge;
 use ag_forge::{RealReviewRequestClient, ReviewRequestClient};
+use app::branch_publish::{
+    BranchPublishActionUpdate, BranchPublishTaskResult, BranchPublishTaskSession,
+    BranchPublishTaskSuccess, branch_publish_loading_label as branch_publish_loading_label_text,
+    branch_publish_loading_message as branch_publish_loading_message_text,
+    branch_publish_loading_title as branch_publish_loading_title_text,
+    branch_publish_success_message as branch_publish_success_message_text,
+    branch_publish_success_title as branch_publish_success_title_text,
+    detected_forge_kind_from_git_push_error, git_push_authentication_message,
+    is_git_push_authentication_error, run_branch_publish_action,
+};
+#[cfg(test)]
+use app::branch_publish::{BranchPublishTaskFailure, branch_push_failure, push_session_branch};
 use app::merge_queue::{MergeQueue, MergeQueueProgress};
 use app::project::ProjectManager;
+use app::reducer::AppEventReducer;
+use app::review::{
+    ReviewCacheEntry, ReviewUpdate, apply_review_updates, auto_start_reviews,
+    start_review_assist as spawn_review_assist,
+};
 use app::service::{AppServiceDeps, AppServices};
 use app::session::SessionManager;
-use app::session_state::{SessionGitStatus, SessionState};
+use app::session_state::SessionGitStatus;
 use app::setting::SettingsManager;
+use app::startup::{AppStartup, StartupProjectContext, StartupSessionLoadContext};
 use app::tab::TabManager;
 use app::task;
-use ignore::WalkBuilder;
 use ratatui::Frame;
-use ratatui::widgets::TableState;
 use session::{SessionTaskService, SyncMainOutcome, SyncSessionStartError, TurnAppliedState};
 use tokio::sync::mpsc;
 
@@ -32,7 +46,7 @@ use crate::app::session;
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::input::InputState;
 use crate::domain::permission::PermissionMode;
-use crate::domain::project::{Project, ProjectListItem, project_name_from_path};
+use crate::domain::project::{Project, ProjectListItem};
 use crate::domain::session::{
     FollowUpTaskAction, PublishBranchAction, Session, SessionSize, Status,
 };
@@ -40,13 +54,12 @@ use crate::infra::channel::TurnPrompt;
 use crate::infra::db::Database;
 use crate::infra::file_index::FileEntry;
 use crate::infra::fs::{FsClient, RealFsClient};
-use crate::infra::git::{GitClient, RealGitClient, detect_git_info};
+use crate::infra::git::{GitClient, RealGitClient};
 use crate::infra::tmux::{RealTmuxClient, TmuxClient};
 use crate::infra::{agent, app_server, db};
 use crate::runtime::mode::{question, sync_blocked};
-use crate::ui::page::session_list::preferred_initial_session_index;
 use crate::ui::state::app_mode::{
-    AppMode, ConfirmationViewMode, DoneSessionOutputMode, HelpContext, QuestionFocus,
+    AppMode, ConfirmationViewMode, DoneSessionOutputMode, QuestionFocus,
 };
 use crate::ui::state::prompt::PromptAtMentionState;
 use crate::{app, ui};
@@ -54,12 +67,6 @@ use crate::{app, ui};
 /// Relative directory name used for session git worktrees within the
 /// `agentty` home directory.
 pub const AGENTTY_WT_DIR: &str = "wt";
-
-/// Maximum directory depth to scan under the user home for git repositories.
-const HOME_PROJECT_SCAN_MAX_DEPTH: usize = 5;
-
-/// Maximum number of repositories discovered from one home-directory scan.
-const HOME_PROJECT_SCAN_MAX_RESULTS: usize = 200;
 
 /// Returns the resolved `agentty` home directory.
 ///
@@ -171,6 +178,7 @@ pub(crate) enum AppEvent {
     },
 }
 
+/// Reduced representation of all app events currently queued for one tick.
 #[derive(Default)]
 struct AppEventBatch {
     applied_turns: HashMap<String, TurnAppliedState>,
@@ -191,108 +199,117 @@ struct AppEventBatch {
     update_status: Option<UpdateStatus>,
 }
 
+impl AppEventBatch {
+    /// Collects one app event into the coalesced batch state.
+    fn collect_event(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::AtMentionEntriesLoaded {
+                entries,
+                session_id,
+            } => {
+                self.at_mention_entries_updates.insert(session_id, entries);
+            }
+            AppEvent::GitStatusUpdated {
+                session_statuses,
+                status,
+            } => {
+                self.has_git_status_update = true;
+                self.git_status_update = status;
+                self.session_git_status_updates = session_statuses;
+            }
+            AppEvent::VersionAvailabilityUpdated {
+                latest_available_version,
+            } => {
+                self.has_latest_available_version_update = true;
+                self.latest_available_version_update = latest_available_version;
+            }
+            AppEvent::UpdateStatusChanged { update_status } => {
+                self.update_status = Some(update_status);
+            }
+            AppEvent::SessionModelUpdated {
+                session_id,
+                session_model,
+            } => {
+                self.session_model_updates.insert(session_id, session_model);
+            }
+            AppEvent::RefreshSessions => {
+                self.should_force_reload = true;
+            }
+            AppEvent::SessionProgressUpdated {
+                progress_message,
+                session_id,
+            } => {
+                self.session_progress_updates
+                    .insert(session_id, progress_message);
+            }
+            AppEvent::SyncMainCompleted { result } => {
+                self.sync_main_result = Some(result);
+            }
+            AppEvent::SessionSizeUpdated {
+                added_lines,
+                deleted_lines,
+                session_id,
+                session_size,
+            } => {
+                self.session_size_updates
+                    .insert(session_id, (added_lines, deleted_lines, session_size));
+            }
+            AppEvent::BranchPublishActionCompleted {
+                restore_view,
+                result,
+                session_id,
+            } => {
+                self.branch_publish_action_update = Some(BranchPublishActionUpdate {
+                    restore_view,
+                    result: *result,
+                    session_id,
+                });
+            }
+            AppEvent::ReviewPrepared {
+                diff_hash,
+                review_text,
+                session_id,
+            } => {
+                self.review_updates.insert(
+                    session_id,
+                    ReviewUpdate {
+                        diff_hash,
+                        result: Ok(review_text),
+                    },
+                );
+            }
+            AppEvent::ReviewPreparationFailed {
+                diff_hash,
+                error,
+                session_id,
+            } => {
+                self.review_updates.insert(
+                    session_id,
+                    ReviewUpdate {
+                        diff_hash,
+                        result: Err(error),
+                    },
+                );
+            }
+            AppEvent::SessionUpdated { session_id } => {
+                self.session_ids.insert(session_id);
+            }
+            AppEvent::AgentResponseReceived {
+                session_id,
+                turn_applied_state,
+            } => {
+                self.applied_turns.insert(session_id, turn_applied_state);
+            }
+        }
+    }
+}
+
 /// Immutable context displayed in sync-main popup content.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SyncPopupContext {
     default_branch: String,
     project_name: String,
 }
-
-/// Aggregated review assist output keyed by session.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReviewUpdate {
-    /// Hash of the diff that triggered this review, carried from the task.
-    diff_hash: u64,
-    result: Result<String, String>,
-}
-
-/// Mutable render-state target for one focused-review-capable mode.
-struct ReviewModeTarget<'a> {
-    /// Status banner shown while focused review loads or fails.
-    review_status_message: &'a mut Option<String>,
-    /// Generated focused review text shown in the active mode.
-    review_text: &'a mut Option<String>,
-}
-
-/// Session snapshot cloned into a branch-publish background task.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct BranchPublishTaskSession {
-    /// Base branch used as the review-request target when a forge link is
-    /// generated after push.
-    base_branch: String,
-    /// Session worktree used for git push and remote inspection.
-    folder: PathBuf,
-    /// Stable session identifier.
-    id: String,
-    /// Current session lifecycle state checked before push.
-    status: Status,
-}
-
-impl BranchPublishTaskSession {
-    /// Builds one background-task snapshot from a live session row.
-    fn from_session(session: &Session) -> Self {
-        Self {
-            base_branch: session.base_branch.clone(),
-            folder: session.folder.clone(),
-            id: session.id.clone(),
-            status: session.status,
-        }
-    }
-}
-
-/// Final reducer payload for a completed branch-publish background action.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct BranchPublishActionUpdate {
-    restore_view: ConfirmationViewMode,
-    result: BranchPublishTaskResult,
-    session_id: String,
-}
-
-/// Error payload shown inside the session-view info popup for branch-publish
-/// failures.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct BranchPublishTaskFailure {
-    message: String,
-    title: String,
-}
-
-impl BranchPublishTaskFailure {
-    /// Builds one blocked-state popup payload from an actionable message.
-    fn blocked(message: String) -> Self {
-        Self {
-            message,
-            title: "Branch push blocked".to_string(),
-        }
-    }
-
-    /// Builds one failure-state popup payload from an execution error.
-    fn failed(message: String) -> Self {
-        Self {
-            message,
-            title: "Branch push failed".to_string(),
-        }
-    }
-}
-
-/// Successful outcome returned by a branch-publish background action.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum BranchPublishTaskSuccess {
-    /// Carries the pushed branch name and persisted upstream reference for
-    /// popup copy and session state updates.
-    Pushed {
-        /// Remote branch name that was pushed successfully.
-        branch_name: String,
-        /// Optional forge-native URL that opens a new review-request flow for
-        /// the pushed branch.
-        review_request_creation_url: Option<String>,
-        /// Persisted upstream ref recorded after the successful push.
-        upstream_reference: String,
-    },
-}
-
-/// Reducer-friendly result for a completed branch-publish background action.
-pub(crate) type BranchPublishTaskResult =
-    Result<BranchPublishTaskSuccess, BranchPublishTaskFailure>;
 
 /// Token-usage totals for one model used by the `/stats` prompt command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -412,16 +429,6 @@ impl AppClients {
     }
 }
 
-/// Startup-only inputs needed to hydrate the initial `SessionManager`.
-struct StartupSessionLoadContext<'a> {
-    /// Identifier for the project whose sessions should be loaded.
-    active_project_id: i64,
-    /// Default model applied when persisted session rows omit one.
-    default_session_model: AgentModel,
-    /// Working directory used to resolve session metadata at startup.
-    startup_working_dir: &'a Path,
-}
-
 // SessionState definition moved to session_state.rs
 
 /// Stores application state and coordinates session/project workflows.
@@ -460,67 +467,6 @@ pub struct App {
     tmux_client: Arc<dyn TmuxClient>,
     /// Stores the current auto-update progress state when an update is running.
     update_status: Option<UpdateStatus>,
-}
-
-/// Cached focused review state for a session.
-#[derive(Debug)]
-pub(crate) enum ReviewCacheEntry {
-    /// Review generation is in progress.
-    Loading {
-        /// Hash of the diff text that triggered this review generation.
-        diff_hash: u64,
-    },
-    /// Review text was successfully generated.
-    Ready {
-        /// Hash of the diff text that was reviewed.
-        diff_hash: u64,
-        /// Generated review text.
-        text: String,
-    },
-    /// Review generation failed with an error description.
-    Failed {
-        /// Hash of the diff text that triggered the failed review.
-        diff_hash: u64,
-        /// Human-readable error description.
-        error: String,
-    },
-}
-
-impl ReviewCacheEntry {
-    /// Returns the diff content hash stored in any variant.
-    pub(crate) fn diff_hash(&self) -> u64 {
-        match self {
-            Self::Loading { diff_hash }
-            | Self::Ready { diff_hash, .. }
-            | Self::Failed { diff_hash, .. } => *diff_hash,
-        }
-    }
-
-    /// Builds one cache entry from a completed focused-review result.
-    fn from_result(diff_hash: u64, result: &Result<String, String>) -> Self {
-        match result {
-            Ok(review_text) => Self::Ready {
-                diff_hash,
-                text: review_text.clone(),
-            },
-            Err(error) => Self::Failed {
-                diff_hash,
-                error: error.clone(),
-            },
-        }
-    }
-}
-
-/// Computes a deterministic hash of the diff text for cache invalidation.
-///
-/// Uses [`DefaultHasher`] which is not guaranteed to produce stable hashes
-/// across Rust versions. This is acceptable because the cache is purely
-/// in-memory and lives only for the duration of the process.
-pub(crate) fn diff_content_hash(diff: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    diff.hash(&mut hasher);
-
-    hasher.finish()
 }
 
 impl App {
@@ -578,16 +524,16 @@ impl App {
         clients: AppClients,
     ) -> Result<Self, AppError> {
         let current_project_id =
-            Self::persist_startup_project(&db, working_dir.as_path(), git_branch.as_deref())
+            AppStartup::persist_startup_project(&db, working_dir.as_path(), git_branch.as_deref())
                 .await?;
-        let (
+        let StartupProjectContext {
             active_project_id,
-            startup_working_dir,
+            active_project_name,
+            project_items,
             startup_git_branch,
             startup_git_upstream_ref,
-            project_items,
-            active_project_name,
-        ) = Self::load_startup_project_context(
+            startup_working_dir,
+        } = AppStartup::load_startup_project_context(
             &db,
             clients.fs_client.as_ref(),
             &clients.git_client,
@@ -598,20 +544,12 @@ impl App {
         .await?;
 
         let clock: Arc<dyn session::Clock> = Arc::new(session::RealClock);
-
-        SessionManager::fail_unfinished_operations_from_previous_run(
-            db.clone(),
-            Arc::clone(&clock),
-        )
-        .await;
-
-        let git_status_cancel = Arc::new(AtomicBool::new(false));
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let available_agent_kinds = task::TaskService::load_agent_availability(Arc::clone(
             &clients.agent_availability_probe,
         ))
         .await;
-        Self::validate_startup_agent_availability(&available_agent_kinds)?;
+        AppStartup::validate_startup_agent_availability(&available_agent_kinds)?;
         let services = AppServices::new(
             base_path.clone(),
             Arc::clone(&clock),
@@ -628,11 +566,16 @@ impl App {
                 review_request_client: Arc::clone(&clients.review_request_client),
             },
         );
+        SessionManager::fail_unfinished_operations_from_previous_run(
+            db.clone(),
+            Arc::clone(&clock),
+        )
+        .await;
         let projects = ProjectManager::new(
             active_project_id,
             active_project_name,
             startup_git_branch,
-            Arc::clone(&git_status_cancel),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
             startup_git_upstream_ref,
             project_items,
             startup_working_dir.clone(),
@@ -644,7 +587,7 @@ impl App {
             AgentKind::Gemini.default_model(),
         )
         .await;
-        let sessions = Self::load_startup_sessions(
+        let sessions = AppStartup::load_startup_sessions(
             &services,
             StartupSessionLoadContext {
                 active_project_id,
@@ -654,7 +597,7 @@ impl App {
         )
         .await;
 
-        Self::spawn_background_tasks(auto_update, &event_tx, &projects, &services, &sessions);
+        AppStartup::spawn_background_tasks(auto_update, &event_tx, &projects, &services, &sessions);
 
         Ok(Self {
             mode: AppMode::List,
@@ -672,127 +615,6 @@ impl App {
             sync_main_runner: clients.sync_main_runner,
             tmux_client: clients.tmux_client,
         })
-    }
-
-    /// Returns a startup error when no supported backend CLI is installed on
-    /// the current machine.
-    fn validate_startup_agent_availability(
-        available_agent_kinds: &[AgentKind],
-    ) -> Result<(), AppError> {
-        if available_agent_kinds.is_empty() {
-            return Err(AppError::Workflow(
-                "No supported backend CLI found on `PATH`. Install `codex`, `claude`, or `gemini` \
-                 and restart `agentty`."
-                    .to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Persists the startup project row and backfills any legacy session
-    /// records that still lack a project association.
-    ///
-    /// # Errors
-    /// Returns an error if the startup project row or its backfill updates
-    /// cannot be written to the database.
-    async fn persist_startup_project(
-        db: &Database,
-        working_dir: &Path,
-        git_branch: Option<&str>,
-    ) -> Result<i64, AppError> {
-        let current_project_id = db
-            .upsert_project(&working_dir.to_string_lossy(), git_branch)
-            .await
-            .map_err(|error| {
-                AppError::Workflow(format!(
-                    "Failed to persist startup project `{}`: {error}",
-                    working_dir.display()
-                ))
-            })?;
-
-        db.backfill_session_project(current_project_id)
-            .await
-            .map_err(|error| {
-                AppError::Workflow(format!(
-                    "Failed to backfill startup sessions for project `{}`: {error}",
-                    working_dir.display()
-                ))
-            })?;
-
-        Ok(current_project_id)
-    }
-
-    /// Loads startup session rows, metadata, and runtime handles into one
-    /// session manager instance.
-    async fn load_startup_sessions(
-        services: &AppServices,
-        context: StartupSessionLoadContext<'_>,
-    ) -> SessionManager {
-        let StartupSessionLoadContext {
-            active_project_id,
-            default_session_model,
-            startup_working_dir,
-        } = context;
-        let mut table_state = TableState::default();
-        let mut handles = HashMap::new();
-        let fs_client = services.fs_client();
-        let (sessions, stats_activity) = SessionManager::load_sessions_with_fs_client(
-            services.base_path(),
-            services.db(),
-            active_project_id,
-            startup_working_dir,
-            &mut handles,
-            fs_client.as_ref(),
-        )
-        .await;
-        let clock = services.clock();
-        let (sessions_row_count, sessions_updated_at_max) = services
-            .db()
-            .load_sessions_metadata()
-            .await
-            .unwrap_or((0, 0));
-        table_state.select(preferred_initial_session_index(&sessions));
-
-        SessionManager::new(
-            session::SessionDefaults {
-                model: default_session_model,
-            },
-            services.git_client(),
-            SessionState::new(
-                handles,
-                sessions,
-                table_state,
-                clock,
-                sessions_row_count,
-                sessions_updated_at_max,
-            ),
-            stats_activity,
-        )
-    }
-
-    /// Spawns background pollers for git status and version checks.
-    ///
-    /// When `auto_update` is `true`, a background `npm i -g agentty@latest`
-    /// runs automatically after detecting a newer version.
-    fn spawn_background_tasks(
-        auto_update: bool,
-        event_tx: &mpsc::UnboundedSender<AppEvent>,
-        projects: &ProjectManager,
-        services: &AppServices,
-        sessions: &SessionManager,
-    ) {
-        task::TaskService::spawn_version_check_task(event_tx, auto_update);
-        if projects.has_git_branch() {
-            task::TaskService::spawn_git_status_task(
-                projects.working_dir(),
-                projects.git_branch().unwrap_or_default().to_string(),
-                Self::session_git_status_targets(sessions),
-                projects.git_status_cancel(),
-                event_tx.clone(),
-                services.git_client(),
-            );
-        }
     }
 
     /// Returns the active project identifier.
@@ -1446,15 +1268,15 @@ impl App {
         review_diff: &str,
         session_summary: Option<&str>,
     ) {
-        task::TaskService::spawn_review_assist_task(task::ReviewAssistTaskInput {
-            app_event_tx: self.services.event_sender(),
+        spawn_review_assist(
+            self.services.event_sender(),
+            self.settings.default_review_model,
+            session_id,
+            session_folder,
             diff_hash,
-            review_diff: review_diff.to_string(),
-            session_folder: session_folder.to_path_buf(),
-            session_id: session_id.to_string(),
-            review_model: self.settings.default_review_model,
-            session_summary: session_summary.map(str::to_string),
-        });
+            review_diff,
+            session_summary,
+        );
     }
 
     /// Reloads sessions when metadata cache indicates changes.
@@ -1498,7 +1320,9 @@ impl App {
 
     /// Builds git-status polling targets for active session branches in the
     /// current project.
-    fn session_git_status_targets(sessions: &SessionManager) -> Vec<task::SessionGitStatusTarget> {
+    pub(crate) fn session_git_status_targets(
+        sessions: &SessionManager,
+    ) -> Vec<task::SessionGitStatusTarget> {
         sessions
             .state()
             .sessions
@@ -1518,8 +1342,11 @@ impl App {
     /// git-status updates, then applies session-handle sync for touched
     /// sessions.
     pub(crate) async fn apply_app_events(&mut self, first_event: AppEvent) {
-        let drained_events = self.drain_app_events(first_event);
-        let event_batch = Self::reduce_app_events(drained_events);
+        let drained_events = AppEventReducer::drain(&mut self.event_rx, first_event);
+        let mut event_batch = AppEventBatch::default();
+        for event in drained_events {
+            event_batch.collect_event(event);
+        }
 
         self.apply_app_event_batch(event_batch).await;
     }
@@ -1536,24 +1363,6 @@ impl App {
     /// Waits for the next internal app event.
     pub(crate) async fn next_app_event(&mut self) -> Option<AppEvent> {
         self.event_rx.recv().await
-    }
-
-    fn drain_app_events(&mut self, first_event: AppEvent) -> Vec<AppEvent> {
-        let mut events = vec![first_event];
-        while let Ok(event) = self.event_rx.try_recv() {
-            events.push(event);
-        }
-
-        events
-    }
-
-    fn reduce_app_events(events: Vec<AppEvent>) -> AppEventBatch {
-        let mut event_batch = AppEventBatch::default();
-        for event in events {
-            event_batch.collect_event(event);
-        }
-
-        event_batch
     }
 
     /// Applies one reduced app-event batch to in-memory app state.
@@ -1613,7 +1422,11 @@ impl App {
             self.apply_prompt_at_mention_entries(&session_id, entries);
         }
 
-        self.apply_review_updates(event_batch.review_updates);
+        apply_review_updates(
+            &mut self.review_cache,
+            &mut self.mode,
+            event_batch.review_updates,
+        );
 
         if let Some(branch_publish_action_update) = event_batch.branch_publish_action_update {
             self.apply_branch_publish_action_update(branch_publish_action_update);
@@ -1638,8 +1451,16 @@ impl App {
         self.sessions
             .clear_terminal_session_workers(&event_batch.session_ids);
 
-        self.auto_start_reviews(&event_batch.session_ids, &previous_session_states)
-            .await;
+        auto_start_reviews(
+            &mut self.review_cache,
+            &event_batch.session_ids,
+            &previous_session_states,
+            &self.sessions.sessions,
+            self.services.git_client(),
+            self.services.event_sender(),
+            self.settings.default_review_model,
+        )
+        .await;
 
         if let Some(sync_main_result) = event_batch.sync_main_result {
             let sync_popup_context = self.sync_popup_context();
@@ -1883,117 +1704,31 @@ impl App {
         *at_mention_state = Some(PromptAtMentionState::new(entries));
     }
 
-    /// Applies review assist updates for all sessions in the batch.
-    fn apply_review_updates(&mut self, review_updates: HashMap<String, ReviewUpdate>) {
-        for (session_id, review_update) in review_updates {
-            self.apply_review_update(&session_id, review_update);
-        }
+    /// Applies one review assist update to cache and focused render state.
+    #[cfg(test)]
+    fn apply_review_update(&mut self, session_id: &str, review_update: app::review::ReviewUpdate) {
+        let mut review_updates = HashMap::new();
+        review_updates.insert(session_id.to_string(), review_update);
+        apply_review_updates(&mut self.review_cache, &mut self.mode, review_updates);
     }
 
-    /// Applies review assist output to the active view/help mode when
-    /// session identifiers still match and updates the persistent cache.
-    fn apply_review_update(&mut self, session_id: &str, review_update: ReviewUpdate) {
-        let ReviewUpdate { diff_hash, result } = review_update;
-        let Some(cache_entry) = self.review_cache.get(session_id) else {
-            return;
-        };
-
-        if cache_entry.diff_hash() != diff_hash {
-            return;
-        }
-
-        self.review_cache.insert(
-            session_id.to_string(),
-            ReviewCacheEntry::from_result(diff_hash, &result),
-        );
-
-        if let Some(mode_target) = Self::review_mode_target(&mut self.mode, session_id) {
-            Self::apply_review_result(
-                mode_target.review_status_message,
-                mode_target.review_text,
-                result,
-            );
-        }
-    }
-
-    /// Returns the focused-review render fields for the active mode when it
-    /// targets the specified session.
-    fn review_mode_target<'a>(
-        mode: &'a mut AppMode,
-        session_id: &str,
-    ) -> Option<ReviewModeTarget<'a>> {
-        match mode {
-            AppMode::View {
-                review_status_message,
-                review_text,
-                session_id: view_session_id,
-                ..
-            } if view_session_id == session_id => Some(ReviewModeTarget {
-                review_status_message,
-                review_text,
-            }),
-            AppMode::Help {
-                context:
-                    HelpContext::View {
-                        review_status_message,
-                        review_text,
-                        session_id: view_session_id,
-                        ..
-                    },
-                ..
-            } if view_session_id == session_id => Some(ReviewModeTarget {
-                review_status_message,
-                review_text,
-            }),
-            AppMode::OpenCommandSelector { restore_view, .. }
-            | AppMode::PublishBranchInput { restore_view, .. }
-            | AppMode::ViewInfoPopup { restore_view, .. } => {
-                Self::confirmation_review_mode_target(restore_view, session_id)
-            }
-            AppMode::List
-            | AppMode::Confirmation { .. }
-            | AppMode::SyncBlockedPopup { .. }
-            | AppMode::Prompt { .. }
-            | AppMode::Question { .. }
-            | AppMode::Diff { .. }
-            | AppMode::Help { .. }
-            | AppMode::View { .. } => None,
-        }
-    }
-
-    /// Returns the focused-review fields stored in one confirmation restore
-    /// view when it targets the specified session.
-    fn confirmation_review_mode_target<'a>(
-        restore_view: &'a mut ConfirmationViewMode,
-        session_id: &str,
-    ) -> Option<ReviewModeTarget<'a>> {
-        if restore_view.session_id != session_id {
-            return None;
-        }
-
-        Some(ReviewModeTarget {
-            review_status_message: &mut restore_view.review_status_message,
-            review_text: &mut restore_view.review_text,
-        })
-    }
-
-    /// Applies one review assist result to render-state fields.
-    fn apply_review_result(
-        review_status_message: &mut Option<String>,
-        review_text: &mut Option<String>,
-        result: Result<String, String>,
+    /// Starts focused review generation for sessions that just entered review.
+    #[cfg(test)]
+    async fn auto_start_reviews(
+        &mut self,
+        session_ids: &HashSet<String>,
+        previous_session_states: &HashMap<String, Status>,
     ) {
-        match result {
-            Ok(text) => {
-                *review_status_message = None;
-                *review_text = Some(text);
-            }
-            Err(error) => {
-                *review_status_message =
-                    Some(format!("Review assist unavailable: {}", error.trim()));
-                *review_text = None;
-            }
-        }
+        auto_start_reviews(
+            &mut self.review_cache,
+            session_ids,
+            previous_session_states,
+            &self.sessions.sessions,
+            self.services.git_client(),
+            self.services.event_sender(),
+            self.settings.default_review_model,
+        )
+        .await;
     }
 
     /// Applies one completed branch-publish action and updates the popup.
@@ -2037,88 +1772,6 @@ impl App {
             ),
         };
         self.mode = popup_mode;
-    }
-
-    /// Detects sessions that just transitioned to `Review` and automatically
-    /// starts focused review generation so the review text is ready when the
-    /// user presses `f`.
-    ///
-    /// Also invalidates cached reviews when a session returns to
-    /// `InProgress` (user sent a follow-up reply).
-    async fn auto_start_reviews(
-        &mut self,
-        session_ids: &HashSet<String>,
-        previous_session_states: &HashMap<String, Status>,
-    ) {
-        for session_id in session_ids {
-            let Some(session) = self
-                .sessions
-                .sessions
-                .iter()
-                .find(|session| session.id == *session_id)
-            else {
-                continue;
-            };
-
-            let current_status = session.status;
-            let previous_status = previous_session_states.get(session_id).copied();
-
-            if current_status == Status::InProgress {
-                self.review_cache.remove(session_id);
-
-                continue;
-            }
-
-            let transitioned_to_review = current_status == Status::Review
-                && matches!(previous_status, Some(Status::InProgress));
-
-            if !transitioned_to_review {
-                continue;
-            }
-
-            let session_folder = session.folder.clone();
-            let base_branch = session.base_branch.clone();
-            let session_summary = session.summary.clone();
-
-            let diff = self
-                .services
-                .git_client()
-                .diff(session_folder.clone(), base_branch)
-                .await
-                .unwrap_or_default();
-
-            if diff.trim().is_empty() || diff.starts_with("Failed to run git diff:") {
-                continue;
-            }
-
-            let new_hash = diff_content_hash(&diff);
-
-            let existing_hash = self
-                .review_cache
-                .get(session_id)
-                .and_then(|entry| match entry {
-                    ReviewCacheEntry::Ready { .. } => Some(entry.diff_hash()),
-                    _ => None,
-                });
-
-            if existing_hash == Some(new_hash) {
-                continue;
-            }
-
-            self.review_cache.insert(
-                session_id.clone(),
-                ReviewCacheEntry::Loading {
-                    diff_hash: new_hash,
-                },
-            );
-            self.start_review_assist(
-                session_id,
-                &session_folder,
-                new_hash,
-                &diff,
-                session_summary.as_deref(),
-            );
-        }
     }
 
     /// Validates whether a session is currently eligible for merge queueing.
@@ -2292,9 +1945,7 @@ impl App {
 
     /// Returns the loading popup title for one branch-publish action.
     fn branch_publish_loading_title(publish_branch_action: PublishBranchAction) -> String {
-        match publish_branch_action {
-            PublishBranchAction::Push => "Pushing branch".to_string(),
-        }
+        branch_publish_loading_title_text(publish_branch_action)
     }
 
     /// Drops thinking text for sessions that are no longer actively running.
@@ -2313,29 +1964,17 @@ impl App {
         publish_branch_action: PublishBranchAction,
         remote_branch_name: Option<&str>,
     ) -> String {
-        match (publish_branch_action, remote_branch_name) {
-            (PublishBranchAction::Push, Some(remote_branch_name)) => format!(
-                "Publishing the session branch to `{remote_branch_name}` on the configured Git \
-                 remote."
-            ),
-            (PublishBranchAction::Push, None) => {
-                "Publishing the session branch to the configured Git remote.".to_string()
-            }
-        }
+        branch_publish_loading_message_text(publish_branch_action, remote_branch_name)
     }
 
     /// Returns the loading spinner label for one branch-publish action.
     fn branch_publish_loading_label(publish_branch_action: PublishBranchAction) -> String {
-        match publish_branch_action {
-            PublishBranchAction::Push => "Pushing branch...".to_string(),
-        }
+        branch_publish_loading_label_text(publish_branch_action)
     }
 
     /// Returns the success popup title for a completed branch-publish action.
     fn branch_publish_success_title(publish_branch_action: PublishBranchAction) -> String {
-        match publish_branch_action {
-            PublishBranchAction::Push => "Branch pushed".to_string(),
-        }
+        branch_publish_success_title_text(publish_branch_action)
     }
 
     /// Returns the success popup body for one completed branch push.
@@ -2343,16 +1982,7 @@ impl App {
         branch_name: &str,
         review_request_creation_url: Option<&str>,
     ) -> String {
-        match review_request_creation_url {
-            Some(review_request_creation_url) => format!(
-                "Pushed session branch `{branch_name}`.\n\nOpen this link to create the pull \
-                 request:\n{review_request_creation_url}"
-            ),
-            None => format!(
-                "Pushed session branch `{branch_name}`.\n\nCreate the pull request manually from \
-                 your forge UI."
-            ),
-        }
+        branch_publish_success_message_text(branch_name, review_request_creation_url)
     }
 
     /// Builds final sync popup mode from background sync completion result.
@@ -2488,154 +2118,24 @@ impl App {
         }
     }
 
-    /// Resolves startup project state and persists the active project metadata.
-    ///
-    /// Persisted projects whose directories no longer exist are ignored so
-    /// startup falls back to the current working directory instead of reviving
-    /// stale project entries.
-    ///
-    /// # Errors
-    /// Returns an error if startup project metadata cannot be persisted.
-    async fn load_startup_project_context(
-        db: &Database,
-        fs_client: &dyn FsClient,
-        git_client: &Arc<dyn GitClient>,
-        working_dir: &Path,
-        git_branch: Option<String>,
-        current_project_id: i64,
-    ) -> Result<
-        (
-            i64,
-            PathBuf,
-            Option<String>,
-            Option<String>,
-            Vec<ProjectListItem>,
-            String,
-        ),
-        AppError,
-    > {
-        let startup_active_project_id =
-            Self::resolve_startup_active_project_id(db, fs_client, current_project_id).await;
-        let startup_active_project = Self::load_project(
-            db,
-            startup_active_project_id,
-            working_dir,
-            git_branch.as_deref(),
-        )
-        .await;
-        let startup_working_dir = startup_active_project.path.clone();
-        let startup_git_branch = if startup_working_dir.as_path() == working_dir {
-            git_branch
-        } else {
-            git_client
-                .detect_git_info(startup_working_dir.clone())
-                .await
-        };
-        let startup_git_upstream_ref = Self::load_git_upstream_ref(
-            git_client.as_ref(),
-            startup_working_dir.as_path(),
-            startup_git_branch.as_deref(),
-        )
-        .await;
-        let active_project_id = db
-            .upsert_project(
-                &startup_working_dir.to_string_lossy(),
-                startup_git_branch.as_deref(),
-            )
-            .await
-            .map_err(|error| {
-                AppError::Workflow(format!(
-                    "Failed to persist active startup project `{}`: {error}",
-                    startup_working_dir.display()
-                ))
-            })?;
-        db.set_active_project_id(active_project_id)
-            .await
-            .map_err(|error| {
-                AppError::Workflow(format!(
-                    "Failed to store active startup project `{}`: {error}",
-                    startup_working_dir.display()
-                ))
-            })?;
-        db.touch_project_last_opened(active_project_id)
-            .await
-            .map_err(|error| {
-                AppError::Workflow(format!(
-                    "Failed to update startup project activity for `{}`: {error}",
-                    startup_working_dir.display()
-                ))
-            })?;
-        Self::refresh_project_catalog_on_startup(db).await;
-
-        let project_items = Self::load_project_items(db, fs_client).await;
-        let active_project_name =
-            Self::project_title_for_id(&project_items, active_project_id, &startup_working_dir);
-
-        Ok((
-            active_project_id,
-            startup_working_dir,
-            startup_git_branch,
-            startup_git_upstream_ref,
-            project_items,
-            active_project_name,
-        ))
-    }
-
     /// Resolves the configured upstream reference for one project branch.
     async fn load_git_upstream_ref(
         git_client: &dyn GitClient,
         working_dir: &Path,
         git_branch: Option<&str>,
     ) -> Option<String> {
-        git_branch?;
-
-        git_client
-            .current_upstream_reference(working_dir.to_path_buf())
-            .await
-            .ok()
+        AppStartup::load_git_upstream_ref(git_client, working_dir, git_branch).await
     }
 
     /// Resolves startup active project id from settings, falling back to the
     /// current working directory when the stored project row is stale.
+    #[cfg(test)]
     async fn resolve_startup_active_project_id(
         db: &Database,
         fs_client: &dyn FsClient,
         current_project_id: i64,
     ) -> i64 {
-        let Some(stored_project_id) = db.load_active_project_id().await.ok().flatten() else {
-            return current_project_id;
-        };
-        let Some(project_row) = db.get_project(stored_project_id).await.ok().flatten() else {
-            return current_project_id;
-        };
-        if !Self::is_existing_project_path(fs_client, project_row.path.as_str()) {
-            return current_project_id;
-        }
-
-        stored_project_id
-    }
-
-    /// Loads one project and falls back to current working directory snapshot.
-    async fn load_project(
-        db: &Database,
-        project_id: i64,
-        fallback_working_dir: &Path,
-        fallback_git_branch: Option<&str>,
-    ) -> Project {
-        if let Some(project_row) = db.get_project(project_id).await.ok().flatten() {
-            return Self::project_from_row(project_row);
-        }
-
-        Project {
-            created_at: 0,
-            display_name: None,
-            git_branch: fallback_git_branch.map(str::to_string),
-            id: project_id,
-            is_favorite: false,
-            last_opened_at: None,
-            path: fallback_working_dir.to_path_buf(),
-            updated_at: 0,
-        }
+        AppStartup::resolve_startup_active_project_id(db, fs_client, current_project_id).await
     }
 
     /// Loads project list entries for the projects tab.
@@ -2644,534 +2144,82 @@ impl App {
     /// excluded so the list keeps only user-facing repository roots that still
     /// exist on disk.
     async fn load_project_items(db: &Database, fs_client: &dyn FsClient) -> Vec<ProjectListItem> {
-        let session_worktree_root = agentty_home().join(AGENTTY_WT_DIR);
-
-        Self::load_project_items_with_session_worktree_root(
-            db,
-            fs_client,
-            session_worktree_root.as_path(),
-        )
-        .await
+        AppStartup::load_project_items(db, fs_client).await
     }
 
     /// Loads project list entries with one caller-provided session worktree
     /// root for filtering.
+    #[cfg(test)]
     async fn load_project_items_with_session_worktree_root(
         db: &Database,
         fs_client: &dyn FsClient,
         session_worktree_root: &Path,
     ) -> Vec<ProjectListItem> {
-        Self::visible_project_rows(
-            db.load_projects_with_stats().await.unwrap_or_default(),
+        AppStartup::load_project_items_with_session_worktree_root(
+            db,
             fs_client,
             session_worktree_root,
         )
-        .into_iter()
-        .map(Self::project_list_item_from_row)
-        .collect()
+        .await
     }
 
     /// Refreshes the persisted project catalog from the user's home directory
     /// during startup before the first project list render.
-    async fn refresh_project_catalog_on_startup(db: &Database) {
-        let session_worktree_root = agentty_home().join(AGENTTY_WT_DIR);
-        let home_directory = dirs::home_dir();
-
-        Self::load_projects_from_home_directory(
-            db,
-            session_worktree_root.as_path(),
-            home_directory.as_deref(),
-        )
-        .await;
-    }
-
-    /// Discovers git repositories under the user home directory and persists
-    /// them during the startup-only catalog refresh.
+    #[cfg(test)]
     async fn load_projects_from_home_directory(
         db: &Database,
         session_worktree_root: &Path,
         home_directory: Option<&Path>,
     ) {
-        let Some(home_directory) = home_directory.map(Path::to_path_buf) else {
-            return;
-        };
-
-        let session_worktree_root = session_worktree_root.to_path_buf();
-        let Ok(discovered_project_paths) = tokio::task::spawn_blocking(move || {
-            Self::discover_home_project_paths(
-                home_directory.as_path(),
-                session_worktree_root.as_path(),
-            )
-        })
-        .await
-        else {
-            return;
-        };
-
-        for project_path in discovered_project_paths {
-            let git_branch = detect_git_info(project_path.clone()).await;
-            let project_path = project_path.to_string_lossy().to_string();
-            // Best-effort: project metadata persistence is non-critical.
-            let _ = db
-                .upsert_project(project_path.as_str(), git_branch.as_deref())
-                .await;
-        }
+        AppStartup::load_projects_from_home_directory(db, session_worktree_root, home_directory)
+            .await;
     }
 
     /// Returns git repository roots discovered under the user home directory.
     ///
     /// A repository root is identified by a direct `.git` marker inside the
     /// directory and discovery stops after `HOME_PROJECT_SCAN_MAX_RESULTS`.
+    #[cfg(test)]
     fn discover_home_project_paths(
         home_directory: &Path,
         session_worktree_root: &Path,
     ) -> Vec<PathBuf> {
-        let mut discovered_project_paths = Vec::new();
-
-        let mut walker_builder = WalkBuilder::new(home_directory);
-        walker_builder
-            .max_depth(Some(HOME_PROJECT_SCAN_MAX_DEPTH))
-            .hidden(true)
-            .git_ignore(true)
-            .git_global(true)
-            .git_exclude(true)
-            .parents(true)
-            .ignore(true);
-        let walker = walker_builder.build();
-
-        for directory_entry in walker.flatten() {
-            let Some(file_type) = directory_entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let directory_path = directory_entry.path();
-            if directory_path == home_directory {
-                continue;
-            }
-            if Self::is_session_worktree_project_path(
-                directory_path.to_string_lossy().as_ref(),
-                session_worktree_root,
-            ) {
-                continue;
-            }
-            if !directory_path.join(".git").exists() {
-                continue;
-            }
-
-            discovered_project_paths.push(directory_path.to_path_buf());
-            if discovered_project_paths.len() >= HOME_PROJECT_SCAN_MAX_RESULTS {
-                break;
-            }
-        }
-
-        discovered_project_paths.sort();
-        discovered_project_paths.dedup();
-
-        discovered_project_paths
+        AppStartup::discover_home_project_paths(home_directory, session_worktree_root)
     }
 
     /// Returns whether a persisted project path points to an agentty session
     /// worktree under `~/.agentty/wt`.
+    #[cfg(test)]
     fn is_session_worktree_project_path(project_path: &str, session_worktree_root: &Path) -> bool {
-        Path::new(project_path).starts_with(session_worktree_root)
+        AppStartup::is_session_worktree_project_path(project_path, session_worktree_root)
     }
 
     /// Filters persisted project rows down to entries that should remain
     /// visible in the Projects tab.
+    #[cfg(test)]
     fn visible_project_rows(
         project_rows: Vec<db::ProjectListRow>,
         fs_client: &dyn FsClient,
         session_worktree_root: &Path,
     ) -> Vec<db::ProjectListRow> {
-        project_rows
-            .into_iter()
-            .filter(|project_row| {
-                !Self::is_session_worktree_project_path(
-                    project_row.path.as_str(),
-                    session_worktree_root,
-                ) && Self::is_existing_project_path(fs_client, project_row.path.as_str())
-            })
-            .collect()
+        AppStartup::visible_project_rows(project_rows, fs_client, session_worktree_root)
     }
 
     /// Returns whether one persisted project path still resolves to a
     /// directory on disk.
+    #[cfg(test)]
     fn is_existing_project_path(fs_client: &dyn FsClient, project_path: &str) -> bool {
-        fs_client.is_dir(PathBuf::from(project_path))
+        AppStartup::is_existing_project_path(fs_client, project_path)
     }
 
     /// Converts a project row into domain project model.
     fn project_from_row(project_row: db::ProjectRow) -> Project {
-        Project {
-            created_at: project_row.created_at,
-            display_name: project_row.display_name,
-            git_branch: project_row.git_branch,
-            id: project_row.id,
-            is_favorite: project_row.is_favorite,
-            last_opened_at: project_row.last_opened_at,
-            path: PathBuf::from(project_row.path),
-            updated_at: project_row.updated_at,
-        }
-    }
-
-    /// Converts an aggregated project row into list-friendly project metadata.
-    fn project_list_item_from_row(project_row: db::ProjectListRow) -> ProjectListItem {
-        let project = Project {
-            created_at: project_row.created_at,
-            display_name: project_row.display_name,
-            git_branch: project_row.git_branch,
-            id: project_row.id,
-            is_favorite: project_row.is_favorite,
-            last_opened_at: project_row.last_opened_at,
-            path: PathBuf::from(project_row.path),
-            updated_at: project_row.updated_at,
-        };
-
-        ProjectListItem {
-            active_session_count: u32::try_from(project_row.active_session_count)
-                .unwrap_or(u32::MAX),
-            last_session_updated_at: project_row.last_session_updated_at,
-            project,
-            session_count: u32::try_from(project_row.session_count).unwrap_or(u32::MAX),
-        }
-    }
-
-    /// Resolves active project title for startup rendering.
-    fn project_title_for_id(
-        project_items: &[ProjectListItem],
-        project_id: i64,
-        fallback_path: &Path,
-    ) -> String {
-        if let Some(project_item) = project_items
-            .iter()
-            .find(|project_item| project_item.project.id == project_id)
-        {
-            return project_item.project.display_label();
-        }
-
-        project_name_from_path(fallback_path)
+        AppStartup::project_from_row(project_row)
     }
 
     /// Returns loading-state popup copy for sync-main operation.
     fn sync_loading_message() -> String {
         "Synchronizing with its upstream.".to_string()
-    }
-}
-
-/// Executes one background branch-publish action for a session snapshot.
-async fn run_branch_publish_action(
-    publish_branch_action: PublishBranchAction,
-    branch_publish_session: BranchPublishTaskSession,
-    db: db::Database,
-    git_client: Arc<dyn GitClient>,
-    remote_branch_name: Option<String>,
-) -> BranchPublishTaskResult {
-    match publish_branch_action {
-        PublishBranchAction::Push => {
-            push_session_branch(
-                &branch_publish_session,
-                db,
-                git_client,
-                remote_branch_name.as_deref(),
-            )
-            .await
-        }
-    }
-}
-
-/// Pushes one session branch to the configured Git remote.
-async fn push_session_branch(
-    branch_publish_session: &BranchPublishTaskSession,
-    db: db::Database,
-    git_client: Arc<dyn GitClient>,
-    remote_branch_name: Option<&str>,
-) -> BranchPublishTaskResult {
-    if branch_publish_session.status != Status::Review {
-        return Err(BranchPublishTaskFailure::failed(
-            "Session must be in review to push the branch.".to_string(),
-        ));
-    }
-
-    let folder = branch_publish_session.folder.clone();
-    let branch_name = remote_branch_name.map_or_else(
-        || session::session_branch(&branch_publish_session.id),
-        str::to_string,
-    );
-    let upstream_reference = match remote_branch_name {
-        Some(remote_branch_name) => {
-            git_client
-                .push_current_branch_to_remote_branch(folder, remote_branch_name.to_string())
-                .await
-        }
-        None => git_client.push_current_branch(folder).await,
-    }
-    .map_err(|error| branch_push_failure(&error.to_string()))?;
-
-    db.update_session_published_upstream_ref(&branch_publish_session.id, Some(&upstream_reference))
-        .await
-        .map_err(|error| {
-            BranchPublishTaskFailure::failed(format!(
-                "Branch push succeeded, but Agentty could not persist the upstream reference: \
-                 {error}"
-            ))
-        })?;
-    let review_request_creation_url =
-        branch_review_request_creation_url(branch_publish_session, git_client, &branch_name).await;
-
-    Ok(BranchPublishTaskSuccess::Pushed {
-        branch_name,
-        review_request_creation_url,
-        upstream_reference,
-    })
-}
-
-/// Returns one forge-native review-request creation URL for a pushed session
-/// branch when the repository remote maps to a supported forge.
-async fn branch_review_request_creation_url(
-    branch_publish_session: &BranchPublishTaskSession,
-    git_client: Arc<dyn GitClient>,
-    branch_name: &str,
-) -> Option<String> {
-    let repo_url = git_client
-        .repo_url(branch_publish_session.folder.clone())
-        .await
-        .ok()?;
-    let remote = forge::detect_remote(&repo_url).ok()?;
-
-    remote
-        .review_request_creation_url(branch_name, &branch_publish_session.base_branch)
-        .ok()
-}
-
-/// Maps one branch-publish failure into blocked or failed popup copy.
-fn branch_push_failure(error: &str) -> BranchPublishTaskFailure {
-    if !is_git_push_authentication_error(error) {
-        return BranchPublishTaskFailure::failed(format!(
-            "Failed to publish session branch: {error}"
-        ));
-    }
-
-    BranchPublishTaskFailure::blocked(git_push_authentication_message(
-        None,
-        "push the branch again",
-    ))
-}
-
-/// Returns whether error output looks like a git push authentication failure.
-fn is_git_push_authentication_error(detail_message: &str) -> bool {
-    let normalized_detail = detail_message.to_ascii_lowercase();
-
-    let is_push_context = normalized_detail.contains("git push failed")
-        || (normalized_detail.contains("push")
-            && (normalized_detail.contains("remote") || normalized_detail.contains("origin")));
-    if !is_push_context {
-        return false;
-    }
-
-    normalized_detail.contains("authentication failed")
-        || normalized_detail.contains("terminal prompts disabled")
-        || normalized_detail.contains("could not read username")
-        || normalized_detail.contains("could not read password")
-        || normalized_detail.contains("permission denied")
-        || normalized_detail.contains("access denied")
-        || normalized_detail.contains("not authorized")
-        || normalized_detail.contains("support for password authentication was removed")
-        || normalized_detail.contains("the requested url returned error: 403")
-        || normalized_detail.contains("repository not found")
-}
-
-/// Attempts to infer one forge kind from a git push authentication failure.
-fn detected_forge_kind_from_git_push_error(detail_message: &str) -> Option<forge::ForgeKind> {
-    let normalized_detail = detail_message.to_ascii_lowercase();
-
-    if let Some(forge_kind) = detected_forge_kind_from_push_auth_url(&normalized_detail) {
-        return Some(forge_kind);
-    }
-
-    if normalized_detail.contains("github.com") || normalized_detail.contains(" gh ") {
-        return Some(forge::ForgeKind::GitHub);
-    }
-
-    None
-}
-
-/// Returns one forge family from the remote host shown in a credential prompt
-/// error.
-fn detected_forge_kind_from_push_auth_url(detail_message: &str) -> Option<forge::ForgeKind> {
-    let host = extract_push_auth_prompt_host(detail_message)?;
-    if host.is_empty() {
-        return None;
-    }
-
-    let host = strip_port(host);
-    if is_github_host(host) {
-        return Some(forge::ForgeKind::GitHub);
-    }
-
-    None
-}
-
-/// Returns whether `host` is a GitHub-style forge host.
-fn is_github_host(host: &str) -> bool {
-    host == "github.com" || host.ends_with(".github.com")
-}
-
-/// Extracts one remote host from one `git push` authentication prompt.
-fn extract_push_auth_prompt_host(detail_message: &str) -> Option<&str> {
-    let username_marker = "could not read username for '";
-    let password_marker = "could not read password for '";
-
-    if let Some(host) = extract_host_from_prompt(detail_message, username_marker) {
-        return Some(host);
-    }
-
-    extract_host_from_prompt(detail_message, password_marker)
-}
-
-/// Extracts the host payload from one quoted credential-prompt URL.
-fn extract_host_from_prompt<'detail>(
-    detail_message: &'detail str,
-    marker: &str,
-) -> Option<&'detail str> {
-    let marker_start = detail_message.find(marker)?;
-    let quoted_host = &detail_message[marker_start + marker.len()..];
-    let host = quoted_host.split('\'').next()?;
-    let host = host.trim().trim_end_matches('/');
-    let host = host
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
-    let host = host.split('/').next()?;
-    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
-
-    Some(host)
-}
-
-/// Removes one explicit host port, if present.
-fn strip_port(host: &str) -> &str {
-    host.split(':').next().unwrap_or(host)
-}
-
-/// Returns actionable copy for one git push authentication failure.
-fn git_push_authentication_message(
-    forge_kind: Option<forge::ForgeKind>,
-    retry_action: &str,
-) -> String {
-    match forge_kind {
-        Some(forge::ForgeKind::GitHub) => format!(
-            "Git push requires authentication for this repository.\nAuthorize git access, then \
-             {retry_action}.\nRun `gh auth login`, or configure credentials with a PAT/SSH key."
-        ),
-        None => format!(
-            "Git push requires authentication for this repository.\nAuthorize git access, then \
-             {retry_action}.\nConfigure Git credentials with a PAT/SSH key or credential helper."
-        ),
-    }
-}
-
-impl AppEventBatch {
-    fn collect_event(&mut self, event: AppEvent) {
-        match event {
-            AppEvent::AtMentionEntriesLoaded {
-                entries,
-                session_id,
-            } => {
-                self.at_mention_entries_updates.insert(session_id, entries);
-            }
-            AppEvent::GitStatusUpdated {
-                session_statuses,
-                status,
-            } => {
-                self.has_git_status_update = true;
-                self.git_status_update = status;
-                self.session_git_status_updates = session_statuses;
-            }
-            AppEvent::VersionAvailabilityUpdated {
-                latest_available_version,
-            } => {
-                self.has_latest_available_version_update = true;
-                self.latest_available_version_update = latest_available_version;
-            }
-            AppEvent::UpdateStatusChanged { update_status } => {
-                self.update_status = Some(update_status);
-            }
-            AppEvent::SessionModelUpdated {
-                session_id,
-                session_model,
-            } => {
-                self.session_model_updates.insert(session_id, session_model);
-            }
-            AppEvent::RefreshSessions => {
-                self.should_force_reload = true;
-            }
-            AppEvent::SessionProgressUpdated {
-                progress_message,
-                session_id,
-            } => {
-                self.session_progress_updates
-                    .insert(session_id, progress_message);
-            }
-            AppEvent::SyncMainCompleted { result } => {
-                self.sync_main_result = Some(result);
-            }
-            AppEvent::SessionSizeUpdated {
-                added_lines,
-                deleted_lines,
-                session_id,
-                session_size,
-            } => {
-                self.session_size_updates
-                    .insert(session_id, (added_lines, deleted_lines, session_size));
-            }
-            AppEvent::BranchPublishActionCompleted {
-                restore_view,
-                result,
-                session_id,
-            } => {
-                self.branch_publish_action_update = Some(BranchPublishActionUpdate {
-                    restore_view,
-                    result: *result,
-                    session_id,
-                });
-            }
-            AppEvent::ReviewPrepared {
-                diff_hash,
-                review_text,
-                session_id,
-            } => {
-                self.review_updates.insert(
-                    session_id,
-                    ReviewUpdate {
-                        diff_hash,
-                        result: Ok(review_text),
-                    },
-                );
-            }
-            AppEvent::ReviewPreparationFailed {
-                diff_hash,
-                error,
-                session_id,
-            } => {
-                self.review_updates.insert(
-                    session_id,
-                    ReviewUpdate {
-                        diff_hash,
-                        result: Err(error),
-                    },
-                );
-            }
-            AppEvent::SessionUpdated { session_id } => {
-                self.session_ids.insert(session_id);
-            }
-            AppEvent::AgentResponseReceived {
-                session_id,
-                turn_applied_state,
-            } => {
-                self.applied_turns.insert(session_id, turn_applied_state);
-            }
-        }
     }
 }
 
@@ -3186,6 +2234,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::app::diff_content_hash;
+    use crate::app::review::ReviewUpdate;
+    use crate::app::startup::HOME_PROJECT_SCAN_MAX_RESULTS;
     use crate::domain::agent::AgentModel;
     use crate::domain::session::{
         SESSION_DATA_DIR, Session, SessionFollowUpTask, SessionHandles, SessionSize, SessionStats,
@@ -3597,6 +2648,93 @@ mod tests {
             error
                 .to_string()
                 .contains("Failed to store active startup project")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_new_with_clients_falls_back_from_stale_active_project_and_loads_current_sessions()
+    {
+        // Arrange
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let agentty_home = temp_dir.path().join("agentty-home");
+        let current_project_path = temp_dir.path().join("current-project");
+        fs::create_dir_all(&agentty_home).expect("failed to create agentty home");
+        fs::create_dir_all(&current_project_path).expect("failed to create current project");
+        let missing_project_path = temp_dir.path().join("missing-project");
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let current_project_id = database
+            .upsert_project(&current_project_path.to_string_lossy(), Some("main"))
+            .await
+            .expect("failed to insert current project");
+        let missing_project_id = database
+            .upsert_project(&missing_project_path.to_string_lossy(), Some("missing"))
+            .await
+            .expect("failed to insert missing project");
+        database
+            .set_active_project_id(missing_project_id)
+            .await
+            .expect("failed to persist stale active project");
+        let current_session_id = "session-current";
+        let missing_session_id = "session-missing";
+        database
+            .insert_session(
+                current_session_id,
+                "gemini-3-flash-preview",
+                "main",
+                &Status::Review.to_string(),
+                current_project_id,
+            )
+            .await
+            .expect("failed to insert current project session");
+        database
+            .insert_session(
+                missing_session_id,
+                "gemini-3-flash-preview",
+                "main",
+                &Status::Review.to_string(),
+                missing_project_id,
+            )
+            .await
+            .expect("failed to insert stale project session");
+        let current_session_folder =
+            agentty_home.join(current_session_id.chars().take(8).collect::<String>());
+        fs::create_dir_all(current_session_folder.join(SESSION_DATA_DIR))
+            .expect("failed to create current session folder");
+
+        // Act
+        let app = App::new_with_clients(
+            agentty_home.clone(),
+            current_project_path.clone(),
+            Some("main".to_string()),
+            database,
+            test_app_clients(),
+        )
+        .await
+        .expect("failed to build app");
+
+        // Assert
+        assert_eq!(app.active_project_id(), current_project_id);
+        assert_eq!(app.working_dir(), current_project_path.as_path());
+        assert_eq!(app.git_branch(), Some("main"));
+        assert_eq!(
+            app.selected_session().map(|session| session.id.as_str()),
+            Some(current_session_id)
+        );
+        assert_eq!(app.sessions.sessions.len(), 1);
+        assert_eq!(app.sessions.sessions[0].id, current_session_id);
+        assert!(
+            app.projects
+                .project_items()
+                .iter()
+                .any(|item| item.project.id == current_project_id)
+        );
+        assert!(
+            !app.projects
+                .project_items()
+                .iter()
+                .any(|item| item.project.id == missing_project_id)
         );
     }
 

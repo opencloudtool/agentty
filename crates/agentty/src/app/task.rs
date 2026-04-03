@@ -26,15 +26,15 @@ pub(super) struct TaskService;
 
 /// Per-session git-status polling target for one active session branch.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct SessionGitStatusTarget {
+pub(crate) struct SessionGitStatusTarget {
     /// Base branch the session branch should be compared against, for example
     /// `main`.
-    pub(super) base_branch: String,
+    pub(crate) base_branch: String,
     /// Local branch name tracked for the session, for example
     /// `agentty/1234abcd`.
-    pub(super) branch_name: String,
+    pub(crate) branch_name: String,
     /// Stable session identifier used as the reducer map key.
-    pub(super) session_id: String,
+    pub(crate) session_id: String,
 }
 
 /// Inputs needed to generate review assist text in the background.
