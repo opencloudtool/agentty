@@ -6,6 +6,7 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use assert_cmd::cargo::cargo_bin;
 use testty::frame::TerminalFrame;
@@ -193,6 +194,39 @@ pub(crate) fn header_region(cols: u16) -> Region {
     Region::new(0, 0, cols, 4)
 }
 
+impl BuilderEnv {
+    /// Initialize a git repository in the workdir so sessions can create
+    /// worktrees.
+    ///
+    /// Sets up a `main` branch with an empty initial commit and minimal git
+    /// config for the test environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any git command fails.
+    pub(crate) fn init_git(&self) -> std::io::Result<()> {
+        let run = |args: &[&str]| -> std::io::Result<()> {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&self.workdir)
+                .output()?;
+            if !output.status.success() {
+                return Err(std::io::Error::other(format!(
+                    "git {} failed: {}",
+                    args.join(" "),
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+
+            Ok(())
+        };
+        run(&["init", "-b", "main"])?;
+        run(&["config", "user.email", "test@test.com"])?;
+        run(&["config", "user.name", "Test"])?;
+        run(&["commit", "--allow-empty", "-m", "init"])
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Agentty-specific Journey builders
 // ---------------------------------------------------------------------------
@@ -245,4 +279,28 @@ pub(crate) fn open_help_overlay() -> Journey {
         .with_description("Press ? and wait for help overlay")
         .step(Step::press_key("?"))
         .step(Step::wait_for_stable_frame(300, 3000))
+}
+
+/// Create a session with a prompt, submit it, and return to the Sessions
+/// list.
+///
+/// Presses `a` to create a non-draft session, types `"test"`, submits with
+/// `Enter` (which starts the agent asynchronously while the session
+/// persists), and presses `q` from the session view to return to the list.
+///
+/// Uses fixed sleeps instead of stable-frame waits because the agent may
+/// produce continuous output after submit.
+///
+/// Requires the Sessions tab to be active and a git-initialized workdir.
+pub(crate) fn create_session_and_return_to_list() -> Journey {
+    Journey::new("create_session")
+        .with_description("Create session via a, type test, submit, return to list")
+        .step(Step::press_key("a"))
+        .step(Step::wait_for_stable_frame(300, 5000))
+        .step(Step::write_text("test"))
+        .step(Step::wait_for_text("test", 3000))
+        .step(Step::press_key("Enter"))
+        .step(Step::sleep(Duration::from_secs(2)))
+        .step(Step::press_key("q"))
+        .step(Step::sleep(Duration::from_secs(1)))
 }
