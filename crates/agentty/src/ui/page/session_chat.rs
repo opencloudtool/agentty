@@ -1090,7 +1090,7 @@ mod tests {
 
         // Assert
         assert!(help_text.contains("launch task"));
-        assert!(help_text.contains("l"));
+        assert!(help_text.contains('l'));
     }
 
     #[test]

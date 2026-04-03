@@ -5,6 +5,7 @@ use testty::region::Region;
 use testty::scenario::Scenario;
 
 use crate::common;
+use crate::common::BuilderEnv;
 
 /// Verify that the Projects tab lists the registered project name from
 /// the temp workdir.
@@ -16,7 +17,7 @@ use crate::common;
 fn projects_page_shows_cwd() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("projects_cwd")
         .compose(&common::wait_for_agentty_startup())
@@ -24,7 +25,7 @@ fn projects_page_shows_cwd() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert — Projects tab is selected (default startup tab).
@@ -33,10 +34,10 @@ fn projects_page_shows_cwd() {
     assertion::assert_text_in_region(&frame, "Projects", &header);
 
     // Assert — the test-project directory name appears in the project list.
-    // The `test_builder` helper creates a `test-project` workdir, which
-    // agentty auto-registers on startup.
+    // `BuilderEnv` creates a `test-project` workdir, which agentty
+    // auto-registers on startup.
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "test-project", &full);
 
-    common::save_proof_gif(&report, "projects_page_shows_cwd");
+    common::save_feature_gif(&scenario, &report, &env, "projects_page_shows_cwd");
 }

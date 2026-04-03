@@ -56,9 +56,7 @@ fn default_output_dir() -> PathBuf {
 /// Uses `FEATURE_OUTPUT` if set, otherwise defaults to
 /// `docs/site/static/features` relative to the workspace root.
 fn feature_output_dir() -> PathBuf {
-    let path = std::env::var("FEATURE_OUTPUT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| default_output_dir());
+    let path = std::env::var("FEATURE_OUTPUT").map_or_else(|_| default_output_dir(), PathBuf::from);
     std::fs::create_dir_all(&path).expect("failed to create feature output dir");
 
     path.canonicalize()
@@ -162,7 +160,7 @@ fn execute_tape(tape_content: &str, name: &str, output_path: &Path) {
 
 /// Seed the database with realistic projects and sessions.
 ///
-/// Opens the SQLite database, runs migrations, and inserts sample data
+/// Opens the `SQLite` database, runs migrations, and inserts sample data
 /// that makes the UI look populated and visually compelling.
 async fn seed_database(agentty_root: &Path, workdir: &Path) {
     let db_path = agentty_root.join(DB_DIR).join(DB_FILE);

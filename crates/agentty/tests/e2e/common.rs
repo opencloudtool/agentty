@@ -1,45 +1,180 @@
 //! Shared helpers and agentty-specific `Journey` builders for E2E tests.
 //!
-//! Extracts reusable utilities from the flat test file so each test module
-//! can compose scenarios without duplicating setup boilerplate.
+//! Provides [`BuilderEnv`] for isolated test environments and
+//! [`save_feature_gif`] for generating high-quality VHS feature GIFs with
+//! frame-bytes content hashing to skip regeneration when output is unchanged.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use assert_cmd::cargo::cargo_bin;
 use testty::frame::TerminalFrame;
 use testty::journey::Journey;
-use testty::proof::gif::GifBackend;
 use testty::proof::report::{ProofCapture, ProofReport};
 use testty::region::Region;
+use testty::scenario::Scenario;
 use testty::session::PtySessionBuilder;
 use testty::step::Step;
+use testty::vhs::{VhsTape, VhsTapeSettings, check_vhs_installed};
 
-/// Save a proof report as an animated GIF when `TESTTY_PROOF_OUTPUT` is set.
+/// Isolated test environment carrying `agentty_root` and `workdir` paths.
 ///
-/// When the environment variable `TESTTY_PROOF_OUTPUT` points to a directory,
-/// the GIF is written there. Otherwise the call is a no-op, keeping the
-/// workspace clean during normal test runs.
-pub(crate) fn save_proof_gif(report: &ProofReport, name: &str) {
-    let Some(dir) = proof_output_dir() else {
-        return;
-    };
-
-    let path = dir.join(format!("{name}.gif"));
-    report
-        .save(&GifBackend::new(), &path)
-        .expect("failed to save proof GIF");
-
-    println!("Proof GIF saved to {}", path.display());
+/// Use [`BuilderEnv::new`] to create a fresh environment under a temporary
+/// directory, [`BuilderEnv::builder`] to get a configured
+/// [`PtySessionBuilder`], and [`BuilderEnv::as_vhs_env_pairs`] to export the
+/// environment for VHS tape compilation.
+pub(crate) struct BuilderEnv {
+    /// Path used as `AGENTTY_ROOT` for database and session isolation.
+    pub(crate) agentty_root: PathBuf,
+    /// Deterministic working directory registered as a project on startup.
+    pub(crate) workdir: PathBuf,
 }
 
-/// Return the proof output directory from `TESTTY_PROOF_OUTPUT`, creating it
-/// if needed. Returns `None` when the variable is unset.
-fn proof_output_dir() -> Option<PathBuf> {
-    let dir = std::env::var("TESTTY_PROOF_OUTPUT").ok()?;
-    let path = Path::new(&dir).to_path_buf();
-    std::fs::create_dir_all(&path).expect("failed to create proof output dir");
+impl BuilderEnv {
+    /// Create a new isolated environment under `temp_root`.
+    ///
+    /// Creates `agentty_root` and `test-project` subdirectories so each test
+    /// gets a fresh database and deterministic project name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory creation fails.
+    pub(crate) fn new(temp_root: &Path) -> std::io::Result<Self> {
+        let agentty_root = temp_root.join("agentty_root");
+        let workdir = temp_root.join("test-project");
 
-    Some(path)
+        std::fs::create_dir_all(&agentty_root)?;
+        std::fs::create_dir_all(&workdir)?;
+
+        Ok(Self {
+            agentty_root,
+            workdir,
+        })
+    }
+
+    /// Return a configured [`PtySessionBuilder`] using this environment.
+    ///
+    /// Sets `AGENTTY_ROOT`, working directory, and 80×24 terminal size.
+    pub(crate) fn builder(&self) -> PtySessionBuilder {
+        PtySessionBuilder::new(cargo_bin("agentty"))
+            .size(80, 24)
+            .env("AGENTTY_ROOT", self.agentty_root.to_string_lossy())
+            .workdir(&self.workdir)
+    }
+
+    /// Return environment variable pairs for VHS tape compilation.
+    ///
+    /// These match the variables set by [`BuilderEnv::builder`] so the VHS
+    /// recording reproduces the same environment as the PTY session.
+    pub(crate) fn as_vhs_env_pairs(&self) -> Vec<(String, String)> {
+        vec![(
+            "AGENTTY_ROOT".to_string(),
+            self.agentty_root.to_string_lossy().into_owned(),
+        )]
+    }
+}
+
+/// Return the feature GIF output directory, creating it if needed.
+///
+/// Derives the path from `CARGO_MANIFEST_DIR` →
+/// `../../docs/site/static/features/`.
+fn feature_output_dir() -> PathBuf {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let output_dir = Path::new(manifest_dir).join("../../docs/site/static/features");
+
+    std::fs::create_dir_all(&output_dir).expect("failed to create feature output dir");
+
+    output_dir
+}
+
+/// Compute a content hash from all proof capture frame bytes.
+///
+/// Uses [`DefaultHasher`] to produce a deterministic u64 hash from the
+/// concatenated frame bytes of every capture in the report.
+fn compute_frame_hash(report: &ProofReport) -> u64 {
+    let mut hasher = DefaultHasher::new();
+
+    for capture in &report.captures {
+        capture.frame_bytes.hash(&mut hasher);
+    }
+
+    hasher.finish()
+}
+
+/// Generate a high-quality VHS feature GIF with frame-bytes content caching.
+///
+/// Checks VHS availability, computes a content hash from all
+/// [`ProofReport`] frame bytes, and skips VHS execution when the hash
+/// matches a `.{name}.hash` sidecar file. Uses
+/// [`VhsTapeSettings::feature_demo()`] for 3200×1600 `OneDark` recordings.
+///
+/// Gracefully skips when VHS is not installed.
+pub(crate) fn save_feature_gif(
+    scenario: &Scenario,
+    report: &ProofReport,
+    env: &BuilderEnv,
+    name: &str,
+) {
+    // Graceful skip when VHS is not installed.
+    if check_vhs_installed().is_err() {
+        println!("VHS not installed — skipping feature GIF for {name}");
+
+        return;
+    }
+
+    let output_dir = feature_output_dir();
+    let hash_path = output_dir.join(format!(".{name}.hash"));
+    let gif_path = output_dir.join(format!("{name}.gif"));
+
+    // Content hash from frame bytes.
+    let current_hash = compute_frame_hash(report);
+    let hash_string = current_hash.to_string();
+
+    // Check sidecar cache — skip VHS when the GIF already matches.
+    if gif_path.exists()
+        && let Ok(cached) = std::fs::read_to_string(&hash_path)
+        && cached.trim() == hash_string
+    {
+        println!("Feature GIF unchanged — skipping {name}");
+
+        return;
+    }
+
+    // Build VHS tape with feature demo settings.
+    let screenshot_path = output_dir.join(format!("{name}.png"));
+    let owned_pairs = env.as_vhs_env_pairs();
+    let env_pairs: Vec<(&str, &str)> = owned_pairs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+
+    let tape = VhsTape::from_scenario_with_settings(
+        scenario,
+        &cargo_bin("agentty"),
+        &screenshot_path,
+        &env_pairs,
+        &VhsTapeSettings::feature_demo(),
+    );
+
+    // Write and execute the tape.
+    let tape_path = output_dir.join(format!("{name}.tape"));
+    match tape.execute(&tape_path) {
+        Ok(_) => {
+            // Update the sidecar hash on success.
+            std::fs::write(&hash_path, &hash_string).expect("failed to write hash sidecar");
+
+            // Clean up the tape file and screenshot.
+            let _ = std::fs::remove_file(&tape_path);
+            let _ = std::fs::remove_file(&screenshot_path);
+
+            println!("Feature GIF saved to {}", gif_path.display());
+        }
+        Err(error) => {
+            // Clean up on failure.
+            let _ = std::fs::remove_file(&tape_path);
+            println!("VHS execution failed for {name}: {error}");
+        }
+    }
 }
 
 /// Reconstruct a [`TerminalFrame`] from a [`ProofCapture`] so full cell-level
@@ -56,28 +191,6 @@ pub(crate) fn frame_from_capture(capture: &ProofCapture) -> TerminalFrame {
 /// layout.
 pub(crate) fn header_region(cols: u16) -> Region {
     Region::new(0, 0, cols, 4)
-}
-
-/// Create a [`PtySessionBuilder`] with a clean isolated environment.
-///
-/// Sets `AGENTTY_ROOT` to a temporary directory, creates a deterministic
-/// `test-project` working directory so frame snapshots are stable across
-/// machines, and uses 80x24 terminal.
-///
-/// # Errors
-///
-/// Returns an error if directory creation fails.
-pub(crate) fn test_builder(temp_root: &Path) -> std::io::Result<PtySessionBuilder> {
-    let agentty_root = temp_root.join("agentty_root");
-    let workdir = temp_root.join("test-project");
-
-    std::fs::create_dir_all(&agentty_root)?;
-    std::fs::create_dir_all(&workdir)?;
-
-    Ok(PtySessionBuilder::new(cargo_bin("agentty"))
-        .size(80, 24)
-        .env("AGENTTY_ROOT", agentty_root.to_string_lossy())
-        .workdir(workdir))
 }
 
 // ---------------------------------------------------------------------------

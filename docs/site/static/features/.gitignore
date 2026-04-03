@@ -1,2 +1,5 @@
 # Generated feature demo GIFs — rebuild with:
 #   cargo test -p agentty --test showcase -- --test-threads=1 --ignored --nocapture
+#   cargo test -p agentty --test e2e
+*.hash
+*.tape

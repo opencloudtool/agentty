@@ -12,17 +12,61 @@ use std::process::Command;
 use crate::scenario::Scenario;
 use crate::step::Step;
 
-/// Default VHS terminal width in pixels.
-const DEFAULT_VHS_WIDTH: u16 = 1200;
-
-/// Default VHS terminal height in pixels.
-const DEFAULT_VHS_HEIGHT: u16 = 600;
-
-/// Default VHS font size in points.
-const DEFAULT_VHS_FONT_SIZE: u16 = 14;
-
 /// Maximum number of VHS execution retries.
 const MAX_VHS_RETRIES: u8 = 3;
+
+/// Configurable VHS tape rendering settings.
+///
+/// Controls the visual appearance of generated GIF recordings. Use
+/// [`VhsTapeSettings::default()`] for compact proof GIFs or
+/// [`VhsTapeSettings::feature_demo()`] for high-resolution feature
+/// showcase recordings.
+#[derive(Debug, Clone)]
+pub struct VhsTapeSettings {
+    /// Terminal width in pixels.
+    pub width: u16,
+    /// Terminal height in pixels.
+    pub height: u16,
+    /// Font size in points.
+    pub font_size: u16,
+    /// VHS theme name (e.g. `"OneDark"`, `"Dracula"`).
+    pub theme: String,
+    /// GIF framerate in frames per second.
+    pub framerate: u16,
+    /// Terminal padding in pixels.
+    pub padding: u16,
+}
+
+impl Default for VhsTapeSettings {
+    /// Return compact settings matching the legacy VHS tape defaults.
+    fn default() -> Self {
+        Self {
+            width: 1200,
+            height: 600,
+            font_size: 14,
+            theme: String::new(),
+            framerate: 0,
+            padding: 0,
+        }
+    }
+}
+
+impl VhsTapeSettings {
+    /// High-resolution preset for feature demo GIFs.
+    ///
+    /// Produces sharp, browser-ready recordings at 3200×1600, font size 36,
+    /// `OneDark` theme, and 30 fps.
+    pub fn feature_demo() -> Self {
+        Self {
+            width: 3200,
+            height: 1600,
+            font_size: 36,
+            theme: "OneDark".to_string(),
+            framerate: 30,
+            padding: 0,
+        }
+    }
+}
 
 /// A compiled VHS tape ready for writing and execution.
 ///
@@ -38,7 +82,7 @@ pub struct VhsTape {
 }
 
 impl VhsTape {
-    /// Compile a scenario into a VHS tape.
+    /// Compile a scenario into a VHS tape using default settings.
     ///
     /// The tape sets up the environment, launches the binary, executes
     /// the scenario steps, and captures a screenshot at each `Capture`
@@ -49,7 +93,27 @@ impl VhsTape {
         screenshot_path: &Path,
         env_vars: &[(&str, &str)],
     ) -> Self {
-        let content = compile_tape(scenario, binary_path, screenshot_path, env_vars);
+        Self::from_scenario_with_settings(
+            scenario,
+            binary_path,
+            screenshot_path,
+            env_vars,
+            &VhsTapeSettings::default(),
+        )
+    }
+
+    /// Compile a scenario into a VHS tape with explicit rendering settings.
+    ///
+    /// Use [`VhsTapeSettings::feature_demo()`] for high-resolution feature
+    /// GIFs or [`VhsTapeSettings::default()`] for compact proof recordings.
+    pub fn from_scenario_with_settings(
+        scenario: &Scenario,
+        binary_path: &Path,
+        screenshot_path: &Path,
+        env_vars: &[(&str, &str)],
+        settings: &VhsTapeSettings,
+    ) -> Self {
+        let content = compile_tape(scenario, binary_path, screenshot_path, env_vars, settings);
 
         Self {
             content,
@@ -149,6 +213,7 @@ fn compile_tape(
     binary_path: &Path,
     screenshot_path: &Path,
     env_vars: &[(&str, &str)],
+    settings: &VhsTapeSettings,
 ) -> String {
     let mut tape = String::new();
     let gif_path = screenshot_path
@@ -159,11 +224,24 @@ fn compile_tape(
     // Infallible: all `writeln!` calls below write to a String, which cannot fail.
     // Header settings.
     let _ = writeln!(tape, "Set Shell \"bash\"");
-    let _ = writeln!(tape, "Set FontSize {DEFAULT_VHS_FONT_SIZE}");
-    let _ = writeln!(tape, "Set Width {DEFAULT_VHS_WIDTH}");
-    let _ = writeln!(tape, "Set Height {DEFAULT_VHS_HEIGHT}");
-    let _ = writeln!(tape, "Set Padding 0");
+    let _ = writeln!(tape, "Set FontSize {}", settings.font_size);
+    let _ = writeln!(tape, "Set Width {}", settings.width);
+    let _ = writeln!(tape, "Set Height {}", settings.height);
+    let _ = writeln!(tape, "Set Padding {}", settings.padding);
     let _ = writeln!(tape, "Set TypingSpeed 0");
+
+    if !settings.theme.is_empty() {
+        let _ = writeln!(
+            tape,
+            "Set Theme \"{}\"",
+            escape_vhs_double_quote(&settings.theme)
+        );
+    }
+
+    if settings.framerate > 0 {
+        let _ = writeln!(tape, "Set Framerate {}", settings.framerate);
+    }
+
     let _ = writeln!(tape);
     let _ = writeln!(
         tape,
@@ -292,7 +370,12 @@ fn escape_shell_single_quote(value: &str) -> String {
 }
 
 /// Verify that VHS is installed and available on `PATH`.
-fn check_vhs_installed() -> Result<(), VhsError> {
+///
+/// # Errors
+///
+/// Returns [`VhsError::NotInstalled`] when `vhs --version` cannot be
+/// executed (binary missing or not on `PATH`).
+pub fn check_vhs_installed() -> Result<(), VhsError> {
     Command::new("vhs").arg("--version").output().map_err(|_| {
         VhsError::NotInstalled("VHS is not installed. Install with: brew install vhs".to_string())
     })?;
@@ -308,6 +391,7 @@ mod tests {
     fn compile_tape_includes_header_settings() {
         // Arrange
         let scenario = Scenario::new("test").sleep_ms(100).capture();
+        let settings = VhsTapeSettings::default();
 
         // Act
         let tape = compile_tape(
@@ -315,12 +399,13 @@ mod tests {
             Path::new("/usr/bin/echo"),
             Path::new("/tmp/shot.png"),
             &[],
+            &settings,
         );
 
         // Assert
         assert!(tape.contains("Set Shell \"bash\""));
-        assert!(tape.contains(&format!("Set FontSize {DEFAULT_VHS_FONT_SIZE}")));
-        assert!(tape.contains(&format!("Set Width {DEFAULT_VHS_WIDTH}")));
+        assert!(tape.contains(&format!("Set FontSize {}", settings.font_size)));
+        assert!(tape.contains(&format!("Set Width {}", settings.width)));
         assert!(tape.contains("Set Padding 0"));
     }
 
@@ -335,6 +420,7 @@ mod tests {
             Path::new("/usr/bin/echo"),
             Path::new("/tmp/shot.png"),
             &[("AGENTTY_ROOT", "/tmp/root")],
+            &VhsTapeSettings::default(),
         );
 
         // Assert
@@ -352,6 +438,7 @@ mod tests {
             Path::new("/usr/bin/echo"),
             Path::new("/tmp/shot.png"),
             &[],
+            &VhsTapeSettings::default(),
         );
 
         // Assert
@@ -433,6 +520,7 @@ mod tests {
             Path::new("/usr/bin/echo"),
             Path::new("/tmp/shot.png"),
             &[("KEY", "it's a value")],
+            &VhsTapeSettings::default(),
         );
 
         // Assert — the single quote is shell-escaped to '\'' and the
@@ -452,6 +540,7 @@ mod tests {
             Path::new("/usr/bin/echo"),
             Path::new("/tmp/shot.png"),
             &[],
+            &VhsTapeSettings::default(),
         );
 
         // Assert — binary path is wrapped in single quotes for the shell.
@@ -469,9 +558,102 @@ mod tests {
             Path::new("/path with spaces/bin"),
             Path::new("/tmp/shot.png"),
             &[],
+            &VhsTapeSettings::default(),
         );
 
         // Assert — spaces are safe inside single quotes.
         assert!(tape.contains("Type \"'/path with spaces/bin'\""));
+    }
+
+    #[test]
+    fn feature_demo_settings_have_expected_values() {
+        // Arrange / Act
+        let settings = VhsTapeSettings::feature_demo();
+
+        // Assert
+        assert_eq!(settings.width, 3200);
+        assert_eq!(settings.height, 1600);
+        assert_eq!(settings.font_size, 36);
+        assert_eq!(settings.theme, "OneDark");
+        assert_eq!(settings.framerate, 30);
+        assert_eq!(settings.padding, 0);
+    }
+
+    #[test]
+    fn default_settings_match_legacy_constants() {
+        // Arrange / Act
+        let settings = VhsTapeSettings::default();
+
+        // Assert
+        assert_eq!(settings.width, 1200);
+        assert_eq!(settings.height, 600);
+        assert_eq!(settings.font_size, 14);
+        assert!(settings.theme.is_empty());
+        assert_eq!(settings.framerate, 0);
+        assert_eq!(settings.padding, 0);
+    }
+
+    #[test]
+    fn from_scenario_with_settings_applies_feature_demo() {
+        // Arrange
+        let scenario = Scenario::new("feature_test").sleep_ms(100).capture();
+        let settings = VhsTapeSettings::feature_demo();
+
+        // Act
+        let tape = VhsTape::from_scenario_with_settings(
+            &scenario,
+            Path::new("/usr/bin/echo"),
+            Path::new("/tmp/shot.png"),
+            &[],
+            &settings,
+        );
+
+        // Assert
+        let content = tape.render();
+        assert!(content.contains("Set FontSize 36"));
+        assert!(content.contains("Set Width 3200"));
+        assert!(content.contains("Set Height 1600"));
+        assert!(content.contains("Set Theme \"OneDark\""));
+        assert!(content.contains("Set Framerate 30"));
+    }
+
+    #[test]
+    fn from_scenario_with_settings_omits_empty_theme() {
+        // Arrange
+        let scenario = Scenario::new("no_theme").capture();
+        let settings = VhsTapeSettings::default();
+
+        // Act
+        let tape = VhsTape::from_scenario_with_settings(
+            &scenario,
+            Path::new("/usr/bin/echo"),
+            Path::new("/tmp/shot.png"),
+            &[],
+            &settings,
+        );
+
+        // Assert — default settings have empty theme, so no Theme line.
+        let content = tape.render();
+        assert!(!content.contains("Set Theme"));
+    }
+
+    #[test]
+    fn from_scenario_with_settings_omits_zero_framerate() {
+        // Arrange
+        let scenario = Scenario::new("no_framerate").capture();
+        let settings = VhsTapeSettings::default();
+
+        // Act
+        let tape = VhsTape::from_scenario_with_settings(
+            &scenario,
+            Path::new("/usr/bin/echo"),
+            Path::new("/tmp/shot.png"),
+            &[],
+            &settings,
+        );
+
+        // Assert — default settings have framerate 0, so no Framerate line.
+        let content = tape.render();
+        assert!(!content.contains("Set Framerate"));
     }
 }

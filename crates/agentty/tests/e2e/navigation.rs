@@ -5,6 +5,7 @@ use testty::region::Region;
 use testty::scenario::Scenario;
 
 use crate::common;
+use crate::common::BuilderEnv;
 
 /// Verify that agentty startup renders the Projects tab as selected.
 ///
@@ -14,7 +15,7 @@ use crate::common;
 fn startup_shows_projects_tab() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("startup")
         .compose(&common::wait_for_agentty_startup())
@@ -22,7 +23,7 @@ fn startup_shows_projects_tab() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert
@@ -30,7 +31,7 @@ fn startup_shows_projects_tab() {
     assertion::assert_text_in_region(&frame, "Projects", &header);
     assertion::assert_span_is_highlighted(&frame, "Projects");
 
-    common::save_proof_gif(&report, "startup_shows_projects_tab");
+    common::save_feature_gif(&scenario, &report, &env, "startup_shows_projects_tab");
 }
 
 /// Verify that Tab key switches between tabs.
@@ -41,7 +42,7 @@ fn startup_shows_projects_tab() {
 fn tab_key_switches_tabs() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("tab_switch")
         .compose(&common::wait_for_agentty_startup())
@@ -51,7 +52,7 @@ fn tab_key_switches_tabs() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert — after pressing Tab, "Sessions" should be selected.
@@ -61,7 +62,7 @@ fn tab_key_switches_tabs() {
     assertion::assert_text_in_region(&frame, "Projects", &header);
     assertion::assert_span_is_not_highlighted(&frame, "Projects");
 
-    common::save_proof_gif(&report, "tab_key_switches_tabs");
+    common::save_feature_gif(&scenario, &report, &env, "tab_key_switches_tabs");
 }
 
 /// Verify that pressing Tab cycles through all four tabs in order.
@@ -72,7 +73,7 @@ fn tab_key_switches_tabs() {
 fn tab_cycles_through_all_tabs() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("tab_full_cycle")
         .compose(&common::wait_for_agentty_startup())
@@ -88,7 +89,7 @@ fn tab_cycles_through_all_tabs() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert — final frame should have Settings selected.
@@ -112,7 +113,7 @@ fn tab_cycles_through_all_tabs() {
     assertion::assert_span_is_highlighted(&stats_frame, "Stats");
     assertion::assert_span_is_not_highlighted(&stats_frame, "Sessions");
 
-    common::save_proof_gif(&report, "tab_cycles_through_all_tabs");
+    common::save_feature_gif(&scenario, &report, &env, "tab_cycles_through_all_tabs");
 }
 
 /// Verify that pressing `q` opens a quit confirmation dialog.
@@ -123,7 +124,7 @@ fn tab_cycles_through_all_tabs() {
 fn quit_shows_confirmation_dialog() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("quit_confirmation")
         .compose(&common::wait_for_agentty_startup())
@@ -133,7 +134,7 @@ fn quit_shows_confirmation_dialog() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert
@@ -141,7 +142,7 @@ fn quit_shows_confirmation_dialog() {
     assertion::assert_text_in_region(&frame, "Confirm Quit", &full);
     assertion::assert_text_in_region(&frame, "Quit agentty?", &full);
 
-    common::save_proof_gif(&report, "quit_shows_confirmation_dialog");
+    common::save_feature_gif(&scenario, &report, &env, "quit_shows_confirmation_dialog");
 }
 
 /// Verify that the footer shows keybinding hints on startup.
@@ -149,7 +150,7 @@ fn quit_shows_confirmation_dialog() {
 fn startup_shows_footer_hints() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("footer_hints")
         .compose(&common::wait_for_agentty_startup())
@@ -157,7 +158,7 @@ fn startup_shows_footer_hints() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert
@@ -168,7 +169,7 @@ fn startup_shows_footer_hints() {
         "Footer should contain keybinding hints"
     );
 
-    common::save_proof_gif(&report, "startup_shows_footer_hints");
+    common::save_feature_gif(&scenario, &report, &env, "startup_shows_footer_hints");
 }
 
 /// Verify that `BackTab` (Shift+Tab) cycles tabs in reverse order.
@@ -180,7 +181,7 @@ fn startup_shows_footer_hints() {
 fn backtab_cycles_tabs_reverse() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("backtab_reverse")
         .compose(&common::wait_for_agentty_startup())
@@ -201,7 +202,7 @@ fn backtab_cycles_tabs_reverse() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert — final frame should have Projects selected.
@@ -222,7 +223,7 @@ fn backtab_cycles_tabs_reverse() {
     assertion::assert_span_is_highlighted(&projects_frame, "Projects");
     assertion::assert_span_is_not_highlighted(&projects_frame, "Sessions");
 
-    common::save_proof_gif(&report, "backtab_cycles_tabs_reverse");
+    common::save_feature_gif(&scenario, &report, &env, "backtab_cycles_tabs_reverse");
 }
 
 /// Verify that `?` opens the help overlay with keybinding content, and
@@ -231,7 +232,7 @@ fn backtab_cycles_tabs_reverse() {
 fn help_overlay_toggle() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("help_overlay")
         .compose(&common::wait_for_agentty_startup())
@@ -246,7 +247,7 @@ fn help_overlay_toggle() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert — help overlay should show "Keybindings" title when open.
@@ -267,5 +268,5 @@ fn help_overlay_toggle() {
         "Help overlay should be dismissed after Esc"
     );
 
-    common::save_proof_gif(&report, "help_overlay_toggle");
+    common::save_feature_gif(&scenario, &report, &env, "help_overlay_toggle");
 }

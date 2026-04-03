@@ -8,6 +8,7 @@ use testty::region::Region;
 use testty::scenario::Scenario;
 
 use crate::common;
+use crate::common::BuilderEnv;
 
 /// Verify that confirming quit with `y` causes the process to exit with
 /// code 0.
@@ -18,8 +19,8 @@ use crate::common;
 fn quit_confirm_yes_exits() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
-    let mut session = builder.spawn().expect("failed to spawn session");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
+    let mut session = env.builder().spawn().expect("failed to spawn session");
 
     let scenario = Scenario::new("quit_yes")
         .compose(&common::wait_for_agentty_startup())
@@ -49,7 +50,7 @@ fn quit_confirm_yes_exits() {
 fn quit_confirm_dismiss_returns() {
     // Arrange
     let temp = tempfile::TempDir::new().expect("failed to create temp dir");
-    let builder = common::test_builder(temp.path()).expect("failed to create test builder");
+    let env = BuilderEnv::new(temp.path()).expect("failed to create builder env");
 
     let scenario = Scenario::new("quit_dismiss")
         .compose(&common::wait_for_agentty_startup())
@@ -68,7 +69,7 @@ fn quit_confirm_dismiss_returns() {
 
     // Act
     let (frame, report) = scenario
-        .run_with_proof(builder)
+        .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
     // Assert — quit dialog was shown both times.
@@ -104,5 +105,5 @@ fn quit_confirm_dismiss_returns() {
         "Quit dialog should be dismissed after Esc"
     );
 
-    common::save_proof_gif(&report, "quit_confirm_dismiss_returns");
+    common::save_feature_gif(&scenario, &report, &env, "quit_confirm_dismiss_returns");
 }
