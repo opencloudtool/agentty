@@ -221,7 +221,7 @@ pub enum FollowUpTaskAction {
 }
 
 /// Per-session usage and diff statistics.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SessionStats {
     /// Added diff lines currently attributed to the session worktree.
     pub added_lines: u64,
@@ -338,10 +338,11 @@ pub struct Session {
     /// Current lifecycle status.
     pub status: Status,
     /// Optional persisted session summary text sourced from the raw agent
-    /// `summary` payload, reloaded from persistence during review/question
-    /// states and, once the session reaches `Done`, formatted with
-    /// `# Summary` and `# Commit` sections using the canonical session commit
-    /// message. This text is also reused as review-assist context.
+    /// `summary` payload, applied immediately from reducer events during
+    /// review/question states and, once the session reaches `Done`,
+    /// formatted with `# Summary` and `# Commit` sections using the canonical
+    /// session commit message. This text is also reused as review-assist
+    /// context.
     pub summary: Option<String>,
     /// Optional explicit session title.
     pub title: Option<String>,

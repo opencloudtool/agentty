@@ -48,6 +48,25 @@ pub struct Database {
     pool: SqlitePool,
 }
 
+/// Transactional turn-metadata payload persisted after one completed agent
+/// turn.
+pub(crate) struct SessionTurnMetadata<'a> {
+    /// Persisted follow-up-task text list replacing any previous rows.
+    pub(crate) follow_up_tasks: &'a [String],
+    /// Session-scoped instruction bootstrap marker for app-server providers.
+    pub(crate) instruction_conversation_id: Option<&'a str>,
+    /// Model identifier used for per-model usage aggregation.
+    pub(crate) model: &'a str,
+    /// Persisted provider-native conversation identifier for future resumes.
+    pub(crate) provider_conversation_id: Option<&'a str>,
+    /// Serialized clarification-question payload stored on the session row.
+    pub(crate) questions_json: &'a str,
+    /// Serialized structured summary payload stored on the session row.
+    pub(crate) summary: &'a str,
+    /// Token-usage delta attributed to the completed turn.
+    pub(crate) token_usage_delta: &'a SessionStats,
+}
+
 /// Row returned when loading a project from the `project` table.
 pub struct ProjectRow {
     pub created_at: i64,
@@ -1155,6 +1174,107 @@ WHERE id = ?
         .bind(id)
         .execute(&self.pool)
         .await?;
+
+        Ok(())
+    }
+
+    /// Persists all canonical turn metadata for one completed agent turn in a
+    /// single transaction.
+    ///
+    /// The session row update must affect exactly one row; otherwise the
+    /// transaction fails so callers do not project non-durable turn metadata
+    /// into memory.
+    ///
+    /// # Errors
+    /// Returns an error if any part of the turn-metadata transaction fails.
+    pub(crate) async fn persist_session_turn_metadata(
+        &self,
+        session_id: &str,
+        turn_metadata: &SessionTurnMetadata<'_>,
+    ) -> Result<(), DbError> {
+        let mut transaction = self.pool.begin().await?;
+
+        let session_update = sqlx::query(
+            r"
+UPDATE session
+SET questions = ?,
+    summary = ?,
+    provider_conversation_id = ?,
+    app_server_instruction_provider_conversation_id = ?
+WHERE id = ?
+",
+        )
+        .bind(turn_metadata.questions_json)
+        .bind(turn_metadata.summary)
+        .bind(turn_metadata.provider_conversation_id)
+        .bind(turn_metadata.instruction_conversation_id)
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await?;
+        if session_update.rows_affected() != 1 {
+            return Err(sqlx::Error::RowNotFound.into());
+        }
+
+        sqlx::query(
+            r"
+DELETE FROM session_follow_up_task
+WHERE session_id = ?
+",
+        )
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await?;
+
+        for (position, follow_up_task) in turn_metadata.follow_up_tasks.iter().enumerate() {
+            sqlx::query(
+                r"
+INSERT INTO session_follow_up_task (session_id, position, text)
+VALUES (?, ?, ?)
+",
+            )
+            .bind(session_id)
+            .bind(i64::try_from(position).unwrap_or(i64::MAX))
+            .bind(follow_up_task)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        if turn_metadata.token_usage_delta.input_tokens != 0
+            || turn_metadata.token_usage_delta.output_tokens != 0
+        {
+            sqlx::query(
+                r"
+UPDATE session
+SET input_tokens = input_tokens + ?,
+    output_tokens = output_tokens + ?
+WHERE id = ?
+",
+            )
+            .bind(turn_metadata.token_usage_delta.input_tokens.cast_signed())
+            .bind(turn_metadata.token_usage_delta.output_tokens.cast_signed())
+            .bind(session_id)
+            .execute(&mut *transaction)
+            .await?;
+
+            sqlx::query(
+                r"
+INSERT INTO session_usage (session_id, model, input_tokens, output_tokens, invocation_count)
+VALUES (?, ?, ?, ?, 1)
+ON CONFLICT(session_id, model) DO UPDATE SET
+    input_tokens = input_tokens + excluded.input_tokens,
+    output_tokens = output_tokens + excluded.output_tokens,
+    invocation_count = invocation_count + 1
+",
+            )
+            .bind(session_id)
+            .bind(turn_metadata.model)
+            .bind(turn_metadata.token_usage_delta.input_tokens.cast_signed())
+            .bind(turn_metadata.token_usage_delta.output_tokens.cast_signed())
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        transaction.commit().await?;
 
         Ok(())
     }
@@ -4021,6 +4141,72 @@ WHERE model = ?
                 "Add integration coverage.".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    /// Verifies transactional turn-metadata persistence rolls back partial
+    /// writes when any statement in the transaction fails.
+    async fn test_persist_session_turn_metadata_rolls_back_on_failure() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to insert project");
+        database
+            .insert_session("session-a", "gpt-5.3-codex", "main", "Review", project_id)
+            .await
+            .expect("failed to insert session");
+        database
+            .update_session_summary("session-a", "persisted summary")
+            .await
+            .expect("failed to seed summary");
+        sqlx::query("DROP TABLE session_follow_up_task")
+            .execute(database.pool())
+            .await
+            .expect("failed to drop follow-up-task table");
+
+        // Act
+        let result = database
+            .persist_session_turn_metadata(
+                "session-a",
+                &SessionTurnMetadata {
+                    follow_up_tasks: &["Document the failure path.".to_string()],
+                    instruction_conversation_id: Some("instruction-thread"),
+                    model: AgentModel::Gpt53Codex.as_str(),
+                    provider_conversation_id: Some("thread-123"),
+                    questions_json: r#"[{"text":"Need tests?"}]"#,
+                    summary: r#"{"turn":"Updated the worker.","session":"Session state changed."}"#,
+                    token_usage_delta: &SessionStats {
+                        added_lines: 0,
+                        deleted_lines: 0,
+                        input_tokens: 3,
+                        output_tokens: 5,
+                    },
+                },
+            )
+            .await;
+        let session = database
+            .load_sessions()
+            .await
+            .expect("failed to reload sessions")
+            .into_iter()
+            .find(|session| session.id == "session-a")
+            .expect("expected seeded session");
+        let provider_conversation_id = database
+            .get_session_provider_conversation_id("session-a")
+            .await
+            .expect("failed to load provider conversation id");
+
+        // Assert
+        assert!(matches!(result, Err(DbError::Query(_))));
+        assert_eq!(session.summary.as_deref(), Some("persisted summary"));
+        assert_eq!(session.questions.as_deref(), None);
+        assert_eq!(session.input_tokens, 0);
+        assert_eq!(session.output_tokens, 0);
+        assert_eq!(provider_conversation_id.as_deref(), None);
     }
 
     #[tokio::test]

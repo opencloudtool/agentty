@@ -10,7 +10,7 @@ mod workflow;
 pub use core::SessionManager;
 pub(crate) use core::{
     Clock, RealClock, RunAgentAssistTaskInput, SESSION_REFRESH_INTERVAL, SessionDefaults,
-    SessionTaskService, SyncMainOutcome, SyncSessionStartError, session_branch,
+    SessionTaskService, SyncMainOutcome, SyncSessionStartError, TurnAppliedState, session_branch,
     unix_timestamp_from_system_time,
 };
 

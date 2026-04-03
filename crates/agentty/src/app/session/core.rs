@@ -16,7 +16,10 @@ use super::workflow::worker::SessionWorkerService;
 use crate::app::session_state::SessionGitStatus;
 use crate::app::{AppServices, SessionState, setting};
 use crate::domain::agent::AgentModel;
-use crate::domain::session::{DailyActivity, FollowUpTaskAction, Session};
+use crate::domain::session::{
+    DailyActivity, FollowUpTaskAction, Session, SessionFollowUpTask, SessionStats,
+};
+use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::git;
 
 /// Render payload tuple returned by [`SessionManager::render_parts`].
@@ -30,6 +33,23 @@ pub(crate) const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) struct SessionDefaults {
     /// Default model selected for newly created sessions.
     pub(crate) model: AgentModel,
+}
+
+/// Reducer-facing snapshot derived from one persisted turn result.
+///
+/// The worker computes this projection immediately after writing canonical turn
+/// metadata so the reducer can apply the same summary, clarification-question,
+/// follow-up-task, and token-usage updates without waiting for a full reload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TurnAppliedState {
+    /// Persisted follow-up tasks for the latest completed turn.
+    pub(crate) follow_up_tasks: Vec<SessionFollowUpTask>,
+    /// Persisted clarification questions for the latest completed turn.
+    pub(crate) questions: Vec<QuestionItem>,
+    /// Raw persisted summary payload, if the turn produced one.
+    pub(crate) summary: Option<String>,
+    /// Token-usage delta reported for the completed turn.
+    pub(crate) token_usage_delta: SessionStats,
 }
 
 /// Provides wall-clock values for session refresh decision logic.
@@ -177,6 +197,37 @@ impl SessionManager {
         {
             session.published_upstream_ref = Some(published_upstream_ref);
         }
+    }
+
+    /// Applies one completed-turn projection to the matching in-memory
+    /// session snapshot.
+    pub(crate) fn apply_turn_applied_state(
+        &mut self,
+        session_id: &str,
+        turn_applied_state: &TurnAppliedState,
+    ) {
+        let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        else {
+            return;
+        };
+
+        session
+            .follow_up_tasks
+            .clone_from(&turn_applied_state.follow_up_tasks);
+        session.questions.clone_from(&turn_applied_state.questions);
+        session.summary.clone_from(&turn_applied_state.summary);
+        session.stats.input_tokens = session
+            .stats
+            .input_tokens
+            .saturating_add(turn_applied_state.token_usage_delta.input_tokens);
+        session.stats.output_tokens = session
+            .stats
+            .output_tokens
+            .saturating_add(turn_applied_state.token_usage_delta.output_tokens);
     }
 
     /// Replaces cached session git-status snapshots from the latest

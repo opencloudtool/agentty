@@ -91,7 +91,7 @@ Reducer behaviors that matter for data flow:
 - `BranchPublishActionCompleted` swaps the session-view popup from loading to success or blocked/failure copy after a manual branch push finishes.
 - `SessionUpdated` marks touched sessions so reducer can call `sync_session_from_handle()` selectively.
 - `SessionProgressUpdated` refreshes transient loader text used by the session view.
-- `AgentResponseReceived` routes question-mode transitions for active view sessions and updates in-memory follow-up-task snapshots for the currently loaded session.
+- `AgentResponseReceived` routes question-mode transitions for active view sessions and applies the worker's reducer-ready turn projection (summary, follow-up tasks, questions, token deltas) to the currently loaded session.
 - After touched-session sync, terminal statuses (`Done`, `Canceled`) drop per-session worker senders so workers can shut down runtimes.
 
 ## Session Chat Rendering Flow
@@ -117,16 +117,22 @@ The printed session-chat data comes from these sources:
 - `session.summary`
   Persisted by the turn worker in
   `crates/agentty/src/app/session/workflow/worker.rs` as the raw protocol
-  `summary` payload and later reloaded with the session row. For merged/done
-  flows, merge helpers can rewrite the stored summary into a display-oriented
-  markdown form before the next reload.
+  `summary` payload. `App::apply_agent_response_received()` in
+  `crates/agentty/src/app/core.rs` now applies that same raw payload to the
+  in-memory session snapshot immediately, and
+  `crates/agentty/src/ui/component/session_output.rs` renders the synthetic
+  summary block from `session.summary` instead of storing a second markdown
+  copy inside `session.output`. For merged/done flows, merge helpers can
+  rewrite the stored value into a display-oriented markdown form before the
+  next reload.
 - `session.follow_up_tasks`
   Persisted as separate rows by the worker in
   `crates/agentty/src/app/session/workflow/worker.rs`, rehydrated into session
   snapshots in `crates/agentty/src/app/session/workflow/load.rs`, and also
-  updated immediately in memory by `App::apply_agent_response_received()` in
-  `crates/agentty/src/app/core.rs` so the active session view reflects the
-  latest protocol payload without waiting for a full reload.
+  updated immediately in memory by the worker-provided `TurnAppliedState`
+  projection in `App::apply_agent_response_received()` so the active session
+  view reflects the latest persisted metadata without waiting for a full
+  reload.
 - `review_status_message` and `review_text`
   Stored on `AppMode::View` and its restore-view variants. Review mode is opened
   from `crates/agentty/src/runtime/mode/session_view.rs`, which either reuses a
@@ -159,9 +165,10 @@ The exact session-chat render path is:
    summary text for `Status::Done` summary mode, otherwise `session.output`.
 1. `SessionOutput::output_lines()` converts that source text into final panel
    lines: it normalizes prompt spacing, splits any trailing commit footer,
-   renders markdown, appends follow-up tasks only for transcript-oriented modes,
-   reattaches the trailing commit footer, and finally adds the loader row or
-   `t` toggle hint when the current status requires it.
+   renders markdown, appends the synthetic summary block from `session.summary`
+   for transcript-oriented modes, appends follow-up tasks, reattaches the
+   trailing commit footer, and finally adds the loader row or `t` toggle hint
+   when the current status requires it.
 1. `SessionOutput::render()` writes the final `Line` list into a `ratatui`
    `Paragraph`, which is the exact widget printed in the session chat output
    area.
@@ -170,12 +177,15 @@ The exact session-chat render path is:
 
 - Review mode prints only review-specific content (`review_text`,
   `review_status_message`, or the `Review is not available.` fallback). It does
-  not append transcript follow-up-task sections.
+  not append transcript summary or follow-up-task sections.
 - Done summary mode prints the persisted summary payload rendered as
   `Change Summary`, plus any transcript-scoped footer content and the `t`
   toggle hint.
-- All other session-chat modes print `session.output`, which is the persisted
-  and handle-synchronized transcript built by worker/task append operations.
+- All other session-chat modes print `session.output`, then append the
+  structured summary from `session.summary` and transcript-scoped follow-up
+  tasks during render. The persisted transcript itself remains the
+  handle-synchronized answer/question output built by worker/task append
+  operations.
 
 ## Session Turn Data Flow
 
@@ -192,9 +202,9 @@ From prompt submit to persisted result:
 1. `AgentChannel::run_turn()` streams `TurnEvent` values and returns `TurnResult`.
 1. Worker applies final result:
 1. Append final assistant transcript output when no assistant chunks were already streamed (`answer` text, fallback `question` text).
-1. Persist session questions, replace persisted follow-up tasks, and emit `AppEvent::AgentResponseReceived`.
-1. Persist stats and per-model usage.
-1. Persist provider conversation id (app-server providers).
+1. `TurnPersistence::apply(...)` transactionally stores the canonical summary payload, question payload, follow-up-task rows, token-usage deltas, and provider conversation markers, then returns `TurnAppliedState`.
+1. Emit `AppEvent::AgentResponseReceived` with that reducer projection so the active session updates without a forced reload.
+1. If canonical metadata persistence fails, append a recovery error to the transcript, trigger `RefreshSessions`, and skip reducer projection emission so the UI falls back to durable state on reload.
 1. Run auto-commit assistance path, which preserves a single evolving commit on the session branch: the first successful file-changing turn creates the commit, later turns regenerate the message from the cumulative diff with the active project's `Default Fast Model`, auto-commit recovery prompts use that same fast-model selection, and the session `title` is synced from the rewritten commit after success while the structured response `summary` payload remains unchanged.
 1. Refresh persisted session size.
 1. Update final status (`Review` or `Question`; on failure -> `Review`).
@@ -286,7 +296,7 @@ Provider output is normalized to one structured response protocol:
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts may leave `summary` unused.
 1. Channels emit transient loader updates as `TurnEvent::ThoughtDelta` values when providers surface thought or tool-status text during the turn.
 1. Final output is parsed to protocol `answer`, `questions`, `follow_up_tasks`, and the optional structured summary. The final assistant payload itself must match the shared protocol JSON object, while direct deserialization into the shared wire type still accepts summary-only or otherwise defaulted top-level fields. If a provider prepends prose before one final schema object, parsing now recovers that trailing payload as long as nothing except whitespace follows it. Rejected payloads now surface parse diagnostics including response sizing, JSON parser location/category, and discovered top-level keys.
-1. Worker persists final display text, raw summary payload, question payloads, and follow-up-task rows, then emits `AgentResponseReceived`.
+1. Worker persists final display text, then `TurnPersistence::apply(...)` commits the canonical turn metadata and emits `AgentResponseReceived` with the matching reducer projection. If that transaction fails, the worker requests `RefreshSessions` and does not emit the projection.
 
 <a id="architecture-agent-interaction-streaming"></a>
 Streaming behavior differs by transport/provider:

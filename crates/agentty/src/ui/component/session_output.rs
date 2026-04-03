@@ -133,10 +133,11 @@ impl<'a> SessionOutput<'a> {
     /// loader row so transcript text stays stable until the turn completes.
     /// Wrapping width follows the configured output panel borders so line
     /// metrics stay in sync with rendered content. Trailing commit notices are
-    /// rendered after follow-up tasks so auto-commit updates do not jump above
-    /// the assistant's structured footer section. Review mode suppresses
-    /// transcript-only follow-up tasks because the panel is showing review
-    /// assist content rather than the chat transcript.
+    /// rendered after the synthetic summary and follow-up-task sections so
+    /// auto-commit updates do not jump above the assistant's structured
+    /// metadata. Review mode suppresses transcript-only summary and follow-up
+    /// sections because the panel is showing review-assist content rather than
+    /// the chat transcript.
     fn output_lines(
         session: &Session,
         output_area: Rect,
@@ -164,6 +165,9 @@ impl<'a> SessionOutput<'a> {
             .saturating_sub(Self::output_horizontal_border_width())
             as usize;
         let mut lines = render_markdown(output_text, inner_width);
+        if Self::shows_summary_block(session.status, done_session_output_mode) {
+            Self::append_summary_lines(&mut lines, session.summary.as_deref(), inner_width);
+        }
         if Self::shows_follow_up_tasks(done_session_output_mode) {
             Self::append_follow_up_task_lines(
                 &mut lines,
@@ -358,6 +362,36 @@ impl<'a> SessionOutput<'a> {
     /// follow-up tasks for the selected display mode.
     fn shows_follow_up_tasks(done_session_output_mode: DoneSessionOutputMode) -> bool {
         done_session_output_mode != DoneSessionOutputMode::Review
+    }
+
+    /// Returns whether the output panel should append the structured summary
+    /// block outside the persisted transcript string.
+    fn shows_summary_block(
+        status: Status,
+        done_session_output_mode: DoneSessionOutputMode,
+    ) -> bool {
+        if done_session_output_mode == DoneSessionOutputMode::Review {
+            return false;
+        }
+
+        !(status == Status::Done && done_session_output_mode == DoneSessionOutputMode::Summary)
+    }
+
+    /// Appends a rendered structured-summary section without mutating the
+    /// persisted transcript string.
+    fn append_summary_lines(
+        lines: &mut Vec<Line<'static>>,
+        summary_text: Option<&str>,
+        inner_width: usize,
+    ) {
+        let Some(summary_text) = summary_text else {
+            return;
+        };
+        if summary_text.trim().is_empty() {
+            return;
+        }
+
+        Self::append_markdown_lines(lines, &Self::render_summary_text(summary_text), inner_width);
     }
 
     /// Appends a rendered follow-up-task section without mutating persisted
@@ -688,6 +722,11 @@ mod tests {
         .expect("summary fixture should serialize")
     }
 
+    fn done_summary_fixture() -> String {
+        "# Summary\n\nSession now greets users on startup.\n\n# Commit\n\nRefine session summary"
+            .to_string()
+    }
+
     fn session_fixture() -> Session {
         Session {
             base_branch: "main".to_string(),
@@ -940,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn test_output_lines_uses_streamed_output_for_done_session_in_output_mode() {
+    fn test_output_lines_done_output_mode_appends_structured_summary() {
         // Arrange
         let mut session = session_fixture();
         session.output = "streamed output".to_string();
@@ -960,12 +999,13 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(!text.contains("Added the structured protocol summary."));
         assert!(text.contains("streamed output"));
+        assert!(text.contains("Added the structured protocol summary."));
+        assert!(text.contains("Session output now renders persisted summary markdown."));
     }
 
     #[test]
-    fn test_output_lines_review_session_uses_transcript_only() {
+    fn test_output_lines_review_session_appends_structured_summary() {
         // Arrange
         let mut session = session_fixture();
         session.output = "implemented the feature".to_string();
@@ -986,8 +1026,8 @@ mod tests {
 
         // Assert
         assert!(text.contains("implemented the feature"));
-        assert!(!text.contains("Added the structured protocol summary."));
-        assert!(!text.contains("Session output now renders persisted summary markdown."));
+        assert!(text.contains("Added the structured protocol summary."));
+        assert!(text.contains("Session output now renders persisted summary markdown."));
     }
 
     #[test]
@@ -1047,6 +1087,54 @@ mod tests {
 
         // Assert
         assert!(text.contains("Press t to switch to output."));
+    }
+
+    #[test]
+    /// Verifies the done-summary transition renders the rewritten summary
+    /// payload exactly once in summary mode.
+    fn test_output_lines_done_summary_transition_renders_rewritten_summary() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = "streamed output".to_string();
+        session.summary = Some(summary_fixture());
+        session.status = Status::Review;
+        let review_lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            line_context(DoneSessionOutputMode::Summary, None, None, None, None),
+        );
+        let review_text = review_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        session.summary = Some(done_summary_fixture());
+        session.status = Status::Done;
+
+        // Act
+        let done_output_text =
+            SessionOutput::output_text(&session, DoneSessionOutputMode::Summary, None, None);
+        let done_lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            line_context(DoneSessionOutputMode::Summary, None, None, None, None),
+        );
+        let done_text = done_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(review_text.contains("Change Summary"));
+        assert!(review_text.contains("Added the structured protocol summary."));
+        assert_eq!(done_output_text, done_summary_fixture());
+        assert!(done_text.contains("Summary"));
+        assert!(done_text.contains("Session now greets users on startup."));
+        assert!(done_text.contains("Commit"));
+        assert!(done_text.contains("Refine session summary"));
+        assert!(!done_text.contains("Change Summary"));
+        assert!(!done_text.contains("streamed output"));
     }
 
     #[test]

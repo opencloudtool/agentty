@@ -10,17 +10,17 @@ use tokio::sync::mpsc;
 
 use super::SessionTaskService;
 use crate::app::assist::AssistContext;
-use crate::app::session::{Clock, SessionError, unix_timestamp_from_system_time};
+use crate::app::session::{Clock, SessionError, TurnAppliedState, unix_timestamp_from_system_time};
 use crate::app::{AppEvent, AppServices, SessionManager};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
-use crate::domain::session::{SessionStats, Status};
+use crate::domain::session::{SessionFollowUpTask, SessionStats, Status};
 use crate::domain::setting::SettingName;
 use crate::infra::agent;
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentRequestKind, TurnEvent, TurnPrompt, TurnRequest, TurnResult,
     create_agent_channel,
 };
-use crate::infra::db::Database;
+use crate::infra::db::{Database, SessionTurnMetadata};
 use crate::infra::fs::FsClient;
 use crate::infra::git::GitClient;
 
@@ -87,6 +87,13 @@ struct SessionWorkerContext {
     output: Arc<Mutex<String>>,
     session_id: String,
     status: Arc<Mutex<Status>>,
+}
+
+/// Applies one successful turn result to persistence and returns the
+/// corresponding reducer projection.
+struct TurnPersistence<'a> {
+    context: &'a SessionWorkerContext,
+    session_model: AgentModel,
 }
 
 /// Runtime snapshot required to create or reuse one session worker.
@@ -548,6 +555,65 @@ impl SessionManager {
     }
 }
 
+impl<'a> TurnPersistence<'a> {
+    /// Persists one completed turn and returns the reducer projection derived
+    /// from the canonical stored values.
+    async fn apply(
+        &self,
+        assistant_message: &agent::AgentResponse,
+        input_tokens: u64,
+        output_tokens: u64,
+        provider_conversation_id: Option<&str>,
+    ) -> Result<TurnAppliedState, SessionError> {
+        let summary = persisted_session_summary_payload(assistant_message);
+        let questions = assistant_message.question_items();
+        let questions_json = if questions.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&questions).unwrap_or_default()
+        };
+        let follow_up_tasks = turn_applied_follow_up_tasks(assistant_message);
+        let persisted_follow_up_text = follow_up_tasks
+            .iter()
+            .map(|follow_up_task| follow_up_task.text.clone())
+            .collect::<Vec<_>>();
+        let token_usage_delta = SessionStats {
+            added_lines: 0,
+            deleted_lines: 0,
+            input_tokens,
+            output_tokens,
+        };
+        let instruction_conversation_id =
+            if agent::transport_mode(self.session_model.kind()).uses_app_server() {
+                agent::normalize_instruction_conversation_id(provider_conversation_id)
+            } else {
+                None
+            };
+        self.context
+            .db
+            .persist_session_turn_metadata(
+                &self.context.session_id,
+                &SessionTurnMetadata {
+                    follow_up_tasks: &persisted_follow_up_text,
+                    instruction_conversation_id: instruction_conversation_id.as_deref(),
+                    model: self.session_model.as_str(),
+                    provider_conversation_id,
+                    questions_json: &questions_json,
+                    summary: &summary,
+                    token_usage_delta: &token_usage_delta,
+                },
+            )
+            .await?;
+
+        Ok(TurnAppliedState {
+            follow_up_tasks,
+            questions,
+            summary: (!summary.is_empty()).then_some(summary),
+            token_usage_delta,
+        })
+    }
+}
+
 /// Applies the turn result: appends the final response, persists follow-up
 /// metadata, updates stats, and runs auto-commit. Returns `Ok(Status)` on
 /// success or `Err(description)` on turn failure after appending the error to
@@ -558,16 +624,12 @@ impl SessionManager {
 /// joined question text so clarification prompts remain visible while
 /// thought-only responses are not persisted as final transcript output.
 ///
-/// The raw agent `summary` payload is persisted here so refresh-driven UI
-/// rendering can reload it from the database and show separate `Current Turn`
-/// and `Session Changes` blocks. When the session later reaches `Done`, the
-/// merge path rewrites the persisted value into markdown with `# Summary` and
-/// `# Commit` sections.
-///
-/// Clarification questions are persisted to the session row, follow-up tasks
-/// are replaced through their dedicated table, and question responses trigger
-/// `Status::Question`; all responses are emitted through
-/// `AppEvent::AgentResponseReceived` for reducer-level routing.
+/// The raw agent `summary` payload is stored only in the session row. The
+/// reducer receives a matching [`TurnAppliedState`] projection so the active UI
+/// can render the same summary and follow-up metadata without embedding a
+/// second markdown copy into `session.output`. If canonical metadata
+/// persistence fails, the worker appends a recovery error, triggers
+/// `RefreshSessions`, and skips reducer projection emission.
 async fn apply_turn_result(
     context: &SessionWorkerContext,
     session_model: AgentModel,
@@ -592,9 +654,9 @@ async fn apply_turn_result(
     }
 }
 
-/// Persists the successful turn payload, emits reducer events, stores both
-/// provider conversation markers, and runs the auto-commit workflow with the
-/// project's fast-model default before returning the next session status.
+/// Persists the successful turn payload, emits the reducer projection, and
+/// runs the auto-commit workflow with the project's fast-model default before
+/// returning the next session status.
 async fn apply_successful_turn_result(
     context: &SessionWorkerContext,
     session_model: AgentModel,
@@ -618,101 +680,35 @@ async fn apply_successful_turn_result(
         )
         .await;
     }
-
-    let summary_text = persisted_session_summary_payload(&assistant_message);
-    // Best-effort: summary persistence failure is non-critical.
-    let _ = context
-        .db
-        .update_session_summary(&context.session_id, &summary_text)
-        .await;
-    let follow_up_tasks = assistant_message.follow_up_task_items();
-    // Best-effort: follow-up-task persistence failure is non-critical.
-    let _ = context
-        .db
-        .replace_session_follow_up_tasks(&context.session_id, &follow_up_tasks)
-        .await;
-
-    let summary_prefix = summary_transcript_prefix(&context.output);
-    if let Some(summary_output) =
-        build_summary_transcript_output(&assistant_message, &summary_prefix)
-    {
-        SessionTaskService::append_session_output(
-            &context.output,
-            &context.db,
-            &context.app_event_tx,
-            &context.session_id,
-            &summary_output,
-        )
-        .await;
+    let turn_applied_state = match (TurnPersistence {
+        context,
+        session_model,
     }
+    .apply(
+        &assistant_message,
+        input_tokens,
+        output_tokens,
+        provider_conversation_id.as_deref(),
+    )
+    .await)
+    {
+        Ok(turn_applied_state) => turn_applied_state,
+        Err(error) => {
+            handle_turn_persistence_failure(context, &error).await;
 
-    // Fire-and-forget: receiver may be dropped during shutdown.
-    let _ = context.app_event_tx.send(AppEvent::RefreshSessions);
-
-    let question_items = assistant_message.question_items();
-    let target_status = if question_items.is_empty() {
-        // Best-effort: questions persistence failure is non-critical.
-        let _ = context
-            .db
-            .update_session_questions(&context.session_id, "")
-            .await;
-
+            return Err(error);
+        }
+    };
+    let target_status = if turn_applied_state.questions.is_empty() {
         Status::Review
     } else {
-        if let Ok(questions_json) = serde_json::to_string(&question_items) {
-            // Best-effort: questions persistence failure is non-critical.
-            let _ = context
-                .db
-                .update_session_questions(&context.session_id, &questions_json)
-                .await;
-        }
-
         Status::Question
     };
     // Fire-and-forget: receiver may be dropped during shutdown.
     let _ = context.app_event_tx.send(AppEvent::AgentResponseReceived {
-        response: assistant_message,
         session_id: context.session_id.clone(),
+        turn_applied_state,
     });
-
-    let stats = SessionStats {
-        added_lines: 0,
-        deleted_lines: 0,
-        input_tokens,
-        output_tokens,
-    };
-    // Best-effort: stats persistence failure is non-critical.
-    let _ = context
-        .db
-        .update_session_stats(&context.session_id, &stats)
-        .await;
-    // Best-effort: usage persistence failure is non-critical.
-    let _ = context
-        .db
-        .upsert_session_usage(&context.session_id, session_model.as_str(), &stats)
-        .await;
-    // Best-effort: provider ID persistence failure is non-critical.
-    let _ = context
-        .db
-        .update_session_provider_conversation_id(
-            &context.session_id,
-            provider_conversation_id.as_deref(),
-        )
-        .await;
-    let instruction_conversation_id =
-        if agent::transport_mode(session_model.kind()).uses_app_server() {
-            agent::normalize_instruction_conversation_id(provider_conversation_id.as_deref())
-        } else {
-            None
-        };
-    // Best-effort: instruction bootstrap persistence failure is non-critical.
-    let _ = context
-        .db
-        .update_session_instruction_conversation_id(
-            &context.session_id,
-            instruction_conversation_id.as_deref(),
-        )
-        .await;
     let auto_commit_model = SessionTaskService::load_auto_commit_model_setting(
         &context.db,
         &context.session_id,
@@ -733,6 +729,25 @@ async fn apply_successful_turn_result(
     .await;
 
     Ok(target_status)
+}
+
+/// Reconciles a failed turn-metadata write by surfacing the error and forcing
+/// the next UI reload to prefer durable state.
+async fn handle_turn_persistence_failure(context: &SessionWorkerContext, error: &SessionError) {
+    let message = format!(
+        "\n[Turn Metadata Error] Failed to persist completed turn metadata: {}\n",
+        error
+    );
+    SessionTaskService::append_session_output(
+        &context.output,
+        &context.db,
+        &context.app_event_tx,
+        &context.session_id,
+        &message,
+    )
+    .await;
+
+    let _ = context.app_event_tx.send(AppEvent::RefreshSessions);
 }
 
 /// Spawns first-turn session title generation from the initial user prompt.
@@ -796,27 +811,6 @@ async fn load_project_model_setting(
         .and_then(|setting_value| AgentModel::from_str(&setting_value).ok())
 }
 
-/// Returns the spacer that should precede the summary transcript block.
-///
-/// Summary markdown should stay visually separated from any previously
-/// persisted assistant text. When the current transcript already ends with a
-/// blank line, no extra spacing is needed.
-fn summary_transcript_prefix(output: &Arc<Mutex<String>>) -> String {
-    let Ok(output) = output.lock() else {
-        return String::new();
-    };
-
-    if output.is_empty() || output.ends_with("\n\n") {
-        return String::new();
-    }
-
-    if output.ends_with('\n') {
-        return "\n".to_string();
-    }
-
-    "\n\n".to_string()
-}
-
 /// Builds the persisted transcript chunk for one parsed assistant response.
 ///
 /// Prefers the top-level `answer` text so normal chat output stays concise.
@@ -862,32 +856,22 @@ fn persisted_session_summary_payload(assistant_message: &agent::AgentResponse) -
         .unwrap_or_default()
 }
 
-/// Formats one assistant summary payload as a markdown transcript block for
-/// inline output display.
-///
-/// Returns `None` only when no summary struct is present on the response.
-/// Empty fields fall back to `"No changes"` so sections stay visually
-/// consistent even when both fields are empty. `summary_prefix` is prepended
-/// when the existing transcript needs extra spacing before the summary block.
-fn build_summary_transcript_output(
+/// Builds the reducer-facing follow-up-task projection for one assistant
+/// response.
+fn turn_applied_follow_up_tasks(
     assistant_message: &agent::AgentResponse,
-    summary_prefix: &str,
-) -> Option<String> {
-    let summary = assistant_message.summary.as_ref()?;
-    let turn = summary.turn.trim();
-    let session = summary.session.trim();
-
-    let turn_text = if turn.is_empty() { "No changes" } else { turn };
-    let session_text = if session.is_empty() {
-        "No changes"
-    } else {
-        session
-    };
-
-    Some(format!(
-        "{summary_prefix}## Change Summary\n### Current Turn\n{turn_text}\n\n### Session \
-         Changes\n{session_text}\n\n"
-    ))
+) -> Vec<SessionFollowUpTask> {
+    assistant_message
+        .follow_up_task_items()
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| SessionFollowUpTask {
+            id: i64::try_from(index).unwrap_or(i64::MAX),
+            launched_session_id: None,
+            position: index,
+            text,
+        })
+        .collect()
 }
 
 /// Consumes [`TurnEvent`]s from `event_rx` and applies their side effects.
@@ -1281,18 +1265,98 @@ mod tests {
             ]
         );
         let output = context.output.lock().expect("output lock poisoned");
-        assert!(output.contains("## Change Summary"));
-        assert!(output.contains("### Current Turn"));
-        assert!(output.contains("- Updated the worker flow."));
-        assert!(output.contains("### Session Changes"));
-        assert!(output.contains("- Active review now reloads summary from persistence."));
+        assert!(output.starts_with("Implemented the change.\n\n"));
+        assert!(output.contains("[Commit] No changes to commit."));
+        assert!(!output.contains("## Change Summary"));
         assert!(!output.contains("Document the worker summary flow."));
     }
 
     #[tokio::test]
-    /// Verifies persisted assistant text is separated from the appended
-    /// summary block even when prior output ended without a trailing newline.
-    async fn test_apply_turn_result_separates_summary_from_streamed_output() {
+    /// Verifies failed turn-metadata persistence forces a refresh and skips
+    /// reducer projection emission.
+    async fn test_apply_turn_result_refreshes_when_turn_metadata_persistence_fails() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "sess1",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        db.delete_session("sess1")
+            .await
+            .expect("failed to delete session");
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let context = SessionWorkerContext {
+            app_event_tx,
+            channel: Arc::new(MockAgentChannel::new()),
+            child_pid: Arc::new(Mutex::new(None)),
+            clock: Arc::new(crate::app::session::RealClock),
+            db,
+            folder: base_dir.path().to_path_buf(),
+            fs_client: Arc::new(fs::MockFsClient::new()),
+            git_client: Arc::new(MockGitClient::new()),
+            output: Arc::new(Mutex::new(String::new())),
+            session_id: "sess1".to_string(),
+            status: Arc::new(Mutex::new(Status::InProgress)),
+        };
+        let turn_result = Ok(TurnResult {
+            assistant_message: AgentResponse {
+                answer: "Implemented the change.".to_string(),
+                questions: Vec::new(),
+                follow_up_tasks: vec!["Document the failure path.".to_string()],
+                summary: Some(AgentResponseSummary {
+                    turn: "- Attempted the update.".to_string(),
+                    session: "- Session state should not project without persistence.".to_string(),
+                }),
+            },
+            context_reset: false,
+            input_tokens: 2,
+            output_tokens: 3,
+            provider_conversation_id: None,
+        });
+
+        // Act
+        let error = apply_turn_result(&context, AgentModel::Gemini3FlashPreview, turn_result)
+            .await
+            .expect_err("turn result should fail when metadata persistence fails");
+        let events = std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
+        let output = context.output.lock().expect("output lock poisoned");
+
+        // Assert
+        assert!(
+            error
+                .to_string()
+                .contains("no rows returned by a query that expected to return at least one row")
+        );
+        assert!(output.contains("Implemented the change."));
+        assert!(
+            output.contains("[Turn Metadata Error] Failed to persist completed turn metadata:")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AppEvent::RefreshSessions))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AppEvent::AgentResponseReceived { .. }))
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies persisted assistant text stays unchanged when summaries are
+    /// stored only in structured session metadata.
+    async fn test_apply_turn_result_keeps_summary_out_of_transcript_output() {
         // Arrange
         let base_dir = tempdir().expect("failed to create temp dir");
         let db = Database::open_in_memory().await.expect("failed to open db");
@@ -1353,7 +1417,11 @@ mod tests {
 
         // Assert
         assert_eq!(status, Status::Review);
-        assert!(output.contains("Hey! How can I help you today?\n\n## Change Summary"));
+        assert!(
+            output.starts_with("Hey! How can I help you today?Hey! How can I help you today?\n\n")
+        );
+        assert!(output.contains("[Commit] No changes to commit."));
+        assert!(!output.contains("## Change Summary"));
     }
 
     #[tokio::test]
@@ -1420,167 +1488,36 @@ mod tests {
     }
 
     #[test]
-    /// Formats a populated summary payload as a markdown transcript block.
-    fn test_build_summary_transcript_output_returns_formatted_markdown() {
+    /// Builds reducer-facing follow-up tasks with stable UI positions and
+    /// placeholder in-memory identifiers.
+    fn test_turn_applied_follow_up_tasks_preserve_order() {
         // Arrange
         let assistant_message = AgentResponse {
             answer: String::new(),
             questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
-            summary: Some(AgentResponseSummary {
-                turn: "- Added feature X.".to_string(),
-                session: "- Feature X now live on branch.".to_string(),
-            }),
-        };
-
-        // Act
-        let output = build_summary_transcript_output(&assistant_message, "");
-
-        // Assert
-        assert_eq!(
-            output,
-            Some(
-                "## Change Summary\n### Current Turn\n- Added feature X.\n\n### Session \
-                 Changes\n- Feature X now live on branch.\n\n"
-                    .to_string()
-            )
-        );
-    }
-
-    #[test]
-    /// Returns `None` when the assistant response has no summary.
-    fn test_build_summary_transcript_output_returns_none_without_summary() {
-        // Arrange
-        let assistant_message = AgentResponse {
-            answer: "Done.".to_string(),
-            questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
+            follow_up_tasks: vec![
+                "Document the flow.".to_string(),
+                "Add a regression test.".to_string(),
+            ],
             summary: None,
         };
 
         // Act
-        let output = build_summary_transcript_output(&assistant_message, "");
-
-        // Assert
-        assert_eq!(output, None);
-    }
-
-    #[test]
-    /// Falls back to "No changes" for both fields when the summary struct is
-    /// present but empty.
-    fn test_build_summary_transcript_output_falls_back_for_both_empty_fields() {
-        // Arrange
-        let assistant_message = AgentResponse {
-            answer: String::new(),
-            questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
-            summary: Some(AgentResponseSummary {
-                turn: String::new(),
-                session: String::new(),
-            }),
-        };
-
-        // Act
-        let output = build_summary_transcript_output(&assistant_message, "");
-
-        // Assert
-        let text = output.expect("should return some output when summary struct is present");
-        assert!(text.contains("## Change Summary"));
-        assert_eq!(text.matches("No changes").count(), 2);
-    }
-
-    #[test]
-    /// Falls back to "No changes" for an empty `turn` field.
-    fn test_build_summary_transcript_output_falls_back_for_empty_turn() {
-        // Arrange
-        let assistant_message = AgentResponse {
-            answer: String::new(),
-            questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
-            summary: Some(AgentResponseSummary {
-                turn: String::new(),
-                session: "- Branch has ongoing changes.".to_string(),
-            }),
-        };
-
-        // Act
-        let output = build_summary_transcript_output(&assistant_message, "");
-
-        // Assert
-        let text = output.expect("should return some output");
-        assert!(text.contains("No changes"));
-        assert!(text.contains("- Branch has ongoing changes."));
-    }
-
-    #[test]
-    /// Falls back to "No changes" for an empty `session` field.
-    fn test_build_summary_transcript_output_falls_back_for_empty_session() {
-        // Arrange
-        let assistant_message = AgentResponse {
-            answer: String::new(),
-            questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
-            summary: Some(AgentResponseSummary {
-                turn: "- Fixed the bug.".to_string(),
-                session: String::new(),
-            }),
-        };
-
-        // Act
-        let output = build_summary_transcript_output(&assistant_message, "");
-
-        // Assert
-        let text = output.expect("should return some output");
-        assert!(text.contains("- Fixed the bug."));
-        assert!(text.contains("No changes"));
-    }
-
-    #[test]
-    /// Includes the requested leading spacer before the summary heading.
-    fn test_build_summary_transcript_output_includes_requested_prefix() {
-        // Arrange
-        let assistant_message = AgentResponse {
-            answer: String::new(),
-            questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
-            summary: Some(AgentResponseSummary {
-                turn: "- Fixed the bug.".to_string(),
-                session: "- Session summary stays readable.".to_string(),
-            }),
-        };
-
-        // Act
-        let output = build_summary_transcript_output(&assistant_message, "\n\n");
+        let follow_up_tasks = turn_applied_follow_up_tasks(&assistant_message);
 
         // Assert
         assert_eq!(
-            output,
-            Some(
-                "\n\n## Change Summary\n### Current Turn\n- Fixed the bug.\n\n### Session \
-                 Changes\n- Session summary stays readable.\n\n"
-                    .to_string()
-            )
+            follow_up_tasks
+                .iter()
+                .map(|follow_up_task| (follow_up_task.position, follow_up_task.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "Document the flow."), (1, "Add a regression test.")]
         );
-    }
-
-    #[test]
-    /// Returns only the spacing needed to keep the summary block separated
-    /// from existing transcript output.
-    fn test_summary_transcript_prefix_matches_existing_spacing() {
-        // Arrange
-        let no_spacing_needed = Arc::new(Mutex::new("answer\n\n".to_string()));
-        let single_newline = Arc::new(Mutex::new("answer\n".to_string()));
-        let no_newline = Arc::new(Mutex::new("answer".to_string()));
-
-        // Act
-        let no_spacing_prefix = summary_transcript_prefix(&no_spacing_needed);
-        let single_newline_prefix = summary_transcript_prefix(&single_newline);
-        let no_newline_prefix = summary_transcript_prefix(&no_newline);
-
-        // Assert
-        assert_eq!(no_spacing_prefix, "");
-        assert_eq!(single_newline_prefix, "\n");
-        assert_eq!(no_newline_prefix, "\n\n");
+        assert!(
+            follow_up_tasks
+                .iter()
+                .all(|follow_up_task| follow_up_task.launched_session_id.is_none())
+        );
     }
 
     #[tokio::test]

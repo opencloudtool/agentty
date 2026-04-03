@@ -24,7 +24,7 @@ use app::task;
 use ignore::WalkBuilder;
 use ratatui::Frame;
 use ratatui::widgets::TableState;
-use session::{SessionTaskService, SyncMainOutcome, SyncSessionStartError};
+use session::{SessionTaskService, SyncMainOutcome, SyncSessionStartError, TurnAppliedState};
 use tokio::sync::mpsc;
 
 use super::AppError;
@@ -36,7 +36,6 @@ use crate::domain::project::{Project, ProjectListItem, project_name_from_path};
 use crate::domain::session::{
     FollowUpTaskAction, PublishBranchAction, Session, SessionSize, Status,
 };
-use crate::infra::agent::AgentResponse;
 use crate::infra::channel::TurnPrompt;
 use crate::infra::db::Database;
 use crate::infra::file_index::FileEntry;
@@ -164,17 +163,17 @@ pub(crate) enum AppEvent {
     },
     /// Indicates that a session handle snapshot changed in-memory.
     SessionUpdated { session_id: String },
-    /// Indicates that an agent turn completed with one structured response
-    /// payload to be routed by the app reducer.
+    /// Indicates that an agent turn completed and persisted one reducer-ready
+    /// projection.
     AgentResponseReceived {
-        response: AgentResponse,
         session_id: String,
+        turn_applied_state: TurnAppliedState,
     },
 }
 
 #[derive(Default)]
 struct AppEventBatch {
-    agent_responses: HashMap<String, AgentResponse>,
+    applied_turns: HashMap<String, TurnAppliedState>,
     at_mention_entries_updates: HashMap<String, Vec<FileEntry>>,
     review_updates: HashMap<String, ReviewUpdate>,
     git_status_update: Option<(u32, u32)>,
@@ -1629,8 +1628,8 @@ impl App {
             }
         }
 
-        for (session_id, response) in event_batch.agent_responses {
-            self.apply_agent_response_received(&session_id, &response);
+        for (session_id, turn_applied_state) in event_batch.applied_turns {
+            self.apply_agent_response_received(&session_id, &turn_applied_state);
         }
 
         for session_id in &event_batch.session_ids {
@@ -1653,46 +1652,33 @@ impl App {
         self.retain_valid_session_progress_messages();
     }
 
-    /// Routes one structured agent response to the currently focused session
+    /// Routes one persisted turn projection to the currently focused session
     /// UI.
     ///
-    /// At the app layer, clarification questions drive mode routing while
-    /// follow-up tasks update the in-memory session snapshot immediately so
-    /// the current view reflects persisted metadata before the next refresh.
-    /// The top-level `answer` text is already appended to transcript output by
-    /// the session worker before this event is handled. Session summaries are
-    /// persisted as raw `summary` payloads by the worker and rendered from
-    /// refresh-driven database state.
-    fn apply_agent_response_received(&mut self, session_id: &str, response: &AgentResponse) {
-        let Some(session_index) = self
+    /// The session worker persists the canonical summary, clarification
+    /// questions, follow-up tasks, and token-usage delta before sending this
+    /// event, so the reducer can apply the exact same projection in memory
+    /// without waiting for a forced reload.
+    fn apply_agent_response_received(
+        &mut self,
+        session_id: &str,
+        turn_applied_state: &TurnAppliedState,
+    ) {
+        if !self
             .sessions
             .sessions
             .iter()
-            .position(|session| session.id == session_id)
-        else {
-            return;
-        };
-
-        let session = &mut self.sessions.sessions[session_index];
-        session.follow_up_tasks = response
-            .follow_up_task_items()
-            .into_iter()
-            .enumerate()
-            .map(
-                |(index, text)| crate::domain::session::SessionFollowUpTask {
-                    id: i64::try_from(index).unwrap_or(i64::MAX),
-                    launched_session_id: None,
-                    position: index,
-                    text,
-                },
-            )
-            .collect();
-        let questions = response.question_items();
-        if questions.is_empty() {
+            .any(|session| session.id == session_id)
+        {
             return;
         }
 
-        session.questions.clone_from(&questions);
+        self.sessions
+            .apply_turn_applied_state(session_id, turn_applied_state);
+        let questions = turn_applied_state.questions.clone();
+        if questions.is_empty() {
+            return;
+        }
 
         let is_viewing_session = match &self.mode {
             AppMode::View {
@@ -3180,10 +3166,10 @@ impl AppEventBatch {
                 self.session_ids.insert(session_id);
             }
             AppEvent::AgentResponseReceived {
-                response,
                 session_id,
+                turn_applied_state,
             } => {
-                self.agent_responses.insert(session_id, response);
+                self.applied_turns.insert(session_id, turn_applied_state);
             }
         }
     }
@@ -3196,6 +3182,7 @@ mod tests {
     use std::sync::Arc;
 
     use mockall::predicate::eq;
+    use serde_json;
     use tempfile::tempdir;
 
     use super::*;
@@ -3259,6 +3246,30 @@ mod tests {
             summary: None,
             title: None,
             updated_at: 0,
+        }
+    }
+
+    /// Builds one reducer-ready turn projection for tests.
+    fn test_turn_applied_state(
+        questions: Vec<QuestionItem>,
+        follow_up_tasks: Vec<&str>,
+        summary: Option<AgentResponseSummary>,
+        token_usage_delta: SessionStats,
+    ) -> TurnAppliedState {
+        TurnAppliedState {
+            follow_up_tasks: follow_up_tasks
+                .into_iter()
+                .enumerate()
+                .map(|(position, text)| SessionFollowUpTask {
+                    id: i64::try_from(position).unwrap_or(i64::MAX),
+                    launched_session_id: None,
+                    position,
+                    text: text.to_string(),
+                })
+                .collect(),
+            questions,
+            summary: summary.and_then(|summary| serde_json::to_string(&summary).ok()),
+            token_usage_delta,
         }
     }
 
@@ -4261,35 +4272,35 @@ mod tests {
     fn app_event_batch_collect_event_keeps_latest_agent_response_update() {
         // Arrange
         let mut event_batch = AppEventBatch::default();
-        let latest_response = AgentResponse {
-            answer: String::new(),
-            questions: vec![
+        let latest_turn = test_turn_applied_state(
+            vec![
                 QuestionItem::new("Need branch?"),
                 QuestionItem::new("Need tests?"),
             ],
-            follow_up_tasks: Vec::new(),
-            summary: None,
-        };
+            Vec::new(),
+            None,
+            SessionStats::default(),
+        );
 
         // Act
         event_batch.collect_event(AppEvent::AgentResponseReceived {
-            response: AgentResponse {
-                answer: String::new(),
-                questions: vec![QuestionItem::new("Old question")],
-                follow_up_tasks: Vec::new(),
-                summary: None,
-            },
             session_id: "session-1".to_string(),
+            turn_applied_state: test_turn_applied_state(
+                vec![QuestionItem::new("Old question")],
+                Vec::new(),
+                None,
+                SessionStats::default(),
+            ),
         });
         event_batch.collect_event(AppEvent::AgentResponseReceived {
-            response: latest_response.clone(),
             session_id: "session-1".to_string(),
+            turn_applied_state: latest_turn.clone(),
         });
 
         // Assert
         assert_eq!(
-            event_batch.agent_responses.get("session-1").cloned(),
-            Some(latest_response)
+            event_batch.applied_turns.get("session-1").cloned(),
+            Some(latest_turn)
         );
     }
     #[test]
@@ -4393,9 +4404,18 @@ mod tests {
             session_id: "session-1".to_string(),
             scroll_offset: None,
         };
-        let response = AgentResponse {
-            answer: String::new(),
-            questions: vec![
+        let expected_questions = vec![
+            QuestionItem::with_options(
+                "Need a target branch?",
+                vec!["main".to_string(), "develop".to_string()],
+            ),
+            QuestionItem::with_options(
+                "Need integration tests?",
+                vec!["Yes".to_string(), "No".to_string()],
+            ),
+        ];
+        let turn_applied_state = test_turn_applied_state(
+            vec![
                 QuestionItem::with_options(
                     "Need a target branch?",
                     vec!["main".to_string(), "develop".to_string()],
@@ -4405,15 +4425,15 @@ mod tests {
                     vec!["Yes".to_string(), "No".to_string()],
                 ),
             ],
-            follow_up_tasks: Vec::new(),
-            summary: None,
-        };
-        let expected_questions = response.question_items();
+            Vec::new(),
+            None,
+            SessionStats::default(),
+        );
 
         // Act
         app.apply_app_events(AppEvent::AgentResponseReceived {
-            response,
             session_id: "session-1".to_string(),
+            turn_applied_state,
         })
         .await;
 
@@ -4440,17 +4460,16 @@ mod tests {
         // Arrange
         let mut app = new_test_app().await;
         app.mode = AppMode::List;
-        let response = AgentResponse {
-            answer: String::new(),
-            questions: vec![QuestionItem::new("Need context?")],
-            follow_up_tasks: Vec::new(),
-            summary: None,
-        };
 
         // Act
         app.apply_app_events(AppEvent::AgentResponseReceived {
-            response,
             session_id: "session-1".to_string(),
+            turn_applied_state: test_turn_applied_state(
+                vec![QuestionItem::new("Need context?")],
+                Vec::new(),
+                None,
+                SessionStats::default(),
+            ),
         })
         .await;
 
@@ -4459,33 +4478,41 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies agent response handling leaves cached session summaries to
-    /// refresh-driven database reloads.
-    async fn apply_app_events_agent_response_does_not_mutate_session_summary() {
+    /// Verifies reducer-applied turn projections update the cached session
+    /// summary immediately.
+    async fn apply_app_events_agent_response_updates_session_summary() {
         // Arrange
         let mut app = new_test_app().await;
         app.sessions
             .sessions
             .push(test_session(PathBuf::from("/tmp/session-summary-view")));
-        let response = AgentResponse {
-            answer: "Implemented the protocol update.".to_string(),
-            questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
-            summary: Some(AgentResponseSummary {
-                turn: "- Added structured protocol summary fields.".to_string(),
-                session: "- Session output now renders summary markdown separately.".to_string(),
-            }),
-        };
+        let expected_summary = serde_json::to_string(&AgentResponseSummary {
+            turn: "- Added structured protocol summary fields.".to_string(),
+            session: "- Session output now renders persisted summary separately.".to_string(),
+        })
+        .expect("summary should serialize");
 
         // Act
         app.apply_app_events(AppEvent::AgentResponseReceived {
-            response,
             session_id: "session-1".to_string(),
+            turn_applied_state: test_turn_applied_state(
+                Vec::new(),
+                Vec::new(),
+                Some(AgentResponseSummary {
+                    turn: "- Added structured protocol summary fields.".to_string(),
+                    session: "- Session output now renders persisted summary separately."
+                        .to_string(),
+                }),
+                SessionStats::default(),
+            ),
         })
         .await;
 
         // Assert
-        assert!(app.sessions.sessions[0].summary.is_none());
+        assert_eq!(
+            app.sessions.sessions[0].summary.as_deref(),
+            Some(expected_summary.as_str())
+        );
     }
 
     #[tokio::test]
@@ -4497,20 +4524,19 @@ mod tests {
         app.sessions
             .sessions
             .push(test_session(PathBuf::from("/tmp/session-follow-up-view")));
-        let response = AgentResponse {
-            answer: String::new(),
-            questions: Vec::new(),
-            follow_up_tasks: vec![
-                "Document the new shortcut.".to_string(),
-                "Add a focused regression test.".to_string(),
-            ],
-            summary: None,
-        };
 
         // Act
         app.apply_app_events(AppEvent::AgentResponseReceived {
-            response,
             session_id: "session-1".to_string(),
+            turn_applied_state: test_turn_applied_state(
+                Vec::new(),
+                vec![
+                    "Document the new shortcut.",
+                    "Add a focused regression test.",
+                ],
+                None,
+                SessionStats::default(),
+            ),
         })
         .await;
 
@@ -4526,6 +4552,41 @@ mod tests {
                 "Add a focused regression test.".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    /// Verifies reducer-applied turn projections clear stale questions and add
+    /// token deltas to cached session stats.
+    async fn apply_app_events_agent_response_updates_questions_and_token_usage() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let mut session = test_session(PathBuf::from("/tmp/session-stats-view"));
+        session.questions = vec![QuestionItem::new("Old question?")];
+        session.stats.input_tokens = 5;
+        session.stats.output_tokens = 8;
+        app.sessions.sessions.push(session);
+
+        // Act
+        app.apply_app_events(AppEvent::AgentResponseReceived {
+            session_id: "session-1".to_string(),
+            turn_applied_state: test_turn_applied_state(
+                Vec::new(),
+                Vec::new(),
+                None,
+                SessionStats {
+                    added_lines: 0,
+                    deleted_lines: 0,
+                    input_tokens: 13,
+                    output_tokens: 21,
+                },
+            ),
+        })
+        .await;
+
+        // Assert
+        assert!(app.sessions.sessions[0].questions.is_empty());
+        assert_eq!(app.sessions.sessions[0].stats.input_tokens, 18);
+        assert_eq!(app.sessions.sessions[0].stats.output_tokens, 29);
     }
 
     #[tokio::test]
