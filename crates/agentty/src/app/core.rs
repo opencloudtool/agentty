@@ -2234,6 +2234,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::app::branch_publish::{BranchPublishTaskResult, BranchPublishTaskSuccess};
     use crate::app::diff_content_hash;
     use crate::app::review::ReviewUpdate;
     use crate::app::startup::HOME_PROJECT_SCAN_MAX_RESULTS;
@@ -2247,7 +2248,7 @@ mod tests {
     use crate::infra::db::Database;
     use crate::infra::file_index::FileEntry;
     use crate::infra::tmux::{MockTmuxClient, TmuxClient};
-    use crate::ui::state::app_mode::DoneSessionOutputMode;
+    use crate::ui::state::app_mode::{ConfirmationViewMode, DoneSessionOutputMode};
 
     /// Builds one mock app-server client wrapped in `Arc`.
     fn mock_app_server() -> Arc<dyn app_server::AppServerClient> {
@@ -2322,6 +2323,27 @@ mod tests {
             summary: summary.and_then(|summary| serde_json::to_string(&summary).ok()),
             token_usage_delta,
         }
+    }
+
+    /// Builds a restore-view snapshot used by branch-publish event-batch
+    /// tests.
+    fn test_confirmation_view_mode(session_id: &str) -> ConfirmationViewMode {
+        ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            scroll_offset: None,
+            session_id: session_id.to_string(),
+        }
+    }
+
+    /// Builds a successful branch-publish batch payload for one session.
+    fn test_pushed_branch_result(branch_name: &str) -> BranchPublishTaskResult {
+        Ok(BranchPublishTaskSuccess::Pushed {
+            branch_name: branch_name.to_string(),
+            review_request_creation_url: None,
+            upstream_reference: format!("origin/{branch_name}"),
+        })
     }
 
     /// Builds a test app rooted at one temporary workspace with an injected
@@ -3441,6 +3463,7 @@ mod tests {
             Some(latest_turn)
         );
     }
+
     #[test]
     /// Verifies that `UpdateStatusChanged` events update the event batch so
     /// the reducer can apply the latest update progress state.
@@ -3465,6 +3488,145 @@ mod tests {
             event_batch.update_status,
             Some(UpdateStatus::Complete {
                 version: "v1.0.0".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn app_event_batch_collect_event_keeps_latest_same_session_updates() {
+        // Arrange
+        let mut event_batch = AppEventBatch::default();
+
+        // Act
+        event_batch.collect_event(AppEvent::SessionModelUpdated {
+            session_id: "session-a".to_string(),
+            session_model: AgentModel::Gemini3FlashPreview,
+        });
+        event_batch.collect_event(AppEvent::SessionModelUpdated {
+            session_id: "session-a".to_string(),
+            session_model: AgentModel::Gemini31ProPreview,
+        });
+        event_batch.collect_event(AppEvent::SessionProgressUpdated {
+            progress_message: Some("first".to_string()),
+            session_id: "session-a".to_string(),
+        });
+        event_batch.collect_event(AppEvent::SessionProgressUpdated {
+            progress_message: Some("second".to_string()),
+            session_id: "session-a".to_string(),
+        });
+        event_batch.collect_event(AppEvent::SessionSizeUpdated {
+            added_lines: 1,
+            deleted_lines: 2,
+            session_id: "session-a".to_string(),
+            session_size: SessionSize::S,
+        });
+        event_batch.collect_event(AppEvent::SessionSizeUpdated {
+            added_lines: 8,
+            deleted_lines: 13,
+            session_id: "session-a".to_string(),
+            session_size: SessionSize::L,
+        });
+        event_batch.collect_event(AppEvent::SessionUpdated {
+            session_id: "session-a".to_string(),
+        });
+        event_batch.collect_event(AppEvent::SessionUpdated {
+            session_id: "session-a".to_string(),
+        });
+        event_batch.collect_event(AppEvent::AgentResponseReceived {
+            session_id: "session-a".to_string(),
+            turn_applied_state: test_turn_applied_state(
+                vec![QuestionItem::new("first question")],
+                Vec::new(),
+                None,
+                SessionStats::default(),
+            ),
+        });
+        event_batch.collect_event(AppEvent::AgentResponseReceived {
+            session_id: "session-a".to_string(),
+            turn_applied_state: test_turn_applied_state(
+                vec![QuestionItem::new("second question")],
+                Vec::new(),
+                None,
+                SessionStats::default(),
+            ),
+        });
+
+        // Assert
+        assert_eq!(
+            event_batch.session_model_updates.get("session-a"),
+            Some(&AgentModel::Gemini31ProPreview)
+        );
+        assert_eq!(
+            event_batch.session_progress_updates.get("session-a"),
+            Some(&Some("second".to_string()))
+        );
+        assert_eq!(
+            event_batch.session_size_updates.get("session-a"),
+            Some(&(8, 13, SessionSize::L))
+        );
+        assert_eq!(event_batch.session_ids.len(), 1);
+        assert_eq!(
+            event_batch
+                .applied_turns
+                .get("session-a")
+                .map(|turn_applied_state| turn_applied_state.questions.clone()),
+            Some(vec![QuestionItem::new("second question")])
+        );
+    }
+
+    #[test]
+    fn app_event_batch_collect_event_uses_final_wins_for_review_and_branch_publish() {
+        // Arrange
+        let mut event_batch = AppEventBatch::default();
+
+        // Act
+        event_batch.collect_event(AppEvent::ReviewPrepared {
+            diff_hash: 11,
+            review_text: "first review".to_string(),
+            session_id: "session-a".to_string(),
+        });
+        event_batch.collect_event(AppEvent::ReviewPreparationFailed {
+            diff_hash: 12,
+            error: "latest failure".to_string(),
+            session_id: "session-a".to_string(),
+        });
+        event_batch.collect_event(AppEvent::ReviewPrepared {
+            diff_hash: 21,
+            review_text: "stable review".to_string(),
+            session_id: "session-b".to_string(),
+        });
+        event_batch.collect_event(AppEvent::BranchPublishActionCompleted {
+            restore_view: test_confirmation_view_mode("session-a"),
+            result: Box::new(test_pushed_branch_result("feature/first")),
+            session_id: "session-a".to_string(),
+        });
+        event_batch.collect_event(AppEvent::BranchPublishActionCompleted {
+            restore_view: test_confirmation_view_mode("session-b"),
+            result: Box::new(test_pushed_branch_result("feature/final")),
+            session_id: "session-b".to_string(),
+        });
+
+        // Assert
+        assert_eq!(
+            event_batch.review_updates.get("session-a"),
+            Some(&ReviewUpdate {
+                diff_hash: 12,
+                result: Err("latest failure".to_string()),
+            })
+        );
+        assert_eq!(
+            event_batch.review_updates.get("session-b"),
+            Some(&ReviewUpdate {
+                diff_hash: 21,
+                result: Ok("stable review".to_string()),
+            })
+        );
+        assert_eq!(
+            event_batch.branch_publish_action_update,
+            Some(BranchPublishActionUpdate {
+                restore_view: test_confirmation_view_mode("session-b"),
+                result: test_pushed_branch_result("feature/final"),
+                session_id: "session-b".to_string(),
             })
         );
     }
