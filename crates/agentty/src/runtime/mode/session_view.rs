@@ -598,6 +598,11 @@ fn view_total_lines(
     output_width: u16,
 ) -> u16 {
     let active_progress = app.session_progress_message(session_id);
+    let active_prompt_output = app
+        .sessions
+        .active_prompt_outputs()
+        .get(session_id)
+        .map(std::string::String::as_str);
 
     app.sessions
         .sessions
@@ -605,6 +610,7 @@ fn view_total_lines(
         .map_or(0, |session| {
             SessionChatPage::rendered_output_line_count(
                 session,
+                active_prompt_output,
                 app.sessions.selected_follow_up_task_position(session_id),
                 output_width,
                 done_session_output_mode,

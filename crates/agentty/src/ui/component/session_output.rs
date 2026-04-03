@@ -23,6 +23,7 @@ const TRANSCRIPT_FOOTER_PREFIXES: &[&str] = &["[Commit]", "[Commit Error]"];
 
 /// Session chat output panel renderer.
 pub struct SessionOutput<'a> {
+    active_prompt_output: Option<&'a str>,
     active_progress: Option<&'a str>,
     /// Selected panel content for the session output panel.
     done_session_output_mode: DoneSessionOutputMode,
@@ -37,6 +38,9 @@ pub struct SessionOutput<'a> {
 /// session snapshot.
 #[derive(Clone, Copy)]
 pub(crate) struct SessionOutputLineContext<'a> {
+    /// Exact prompt transcript block for the currently active turn, when one
+    /// has been submitted in this app process.
+    pub(crate) active_prompt_output: Option<&'a str>,
     /// Transient progress text rendered in the active-status loader row.
     pub(crate) active_progress: Option<&'a str>,
     /// Completed-session panel mode currently selected by the user.
@@ -55,6 +59,7 @@ impl<'a> SessionOutput<'a> {
     /// Creates a new session output component.
     pub fn new(session: &'a Session) -> Self {
         Self {
+            active_prompt_output: None,
             active_progress: None,
             done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: None,
@@ -63,6 +68,13 @@ impl<'a> SessionOutput<'a> {
             selected_follow_up_task_position: None,
             session,
         }
+    }
+
+    /// Sets the exact prompt transcript block for the currently active turn.
+    #[must_use]
+    pub fn active_prompt_output(mut self, active_prompt_output: Option<&'a str>) -> Self {
+        self.active_prompt_output = active_prompt_output;
+        self
     }
 
     /// Sets transient progress text rendered in the loader row.
@@ -135,7 +147,10 @@ impl<'a> SessionOutput<'a> {
     /// metrics stay in sync with rendered content. Trailing commit notices are
     /// rendered after the synthetic summary and follow-up-task sections so
     /// auto-commit updates do not jump above the assistant's structured
-    /// metadata. Review mode suppresses transcript-only summary and follow-up
+    /// metadata. While a new turn is active, the latest prompt-led transcript
+    /// block renders after the previous turn's synthetic summary/footer block
+    /// so completed-turn metadata stays visually attached to the finished
+    /// turn. Review mode suppresses transcript-only summary and follow-up
     /// sections because the panel is showing review-assist content rather than
     /// the chat transcript.
     fn output_lines(
@@ -144,6 +159,7 @@ impl<'a> SessionOutput<'a> {
         context: SessionOutputLineContext<'_>,
     ) -> Vec<Line<'static>> {
         let SessionOutputLineContext {
+            active_prompt_output,
             active_progress,
             done_session_output_mode,
             review_status_message,
@@ -157,14 +173,17 @@ impl<'a> SessionOutput<'a> {
             review_status_message,
             review_text,
         );
-        let output_text = Self::output_text_with_spaced_user_input(&output_text);
-        let (output_text, trailing_footer_text) =
-            text_util::split_trailing_line_block(&output_text, TRANSCRIPT_FOOTER_PREFIXES);
+        let (completed_turn_text, active_turn_text) =
+            Self::transcript_sections(status, &output_text, active_prompt_output);
+        let completed_turn_text = Self::output_text_with_spaced_user_input(completed_turn_text);
+        let active_turn_text = active_turn_text.map(Self::output_text_with_spaced_user_input);
         let inner_width = output_area
             .width
             .saturating_sub(Self::output_horizontal_border_width())
             as usize;
-        let mut lines = render_markdown(output_text, inner_width);
+        let (completed_turn_text, trailing_footer_text) =
+            text_util::split_trailing_line_block(&completed_turn_text, TRANSCRIPT_FOOTER_PREFIXES);
+        let mut lines = render_markdown(completed_turn_text, inner_width);
         if Self::shows_summary_block(session.status, done_session_output_mode) {
             Self::append_summary_lines(&mut lines, session.summary.as_deref(), inner_width);
         }
@@ -177,6 +196,7 @@ impl<'a> SessionOutput<'a> {
             );
         }
         Self::append_transcript_footer_lines(&mut lines, trailing_footer_text, inner_width);
+        Self::append_active_turn_lines(&mut lines, active_turn_text.as_deref(), inner_width);
 
         if matches!(
             status,
@@ -203,6 +223,35 @@ impl<'a> SessionOutput<'a> {
         }
 
         lines
+    }
+
+    /// Splits the transcript at the exact active-turn prompt block captured
+    /// when the current turn was submitted.
+    fn transcript_sections<'text>(
+        status: Status,
+        output_text: &'text str,
+        active_prompt_output: Option<&str>,
+    ) -> (&'text str, Option<&'text str>) {
+        if !matches!(
+            status,
+            Status::InProgress | Status::Queued | Status::Rebasing | Status::Merging
+        ) {
+            return (output_text, None);
+        }
+        let Some(active_prompt_output) = active_prompt_output else {
+            return (output_text, None);
+        };
+        let Some(active_prompt_start) = output_text.rfind(active_prompt_output) else {
+            return (output_text, None);
+        };
+        if active_prompt_start == 0 {
+            return (output_text, None);
+        }
+
+        (
+            &output_text[..active_prompt_start],
+            Some(&output_text[active_prompt_start..]),
+        )
     }
 
     /// Returns horizontal width consumed by the output panel border.
@@ -438,6 +487,23 @@ impl<'a> SessionOutput<'a> {
         Self::append_markdown_lines(lines, trailing_footer_text, inner_width);
     }
 
+    /// Appends the currently active prompt-led transcript block after
+    /// completed-turn synthetic metadata so in-progress work stays separate.
+    fn append_active_turn_lines(
+        lines: &mut Vec<Line<'static>>,
+        active_turn_text: Option<&str>,
+        inner_width: usize,
+    ) {
+        let Some(active_turn_text) = active_turn_text else {
+            return;
+        };
+        if active_turn_text.trim().is_empty() {
+            return;
+        }
+
+        Self::append_markdown_lines(lines, active_turn_text, inner_width);
+    }
+
     /// Appends rendered markdown with one blank separator while trimming any
     /// existing trailing blank lines from `lines`.
     fn append_markdown_lines(lines: &mut Vec<Line<'static>>, markdown: &str, inner_width: usize) {
@@ -668,6 +734,7 @@ impl Component for SessionOutput<'_> {
             self.session,
             output_area,
             SessionOutputLineContext {
+                active_prompt_output: self.active_prompt_output,
                 active_progress: self.active_progress,
                 done_session_output_mode: self.done_session_output_mode,
                 review_status_message: self.review_status_message,
@@ -710,6 +777,7 @@ mod tests {
         active_progress: Option<&'a str>,
     ) -> SessionOutputLineContext<'a> {
         SessionOutputLineContext {
+            active_prompt_output: None,
             active_progress,
             done_session_output_mode,
             review_status_message,
@@ -1031,6 +1099,111 @@ mod tests {
         assert!(text.contains("implemented the feature"));
         assert!(text.contains("Added the structured protocol summary."));
         assert!(text.contains("Session output now renders persisted summary markdown."));
+    }
+
+    #[test]
+    fn test_output_lines_in_progress_session_keeps_summary_before_active_prompt() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output =
+            " › hi\n\n[Commit] No changes to commit.\n\n › add hello world\n\n".to_string();
+        session.summary = Some(summary_fixture());
+        session.status = Status::InProgress;
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            SessionOutputLineContext {
+                active_prompt_output: Some("\n › add hello world\n\n"),
+                ..line_context(DoneSessionOutputMode::Summary, None, None, None, None)
+            },
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary_index = text
+            .find("Change Summary")
+            .expect("structured summary should be rendered");
+        let prompt_index = text
+            .find(" › add hello world")
+            .expect("active prompt should be rendered");
+
+        // Assert
+        assert!(text.contains("[Commit] No changes to commit."));
+        assert!(summary_index < prompt_index);
+    }
+
+    #[test]
+    fn test_output_lines_in_progress_single_prompt_keeps_summary_after_transcript() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = " › add hello world\n\nI added the README change.\n".to_string();
+        session.summary = Some(summary_fixture());
+        session.status = Status::InProgress;
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            SessionOutputLineContext {
+                active_prompt_output: Some(" › add hello world\n\n"),
+                ..line_context(DoneSessionOutputMode::Summary, None, None, None, None)
+            },
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt_index = text
+            .find(" › add hello world")
+            .expect("prompt should be rendered");
+        let summary_index = text
+            .find("Change Summary")
+            .expect("structured summary should be rendered");
+
+        // Assert
+        assert!(text.contains("I added the README change."));
+        assert!(prompt_index < summary_index);
+    }
+
+    #[test]
+    fn test_output_lines_in_progress_ignores_assistant_lines_that_look_like_prompts() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = " › hi\n\nprevious answer\n\n › actual prompt\n\nstreaming answer\n › \
+                          quoted output\n"
+            .to_string();
+        session.summary = Some(summary_fixture());
+        session.status = Status::InProgress;
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            SessionOutputLineContext {
+                active_prompt_output: Some("\n › actual prompt\n\n"),
+                ..line_context(DoneSessionOutputMode::Summary, None, None, None, None)
+            },
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary_index = text
+            .find("Change Summary")
+            .expect("structured summary should be rendered");
+        let prompt_index = text
+            .find(" › actual prompt")
+            .expect("active prompt should be rendered");
+
+        // Assert
+        assert!(text.contains(" › quoted output"));
+        assert!(summary_index < prompt_index);
     }
 
     #[test]

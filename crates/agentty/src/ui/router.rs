@@ -58,6 +58,7 @@ impl RouteSharedContext<'_> {
 /// Borrowed inputs for rendering a session chat page.
 #[derive(Clone, Copy)]
 struct SessionChatRenderContext<'a> {
+    active_prompt_outputs: &'a HashMap<String, String>,
     follow_up_task_positions: &'a HashMap<String, usize>,
     mode: &'a AppMode,
     session_id: &'a str,
@@ -72,6 +73,7 @@ struct SessionChatRenderContext<'a> {
 #[derive(Clone, Copy)]
 struct PublishBranchOverlayContext<'a> {
     default_branch_name: &'a str,
+    active_prompt_outputs: &'a HashMap<String, String>,
     follow_up_task_positions: &'a HashMap<String, usize>,
     input: &'a InputState,
     locked_upstream_ref: Option<&'a str>,
@@ -83,6 +85,7 @@ struct PublishBranchOverlayContext<'a> {
 /// Shared immutable routing inputs that are not part of list-background state.
 #[derive(Clone, Copy)]
 struct RouteAuxContext<'a> {
+    active_prompt_outputs: &'a HashMap<String, String>,
     follow_up_task_positions: &'a HashMap<String, usize>,
     session_progress_messages: &'a HashMap<String, String>,
     wall_clock_unix_seconds: i64,
@@ -93,6 +96,7 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
     let RenderContext {
         follow_up_task_positions,
         active_project_id,
+        active_prompt_outputs,
         current_tab,
         mode,
         project_table_state,
@@ -118,6 +122,7 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
     };
 
     let aux = RouteAuxContext {
+        active_prompt_outputs,
         follow_up_task_positions,
         session_progress_messages,
         wall_clock_unix_seconds,
@@ -162,6 +167,7 @@ fn render_list_or_overlay_mode(
                     f,
                     area,
                     SessionOverlayRenderContext {
+                        active_prompt_outputs: aux.active_prompt_outputs,
                         follow_up_task_positions: aux.follow_up_task_positions,
                         restore_view: view_mode,
                         session_progress_messages: aux.session_progress_messages,
@@ -264,6 +270,8 @@ struct SessionConfirmationContext<'a> {
 /// session chat page.
 #[derive(Clone, Copy)]
 struct SessionOverlayRenderContext<'a> {
+    /// Exact prompt transcript blocks keyed by session id for active turns.
+    active_prompt_outputs: &'a HashMap<String, String>,
     /// Follow-up-task selection state keyed by session id.
     follow_up_task_positions: &'a HashMap<String, usize>,
     /// Session view restored after the overlay closes.
@@ -289,6 +297,7 @@ fn render_session_overlay_background(
         f,
         area,
         SessionChatRenderContext {
+            active_prompt_outputs: context.active_prompt_outputs,
             follow_up_task_positions: context.follow_up_task_positions,
             mode: &background_mode,
             session_id: &context.restore_view.session_id,
@@ -346,6 +355,7 @@ fn render_session_or_diff_mode(
             f,
             area,
             SessionChatRenderContext {
+                active_prompt_outputs: aux.active_prompt_outputs,
                 follow_up_task_positions: aux.follow_up_task_positions,
                 mode,
                 session_id,
@@ -363,6 +373,7 @@ fn render_session_or_diff_mode(
             f,
             area,
             SessionOverlayRenderContext {
+                active_prompt_outputs: aux.active_prompt_outputs,
                 follow_up_task_positions: aux.follow_up_task_positions,
                 restore_view,
                 session_progress_messages: aux.session_progress_messages,
@@ -383,6 +394,7 @@ fn render_session_or_diff_mode(
             area,
             &PublishBranchOverlayContext {
                 default_branch_name,
+                active_prompt_outputs: aux.active_prompt_outputs,
                 follow_up_task_positions: aux.follow_up_task_positions,
                 input,
                 locked_upstream_ref: locked_upstream_ref.as_deref(),
@@ -441,6 +453,7 @@ fn render_publish_branch_overlay(
 ) {
     let PublishBranchOverlayContext {
         default_branch_name,
+        active_prompt_outputs,
         follow_up_task_positions,
         input,
         locked_upstream_ref,
@@ -452,6 +465,7 @@ fn render_publish_branch_overlay(
         f,
         area,
         SessionOverlayRenderContext {
+            active_prompt_outputs,
             follow_up_task_positions,
             restore_view,
             session_progress_messages,
@@ -471,6 +485,7 @@ fn render_publish_branch_overlay(
 /// Renders the session chat page for all session-chat modes.
 fn render_session_chat(f: &mut Frame, area: Rect, context: SessionChatRenderContext<'_>) {
     let SessionChatRenderContext {
+        active_prompt_outputs,
         follow_up_task_positions,
         mode,
         session_id,
@@ -487,12 +502,16 @@ fn render_session_chat(f: &mut Frame, area: Rect, context: SessionChatRenderCont
     let active_progress = session_progress_messages
         .get(session_id)
         .map(std::string::String::as_str);
+    let active_prompt_output = active_prompt_outputs
+        .get(session_id)
+        .map(std::string::String::as_str);
 
     page::session_chat::SessionChatPage::new(
         sessions,
         session_index,
         scroll_offset,
         mode,
+        active_prompt_output,
         active_progress,
         wall_clock_unix_seconds,
     )
@@ -643,6 +662,7 @@ mod tests {
                     &mode,
                     &sessions,
                     RouteAuxContext {
+                        active_prompt_outputs: &HashMap::new(),
                         follow_up_task_positions: &HashMap::new(),
                         session_progress_messages: &progress_messages,
                         wall_clock_unix_seconds: 0,
@@ -683,6 +703,7 @@ mod tests {
                     &mode,
                     &sessions,
                     RouteAuxContext {
+                        active_prompt_outputs: &HashMap::new(),
                         follow_up_task_positions: &HashMap::new(),
                         session_progress_messages: &progress_messages,
                         wall_clock_unix_seconds: 0,
@@ -723,6 +744,7 @@ mod tests {
                     &mode,
                     &sessions,
                     RouteAuxContext {
+                        active_prompt_outputs: &HashMap::new(),
                         follow_up_task_positions: &HashMap::new(),
                         session_progress_messages: &progress_messages,
                         wall_clock_unix_seconds: 0,
@@ -765,6 +787,7 @@ mod tests {
                     frame,
                     frame.area(),
                     SessionOverlayRenderContext {
+                        active_prompt_outputs: &HashMap::new(),
                         follow_up_task_positions: &HashMap::new(),
                         restore_view: &view_mode,
                         session_progress_messages: &progress_messages,

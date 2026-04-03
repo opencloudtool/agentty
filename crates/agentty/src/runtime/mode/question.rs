@@ -160,9 +160,15 @@ fn question_view_metrics(app: &App, terminal_size: Rect) -> QuestionViewMetrics 
         .and_then(|index| app.sessions.sessions.get(index))
         .map_or(0, |session| {
             let active_progress = app.session_progress_message(session_id);
+            let active_prompt_output = app
+                .sessions
+                .active_prompt_outputs()
+                .get(session_id)
+                .map(std::string::String::as_str);
 
             SessionChatPage::rendered_output_line_count(
                 session,
+                active_prompt_output,
                 None,
                 output_width,
                 DoneSessionOutputMode::Summary,

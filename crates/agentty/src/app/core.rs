@@ -696,6 +696,7 @@ impl App {
         let latest_available_version = self.latest_available_version.as_deref().map(str::to_string);
         let session_git_statuses = self.sessions.session_git_statuses().clone();
         let follow_up_task_positions = self.sessions.state().follow_up_task_positions.clone();
+        let active_prompt_outputs = self.sessions.active_prompt_outputs().clone();
         let session_progress_messages = self.session_progress_messages.clone();
         let update_status = self.update_status().cloned();
         let wall_clock_unix_seconds =
@@ -719,6 +720,7 @@ impl App {
                 mode,
                 project_table_state,
                 projects: &projects,
+                active_prompt_outputs: &active_prompt_outputs,
                 follow_up_task_positions: &follow_up_task_positions,
                 session_git_statuses: &session_git_statuses,
                 session_progress_messages: &session_progress_messages,
@@ -1494,6 +1496,7 @@ impl App {
         self.handle_merge_queue_progress(&event_batch.session_ids, &previous_session_states)
             .await;
         self.retain_valid_session_progress_messages();
+        self.sessions.retain_active_prompt_outputs();
     }
 
     /// Routes one persisted turn projection to the currently focused session

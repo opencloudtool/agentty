@@ -122,6 +122,7 @@ pub(crate) fn render_view_info_popup(
             session_index,
             restore_view.scroll_offset,
             &background_mode,
+            None,
             active_progress,
             wall_clock_unix_seconds,
         )
@@ -356,6 +357,7 @@ fn render_help_background(
                 session_index,
                 scroll_offset,
                 &bg_mode,
+                None,
                 active_progress,
                 wall_clock_unix_seconds,
             )

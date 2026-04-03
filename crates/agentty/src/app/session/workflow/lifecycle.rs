@@ -471,6 +471,7 @@ impl SessionManager {
             &initial_output,
         )
         .await;
+        self.set_active_prompt_output(&persisted_session_id, initial_output);
 
         // Best-effort: status transition failure is non-critical.
         let _ = SessionTaskService::update_status(
@@ -1114,7 +1115,7 @@ impl SessionManager {
 
     /// Appends the user reply marker line to session output.
     async fn append_reply_prompt_line(
-        &self,
+        &mut self,
         services: &AppServices,
         output: &Arc<Mutex<String>>,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
@@ -1130,6 +1131,7 @@ impl SessionManager {
             &reply_line,
         )
         .await;
+        self.set_active_prompt_output(session_id, reply_line);
     }
 
     /// Formats one user prompt block for persisted session output.

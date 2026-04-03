@@ -98,6 +98,7 @@ impl Clock for RealClock {
 
 /// Session domain state and worker orchestration state.
 pub struct SessionManager {
+    pub(super) active_prompt_outputs: HashMap<String, String>,
     pub(super) default_session_model: AgentModel,
     pub(super) git_client: Arc<dyn git::GitClient>,
     pub(super) merge_service: SessionMergeService,
@@ -121,6 +122,7 @@ impl SessionManager {
         let pending_history_replay = Self::startup_history_replay_set(&state.sessions);
 
         Self {
+            active_prompt_outputs: HashMap::new(),
             default_session_model: defaults.model,
             git_client,
             merge_service: SessionMergeService,
@@ -176,6 +178,12 @@ impl SessionManager {
             &self.stats_activity,
             &mut self.state.table_state,
         )
+    }
+
+    /// Returns the active prompt transcript block cached for sessions that are
+    /// currently running a turn.
+    pub(crate) fn active_prompt_outputs(&self) -> &HashMap<String, String> {
+        &self.active_prompt_outputs
     }
 
     /// Returns shared immutable access to session render and refresh state.
@@ -250,6 +258,35 @@ impl SessionManager {
             .stats
             .output_tokens
             .saturating_add(turn_applied_state.token_usage_delta.output_tokens);
+        self.active_prompt_outputs.remove(session_id);
+    }
+
+    /// Caches one exact prompt transcript block for an active session turn so
+    /// rendering can anchor synthetic metadata to the correct boundary without
+    /// reparsing generic transcript markers.
+    pub(crate) fn set_active_prompt_output(&mut self, session_id: &str, prompt_output: String) {
+        self.active_prompt_outputs
+            .insert(session_id.to_string(), prompt_output);
+    }
+
+    /// Drops cached prompt transcript blocks for sessions that are no longer
+    /// actively running a turn.
+    pub(crate) fn retain_active_prompt_outputs(&mut self) {
+        self.active_prompt_outputs.retain(|session_id, _| {
+            self.state
+                .sessions
+                .iter()
+                .find(|session| session.id == *session_id)
+                .is_some_and(|session| {
+                    matches!(
+                        session.status,
+                        crate::domain::session::Status::InProgress
+                            | crate::domain::session::Status::Queued
+                            | crate::domain::session::Status::Rebasing
+                            | crate::domain::session::Status::Merging
+                    )
+                })
+        });
     }
 
     /// Replaces cached session git-status snapshots from the latest
@@ -863,6 +900,80 @@ mod tests {
         if app.sessions.table_state.selected().is_none() {
             app.sessions.table_state.select(Some(0));
         }
+    }
+
+    #[tokio::test]
+    async fn test_apply_turn_applied_state_clears_active_prompt_output() {
+        // Arrange
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(temp_dir.path().to_path_buf()).await;
+        add_manual_session_with_status(
+            &mut app,
+            temp_dir.path(),
+            "session-id",
+            "Prompt",
+            Status::InProgress,
+        );
+        app.sessions
+            .set_active_prompt_output("session-id", " › Prompt\n\n".to_string());
+
+        // Act
+        app.sessions.apply_turn_applied_state(
+            "session-id",
+            &TurnAppliedState {
+                follow_up_tasks: Vec::new(),
+                questions: Vec::new(),
+                summary: None,
+                token_usage_delta: SessionStats::default(),
+            },
+        );
+
+        // Assert
+        assert!(
+            !app.sessions
+                .active_prompt_outputs()
+                .contains_key("session-id")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retain_active_prompt_outputs_keeps_only_active_sessions() {
+        // Arrange
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app(temp_dir.path().to_path_buf()).await;
+        add_manual_session_with_status(
+            &mut app,
+            temp_dir.path(),
+            "active-session",
+            "Prompt",
+            Status::InProgress,
+        );
+        add_manual_session_with_status(
+            &mut app,
+            temp_dir.path(),
+            "review-session",
+            "Prompt",
+            Status::Review,
+        );
+        app.sessions
+            .set_active_prompt_output("active-session", " › Active\n\n".to_string());
+        app.sessions
+            .set_active_prompt_output("review-session", " › Review\n\n".to_string());
+
+        // Act
+        app.sessions.retain_active_prompt_outputs();
+
+        // Assert
+        assert!(
+            app.sessions
+                .active_prompt_outputs()
+                .contains_key("active-session")
+        );
+        assert!(
+            !app.sessions
+                .active_prompt_outputs()
+                .contains_key("review-session")
+        );
     }
 
     /// Helper: creates a session and starts it with the given prompt (two-step
