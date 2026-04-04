@@ -441,6 +441,8 @@ mod tests {
             attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::default(),
             input: InputState::default(),
+            review_status_message: None,
+            review_text: None,
             scroll_offset: None,
             session_id,
             slash_state: PromptSlashState::default(),

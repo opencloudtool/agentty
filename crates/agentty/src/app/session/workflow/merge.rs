@@ -394,7 +394,7 @@ impl SessionMergeService {
         let session = manager
             .session_or_err(session_id)
             .map_err(|_| SessionError::NotFound)?;
-        if !matches!(session.status, Status::Review | Status::Queued) {
+        if !(session.status.allows_review_actions() || session.status == Status::Queued) {
             return Err(SessionError::Workflow(
                 "Session must be in review or queued status".to_string(),
             ));
@@ -520,7 +520,7 @@ impl SessionMergeService {
         let session = manager
             .session_or_err(session_id)
             .map_err(|_| SessionError::NotFound)?;
-        if session.status != Status::Review {
+        if !session.status.allows_review_actions() {
             return Err(SessionError::Workflow(
                 "Session must be in review status".to_string(),
             ));

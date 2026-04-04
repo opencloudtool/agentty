@@ -150,9 +150,9 @@ impl<'a> SessionOutput<'a> {
     /// metadata. While a new turn is active, the latest prompt-led transcript
     /// block renders after the previous turn's synthetic summary/footer block
     /// so completed-turn metadata stays visually attached to the finished
-    /// turn. Review mode suppresses transcript-only summary and follow-up
-    /// sections because the panel is showing review-assist content rather than
-    /// the chat transcript.
+    /// turn. Focused-review output is appended after transcript content so it
+    /// reads like agent-produced session output instead of replacing the
+    /// transcript panel.
     fn output_lines(
         session: &Session,
         output_area: Rect,
@@ -167,12 +167,7 @@ impl<'a> SessionOutput<'a> {
             selected_follow_up_task_position,
         } = context;
         let status = session.status;
-        let output_text = Self::output_text(
-            session,
-            done_session_output_mode,
-            review_status_message,
-            review_text,
-        );
+        let output_text = Self::output_text(session, done_session_output_mode);
         let (completed_turn_text, active_turn_text) =
             Self::transcript_sections(status, &output_text, active_prompt_output);
         let completed_turn_text = Self::output_text_with_spaced_user_input(completed_turn_text);
@@ -187,7 +182,7 @@ impl<'a> SessionOutput<'a> {
         if Self::shows_summary_block(session.status, done_session_output_mode) {
             Self::append_summary_lines(&mut lines, session.summary.as_deref(), inner_width);
         }
-        if Self::shows_follow_up_tasks(done_session_output_mode) {
+        if Self::shows_follow_up_tasks() {
             Self::append_follow_up_task_lines(
                 &mut lines,
                 &session.follow_up_tasks,
@@ -197,10 +192,15 @@ impl<'a> SessionOutput<'a> {
         }
         Self::append_transcript_footer_lines(&mut lines, trailing_footer_text, inner_width);
         Self::append_active_turn_lines(&mut lines, active_turn_text.as_deref(), inner_width);
+        Self::append_review_lines(&mut lines, review_text, inner_width);
 
         if matches!(
             status,
-            Status::InProgress | Status::Queued | Status::Rebasing | Status::Merging
+            Status::InProgress
+                | Status::AgentReview
+                | Status::Queued
+                | Status::Rebasing
+                | Status::Merging
         ) {
             while lines.last().is_some_and(|line| line.width() == 0) {
                 lines.pop();
@@ -209,7 +209,8 @@ impl<'a> SessionOutput<'a> {
             lines.push(Line::from(""));
 
             let status_icon = Self::status_icon(status);
-            let status_message = Self::status_message(status, active_progress);
+            let status_message =
+                Self::status_message(status, active_progress, review_status_message);
             lines.push(Line::from(vec![Span::styled(
                 format!("{status_icon} {status_message}"),
                 Style::default().fg(style::status_color(status)),
@@ -294,24 +295,7 @@ impl<'a> SessionOutput<'a> {
     ///
     /// Summary markdown is shown only for `Done` sessions after it has been
     /// persisted. Active and canceled sessions render transcript output only.
-    fn output_text(
-        session: &Session,
-        done_session_output_mode: DoneSessionOutputMode,
-        review_status_message: Option<&str>,
-        review_text: Option<&str>,
-    ) -> String {
-        if done_session_output_mode == DoneSessionOutputMode::Review {
-            if let Some(review_text) = review_text {
-                return review_text.to_string();
-            }
-
-            if let Some(review_status_message) = review_status_message {
-                return review_status_message.to_string();
-            }
-
-            return "Review is not available.".to_string();
-        }
-
+    fn output_text(session: &Session, done_session_output_mode: DoneSessionOutputMode) -> String {
         match session.status {
             Status::New if session.is_draft_session() && session.has_staged_drafts() => {
                 return Self::render_staged_draft_preview(session);
@@ -323,6 +307,7 @@ impl<'a> SessionOutput<'a> {
                 return session.output.clone();
             }
             Status::Review
+            | Status::AgentReview
             | Status::Question
             | Status::New
             | Status::Done
@@ -408,9 +393,9 @@ impl<'a> SessionOutput<'a> {
     }
 
     /// Returns whether the output panel should append transcript-scoped
-    /// follow-up tasks for the selected display mode.
-    fn shows_follow_up_tasks(done_session_output_mode: DoneSessionOutputMode) -> bool {
-        done_session_output_mode != DoneSessionOutputMode::Review
+    /// follow-up tasks.
+    fn shows_follow_up_tasks() -> bool {
+        true
     }
 
     /// Returns whether the output panel should append the structured summary
@@ -422,11 +407,30 @@ impl<'a> SessionOutput<'a> {
         status: Status,
         done_session_output_mode: DoneSessionOutputMode,
     ) -> bool {
-        if done_session_output_mode == DoneSessionOutputMode::Review || status == Status::Canceled {
+        if status == Status::Canceled {
             return false;
         }
 
         !(status == Status::Done && done_session_output_mode == DoneSessionOutputMode::Summary)
+    }
+
+    /// Appends focused-review output to the transcript when review text is
+    /// available for the current session view.
+    fn append_review_lines(
+        lines: &mut Vec<Line<'static>>,
+        review_text: Option<&str>,
+        inner_width: usize,
+    ) {
+        let review_markdown = review_text
+            .map(str::trim)
+            .filter(|review_text| !review_text.is_empty())
+            .map(str::to_string);
+
+        let Some(review_markdown) = review_markdown else {
+            return;
+        };
+
+        Self::append_markdown_lines(lines, &review_markdown, inner_width);
     }
 
     /// Appends a rendered structured-summary section without mutating the
@@ -681,7 +685,11 @@ impl<'a> SessionOutput<'a> {
     }
 
     /// Returns the loader label for active session states.
-    fn status_message(status: Status, active_progress: Option<&str>) -> String {
+    fn status_message(
+        status: Status,
+        active_progress: Option<&str>,
+        review_status_message: Option<&str>,
+    ) -> String {
         match status {
             Status::InProgress => active_progress
                 .map(str::trim)
@@ -690,6 +698,10 @@ impl<'a> SessionOutput<'a> {
                     || "Working...".to_string(),
                     |progress| format!("Working... {progress}"),
                 ),
+            Status::AgentReview => review_status_message
+                .map(str::trim)
+                .filter(|status_message| !status_message.is_empty())
+                .map_or_else(|| "Preparing review...".to_string(), ToString::to_string),
             Status::Queued => "Waiting in merge queue...".to_string(),
             Status::Rebasing => "Rebasing...".to_string(),
             Status::Merging => "Merging...".to_string(),
@@ -702,7 +714,9 @@ impl<'a> SessionOutput<'a> {
     /// Returns the status indicator icon used for inline status messages.
     fn status_icon(status: Status) -> Icon {
         match status {
-            Status::InProgress | Status::Rebasing | Status::Merging => Icon::current_spinner(),
+            Status::InProgress | Status::AgentReview | Status::Rebasing | Status::Merging => {
+                Icon::current_spinner()
+            }
             Status::Queued
             | Status::New
             | Status::Review
@@ -1288,8 +1302,7 @@ mod tests {
         session.status = Status::Done;
 
         // Act
-        let done_output_text =
-            SessionOutput::output_text(&session, DoneSessionOutputMode::Summary, None, None);
+        let done_output_text = SessionOutput::output_text(&session, DoneSessionOutputMode::Summary);
         let done_lines = SessionOutput::output_lines(
             &session,
             Rect::new(0, 0, 80, 8),
@@ -1338,10 +1351,11 @@ mod tests {
     }
 
     #[test]
-    fn test_output_lines_review_mode_shows_unavailable_message_without_assisted_text() {
+    fn test_output_lines_review_mode_keeps_transcript_when_review_output_is_missing() {
         // Arrange
         let mut session = session_fixture();
         session.status = Status::Review;
+        session.output = "streamed output".to_string();
 
         // Act
         let lines = SessionOutput::output_lines(
@@ -1356,7 +1370,8 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(text.contains("Review is not available."));
+        assert!(text.contains("streamed output"));
+        assert!(!text.contains("Review is not available."));
     }
 
     #[test]
@@ -1412,10 +1427,10 @@ mod tests {
     }
 
     #[test]
-    fn test_output_lines_review_mode_shows_status_message() {
+    fn test_output_lines_agent_review_mode_shows_loader_message() {
         // Arrange
         let mut session = session_fixture();
-        session.status = Status::Review;
+        session.status = Status::AgentReview;
 
         // Act
         let lines = SessionOutput::output_lines(
@@ -1441,10 +1456,40 @@ mod tests {
     }
 
     #[test]
-    fn test_output_lines_review_mode_hides_follow_up_tasks() {
+    fn test_output_lines_agent_review_mode_shows_assisted_text() {
         // Arrange
         let mut session = session_fixture();
-        session.status = Status::Review;
+        session.status = Status::AgentReview;
+        let assisted_text = "## Review\n\n- Focused finding";
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 5),
+            line_context(
+                DoneSessionOutputMode::Review,
+                None,
+                Some("Preparing review with agent help..."),
+                Some(assisted_text),
+                None,
+            ),
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("Focused finding"));
+        assert!(!text.contains("Review is not available."));
+    }
+
+    #[test]
+    fn test_output_lines_agent_review_mode_keeps_follow_up_tasks() {
+        // Arrange
+        let mut session = session_fixture();
+        session.status = Status::AgentReview;
         session.follow_up_tasks = vec![SessionFollowUpTask {
             id: 1,
             launched_session_id: None,
@@ -1472,8 +1517,8 @@ mod tests {
 
         // Assert
         assert!(text.contains("Preparing review with agent help..."));
-        assert!(!text.contains(FOLLOW_UP_TASK_HEADER));
-        assert!(!text.contains("Run cargo test -q."));
+        assert!(text.contains(FOLLOW_UP_TASK_HEADER));
+        assert!(text.contains("Run cargo test -q."));
     }
 
     #[test]
@@ -1667,7 +1712,7 @@ mod tests {
     #[test]
     fn test_status_message_for_merging() {
         // Arrange & Act
-        let message = SessionOutput::status_message(Status::Merging, None);
+        let message = SessionOutput::status_message(Status::Merging, None, None);
 
         // Assert
         assert_eq!(message, "Merging...");
@@ -1676,10 +1721,23 @@ mod tests {
     #[test]
     fn test_status_message_for_queued() {
         // Arrange & Act
-        let message = SessionOutput::status_message(Status::Queued, None);
+        let message = SessionOutput::status_message(Status::Queued, None, None);
 
         // Assert
         assert_eq!(message, "Waiting in merge queue...");
+    }
+
+    #[test]
+    fn test_status_message_for_agent_review_uses_review_loader_text() {
+        // Arrange & Act
+        let message = SessionOutput::status_message(
+            Status::AgentReview,
+            None,
+            Some("Preparing review with agent help..."),
+        );
+
+        // Assert
+        assert_eq!(message, "Preparing review with agent help...");
     }
 
     #[test]
@@ -1708,8 +1766,11 @@ mod tests {
     #[test]
     fn test_status_message_for_in_progress_includes_progress_text() {
         // Arrange & Act
-        let message =
-            SessionOutput::status_message(Status::InProgress, Some("Inspecting changed files"));
+        let message = SessionOutput::status_message(
+            Status::InProgress,
+            Some("Inspecting changed files"),
+            None,
+        );
 
         // Assert
         assert_eq!(message, "Working... Inspecting changed files");

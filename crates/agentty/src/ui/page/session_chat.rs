@@ -153,7 +153,10 @@ impl<'a> SessionChatPage<'a> {
         }
     }
 
-    /// Returns review status text for the active view mode.
+    /// Returns focused-review status text for the active session transcript.
+    ///
+    /// Prompt mode preserves the last focused-review loader text so the output
+    /// panel does not flicker when users open the composer and then cancel.
     fn review_status_message(&self) -> Option<&str> {
         match self.mode {
             AppMode::View {
@@ -168,24 +171,30 @@ impl<'a> SessionChatPage<'a> {
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
-            | AppMode::Prompt { .. }
             | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. } => None,
+            AppMode::Prompt {
+                review_status_message,
+                ..
+            } => review_status_message.as_deref(),
         }
     }
 
-    /// Returns review assist text for the active view mode.
+    /// Returns focused-review text for the active session transcript.
+    ///
+    /// Prompt mode preserves the appended focused review until the next prompt
+    /// is submitted so reopening the composer does not hide the review block.
     fn review_text(&self) -> Option<&str> {
         match self.mode {
             AppMode::View { review_text, .. } => review_text.as_deref(),
             AppMode::OpenCommandSelector { restore_view, .. }
             | AppMode::PublishBranchInput { restore_view, .. }
             | AppMode::ViewInfoPopup { restore_view, .. } => restore_view.review_text.as_deref(),
+            AppMode::Prompt { review_text, .. } => review_text.as_deref(),
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
-            | AppMode::Prompt { .. }
             | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. } => None,
@@ -1470,7 +1479,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rendered_output_line_count_review_mode_ignores_follow_up_tasks() {
+    fn test_rendered_output_line_count_review_mode_includes_follow_up_tasks() {
         // Arrange
         let mut session = session_fixture();
         session.status = Status::Review;
@@ -1494,7 +1503,7 @@ mod tests {
         );
 
         // Assert
-        assert_eq!(rendered_line_count, 2);
+        assert!(rendered_line_count > 2);
     }
 
     #[test]
@@ -1618,6 +1627,22 @@ mod tests {
     }
 
     #[test]
+    fn test_view_help_text_agent_review_matches_review_actions() {
+        // Arrange
+        let mut session = session_fixture();
+        session.status = Status::AgentReview;
+
+        // Act
+        let help_text = view_help_text(&session, DoneSessionOutputMode::Summary);
+
+        // Assert
+        assert!(help_text.contains("f: review"));
+        assert!(help_text.contains("Enter: reply"));
+        assert!(help_text.contains("m: add to merge queue"));
+        assert!(help_text.contains("p: publish branch"));
+    }
+
+    #[test]
     fn test_view_help_text_done_hides_open_hint() {
         // Arrange
         let mut session = session_fixture();
@@ -1666,6 +1691,8 @@ mod tests {
             at_mention_state: None,
             attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::default(),
+            review_status_message: None,
+            review_text: None,
             slash_state: PromptSlashState::new(),
             session_id: "session-id".to_string(),
             input: InputState::with_text("line\n".repeat(80)),
@@ -1697,6 +1724,8 @@ mod tests {
             at_mention_state: None,
             attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::default(),
+            review_status_message: None,
+            review_text: None,
             slash_state: PromptSlashState::new(),
             session_id: "session-id".to_string(),
             input: InputState::with_text("line\n".repeat(80)),
@@ -1718,6 +1747,38 @@ mod tests {
 
         // Assert
         assert_eq!(bottom_height, 7);
+    }
+
+    #[test]
+    fn test_review_text_reads_preserved_prompt_review_output() {
+        // Arrange
+        let session = session_fixture();
+        let mode = AppMode::Prompt {
+            at_mention_state: None,
+            attachment_state: PromptAttachmentState::default(),
+            history_state: PromptHistoryState::default(),
+            review_status_message: None,
+            review_text: Some("Focused review".to_string()),
+            slash_state: PromptSlashState::new(),
+            session_id: "session-id".to_string(),
+            input: InputState::default(),
+            scroll_offset: None,
+        };
+        let page = SessionChatPage::new(
+            std::slice::from_ref(&session),
+            0,
+            None,
+            &mode,
+            None,
+            None,
+            0,
+        );
+
+        // Act
+        let review_text = page.review_text();
+
+        // Assert
+        assert_eq!(review_text, Some("Focused review"));
     }
 
     #[test]

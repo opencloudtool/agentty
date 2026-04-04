@@ -200,6 +200,12 @@ pub enum AppMode {
         attachment_state: PromptAttachmentState,
         /// Prompt-history navigation state for `Up`/`Down`.
         history_state: PromptHistoryState,
+        /// Focused-review status text preserved while the composer is open so
+        /// canceling the prompt restores the same session output view.
+        review_status_message: Option<String>,
+        /// Focused-review output preserved while the composer is open so the
+        /// session transcript remains stable until a new prompt is submitted.
+        review_text: Option<String>,
         /// Slash-command selection state for the current prompt input.
         slash_state: PromptSlashState,
         /// Session whose prompt composer is currently active.

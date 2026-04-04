@@ -64,18 +64,18 @@ The Settings tab includes:
 ## Session View
 
 <a id="usage-session-view-actions"></a>
-Available actions depend on the session state. The full set in **Review**
-state:
+Available actions depend on the session state. The full set in **Review** and
+**AgentReview** state:
 
 | Key | Action |
 |-----|--------|
-| `q` | Exit focused review (when viewing) / Back to list |
+| `q` | Back to list |
 | `Enter` | Compose the first prompt or reply; in draft sessions it adds a draft |
 | `s` | Start a staged draft session |
 | `o` | Open worktree in tmux |
 | `p` | Publish session branch |
 | `d` | Show diff |
-| `f` | Focused review (regenerate if already viewing) |
+| `f` | Append focused review output (regenerate if already present) |
 | `l` | Launch or open the selected follow-up task |
 | `m` | Add to merge queue (confirmation popup) |
 | `r` | Rebase |
@@ -93,7 +93,7 @@ Additional notes:
 - **Open command behavior**: `o` always opens the session worktree in tmux.
   If one `Open Commands` entry is configured for the active project, it runs immediately.
   If multiple entries are configured (one command per line), Agentty opens a selector popup.
-- **Branch publish**: `p` is available in **Review** and opens a publish popup. Press `Enter` with an empty field to keep the default session branch target, or type a custom remote branch name first.
+- **Branch publish**: `p` is available in **Review** and **AgentReview** and opens a publish popup. Press `Enter` with an empty field to keep the default session branch target, or type a custom remote branch name first.
 - **Branch publish lock**: once a session branch already tracks a remote branch, Agentty locks the popup field and re-publishes to that same remote branch only.
 - **Branch publish auth**: `p` uses regular Git authentication only. HTTPS remotes need a credential helper or PAT, and SSH remotes need a working SSH key.
 - **Follow-up tasks**: `l` launches the selected follow-up task into a sibling session the first time, then reopens that linked sibling on later presses. Use `[` and `]` to move between follow-up tasks when a session has more than one.

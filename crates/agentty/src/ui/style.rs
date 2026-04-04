@@ -52,7 +52,7 @@ pub fn status_color(status: Status) -> Color {
     match status {
         Status::New => palette::TEXT_SUBTLE,
         Status::InProgress => palette::WARNING,
-        Status::Review => palette::INFO,
+        Status::Review | Status::AgentReview => palette::INFO,
         Status::Question => palette::QUESTION,
         Status::Queued => palette::ACCENT_SOFT,
         Status::Rebasing | Status::Merging => palette::ACCENT,
@@ -65,7 +65,9 @@ pub fn status_color(status: Status) -> Color {
 pub fn status_icon(status: Status) -> Icon {
     match status {
         Status::New | Status::Review | Status::Question | Status::Queued => Icon::Pending,
-        Status::InProgress | Status::Rebasing | Status::Merging => Icon::current_spinner(),
+        Status::InProgress | Status::AgentReview | Status::Rebasing | Status::Merging => {
+            Icon::current_spinner()
+        }
         Status::Done => Icon::Check,
         Status::Canceled => Icon::Cross,
     }

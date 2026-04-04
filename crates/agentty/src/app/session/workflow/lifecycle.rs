@@ -327,8 +327,10 @@ impl SessionManager {
             let staged_prompt =
                 Self::append_staged_prompt(&session.prompt, &prompt, next_attachment_number);
             let mut staged_attachments = session.draft_attachments.clone();
-            staged_attachments
-                .extend(Self::renumbered_attachments(&prompt, next_attachment_number).into_iter());
+            staged_attachments.extend(Self::renumbered_attachments(
+                &prompt,
+                next_attachment_number,
+            ));
 
             (
                 session.id.clone(),
@@ -659,7 +661,7 @@ impl SessionManager {
             return Ok(review_request);
         }
 
-        if session.status != Status::Review {
+        if !session.status.allows_review_actions() {
             return Err(SessionError::Workflow(
                 "Session must be in review to create a review request".to_string(),
             ));
@@ -1057,7 +1059,7 @@ impl SessionManager {
         };
 
         let is_first_message = session.prompt.is_empty();
-        let allowed = session.status == Status::Review
+        let allowed = session.status.allows_review_actions()
             || session.status == Status::Question
             || (is_first_message && session.status == Status::New);
         if !allowed {
@@ -1553,7 +1555,7 @@ impl SessionManager {
         session_id: &str,
     ) -> Result<(), SessionError> {
         let session = self.session_or_err(session_id)?;
-        if session.status != Status::Review {
+        if !session.status.allows_review_actions() {
             return Err(SessionError::Workflow(
                 "Session must be in review to be canceled".to_string(),
             ));

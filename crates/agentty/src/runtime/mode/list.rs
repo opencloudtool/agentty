@@ -87,7 +87,9 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
         }
         KeyCode::Char('c') if app.tabs.current() == Tab::Sessions => {
             let selected_session = app.selected_session().and_then(|session| {
-                (session.status == Status::Review)
+                session
+                    .status
+                    .allows_review_actions()
                     .then(|| (session.id.clone(), session.display_title().to_string()))
             });
             if let Some((session_id, session_title)) = selected_session {
@@ -144,10 +146,11 @@ async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
                         selected_option_index,
                     };
                 } else {
+                    let (review_status_message, review_text) = app.review_view_state(&session_id);
                     app.mode = AppMode::View {
                         done_session_output_mode: DoneSessionOutputMode::Summary,
-                        review_status_message: None,
-                        review_text: None,
+                        review_status_message,
+                        review_text,
                         session_id,
                         scroll_offset: None,
                     };
@@ -281,8 +284,8 @@ fn list_keybindings(app: &App) -> Vec<HelpAction> {
     let is_sessions_tab = app.tabs.current() == Tab::Sessions;
     let selected_session = app.selected_session();
     let can_delete_selected_session = is_sessions_tab && selected_session.is_some();
-    let can_cancel_selected_session =
-        is_sessions_tab && selected_session.is_some_and(|session| session.status == Status::Review);
+    let can_cancel_selected_session = is_sessions_tab
+        && selected_session.is_some_and(|session| session.status.allows_review_actions());
     let can_open_selected_session = is_sessions_tab
         && app
             .sessions
@@ -319,6 +322,8 @@ fn open_session_prompt(app: &mut App, session_id: String) {
         at_mention_state: None,
         attachment_state: PromptAttachmentState::default(),
         history_state: PromptHistoryState::new(Vec::new()),
+        review_status_message: None,
+        review_text: None,
         slash_state: app.prompt_slash_state(),
         session_id,
         input: InputState::new(),
@@ -629,6 +634,44 @@ mod tests {
                 scroll_offset: None,
                 ..
             } if session_id == &expected_session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_enter_key_restores_cached_review_output() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let expected_session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        app.review_cache.insert(
+            expected_session_id.clone(),
+            crate::app::ReviewCacheEntry::Ready {
+                diff_hash: 7,
+                text: "Focused review".to_string(),
+            },
+        );
+        app.tabs.set(Tab::Sessions);
+        app.sessions.table_state.select(Some(0));
+        app.mode = AppMode::List;
+
+        // Act
+        let event_result = handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                ref session_id,
+                review_status_message: None,
+                review_text: Some(ref review_text),
+                scroll_offset: None,
+                ..
+            } if session_id == &expected_session_id && review_text == "Focused review"
         ));
     }
 

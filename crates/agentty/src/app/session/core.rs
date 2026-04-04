@@ -2496,7 +2496,7 @@ mod tests {
                 AgentModel::ClaudeOpus46,
             )
             .await;
-        wait_for_status(&mut app, &session_id, Status::Review).await;
+        wait_for_status(&mut app, &session_id, Status::AgentReview).await;
         app.process_pending_app_events().await;
         let db_sessions = app
             .services

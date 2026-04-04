@@ -232,7 +232,7 @@ pub(crate) async fn push_session_branch(
     git_client: Arc<dyn GitClient>,
     remote_branch_name: Option<&str>,
 ) -> BranchPublishTaskResult {
-    if branch_publish_session.status != Status::Review {
+    if !branch_publish_session.status.allows_review_actions() {
         return Err(BranchPublishTaskFailure::failed(
             "Session must be in review to push the branch.".to_string(),
         ));

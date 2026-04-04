@@ -81,7 +81,7 @@ const REVIEW_NO_DIFF_MESSAGE: &str = "No diff changes found for review.";
 
 /// Processes view-mode key presses and keeps shortcut availability aligned with
 /// session status (`o` disabled for `Done`/`Canceled`/`Merging`/`Queued`, and
-/// diff/review only for `Review`).
+/// diff/review available for review-ready statuses).
 pub(crate) async fn handle<B: Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -135,12 +135,6 @@ async fn handle_view_key(
     let view_session_snapshot = view_key_context.session_snapshot;
 
     match key.code {
-        KeyCode::Char('q')
-            if pending_update.done_session_output_mode == DoneSessionOutputMode::Review =>
-        {
-            pending_update.done_session_output_mode = DoneSessionOutputMode::Summary;
-            pending_update.scroll_offset = None;
-        }
         KeyCode::Char('q') => app.mode = AppMode::List,
         KeyCode::Char('o') if view_session_snapshot.can_open_worktree => {
             open_worktree_for_view_session(app, view_context).await;
@@ -310,25 +304,25 @@ fn confirmation_view_mode(view_context: &ViewContext) -> ConfirmationViewMode {
 
 /// Opens focused review or shows a regeneration confirmation popup.
 ///
-/// When currently in focused review mode and a review result (or error) is
-/// displayed, shows a confirmation popup before regenerating. If a generation
-/// is already in flight (loading), the press is ignored to avoid spawning
-/// duplicate background tasks. Otherwise, opens focused review and resets
-/// scroll to bottom-aligned mode.
+/// When a review result (or error) is already present, shows a confirmation
+/// popup before regenerating. If a generation is already in flight (loading),
+/// the press is ignored to avoid spawning duplicate background tasks.
+/// Otherwise, loads or starts focused review output and resets scroll to
+/// bottom-aligned mode.
 async fn open_or_regenerate_review(
     app: &mut App,
     view_context: &ViewContext,
     pending_update: &mut ViewPendingUpdate,
 ) {
-    if pending_update.done_session_output_mode == DoneSessionOutputMode::Review {
-        let is_loading = pending_update
-            .review_status_message
-            .as_deref()
-            .is_some_and(is_review_loading_status_message);
-        if is_loading {
-            return;
-        }
+    let is_loading = pending_update
+        .review_status_message
+        .as_deref()
+        .is_some_and(is_review_loading_status_message);
+    if is_loading {
+        return;
+    }
 
+    if pending_update.review_text.is_some() || pending_update.review_status_message.is_some() {
         app.mode = AppMode::Confirmation {
             confirmation_intent: ConfirmationIntent::RegenerateReview,
             confirmation_message: "Regenerate focused review?".to_string(),
@@ -433,15 +427,18 @@ fn is_view_action_allowed(status: Status) -> bool {
 
 /// Returns whether the `d` shortcut can open the diff view.
 fn is_view_diff_allowed(status: Status) -> bool {
-    status == Status::Review
+    status.allows_review_actions()
 }
 
 /// Returns whether the `f` shortcut can open review content.
 fn is_view_review_allowed(status: Status) -> bool {
-    status == Status::Review
+    status.allows_review_actions()
 }
 
 /// Switches the TUI mode from session view to the prompt input.
+///
+/// Focused-review output/status is copied into prompt mode so canceling the
+/// composer returns to the same session transcript state.
 fn switch_view_to_prompt(
     app: &mut App,
     view_context: &ViewContext,
@@ -452,6 +449,8 @@ fn switch_view_to_prompt(
         at_mention_state: None,
         attachment_state: PromptAttachmentState::default(),
         history_state,
+        review_status_message: view_context.review_status_message.clone(),
+        review_text: view_context.review_text.clone(),
         slash_state: app.prompt_slash_state(),
         session_id: view_context.session_id.clone(),
         input: InputState::new(),
@@ -705,17 +704,15 @@ fn half_page_scroll_step(metrics: ViewMetrics) -> u16 {
 /// Reviews are auto-generated when sessions transition to `Review`. When the
 /// user presses `f` and no cached review exists yet, Agentty computes the
 /// current diff, starts background generation, and shows a loading message
-/// immediately. Exiting focused review is handled by `q`; pressing `f` again
-/// while viewing regenerates via `open_or_regenerate_review`.
+/// immediately. The resulting review is appended into the normal session
+/// output panel instead of replacing it.
 async fn open_review_output_mode(
     app: &mut App,
     view_context: &ViewContext,
-    done_session_output_mode: &mut DoneSessionOutputMode,
+    _done_session_output_mode: &mut DoneSessionOutputMode,
     review_status_message: &mut Option<String>,
     review_text: &mut Option<String>,
 ) {
-    *done_session_output_mode = DoneSessionOutputMode::Review;
-
     let review_is_loading = review_status_message
         .as_deref()
         .is_some_and(is_review_loading_status_message);
@@ -1511,7 +1508,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(next_done_session_output_mode, DoneSessionOutputMode::Review);
+        assert_eq!(
+            next_done_session_output_mode,
+            DoneSessionOutputMode::Summary
+        );
         assert_eq!(next_review_status_message, None);
         assert_eq!(next_review_text.as_deref(), Some("Cached review"));
     }
@@ -1521,6 +1521,7 @@ mod tests {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         app.settings.default_review_model = AgentModel::ClaudeOpus46;
+        app.sessions.sessions[0].status = Status::Review;
         let session_folder = app.sessions.sessions[0].folder.clone();
         std::fs::write(session_folder.join("README.md"), "review test content\n")
             .expect("failed to update readme");
@@ -1547,12 +1548,16 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(next_done_session_output_mode, DoneSessionOutputMode::Review);
+        assert_eq!(
+            next_done_session_output_mode,
+            DoneSessionOutputMode::Summary
+        );
         assert_eq!(
             next_review_status_message,
             Some(review_loading_message(AgentModel::ClaudeOpus46))
         );
         assert_eq!(next_review_text, None);
+        assert_eq!(app.sessions.sessions[0].status, Status::AgentReview);
         assert!(matches!(
             app.review_cache.get(&view_context.session_id),
             Some(ReviewCacheEntry::Loading { .. })
@@ -1586,7 +1591,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(next_done_session_output_mode, DoneSessionOutputMode::Review);
+        assert_eq!(
+            next_done_session_output_mode,
+            DoneSessionOutputMode::Summary
+        );
         assert_eq!(next_review_status_message, None);
         assert_eq!(next_review_text.as_deref(), Some(REVIEW_NO_DIFF_MESSAGE));
         assert!(!app.review_cache.contains_key(&view_context.session_id));
@@ -1620,7 +1628,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(next_done_session_output_mode, DoneSessionOutputMode::Review);
+        assert_eq!(
+            next_done_session_output_mode,
+            DoneSessionOutputMode::Summary
+        );
         assert_eq!(next_review_status_message, None);
         assert_eq!(next_review_text, Some(String::new()));
     }
@@ -2136,7 +2147,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(next_done_session_output_mode, DoneSessionOutputMode::Review);
+        assert_eq!(
+            next_done_session_output_mode,
+            DoneSessionOutputMode::Summary
+        );
         assert_eq!(next_review_status_message, None);
         assert_eq!(next_review_text.as_deref(), Some(cached_text));
     }
@@ -2173,7 +2187,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(next_done_session_output_mode, DoneSessionOutputMode::Review);
+        assert_eq!(
+            next_done_session_output_mode,
+            DoneSessionOutputMode::Summary
+        );
         assert_eq!(
             next_review_status_message,
             Some(review_loading_message(AgentModel::ClaudeOpus46))
@@ -2182,7 +2199,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_open_or_regenerate_review_opens_when_not_in_review() {
+    async fn test_open_or_regenerate_review_opens_when_review_output_is_missing() {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         let view_context = ViewContext {
@@ -2201,13 +2218,13 @@ mod tests {
         // Assert
         assert_eq!(
             pending_update.done_session_output_mode,
-            DoneSessionOutputMode::Review
+            DoneSessionOutputMode::Summary
         );
         assert_eq!(pending_update.scroll_offset, None);
     }
 
     #[tokio::test]
-    async fn test_open_or_regenerate_shows_confirmation_when_already_viewing() {
+    async fn test_open_or_regenerate_shows_confirmation_when_review_output_exists() {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         app.review_cache.insert(
@@ -2218,7 +2235,7 @@ mod tests {
             },
         );
         let view_context = ViewContext {
-            done_session_output_mode: DoneSessionOutputMode::Review,
+            done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: None,
             review_text: Some("Old review".to_string()),
             scroll_offset: None,
@@ -2252,7 +2269,7 @@ mod tests {
         );
         let loading_message = review_loading_message(app.settings.default_review_model);
         let view_context = ViewContext {
-            done_session_output_mode: DoneSessionOutputMode::Review,
+            done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: Some(loading_message.clone()),
             review_text: None,
             scroll_offset: None,
@@ -2450,52 +2467,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_q_in_review_exits_to_summary() {
+    async fn test_q_always_transitions_to_list() {
         // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         let view_context = ViewContext {
             done_session_output_mode: DoneSessionOutputMode::Review,
             review_status_message: None,
             review_text: Some("review text".to_string()),
             scroll_offset: Some(10),
-            session_id: String::new(),
-            session_index: 0,
-        };
-        let mut pending_update = ViewPendingUpdate::from_context(&view_context);
-
-        // Act — simulate the q guard branch
-        pending_update.done_session_output_mode = DoneSessionOutputMode::Summary;
-        pending_update.scroll_offset = None;
-
-        // Assert
-        assert_eq!(
-            pending_update.done_session_output_mode,
-            DoneSessionOutputMode::Summary
-        );
-        assert_eq!(pending_update.scroll_offset, None);
-    }
-
-    #[tokio::test]
-    async fn test_q_in_summary_mode_transitions_to_list() {
-        // Arrange
-        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
-        let view_context = ViewContext {
-            done_session_output_mode: DoneSessionOutputMode::Summary,
-            review_status_message: None,
-            review_text: None,
-            scroll_offset: None,
             session_id,
             session_index: 0,
         };
         let pending_update = ViewPendingUpdate::from_context(&view_context);
 
-        // Act — the q key without focused review transitions app mode to List
+        // Act — q always returns to list without mutating pending output mode
         app.mode = AppMode::List;
 
-        // Assert — mode is List and output mode stayed Summary
+        // Assert
         assert!(matches!(app.mode, AppMode::List));
         assert_eq!(
             pending_update.done_session_output_mode,
-            DoneSessionOutputMode::Summary
+            DoneSessionOutputMode::Review
         );
     }
 }

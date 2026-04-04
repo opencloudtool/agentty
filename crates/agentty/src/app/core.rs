@@ -29,7 +29,7 @@ use app::project::ProjectManager;
 use app::reducer::AppEventReducer;
 use app::review::{
     ReviewCacheEntry, ReviewUpdate, apply_review_updates, auto_start_reviews,
-    start_review_assist as spawn_review_assist,
+    mark_session_agent_review, review_view_state, start_review_assist as spawn_review_assist,
 };
 use app::service::{AppServiceDeps, AppServices};
 use app::session::SessionManager;
@@ -877,6 +877,9 @@ impl App {
 
     /// Submits the initial prompt for a newly created session.
     ///
+    /// Starting a new turn clears any cached focused-review output for that
+    /// session so review text does not bleed into the next prompt cycle.
+    ///
     /// # Errors
     /// Returns an error if the session is missing or task enqueue fails.
     pub async fn start_session(
@@ -884,6 +887,8 @@ impl App {
         session_id: &str,
         prompt: impl Into<TurnPrompt>,
     ) -> Result<(), AppError> {
+        self.review_cache.remove(session_id);
+
         Ok(self
             .sessions
             .start_session(&self.services, session_id, prompt)
@@ -919,10 +924,24 @@ impl App {
     }
 
     /// Submits a follow-up prompt for an existing session.
+    ///
+    /// Starting a new turn clears any cached focused-review output for that
+    /// session so review text does not persist past prompt submission.
     pub async fn reply(&mut self, session_id: &str, prompt: impl Into<TurnPrompt>) {
+        self.review_cache.remove(session_id);
         self.sessions
             .reply(&self.services, session_id, prompt)
             .await;
+    }
+
+    /// Returns the focused-review output state that should be shown when one
+    /// session view is reopened.
+    pub(crate) fn review_view_state(&self, session_id: &str) -> (Option<String>, Option<String>) {
+        review_view_state(
+            &self.review_cache,
+            session_id,
+            self.settings.default_review_model,
+        )
     }
 
     /// Persists and applies a model selection for a session.
@@ -1286,13 +1305,15 @@ impl App {
     /// The review assist prompt enforces read-only review constraints
     /// and allows only internet lookup and non-editing verification commands.
     pub(crate) fn start_review_assist(
-        &self,
+        &mut self,
         session_id: &str,
         session_folder: &Path,
         diff_hash: u64,
         review_diff: &str,
         session_summary: Option<&str>,
     ) {
+        mark_session_agent_review(&mut self.sessions, session_id);
+
         spawn_review_assist(
             self.services.event_sender(),
             self.settings.default_review_model,
@@ -1450,6 +1471,7 @@ impl App {
         apply_review_updates(
             &mut self.review_cache,
             &mut self.mode,
+            &mut self.sessions,
             event_batch.review_updates,
         );
 
@@ -1480,7 +1502,7 @@ impl App {
             &mut self.review_cache,
             &event_batch.session_ids,
             &previous_session_states,
-            &self.sessions.sessions,
+            &mut self.sessions,
             self.services.git_client(),
             self.services.event_sender(),
             self.settings.default_review_model,
@@ -1684,10 +1706,12 @@ impl App {
             return;
         }
 
+        let (review_status_message, review_text) = self.review_view_state(target_session_id);
+
         self.mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
-            review_status_message: None,
-            review_text: None,
+            review_status_message,
+            review_text,
             session_id: target_session_id.to_string(),
             scroll_offset: None,
         };
@@ -1735,7 +1759,12 @@ impl App {
     fn apply_review_update(&mut self, session_id: &str, review_update: app::review::ReviewUpdate) {
         let mut review_updates = HashMap::new();
         review_updates.insert(session_id.to_string(), review_update);
-        apply_review_updates(&mut self.review_cache, &mut self.mode, review_updates);
+        apply_review_updates(
+            &mut self.review_cache,
+            &mut self.mode,
+            &mut self.sessions,
+            review_updates,
+        );
     }
 
     /// Starts focused review generation for sessions that just entered review.
@@ -1749,7 +1778,7 @@ impl App {
             &mut self.review_cache,
             session_ids,
             previous_session_states,
-            &self.sessions.sessions,
+            &mut self.sessions,
             self.services.git_client(),
             self.services.event_sender(),
             self.settings.default_review_model,
@@ -1810,7 +1839,7 @@ impl App {
     /// status.
     fn validate_merge_request(&self, session_id: &str) -> Result<(), AppError> {
         let session = self.sessions.session_or_err(session_id)?;
-        if !matches!(session.status, Status::Review | Status::Queued) {
+        if !(session.status.allows_review_actions() || session.status == Status::Queued) {
             return Err(AppError::Workflow(
                 "Session must be in review or queued status".to_string(),
             ));
@@ -4600,6 +4629,14 @@ mod tests {
         let mut app = new_test_app().await;
         let session_id = "session-review-cache";
         let review_text = "## Review\nLooks good.";
+        let mut session = test_session(PathBuf::from("/tmp/session-review-cache"));
+        session.id = session_id.to_string();
+        session.status = Status::AgentReview;
+        app.sessions.sessions.push(session);
+        app.sessions.handles.insert(
+            session_id.to_string(),
+            SessionHandles::new(String::new(), Status::AgentReview),
+        );
         app.review_cache.insert(
             session_id.to_string(),
             ReviewCacheEntry::Loading { diff_hash: 123 },
@@ -4619,6 +4656,17 @@ mod tests {
             app.review_cache.get(session_id),
             Some(ReviewCacheEntry::Ready { text, diff_hash }) if text == review_text && *diff_hash == 123
         ));
+        assert_eq!(app.sessions.sessions[0].status, Status::Review);
+        assert_eq!(
+            *app.sessions
+                .handles
+                .get(session_id)
+                .expect("expected session handles")
+                .status
+                .lock()
+                .expect("expected handle status lock"),
+            Status::Review
+        );
     }
 
     #[tokio::test]
@@ -4672,6 +4720,47 @@ mod tests {
             app.review_cache.get(session_id),
             Some(ReviewCacheEntry::Loading { diff_hash }) if *diff_hash == 999
         ));
+    }
+
+    #[tokio::test]
+    async fn apply_review_update_keeps_non_agent_review_status_unchanged() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_id = "session-review-progress";
+        let mut session = test_session(PathBuf::from("/tmp/session-review-progress"));
+        session.id = session_id.to_string();
+        session.status = Status::InProgress;
+        app.sessions.sessions.push(session);
+        app.sessions.handles.insert(
+            session_id.to_string(),
+            SessionHandles::new(String::new(), Status::InProgress),
+        );
+        app.review_cache.insert(
+            session_id.to_string(),
+            ReviewCacheEntry::Loading { diff_hash: 222 },
+        );
+
+        // Act
+        app.apply_review_update(
+            session_id,
+            ReviewUpdate {
+                diff_hash: 222,
+                result: Ok("## Review\nBackground review".to_string()),
+            },
+        );
+
+        // Assert
+        assert_eq!(app.sessions.sessions[0].status, Status::InProgress);
+        assert_eq!(
+            *app.sessions
+                .handles
+                .get(session_id)
+                .expect("expected session handles")
+                .status
+                .lock()
+                .expect("expected handle status lock"),
+            Status::InProgress
+        );
     }
 
     #[tokio::test]
@@ -4767,6 +4856,7 @@ mod tests {
             app.review_cache.get(session_id),
             Some(ReviewCacheEntry::Loading { diff_hash }) if *diff_hash == expected_hash
         ));
+        assert_eq!(app.sessions.sessions[0].status, Status::AgentReview);
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use super::SessionManager;
-use crate::domain::session::{Session, Status};
+use crate::domain::session::Session;
 
 impl SessionManager {
     /// Collects session ids that should replay persisted transcript output on
@@ -13,7 +13,7 @@ impl SessionManager {
     ) -> HashSet<String> {
         sessions
             .iter()
-            .filter(|session| session.status == Status::Review)
+            .filter(|session| session.status.allows_review_actions())
             .map(|session| session.id.clone())
             .collect()
     }
@@ -48,7 +48,7 @@ mod tests {
     use crate::app::SessionState;
     use crate::app::session::{Clock, SessionDefaults};
     use crate::domain::agent::{AgentKind, AgentModel};
-    use crate::domain::session::{SessionSize, SessionStats};
+    use crate::domain::session::{SessionSize, SessionStats, Status};
     use crate::infra::git;
 
     /// Deterministic clock for test construction.
@@ -129,6 +129,19 @@ mod tests {
         assert_eq!(replay_set.len(), 2);
         assert!(replay_set.contains("review-1"));
         assert!(replay_set.contains("review-2"));
+    }
+
+    #[test]
+    fn test_startup_replay_set_collects_agent_review_sessions() {
+        // Arrange
+        let sessions = vec![test_session("review-1", Status::AgentReview)];
+
+        // Act
+        let replay_set = SessionManager::startup_history_replay_set(&sessions);
+
+        // Assert
+        assert_eq!(replay_set.len(), 1);
+        assert!(replay_set.contains("review-1"));
     }
 
     #[test]

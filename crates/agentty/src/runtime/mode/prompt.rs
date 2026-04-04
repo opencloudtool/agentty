@@ -450,6 +450,9 @@ fn advance_prompt_slash_selection(app: &mut App) {
 }
 
 /// Submits the active prompt when it passes prompt-mode validation.
+///
+/// A submitted prompt clears any cached focused-review output for the session
+/// so the next turn starts from the raw transcript again.
 async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext) {
     if prompt_context.is_slash_command {
         handle_prompt_slash_submit(app, prompt_context).await;
@@ -665,6 +668,9 @@ async fn handle_prompt_slash_submit(app: &mut App, prompt_context: &PromptContex
 }
 
 /// Cancels the active prompt and drops any composer-owned attachment files.
+///
+/// Existing focused-review output is restored into session view because no new
+/// prompt was submitted.
 async fn handle_prompt_cancel_key(app: &mut App, prompt_context: &PromptContext) {
     if prompt_context.is_slash_command {
         if let AppMode::Prompt {
@@ -689,11 +695,30 @@ async fn handle_prompt_cancel_key(app: &mut App, prompt_context: &PromptContext)
 
     app.mode = AppMode::View {
         done_session_output_mode: DoneSessionOutputMode::Summary,
-        review_status_message: None,
-        review_text: None,
+        review_status_message: prompt_review_status_message(app),
+        review_text: prompt_review_text(app),
         session_id: prompt_context.session_id.clone(),
         scroll_offset: prompt_context.scroll_offset,
     };
+}
+
+/// Returns the preserved focused-review status text stored in prompt mode.
+fn prompt_review_status_message(app: &App) -> Option<String> {
+    match &app.mode {
+        AppMode::Prompt {
+            review_status_message,
+            ..
+        } => review_status_message.clone(),
+        _ => None,
+    }
+}
+
+/// Returns the preserved focused-review output stored in prompt mode.
+fn prompt_review_text(app: &App) -> Option<String> {
+    match &app.mode {
+        AppMode::Prompt { review_text, .. } => review_text.clone(),
+        _ => None,
+    }
 }
 
 async fn append_output_for_session(app: &App, session_id: &str, output: &str) {
@@ -1358,6 +1383,8 @@ mod tests {
             at_mention_state,
             attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::new(Vec::new()),
+            review_status_message: None,
+            review_text: None,
             slash_state: PromptSlashState::new(),
             session_id,
             input: InputState::with_text(input_text.to_string()),
@@ -2387,6 +2414,8 @@ mod tests {
             at_mention_state: None,
             attachment_state: PromptAttachmentState::default(),
             history_state: PromptHistoryState::new(Vec::new()),
+            review_status_message: None,
+            review_text: None,
             input: InputState::with_text("follow up".to_string()),
             session_id: "missing-session".to_string(),
             slash_state: PromptSlashState::new(),
@@ -2635,6 +2664,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_prompt_submit_key_clears_cached_review_output() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("follow up", None).await;
+        let session_id = app.sessions.sessions[0].id.clone();
+        app.review_cache.insert(
+            session_id.clone(),
+            crate::app::ReviewCacheEntry::Ready {
+                diff_hash: 7,
+                text: "Focused review".to_string(),
+            },
+        );
+        if let AppMode::Prompt {
+            review_status_message,
+            review_text,
+            ..
+        } = &mut app.mode
+        {
+            *review_status_message = None;
+            *review_text = Some("Focused review".to_string());
+        }
+        let prompt_context = prompt_context(&mut app).expect("expected prompt context");
+
+        // Act
+        handle_prompt_submit_key(&mut app, &prompt_context).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                review_status_message: None,
+                review_text: None,
+                ..
+            }
+        ));
+        assert!(!app.review_cache.contains_key(&session_id));
+    }
+
+    #[tokio::test]
     async fn test_handle_prompt_cancel_key_keeps_new_session_with_staged_drafts() {
         // Arrange
         let (mut app, _base_dir) = new_test_draft_prompt_app("Another draft", None).await;
@@ -2647,6 +2714,36 @@ mod tests {
         // Assert
         assert!(matches!(app.mode, AppMode::View { .. }));
         assert_eq!(app.sessions.sessions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_cancel_key_restores_review_output() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_prompt_app("follow up", None).await;
+        app.sessions.sessions[0].status = crate::domain::session::Status::Review;
+        if let AppMode::Prompt {
+            review_status_message,
+            review_text,
+            ..
+        } = &mut app.mode
+        {
+            *review_status_message = None;
+            *review_text = Some("Focused review".to_string());
+        }
+        let prompt_context = prompt_context(&mut app).expect("expected prompt context");
+
+        // Act
+        handle_prompt_cancel_key(&mut app, &prompt_context).await;
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::View {
+                review_status_message: None,
+                review_text: Some(ref review_text),
+                ..
+            } if review_text == "Focused review"
+        ));
     }
 
     #[tokio::test]

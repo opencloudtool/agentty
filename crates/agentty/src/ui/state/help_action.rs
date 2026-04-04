@@ -80,10 +80,10 @@ pub(crate) fn session_view_state(session: &Session) -> ViewSessionState {
         Status::InProgress => ViewSessionState::InProgress,
         Status::New if session.is_draft_session() => ViewSessionState::NewSession,
         Status::New => ViewSessionState::Interactive,
+        Status::Question => ViewSessionState::Interactive,
         Status::Rebasing => ViewSessionState::Rebasing,
         Status::Merging | Status::Queued => ViewSessionState::MergeQueue,
-        Status::Review => ViewSessionState::Review,
-        _ => ViewSessionState::Interactive,
+        Status::Review | Status::AgentReview => ViewSessionState::Review,
     }
 }
 

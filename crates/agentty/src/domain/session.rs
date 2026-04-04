@@ -18,6 +18,9 @@ pub enum Status {
     New,
     InProgress,
     Review,
+    /// Session is generating focused-review output while keeping review
+    /// actions available.
+    AgentReview,
     /// Session is waiting for model clarification responses.
     Question,
     /// Session is waiting in the merge queue for its turn to merge.
@@ -34,13 +37,18 @@ impl Status {
         match self {
             Status::New => Color::DarkGray,
             Status::InProgress => Color::Yellow,
-            Status::Review => Color::LightBlue,
+            Status::Review | Status::AgentReview => Color::LightBlue,
             Status::Question => Color::LightMagenta,
             Status::Queued => Color::LightCyan,
             Status::Rebasing | Status::Merging => Color::Cyan,
             Status::Done => Color::Green,
             Status::Canceled => Color::Red,
         }
+    }
+
+    /// Returns whether this status keeps the review shortcut set enabled.
+    pub fn allows_review_actions(self) -> bool {
+        matches!(self, Status::Review | Status::AgentReview)
     }
 
     /// Returns whether a transition to `next` is valid.
@@ -53,20 +61,28 @@ impl Status {
             (self, next),
             (Status::New, Status::InProgress)
                 | (Status::New | Status::InProgress, Status::Rebasing)
+                | (Status::Review, Status::AgentReview)
+                | (Status::AgentReview, Status::Review)
                 | (
-                    Status::Review | Status::Question,
+                    Status::Review | Status::AgentReview | Status::Question,
                     Status::InProgress
                         | Status::Queued
                         | Status::Rebasing
                         | Status::Merging
                         | Status::Canceled
                 )
-                | (Status::Queued, Status::Merging | Status::Review)
+                | (
+                    Status::Queued,
+                    Status::Merging | Status::Review | Status::AgentReview
+                )
                 | (
                     Status::InProgress | Status::Rebasing,
-                    Status::Review | Status::Question
+                    Status::Review | Status::AgentReview | Status::Question
                 )
-                | (Status::Merging, Status::Done | Status::Review)
+                | (
+                    Status::Merging,
+                    Status::Done | Status::Review | Status::AgentReview
+                )
         )
     }
 }
@@ -77,6 +93,7 @@ impl fmt::Display for Status {
             Status::New => write!(f, "New"),
             Status::InProgress => write!(f, "InProgress"),
             Status::Review => write!(f, "Review"),
+            Status::AgentReview => write!(f, "AgentReview"),
             Status::Question => write!(f, "Question"),
             Status::Queued => write!(f, "Queued"),
             Status::Rebasing => write!(f, "Rebasing"),
@@ -95,6 +112,7 @@ impl FromStr for Status {
             "New" => Ok(Status::New),
             "InProgress" | "Committing" => Ok(Status::InProgress),
             "Review" => Ok(Status::Review),
+            "AgentReview" => Ok(Status::AgentReview),
             "Question" => Ok(Status::Question),
             "Queued" => Ok(Status::Queued),
             "Rebasing" => Ok(Status::Rebasing),
@@ -387,7 +405,9 @@ impl Session {
 
     /// Returns the session-branch action currently available in session view.
     pub fn publish_branch_action(&self) -> Option<PublishBranchAction> {
-        (self.status == Status::Review).then_some(PublishBranchAction::Push)
+        self.status
+            .allows_review_actions()
+            .then_some(PublishBranchAction::Push)
     }
 
     /// Returns the follow-up task at `position`, when present.
@@ -466,6 +486,30 @@ mod tests {
 
         // Assert
         assert!(can_transition);
+    }
+
+    #[test]
+    fn test_status_transition_review_to_agent_review() {
+        // Arrange
+        let current_status = Status::Review;
+
+        // Act
+        let can_transition = current_status.can_transition_to(Status::AgentReview);
+
+        // Assert
+        assert!(can_transition);
+    }
+
+    #[test]
+    fn test_status_allows_review_actions_for_agent_review() {
+        // Arrange
+        let status = Status::AgentReview;
+
+        // Act
+        let allows_review_actions = status.allows_review_actions();
+
+        // Assert
+        assert!(allows_review_actions);
     }
 
     #[test]
@@ -569,6 +613,41 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             size: SessionSize::Xs,
             stats: SessionStats::default(),
             status: Status::Review,
+            summary: None,
+            title: None,
+            updated_at: 0,
+        };
+
+        // Act
+        let action = session.publish_branch_action();
+
+        // Assert
+        assert_eq!(action, Some(PublishBranchAction::Push));
+    }
+
+    #[test]
+    fn test_publish_branch_action_returns_push_for_agent_review_session() {
+        // Arrange
+        let session = Session {
+            base_branch: "main".to_string(),
+            created_at: 0,
+            draft_attachments: Vec::new(),
+            folder: PathBuf::new(),
+            follow_up_tasks: Vec::new(),
+            id: "session-id".to_string(),
+            in_progress_started_at: None,
+            in_progress_total_seconds: 0,
+            is_draft: false,
+            model: AgentModel::Gemini3FlashPreview,
+            output: String::new(),
+            project_name: "project".to_string(),
+            prompt: String::new(),
+            published_upstream_ref: None,
+            questions: Vec::new(),
+            review_request: None,
+            size: SessionSize::Xs,
+            stats: SessionStats::default(),
+            status: Status::AgentReview,
             summary: None,
             title: None,
             updated_at: 0,

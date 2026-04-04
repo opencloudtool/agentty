@@ -10,8 +10,9 @@ use tokio::sync::mpsc;
 
 use super::core::AppEvent;
 use super::task;
+use crate::app::session_state::SessionState;
 use crate::domain::agent::AgentModel;
-use crate::domain::session::{Session, Status};
+use crate::domain::session::Status;
 use crate::infra::git::GitClient;
 use crate::ui::state::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
 
@@ -93,6 +94,33 @@ pub(crate) fn diff_content_hash(diff: &str) -> u64 {
     hasher.finish()
 }
 
+/// Returns the focused-review render state that should be restored for one
+/// session when reopening session view.
+pub(crate) fn review_view_state(
+    review_cache: &HashMap<String, ReviewCacheEntry>,
+    session_id: &str,
+    review_model: AgentModel,
+) -> (Option<String>, Option<String>) {
+    let Some(cache_entry) = review_cache.get(session_id) else {
+        return (None, None);
+    };
+
+    match cache_entry {
+        ReviewCacheEntry::Loading { .. } => (
+            Some(format!(
+                "Preparing review with agent help with model {}...",
+                review_model.as_str(),
+            )),
+            None,
+        ),
+        ReviewCacheEntry::Ready { text, .. } => (None, Some(text.clone())),
+        ReviewCacheEntry::Failed { error, .. } => (
+            Some(format!("Review assist unavailable: {}", error.trim())),
+            None,
+        ),
+    }
+}
+
 /// Spawns one focused review-assist task for the provided session diff.
 pub(crate) fn start_review_assist(
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -114,14 +142,32 @@ pub(crate) fn start_review_assist(
     });
 }
 
+/// Marks one review-ready session as transient `AgentReview` while focused
+/// review generation is running.
+pub(crate) fn mark_session_agent_review(session_state: &mut SessionState, session_id: &str) {
+    update_transient_review_status(
+        session_state,
+        session_id,
+        Status::Review,
+        Status::AgentReview,
+    );
+}
+
 /// Applies review assist updates for all sessions in one reducer batch.
 pub(crate) fn apply_review_updates(
     review_cache: &mut HashMap<String, ReviewCacheEntry>,
     mode: &mut AppMode,
+    session_state: &mut SessionState,
     review_updates: HashMap<String, ReviewUpdate>,
 ) {
     for (session_id, review_update) in review_updates {
-        apply_review_update(review_cache, mode, &session_id, review_update);
+        apply_review_update(
+            review_cache,
+            mode,
+            session_state,
+            &session_id,
+            review_update,
+        );
     }
 }
 
@@ -133,17 +179,28 @@ pub(crate) async fn auto_start_reviews(
     review_cache: &mut HashMap<String, ReviewCacheEntry>,
     session_ids: &HashSet<String>,
     previous_session_states: &HashMap<String, Status>,
-    sessions: &[Session],
+    session_state: &mut SessionState,
     git_client: Arc<dyn GitClient>,
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
     review_model: AgentModel,
 ) {
     for session_id in session_ids {
-        let Some(session) = sessions.iter().find(|session| session.id == *session_id) else {
+        let Some((current_status, session_folder, base_branch, session_summary)) = session_state
+            .sessions
+            .iter()
+            .find(|session| session.id == *session_id)
+            .map(|session| {
+                (
+                    session.status,
+                    session.folder.clone(),
+                    session.base_branch.clone(),
+                    session.summary.clone(),
+                )
+            })
+        else {
             continue;
         };
 
-        let current_status = session.status;
         let previous_status = previous_session_states.get(session_id).copied();
 
         if current_status == Status::InProgress {
@@ -158,10 +215,6 @@ pub(crate) async fn auto_start_reviews(
         if !transitioned_to_review {
             continue;
         }
-
-        let session_folder = session.folder.clone();
-        let base_branch = session.base_branch.clone();
-        let session_summary = session.summary.clone();
 
         let diff = git_client
             .diff(session_folder.clone(), base_branch)
@@ -188,6 +241,7 @@ pub(crate) async fn auto_start_reviews(
                 diff_hash: new_hash,
             },
         );
+        mark_session_agent_review(session_state, session_id);
         start_review_assist(
             app_event_tx.clone(),
             review_model,
@@ -204,6 +258,7 @@ pub(crate) async fn auto_start_reviews(
 fn apply_review_update(
     review_cache: &mut HashMap<String, ReviewCacheEntry>,
     mode: &mut AppMode,
+    session_state: &mut SessionState,
     session_id: &str,
     review_update: ReviewUpdate,
 ) {
@@ -220,6 +275,7 @@ fn apply_review_update(
         session_id.to_string(),
         ReviewCacheEntry::from_result(diff_hash, &result),
     );
+    restore_session_review_status(session_state, session_id);
 
     if let Some(mode_target) = review_mode_target(mode, session_id) {
         apply_review_result(
@@ -227,6 +283,42 @@ fn apply_review_update(
             mode_target.review_text,
             result,
         );
+    }
+}
+
+/// Restores one transient `AgentReview` session back to `Review` after the
+/// focused-review task completes.
+fn restore_session_review_status(session_state: &mut SessionState, session_id: &str) {
+    update_transient_review_status(
+        session_state,
+        session_id,
+        Status::AgentReview,
+        Status::Review,
+    );
+}
+
+/// Updates one session snapshot and live handle when a transient review status
+/// transition still matches the expected current status.
+fn update_transient_review_status(
+    session_state: &mut SessionState,
+    session_id: &str,
+    current_status: Status,
+    next_status: Status,
+) {
+    if let Some(session) = session_state
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == session_id)
+        && session.status == current_status
+    {
+        session.status = next_status;
+    }
+
+    if let Some(handles) = session_state.handles.get(session_id)
+        && let Ok(mut handle_status) = handles.status.lock()
+        && *handle_status == current_status
+    {
+        *handle_status = next_status;
     }
 }
 

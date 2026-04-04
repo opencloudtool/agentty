@@ -447,7 +447,7 @@ async fn handle_merge_confirmation(
 }
 
 /// Clears the focused review cache and restarts generation for the confirmed
-/// session, then restores focused review mode with loading state.
+/// session, then restores session view with the refreshed review state.
 async fn handle_regenerate_review_confirmation(
     app: &mut App,
     confirmation_session_id: Option<String>,
@@ -485,7 +485,7 @@ async fn handle_regenerate_review_confirmation(
 
     if diff.trim().is_empty() || diff.starts_with("Failed to run git diff:") {
         let mut view_mode = restore_view.unwrap_or(ConfirmationViewMode {
-            done_session_output_mode: DoneSessionOutputMode::Review,
+            done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: None,
             review_text: None,
             scroll_offset: None,
@@ -515,13 +515,12 @@ async fn handle_regenerate_review_confirmation(
     );
 
     let mut view_mode = restore_view.unwrap_or(ConfirmationViewMode {
-        done_session_output_mode: DoneSessionOutputMode::Review,
+        done_session_output_mode: DoneSessionOutputMode::Summary,
         review_status_message: None,
         review_text: None,
         scroll_offset: None,
         session_id,
     });
-    view_mode.done_session_output_mode = DoneSessionOutputMode::Review;
     view_mode.review_status_message = Some(
         crate::runtime::mode::session_view::review_loading_message(review_model),
     );
