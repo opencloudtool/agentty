@@ -21,9 +21,9 @@ layer boundaries.
 ## Add a New Agent Backend or Model
 
 1. Update domain model declarations in `crates/agentty/src/domain/agent.rs`.
-1. Add backend behavior in `crates/agentty/src/infra/agent/` and wiring in `backend.rs`.
+1. Add backend behavior in `crates/agentty/src/infra/agent/` and register it in `provider.rs`.
 1. If app-server-based, implement `app_server_client()` in the concrete backend so the provider owns its runtime wiring.
-1. Register any shared parsing or streaming policy changes in `crates/agentty/src/infra/agent/backend.rs`.
+1. Register any shared parsing, prompt-transport, streaming, or thought-policy changes in `crates/agentty/src/infra/agent/provider.rs`.
 1. The channel layer (`infra/channel.rs`) routes automatically based on the backend-owned transport mode - no change needed there unless the runtime contract itself changes.
 1. Update `docs/site/content/docs/agents/backends.md` with backend/model documentation.
 

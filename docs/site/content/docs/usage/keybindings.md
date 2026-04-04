@@ -102,7 +102,7 @@ Additional notes:
 - **Branch publish lock**: once a session branch already tracks a remote branch, Agentty locks the popup field and re-publishes to that same remote branch only.
 - **Branch publish auth**: `p` uses regular Git authentication only. HTTPS remotes need a credential helper or PAT, and SSH remotes need a working SSH key.
 - **Follow-up tasks**: `l` launches the selected follow-up task into a sibling session the first time, then reopens that linked sibling on later presses. Use `[` and `]` to move between follow-up tasks when a session has more than one.
-- **Question**: opening the session enters Question Input mode until all prompts are answered or skipped.
+- **Question**: opening the session enters Question Input mode until all prompts are answered and submitted, or the clarification turn is ended with `Esc`.
 - **Done**: `t` toggles between summary and full output.
 - **Review**: Runs in read-only review mode. It can use internet lookup
   and non-editing verification commands, but it should not edit files or
@@ -215,6 +215,8 @@ When chat output is focused (press `Tab` to switch):
 | `G` | Scroll to bottom |
 | `Ctrl+d` | Half page down |
 | `Ctrl+u` | Half page up |
+| `d` | Open diff preview for the current session |
+| `Enter` / `Esc` | Return focus to answer input |
 | `Tab` | Switch focus back to answer input |
 
 <a id="usage-question-input-submit-flow"></a>

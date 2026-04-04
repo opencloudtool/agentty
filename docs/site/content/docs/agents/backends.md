@@ -145,6 +145,7 @@ Example payload:
 ```json
 {
   "answer": "Implemented the change.",
+  "follow_up_tasks": [],
   "questions": [
     {
       "text": "Should I run the full test suite?",
@@ -187,7 +188,7 @@ Agentty validates final agent output against the structured response protocol.
   output is easier to diagnose.
 - Provider-specific transport, stdin-vs-argv prompt delivery, strict final
   parsing, and app-server thought-phase handling are centralized in the
-  shared provider descriptor in `crates/agentty/src/infra/agent/backend.rs`.
+  shared provider registry in `crates/agentty/src/infra/agent/provider.rs`.
 - Concrete backends in `crates/agentty/src/infra/agent/` now also own app-server
   client selection and runtime command construction, so Codex and Gemini
   transport wiring stays with their provider-specific implementations instead
@@ -278,7 +279,8 @@ of leaving the selector on a hidden choice.
 <a id="backends-reasoning-level"></a>
 For Codex and Claude sessions, the **Settings** tab also exposes `Reasoning Level`
 (`low`, `medium`, `high`, `xhigh`). The selected level is persisted and sent
-with Codex and Claude turns.
+with Codex and Claude turns. For Claude, `xhigh` maps to `--effort max`,
+which is currently only supported by `claude-opus-4-6`.
 
 ## Available Models
 
@@ -290,8 +292,8 @@ quality, and cost.
 
 | Model ID | Description | Default |
 |----------|-------------|---------|
-| `gemini-3-flash-preview` | Fast Gemini model for quick iterations. | |
 | `gemini-3.1-pro-preview` | Higher-quality Gemini model for deeper reasoning. | Yes |
+| `gemini-3-flash-preview` | Fast Gemini model for quick iterations. | |
 
 ### Claude Models
 

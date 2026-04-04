@@ -34,23 +34,40 @@ Agentty runtime design is built around these constraints:
 <a id="architecture-runtime-flow-main"></a>
 Primary foreground path from process start to one event-loop cycle:
 
-```text
-main.rs
-  ├─ Database::open(...)                    // sqlite open + WAL + FK + migrations
-  ├─ App::new(...)
-  │    ├─ run one startup-only home-directory project scan, then load project/session snapshots
-  │    ├─ fail unfinished operations from previous run
-  │    └─ spawn app background tasks
-  └─ runtime::run(&mut app)
-       ├─ terminal::setup_terminal()
-       ├─ event::spawn_event_reader(...)    // dedicated OS thread
-       └─ run_main_loop(...)
-            ├─ sessions.sync_from_handles() // pull Arc<Mutex> runtime state into snapshots
-            ├─ ui::render::draw(...)
-            └─ event::process_events(...)
-                 ├─ key events -> mode handlers -> app/session orchestration
-                 ├─ app events -> App::apply_app_events reducer
-                 └─ tick -> refresh_sessions_if_needed safety poll
+```mermaid
+flowchart TD
+  main["main.rs"]
+  db["Database::open()<br/>sqlite open + WAL + foreign keys + migrations"]
+  app_new["App::new()"]
+  scan["Startup-only home-directory project scan<br/>then project/session snapshot load"]
+  fail_ops["Fail unfinished operations from previous run"]
+  background["Spawn app background tasks"]
+  runtime["runtime::run(&mut app)"]
+  terminal["terminal::setup_terminal()"]
+  event_reader["event::spawn_event_reader()<br/>dedicated OS thread"]
+  main_loop["run_main_loop()"]
+  sync["sessions.sync_from_handles()<br/>pull Arc&lt;Mutex&gt; state into snapshots"]
+  draw["ui::render::draw()"]
+  process["event::process_events()"]
+  key_events["Key events<br/>mode handlers -> app/session orchestration"]
+  app_events["App events<br/>App::apply_app_events reducer"]
+  tick["Tick<br/>refresh_sessions_if_needed safety poll"]
+
+  main --> db
+  main --> app_new
+  app_new --> scan
+  app_new --> fail_ops
+  app_new --> background
+  main --> runtime
+  runtime --> terminal
+  runtime --> event_reader
+  runtime --> main_loop
+  main_loop --> sync
+  main_loop --> draw
+  main_loop --> process
+  process --> key_events
+  process --> app_events
+  process --> tick
 ```
 
 <a id="architecture-runtime-flow-notes"></a>
@@ -268,6 +285,7 @@ flowchart TD
 
   question_meta --> clarifications["Clarification answers submitted"]
   clarifications --> clarification_prompt["Runtime builds one normal reply prompt<br/>starting with Clarifications:"]
+  question_meta --> end_turn["Esc ends clarification turn<br/>and restores Review without a reply"]
 ```
 
 ### What Prints, When It Prints, and When It Stops Showing
@@ -278,7 +296,7 @@ flowchart TD
 | Assistant answer | `session.output` | After a successful turn when protocol `answer` is non-empty. | Durable transcript entry; not removed by `SessionOutput`. It can be hidden from view only when `DoneSessionOutputMode::Summary` replaces the base body with rendered summary text. |
 | Clarification question text from the assistant | `session.output` fallback when no `answer` exists | After a successful turn with questions but without top-level `answer` text. | Durable transcript entry once appended. Pending structured `session.questions` continue separately in question mode until answered. |
 | Structured clarification questions | `session.questions` | In `AppMode::Question`, inside the bottom question panel, not inside `SessionOutput`. | Cleared when the resumed turn starts; the output panel never renders these as synthetic transcript rows. |
-| Clarification answers | New reply prompt built by runtime and appended into `session.output` | When the user finishes all questions and submits the generated `Clarifications:` reply turn. | Durable transcript entry. `SessionOutput` only adjusts spacing between numbered question groups for readability. |
+| Clarification answers | New reply prompt built by runtime and appended into `session.output` | When the user finishes all questions and submits the generated `Clarifications:` reply turn. | Durable transcript entry. `SessionOutput` only adjusts spacing between numbered question groups for readability. If the user ends question mode with `Esc`, no clarification reply is built and the session returns to `Review`. |
 | Summary block | `session.summary` | Appended after transcript content for most statuses. In `Done + Summary` mode it becomes the primary body instead. | Hidden for `Canceled` sessions. Also not appended a second time when `Done + Summary` mode already uses the summary as the base body. |
 | Follow-up tasks | `session.follow_up_tasks` | Always appended synthetically after the summary block when any tasks exist. | Replaced wholesale by the next completed turn's follow-up-task set. Not stored inside `session.output`. |
 | Commit footer | Trailing lines in `session.output` that begin with `[Commit]` or `[Commit Error]` | Reattached after summary and follow-up sections so commit notes stay tied to the completed turn footer. | Durable transcript content; only moved later in render order. |
@@ -357,18 +375,30 @@ Runtime status transitions enforced by `Status::can_transition_to()`:
 <a id="architecture-agent-channel"></a>
 Session workers are transport-agnostic through `AgentChannel`:
 
-```text
-app/session/workflow/worker.rs
-  └─ create_agent_channel(kind, override)
-       └─ provider registry (`infra/agent/provider.rs`)
-            ├─ transport_mode() -> Cli
-            │    └─ CliAgentChannel        (Claude; subprocess per turn)
-            └─ transport_mode() -> AppServer
-                 ├─ create_app_server_client()
-                 └─ AppServerAgentChannel  (Codex/Gemini; persistent runtime per session)
-                      └─ AppServerClient
-                           ├─ RealCodexAppServerClient
-                           └─ RealGeminiAcpClient
+```mermaid
+flowchart TD
+  worker["app/session/workflow/worker.rs"]
+  factory["create_agent_channel(kind, override)"]
+  provider["Provider registry<br/>infra/agent/provider.rs"]
+  cli_mode["transport_mode() -> Cli"]
+  cli_channel["CliAgentChannel<br/>Claude; subprocess per turn"]
+  app_server_mode["transport_mode() -> AppServer"]
+  app_server_client["create_app_server_client()"]
+  app_server_channel["AppServerAgentChannel<br/>Codex/Gemini; persistent runtime per session"]
+  client_trait["AppServerClient"]
+  codex_client["RealCodexAppServerClient"]
+  gemini_client["RealGeminiAcpClient"]
+
+  worker --> factory
+  factory --> provider
+  provider --> cli_mode
+  cli_mode --> cli_channel
+  provider --> app_server_mode
+  app_server_mode --> app_server_client
+  app_server_mode --> app_server_channel
+  app_server_channel --> client_trait
+  client_trait --> codex_client
+  client_trait --> gemini_client
 ```
 
 <a id="architecture-key-types"></a>
@@ -474,7 +504,7 @@ Question-mode loop:
 1. Worker receives final parsed response containing clarification questions in `questions`.
 1. Worker persists question list and sets session status `Question`.
 1. Reducer switches active view to `AppMode::Question` when that session is focused.
-1. User answers each question.
+1. User answers each question. Submitting a blank free-text answer stores `no answer`.
 1. Runtime builds one follow-up prompt:
 
 ```text
@@ -486,6 +516,9 @@ Clarifications:
 ```
 
 6. Runtime submits this as a normal reply turn; flow returns to standard worker path.
+
+Pressing `Esc` instead ends question mode immediately, restores the session to
+`Review`, and does not send the generated clarification reply.
 
 ## Background Task Catalog
 

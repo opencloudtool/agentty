@@ -29,6 +29,11 @@ Use these conventions to keep Agentty documentation maintainable as it grows.
 - Render navigation from `get_section(...).subsections` so new sections appear automatically.
 - Use `transparent = true` only when subsection pages should be merged into the parent listing.
 
+## Prefer Mermaid for Diagrams
+
+- Use fenced `mermaid` code blocks for flow, lifecycle, and architecture diagrams instead of ASCII trees.
+- Keep node labels concise and let the docs-page template handle theme-aware Mermaid rendering.
+
 ## Authoring Workflow
 
 1. Create a new Markdown page under `content/docs/`.

@@ -54,7 +54,7 @@ Session statuses and what you can do in each state:
 | **InProgress** | Agent is actively working. | `o` open worktree, scroll, help |
 | **Review** | Agent finished; changes are ready for review. | `Enter` reply, `m` add to merge queue, `r` rebase, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
 | **AgentReview** | Agentty is generating the focused review output in the background. | `Enter` reply, `m` add to merge queue, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
-| **Question** | Agent requested clarification before continuing. | question input mode (`Enter` submit, `Esc` skip, text editing keys) |
+| **Question** | Agent requested clarification before continuing. | question input mode (`Enter` submit, `Tab` toggle chat scroll, `Esc` end turn) |
 | **Queued** | Session is waiting in the merge queue. | read-only view (`q`, scroll, help) |
 | **Rebasing** | Worktree branch is rebasing onto the base branch. | `o` open worktree, scroll, help |
 | **Merging** | Changes are being merged into the base branch. | read-only view (`q`, scroll, help) |
@@ -149,14 +149,35 @@ view, and start only after you press `s`.
 
 ### Typical Transitions
 
-```text
-New -> InProgress -> Review -> Done
-New (draft) -> New (draft) -> InProgress -> Review -> Done
-                         ↘ Canceled
-                         ↘ Question → InProgress
-                         ↘ Queued → Merging → Done
-                         ↘ AgentReview → Review
-                         ↘ Rebasing → Review
+```mermaid
+flowchart TD
+  new_regular["New"]
+  new_draft["New (draft staging)"]
+  in_progress["InProgress"]
+  review["Review"]
+  agent_review["AgentReview"]
+  question["Question"]
+  queued["Queued"]
+  rebasing["Rebasing"]
+  merging["Merging"]
+  done["Done"]
+  canceled["Canceled"]
+
+  new_regular --> in_progress
+  new_draft -->|stage more drafts| new_draft
+  new_draft -->|start staged bundle| in_progress
+  in_progress --> review
+  in_progress --> question
+  review --> agent_review
+  agent_review --> review
+  review --> queued
+  queued --> merging
+  merging --> done
+  review --> rebasing
+  rebasing --> review
+  review --> canceled
+  question -->|submit clarifications| in_progress
+  question -->|Esc end turn| review
 ```
 
 While a session is **InProgress**, Agentty keeps the `Thinking...` status badge
@@ -179,9 +200,12 @@ for session initiation; Agentty does not continuously refresh titles.
 <a id="usage-clarification-loop"></a>
 If an agent emits structured clarification questions in the `questions`
 array, the session moves to
-**Question** status. You answer each question in sequence (or press `Esc` to
-skip with `no answer`), and Agentty sends one consolidated follow-up message
-back to the same session before returning it to normal execution.
+**Question** status. You answer each question in sequence, and Agentty sends
+one consolidated follow-up message back to the same session before returning
+it to normal execution. Submitting a blank free-text answer stores
+`no answer` for that question. Pressing `Esc` ends the clarification turn
+immediately, restores the session to **Review**, and does not send the
+follow-up message.
 
 <a id="usage-question-options"></a>
 Questions may include predefined answer options. Agentty displays them as an
@@ -190,8 +214,9 @@ pre-selected when options exist. Use `j`/`k` or `Up`/`Down` to navigate
 options and `Enter` to submit the highlighted choice. Moving above the first
 option or below the last option switches into the free-text answer input shown
 below the list. Questions without predefined options open directly in that
-free-text input. Press `Esc` at any point to skip the question with
-`no answer`.
+free-text input. Submitting a blank free-text answer stores `no answer` for
+that question. Press `Esc` at any point to end the clarification turn
+immediately and return the session to **Review** without sending a reply.
 
 ## Session Sizes
 
