@@ -37,9 +37,53 @@ pub(super) fn parse_prompt_completion_response(
 
 /// Extracts prompt completion usage values from ACP result payloads.
 pub(super) fn extract_prompt_usage_tokens(result: &Value) -> (u64, u64) {
-    let Some(usage) = result.get("usage") else {
-        return (0, 0);
-    };
+    extract_token_count_object(result.get("usage"))
+        .or_else(|| extract_meta_quota_token_count(result))
+        .or_else(|| extract_meta_model_usage_totals(result))
+        .unwrap_or((0, 0))
+}
+
+/// Extracts prompt usage totals from the current Gemini ACP `_meta.quota`
+/// result payload shape.
+fn extract_meta_quota_token_count(result: &Value) -> Option<(u64, u64)> {
+    let quota = result.get("_meta")?.get("quota")?;
+    extract_token_count_object(quota.get("token_count").or_else(|| quota.get("tokenCount")))
+}
+
+/// Extracts prompt usage totals by summing `_meta.quota.model_usage`
+/// entries when the aggregate token count is absent.
+fn extract_meta_model_usage_totals(result: &Value) -> Option<(u64, u64)> {
+    let quota = result.get("_meta")?.get("quota")?;
+    let model_usage = quota
+        .get("model_usage")
+        .or_else(|| quota.get("modelUsage"))?
+        .as_array()?;
+    let mut input_tokens = 0;
+    let mut output_tokens = 0;
+    let mut found_usage = false;
+
+    for model_usage_entry in model_usage {
+        if let Some((model_input_tokens, model_output_tokens)) = extract_token_count_object(
+            model_usage_entry
+                .get("token_count")
+                .or_else(|| model_usage_entry.get("tokenCount")),
+        ) {
+            input_tokens += model_input_tokens;
+            output_tokens += model_output_tokens;
+            found_usage = true;
+        }
+    }
+
+    if !found_usage {
+        return None;
+    }
+
+    Some((input_tokens, output_tokens))
+}
+
+/// Extracts normalized prompt token counts from one usage/token-count object.
+fn extract_token_count_object(value: Option<&Value>) -> Option<(u64, u64)> {
+    let usage = value?;
     let input_tokens = usage
         .get("inputTokens")
         .or_else(|| usage.get("input_tokens"))
@@ -51,7 +95,7 @@ pub(super) fn extract_prompt_usage_tokens(result: &Value) -> (u64, u64) {
         .and_then(Value::as_u64)
         .unwrap_or(0);
 
-    (input_tokens, output_tokens)
+    Some((input_tokens, output_tokens))
 }
 
 /// Extracts assistant text from known ACP prompt completion result shapes.
@@ -170,6 +214,55 @@ mod tests {
 
         // Assert
         assert_eq!(usage, (14, 6));
+    }
+
+    #[test]
+    fn extract_prompt_usage_tokens_reads_meta_quota_token_count_fields() {
+        // Arrange
+        let result = serde_json::json!({
+            "_meta": {
+                "quota": {
+                    "token_count": {
+                        "input_tokens": 21,
+                        "output_tokens": 8
+                    }
+                }
+            }
+        });
+
+        // Act
+        let usage = extract_prompt_usage_tokens(&result);
+
+        // Assert
+        assert_eq!(usage, (21, 8));
+    }
+
+    #[test]
+    fn extract_prompt_usage_tokens_sums_meta_model_usage_when_total_is_missing() {
+        // Arrange
+        let result = serde_json::json!({
+            "_meta": {
+                "quota": {
+                    "model_usage": [{
+                        "token_count": {
+                            "input_tokens": 13,
+                            "output_tokens": 5
+                        }
+                    }, {
+                        "token_count": {
+                            "input_tokens": 8,
+                            "output_tokens": 3
+                        }
+                    }]
+                }
+            }
+        });
+
+        // Act
+        let usage = extract_prompt_usage_tokens(&result);
+
+        // Assert
+        assert_eq!(usage, (21, 8));
     }
 
     #[test]
