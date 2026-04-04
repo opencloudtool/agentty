@@ -4,7 +4,10 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
-use crate::app::{App, ReviewCacheEntry, diff_content_hash};
+use crate::app::{
+    App, ReviewCacheEntry, diff_content_hash, is_review_loading_status_message,
+    review_loading_message,
+};
 use crate::domain::agent::AgentModel;
 use crate::domain::input::InputState;
 use crate::domain::session::{FollowUpTaskAction, PublishBranchAction, Status};
@@ -73,9 +76,6 @@ struct ViewSessionSnapshot {
     session_status: Status,
 }
 
-/// Prefix for the review loading status while assist output is being
-/// prepared.
-const REVIEW_LOADING_MESSAGE_PREFIX: &str = "Preparing review with agent help";
 /// Fallback copy shown when a review-ready session has no diff to inspect.
 const REVIEW_NO_DIFF_MESSAGE: &str = "No diff changes found for review.";
 
@@ -804,23 +804,9 @@ async fn show_diff_for_view_session(app: &mut App, view_context: &ViewContext) -
     true
 }
 
-/// Returns whether a review status line indicates assist is still
-/// loading.
-fn is_review_loading_status_message(status_message: &str) -> bool {
-    status_message.starts_with(REVIEW_LOADING_MESSAGE_PREFIX)
-}
-
 /// Returns the configured model used for review assist generation.
 fn review_assist_model(app: &App) -> AgentModel {
     app.settings.default_review_model
-}
-
-/// Formats the review loading status line with the active model name.
-pub(crate) fn review_loading_message(review_model: AgentModel) -> String {
-    format!(
-        "{REVIEW_LOADING_MESSAGE_PREFIX} with model {}...",
-        review_model.as_str(),
-    )
 }
 
 /// Loads the session worktree diff against its base branch.
@@ -1776,7 +1762,7 @@ mod tests {
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         app.mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Review,
-            review_status_message: Some("Preparing focused review...".to_string()),
+            review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
             review_text: Some("Critical finding".to_string()),
             session_id: session_id.clone(),
             scroll_offset: Some(5),
@@ -1806,7 +1792,7 @@ mod tests {
                 && confirmation_message == "Add this session to merge queue?"
                 && restored_session_id == &session_id
                 && mode_session_id == &session_id
-                && status_message == "Preparing focused review..."
+                && status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Critical finding"
         ));
     }
@@ -1818,7 +1804,7 @@ mod tests {
         app.settings.open_command = "cargo test\nnpm run dev".to_string();
         app.mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
-            review_status_message: Some("Preparing focused review".to_string()),
+            review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
             review_text: Some("Critical finding".to_string()),
             session_id: session_id.clone(),
             scroll_offset: Some(4),
@@ -1844,7 +1830,7 @@ mod tests {
                 selected_command_index: 0,
             } if commands == &vec!["cargo test".to_string(), "npm run dev".to_string()]
                 && restored_session_id == &session_id
-                && status_message == "Preparing focused review"
+                && status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Critical finding"
         ));
     }
@@ -1911,7 +1897,7 @@ mod tests {
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         let view_context = ViewContext {
             done_session_output_mode: DoneSessionOutputMode::Review,
-            review_status_message: Some("Preparing focused review".to_string()),
+            review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
             review_text: Some("Critical finding".to_string()),
             scroll_offset: Some(3),
             session_id: session_id.clone(),
@@ -1945,7 +1931,7 @@ mod tests {
                 },
                 scroll_offset: 0,
             } if session_id_in_mode == &session_id
-                && status_message == "Preparing focused review"
+                && status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Critical finding"
         ));
     }
@@ -1956,7 +1942,7 @@ mod tests {
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         let view_context = ViewContext {
             done_session_output_mode: DoneSessionOutputMode::Review,
-            review_status_message: Some("Preparing focused review".to_string()),
+            review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
             review_text: Some("Critical finding".to_string()),
             scroll_offset: Some(5),
             session_id: session_id.clone(),
@@ -1986,7 +1972,7 @@ mod tests {
                 && input_state.cursor == 0
                 && input_state.text().is_empty()
                 && restored_session_id == &session_id
-                && status_message == "Preparing focused review"
+                && status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Critical finding"
         ));
     }

@@ -368,6 +368,8 @@ impl HelpContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::review_loading_message;
+    use crate::domain::agent::AgentModel;
     use crate::domain::session::PublishBranchAction;
 
     #[test]
@@ -393,7 +395,7 @@ mod tests {
         // Arrange
         let confirmation_view_mode = ConfirmationViewMode {
             done_session_output_mode: DoneSessionOutputMode::Review,
-            review_status_message: Some("Preparing focused review".to_string()),
+            review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
             review_text: Some("Critical finding".to_string()),
             scroll_offset: Some(7),
             session_id: "session-id".to_string(),
@@ -412,7 +414,7 @@ mod tests {
                 ref session_id,
                 scroll_offset: Some(7),
             } if session_id == "session-id"
-                && review_status_message == "Preparing focused review"
+                && review_status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Critical finding"
         ));
     }

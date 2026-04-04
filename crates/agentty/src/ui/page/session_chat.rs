@@ -1391,7 +1391,7 @@ mod tests {
             None,
             80,
             DoneSessionOutputMode::Review,
-            Some("Preparing review with agent help..."),
+            Some("Reviewing changes with gpt-5.4"),
             None,
             None,
         );

@@ -1410,7 +1410,7 @@ mod tests {
             line_context(
                 DoneSessionOutputMode::Review,
                 None,
-                Some("Preparing review with agent help..."),
+                Some("Reviewing changes with gpt-5.4"),
                 Some(assisted_text),
                 None,
             ),
@@ -1423,7 +1423,7 @@ mod tests {
 
         // Assert
         assert!(text.contains("Assisted insight"));
-        assert!(!text.contains("Preparing review with agent help..."));
+        assert!(!text.contains("Reviewing changes with gpt-5.4"));
     }
 
     #[test]
@@ -1439,7 +1439,7 @@ mod tests {
             line_context(
                 DoneSessionOutputMode::Review,
                 None,
-                Some("Preparing review with agent help..."),
+                Some("Reviewing changes with gpt-5.4"),
                 None,
                 None,
             ),
@@ -1451,7 +1451,7 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(text.contains("Preparing review with agent help..."));
+        assert!(text.contains("Reviewing changes with gpt-5.4"));
         assert!(!text.contains("Review is not available."));
     }
 
@@ -1469,7 +1469,7 @@ mod tests {
             line_context(
                 DoneSessionOutputMode::Review,
                 None,
-                Some("Preparing review with agent help..."),
+                Some("Reviewing changes with gpt-5.4"),
                 Some(assisted_text),
                 None,
             ),
@@ -1504,7 +1504,7 @@ mod tests {
             line_context(
                 DoneSessionOutputMode::Review,
                 None,
-                Some("Preparing review with agent help..."),
+                Some("Reviewing changes with gpt-5.4"),
                 None,
                 None,
             ),
@@ -1516,7 +1516,7 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(text.contains("Preparing review with agent help..."));
+        assert!(text.contains("Reviewing changes with gpt-5.4"));
         assert!(text.contains(FOLLOW_UP_TASK_HEADER));
         assert!(text.contains("Run cargo test -q."));
     }
@@ -1733,11 +1733,11 @@ mod tests {
         let message = SessionOutput::status_message(
             Status::AgentReview,
             None,
-            Some("Preparing review with agent help..."),
+            Some("Reviewing changes with gpt-5.4"),
         );
 
         // Assert
-        assert_eq!(message, "Preparing review with agent help...");
+        assert_eq!(message, "Reviewing changes with gpt-5.4");
     }
 
     #[test]

@@ -5,7 +5,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::app::{App, ReviewCacheEntry, diff_content_hash};
+use crate::app::{App, ReviewCacheEntry, diff_content_hash, review_loading_message};
 use crate::runtime::mode::confirmation::ConfirmationDecision;
 use crate::runtime::{EventResult, backend_err, mode};
 use crate::ui::state::app_mode::{
@@ -521,9 +521,7 @@ async fn handle_regenerate_review_confirmation(
         scroll_offset: None,
         session_id,
     });
-    view_mode.review_status_message = Some(
-        crate::runtime::mode::session_view::review_loading_message(review_model),
-    );
+    view_mode.review_status_message = Some(review_loading_message(review_model));
     view_mode.review_text = None;
     app.mode = view_mode.into_view_mode();
 
@@ -543,6 +541,7 @@ mod tests {
     use super::*;
     use crate::app::AppClients;
     use crate::db::Database;
+    use crate::domain::agent::AgentModel;
     use crate::infra::app_server;
     use crate::infra::tmux::{MockTmuxClient, TmuxClient};
     use crate::ui::state::app_mode::{ConfirmationViewMode, DoneSessionOutputMode};
@@ -859,7 +858,7 @@ mod tests {
             confirmation_title: "Confirm Merge".to_string(),
             restore_view: Some(ConfirmationViewMode {
                 done_session_output_mode: DoneSessionOutputMode::Review,
-                review_status_message: Some("Preparing focused review".to_string()),
+                review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
                 review_text: Some("Review output".to_string()),
                 scroll_offset: Some(6),
                 session_id: session_id.clone(),
@@ -883,7 +882,7 @@ mod tests {
                 session_id: ref session_id_in_mode,
                 scroll_offset: Some(6),
             } if session_id_in_mode == &session_id
-                && review_status_message == "Preparing focused review"
+                && review_status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Review output"
         ));
     }
@@ -943,7 +942,7 @@ mod tests {
             publish_branch_action: crate::domain::session::PublishBranchAction::Push,
             restore_view: ConfirmationViewMode {
                 done_session_output_mode: DoneSessionOutputMode::Review,
-                review_status_message: Some("Preparing focused review".to_string()),
+                review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
                 review_text: Some("Critical finding".to_string()),
                 scroll_offset: Some(7),
                 session_id: "session-id".to_string(),
@@ -967,7 +966,7 @@ mod tests {
                 ref session_id,
                 scroll_offset: Some(7),
             } if session_id == "session-id"
-                && status_message == "Preparing focused review"
+                && status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Critical finding"
         ));
     }
@@ -1158,7 +1157,7 @@ mod tests {
             commands: vec!["cargo test".to_string(), "npm run dev".to_string()],
             restore_view: ConfirmationViewMode {
                 done_session_output_mode: DoneSessionOutputMode::Review,
-                review_status_message: Some("Preparing focused review".to_string()),
+                review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
                 review_text: Some("Critical finding".to_string()),
                 scroll_offset: Some(3),
                 session_id: "session-id".to_string(),
@@ -1184,7 +1183,7 @@ mod tests {
                 ref session_id,
                 scroll_offset: Some(3),
             } if session_id == "session-id"
-                && status_message == "Preparing focused review"
+                && status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Critical finding"
         ));
     }
@@ -1354,7 +1353,7 @@ mod tests {
             commands: vec!["cargo test".to_string(), "npm run dev".to_string()],
             restore_view: ConfirmationViewMode {
                 done_session_output_mode: DoneSessionOutputMode::Review,
-                review_status_message: Some("Preparing focused review".to_string()),
+                review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
                 review_text: Some("Critical finding".to_string()),
                 scroll_offset: Some(1),
                 session_id: "session-id".to_string(),
@@ -1386,7 +1385,7 @@ mod tests {
                     },
             } if commands == &vec!["cargo test".to_string(), "npm run dev".to_string()]
                 && session_id == "session-id"
-                && status_message == "Preparing focused review"
+                && status_message == &review_loading_message(AgentModel::Gpt54)
                 && review_text == "Critical finding"
         ));
     }

@@ -74,6 +74,10 @@ pub(crate) struct ReviewUpdate {
     pub(crate) result: Result<String, String>,
 }
 
+/// Prefix for the focused-review loading status while assist output is being
+/// prepared.
+const REVIEW_LOADING_MESSAGE_PREFIX: &str = "Reviewing changes with";
+
 /// Mutable render-state target for one focused-review-capable mode.
 struct ReviewModeTarget<'a> {
     /// Status banner shown while focused review loads or fails.
@@ -94,6 +98,16 @@ pub(crate) fn diff_content_hash(diff: &str) -> u64 {
     hasher.finish()
 }
 
+/// Returns whether one status line represents an in-flight focused review.
+pub(crate) fn is_review_loading_status_message(status_message: &str) -> bool {
+    status_message.starts_with(REVIEW_LOADING_MESSAGE_PREFIX)
+}
+
+/// Formats the focused-review loading status with the active model name.
+pub(crate) fn review_loading_message(review_model: AgentModel) -> String {
+    format!("{REVIEW_LOADING_MESSAGE_PREFIX} {}", review_model.as_str())
+}
+
 /// Returns the focused-review render state that should be restored for one
 /// session when reopening session view.
 pub(crate) fn review_view_state(
@@ -106,13 +120,7 @@ pub(crate) fn review_view_state(
     };
 
     match cache_entry {
-        ReviewCacheEntry::Loading { .. } => (
-            Some(format!(
-                "Preparing review with agent help with model {}...",
-                review_model.as_str(),
-            )),
-            None,
-        ),
+        ReviewCacheEntry::Loading { .. } => (Some(review_loading_message(review_model)), None),
         ReviewCacheEntry::Ready { text, .. } => (None, Some(text.clone())),
         ReviewCacheEntry::Failed { error, .. } => (
             Some(format!("Review assist unavailable: {}", error.trim())),
@@ -393,5 +401,57 @@ fn apply_review_result(
             *review_status_message = Some(format!("Review assist unavailable: {}", error.trim()));
             *review_text = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    #[test]
+    fn review_loading_message_uses_requested_model_name() {
+        // Arrange
+        let review_model = AgentModel::Gpt54;
+
+        // Act
+        let message = review_loading_message(review_model);
+
+        // Assert
+        assert_eq!(message, "Reviewing changes with gpt-5.4");
+    }
+
+    #[test]
+    fn is_review_loading_status_message_matches_model_aware_copy() {
+        // Arrange
+        let status_message = review_loading_message(AgentModel::ClaudeOpus46);
+
+        // Act
+        let is_loading = is_review_loading_status_message(&status_message);
+
+        // Assert
+        assert!(is_loading);
+    }
+
+    #[test]
+    fn review_view_state_uses_loading_message_for_cached_review_generation() {
+        // Arrange
+        let mut review_cache = HashMap::new();
+        review_cache.insert(
+            "session-id".to_string(),
+            ReviewCacheEntry::Loading { diff_hash: 7 },
+        );
+
+        // Act
+        let (review_status_message, review_text) =
+            review_view_state(&review_cache, "session-id", AgentModel::ClaudeSonnet46);
+
+        // Assert
+        assert_eq!(
+            review_status_message.as_deref(),
+            Some("Reviewing changes with claude-sonnet-4-6")
+        );
+        assert_eq!(review_text, None);
     }
 }

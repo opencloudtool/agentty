@@ -26,7 +26,9 @@ pub(crate) use core::{AppEvent, SessionStatsUsage};
 
 pub use error::AppError;
 pub use project::ProjectManager;
-pub(crate) use review::{ReviewCacheEntry, diff_content_hash};
+pub(crate) use review::{
+    ReviewCacheEntry, diff_content_hash, is_review_loading_status_message, review_loading_message,
+};
 pub use service::AppServices;
 pub use session::{SessionError, SessionManager};
 #[cfg(test)]

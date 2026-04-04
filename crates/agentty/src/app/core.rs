@@ -2290,9 +2290,9 @@ mod tests {
 
     use super::*;
     use crate::app::branch_publish::{BranchPublishTaskResult, BranchPublishTaskSuccess};
-    use crate::app::diff_content_hash;
     use crate::app::review::ReviewUpdate;
     use crate::app::startup::HOME_PROJECT_SCAN_MAX_RESULTS;
+    use crate::app::{diff_content_hash, review_loading_message};
     use crate::domain::agent::AgentModel;
     use crate::domain::session::{
         SESSION_DATA_DIR, Session, SessionFollowUpTask, SessionHandles, SessionSize, SessionStats,
@@ -4139,7 +4139,7 @@ mod tests {
         );
         app.mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
-            review_status_message: Some("Preparing focused review".to_string()),
+            review_status_message: Some(review_loading_message(AgentModel::Gpt54)),
             review_text: Some("Review text".to_string()),
             session_id: "session-1".to_string(),
             scroll_offset: Some(9),
