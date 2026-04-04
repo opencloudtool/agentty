@@ -45,9 +45,10 @@ pub(crate) fn turn_prompt_for_runtime(
     instruction_delivery_mode: InstructionDeliveryMode,
 ) -> Result<TurnPrompt, AppServerError> {
     let prompt = prompt.into();
+    let agent_prompt = prompt.agent_text();
     let turn_prompt = agent::prepare_prompt_text(agent::PromptPreparationRequest {
         instruction_delivery_mode,
-        prompt: &prompt.text,
+        prompt: &agent_prompt,
         protocol_profile: request_kind.protocol_profile(),
         replay_session_output,
     })
@@ -198,6 +199,26 @@ mod tests {
         let turn_prompt = result.expect("prompt rendering should succeed");
         assert!(turn_prompt.text.contains("Protocol refresh reminder:"));
         assert!(!turn_prompt.text.contains("Authoritative JSON Schema:"));
+    }
+
+    #[test]
+    fn turn_prompt_for_runtime_rewrites_user_at_lookups_for_agent_delivery() {
+        // Arrange
+        let prompt = TurnPrompt::from("review @src/main.rs");
+        let request_kind = AgentRequestKind::SessionStart;
+
+        // Act
+        let result = turn_prompt_for_runtime(
+            prompt,
+            &request_kind,
+            None,
+            InstructionDeliveryMode::BootstrapFull,
+        );
+
+        // Assert
+        let turn_prompt = result.expect("prompt rendering should succeed");
+        assert!(turn_prompt.text.contains("\"looked/up/src/main.rs\""));
+        assert!(!turn_prompt.text.contains("@src/main.rs"));
     }
 
     #[test]

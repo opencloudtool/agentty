@@ -435,4 +435,28 @@ mod tests {
         assert!(top_row.contains(" Prompt Suggestion "));
         assert!(top_row.contains("╮"));
     }
+
+    #[test]
+    fn test_render_keeps_raw_at_lookup_text_visible_in_input() {
+        // Arrange
+        let width = 48;
+        let backend = ratatui::backend::TestBackend::new(width, 5);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let chat_input = ChatInput::new("Prompt", "@src/main.rs", "@src/main.rs".chars().count());
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                chat_input.render(frame, area);
+            })
+            .expect("failed to draw prompt input with at-lookup");
+
+        // Assert
+        let visible_text = (0..5)
+            .map(|row| buffer_row_text(terminal.backend().buffer(), row, width))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(visible_text.contains("@src/main.rs"));
+    }
 }

@@ -51,11 +51,14 @@ impl CliAgentChannel {
 }
 
 /// Builds the provider backend command request for one CLI turn.
-fn build_command_request(request: &TurnRequest) -> BuildCommandRequest<'_> {
+fn build_command_request<'a>(
+    request: &'a TurnRequest,
+    prompt_text: &'a str,
+) -> BuildCommandRequest<'a> {
     BuildCommandRequest {
         attachments: &request.prompt.attachments,
         folder: &request.folder,
-        prompt: &request.prompt.text,
+        prompt: prompt_text,
         request_kind: &request.request_kind,
         model: &request.model,
         reasoning_level: request.reasoning_level,
@@ -90,13 +93,14 @@ impl AgentChannel for CliAgentChannel {
         req: TurnRequest,
         events: mpsc::UnboundedSender<TurnEvent>,
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
-        let build_request = build_command_request(&req);
-        let build_result = self.backend.build_command(build_request);
-        let stdin_payload_result = agent::build_command_stdin_payload(self.kind, build_request);
         let kind = self.kind;
         let backend = Arc::clone(&self.backend);
 
         Box::pin(async move {
+            let prompt_text = req.prompt.agent_text();
+            let build_request = build_command_request(&req, &prompt_text);
+            let build_result = backend.build_command(build_request);
+            let stdin_payload_result = agent::build_command_stdin_payload(kind, build_request);
             let command = build_result.map_err(|error| {
                 AgentError::Backend(format!("Failed to build command: {error}"))
             })?;
@@ -456,6 +460,28 @@ mod tests {
         command.env("CLI_CAPTURE_PATH", capture_path);
 
         command
+    }
+
+    #[test]
+    fn test_build_command_request_uses_agent_facing_prompt_text() {
+        // Arrange
+        let request = TurnRequest {
+            folder: PathBuf::from("/tmp/session"),
+            live_session_output: None,
+            model: "claude-sonnet-4-6".to_string(),
+            request_kind: AgentRequestKind::SessionStart,
+            prompt: TurnPrompt::from("Review @src/main.rs"),
+            provider_conversation_id: None,
+            persisted_instruction_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
+        };
+        let prompt_text = request.prompt.agent_text();
+
+        // Act
+        let build_request = build_command_request(&request, &prompt_text);
+
+        // Assert
+        assert_eq!(build_request.prompt, "Review \"looked/up/src/main.rs\"");
     }
 
     #[tokio::test]

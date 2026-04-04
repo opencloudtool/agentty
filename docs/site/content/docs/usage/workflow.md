@@ -113,6 +113,11 @@ streamed to `claude`. Draft image files are removed when you cancel the
 composer, after a submitted turn finishes using them, and when a session is
 deleted or canceled.
 
+When you use `@` file lookups in prompt or clarification input, Agentty keeps
+the raw `@path/to/file` text visible in the composer and transcript. The
+agent-facing transport rewrites those lookups to quoted `looked/up/path`
+tokens before the prompt is sent to the model.
+
 ## Branch Publish Flow
 
 <a id="usage-review-request-flow"></a>

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::domain::agent::ReasoningLevel;
+use crate::domain::composer;
 use crate::infra::agent::AgentResponse;
 
 /// Boxed async result used by [`AgentChannel`] trait methods.
@@ -82,6 +83,16 @@ impl TurnPrompt {
     #[must_use]
     pub fn ends_with(&self, suffix: &str) -> bool {
         self.text.ends_with(suffix)
+    }
+
+    /// Returns the prompt text as it should be sent to an agent runtime.
+    ///
+    /// User-entered `@path` lookups are rewritten to quoted `looked/up/path`
+    /// tokens for transport, while the persisted transcript continues to use
+    /// the original raw prompt text.
+    #[must_use]
+    pub fn agent_text(&self) -> String {
+        composer::render_prompt_text_for_agent(&self.text)
     }
 
     /// Returns prompt text spans and image attachments in transport order.
@@ -483,6 +494,28 @@ mod tests {
 
         // Assert
         assert_eq!(transcript_text, "Review [Image #1] carefully");
+    }
+
+    #[test]
+    /// Ensures agent-bound prompt text rewrites raw `@` lookups without
+    /// mutating transcript-facing text.
+    fn test_turn_prompt_agent_text_rewrites_user_at_lookups() {
+        // Arrange
+        let prompt = TurnPrompt::from("Review @src/main.rs and person@example.com");
+
+        // Act
+        let agent_text = prompt.agent_text();
+        let transcript_text = prompt.transcript_text();
+
+        // Assert
+        assert_eq!(
+            agent_text,
+            "Review \"looked/up/src/main.rs\" and person@example.com"
+        );
+        assert_eq!(
+            transcript_text,
+            "Review @src/main.rs and person@example.com"
+        );
     }
 
     #[test]

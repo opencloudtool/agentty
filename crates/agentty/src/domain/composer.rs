@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use crate::domain::agent::{self, AgentKind, AgentModel, AgentSelectionMetadata};
-use crate::domain::input::InputState;
+use crate::domain::input::{InputState, is_at_mention_boundary, is_at_mention_query_character};
 
 /// One selectable row in the prompt slash-command menu.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -581,6 +581,52 @@ pub fn drain_prompt_submission(
     PromptComposerSubmission { attachments, text }
 }
 
+/// Rewrites user-entered `@` lookups into quoted agent-facing path tokens.
+///
+/// File and directory lookups like `@path/to/file` are rewritten to
+/// `"looked/up/path/to/file"`. Non-lookup uses of `@`, including email-like
+/// tokens and lone `@`, are preserved so the UI and persisted transcript can
+/// continue storing the original user input unchanged.
+#[must_use]
+pub fn render_prompt_text_for_agent(text: &str) -> String {
+    let characters = text.chars().collect::<Vec<char>>();
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+
+    while let Some(&character) = characters.get(index) {
+        if character != '@'
+            || !is_at_mention_boundary(characters.get(index.wrapping_sub(1)).copied())
+            || index + 1 >= characters.len()
+        {
+            output.push(character);
+            index += 1;
+
+            continue;
+        }
+
+        let mut scan_index = index + 1;
+        while scan_index < characters.len() && is_at_mention_query_character(characters[scan_index])
+        {
+            scan_index += 1;
+        }
+
+        if scan_index == index + 1 {
+            output.push(character);
+            index += 1;
+
+            continue;
+        }
+
+        output.push('"');
+        output.push_str("looked/up/");
+        output.extend(characters[index + 1..scan_index].iter());
+        output.push('"');
+        index = scan_index;
+    }
+
+    output
+}
+
 /// Builds the render-ready prompt slash suggestion list for the provided
 /// input and slash state.
 #[must_use]
@@ -1047,6 +1093,65 @@ mod tests {
         assert_eq!(submission.text, "One two [Image #2]");
         assert_eq!(submission.attachments.len(), 1);
         assert_eq!(submission.attachments[0].placeholder, "[Image #2]");
+    }
+
+    #[test]
+    fn test_drain_prompt_submission_keeps_raw_at_lookup_text() {
+        // Arrange
+        let mut composer = PromptComposerState::new(AgentKind::ALL.to_vec());
+        composer.input =
+            InputState::with_text("Check @src/main.rs and @docs/guide.md before @".to_string());
+
+        // Act
+        let submission = composer.take_submission();
+
+        // Assert
+        assert_eq!(
+            submission.text,
+            "Check @src/main.rs and @docs/guide.md before @"
+        );
+        assert_eq!(submission.attachments.len(), 0);
+    }
+
+    #[test]
+    fn test_drain_prompt_submission_preserves_email_lookalikes() {
+        // Arrange
+        let mut composer = PromptComposerState::new(AgentKind::ALL.to_vec());
+        composer.input = InputState::with_text("Notify user@example.com and @!".to_string());
+
+        // Act
+        let submission = composer.take_submission();
+
+        // Assert
+        assert_eq!(submission.text, "Notify user@example.com and @!");
+        assert!(submission.attachments.is_empty());
+    }
+
+    #[test]
+    fn test_render_prompt_text_for_agent_quotes_user_at_lookups() {
+        // Arrange
+        let prompt_text = "Check @src/main.rs and (@docs/guide.md)";
+
+        // Act
+        let rendered_text = render_prompt_text_for_agent(prompt_text);
+
+        // Assert
+        assert_eq!(
+            rendered_text,
+            "Check \"looked/up/src/main.rs\" and (\"looked/up/docs/guide.md\")"
+        );
+    }
+
+    #[test]
+    fn test_render_prompt_text_for_agent_preserves_non_lookup_at_tokens() {
+        // Arrange
+        let prompt_text = "Notify user@example.com and leave @ alone";
+
+        // Act
+        let rendered_text = render_prompt_text_for_agent(prompt_text);
+
+        // Assert
+        assert_eq!(rendered_text, "Notify user@example.com and leave @ alone");
     }
 
     #[test]
