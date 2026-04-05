@@ -103,5 +103,5 @@ fn quit_confirm_dismiss_returns() {
         "Quit dialog should be dismissed after Esc"
     );
 
-    common::save_feature_gif(&scenario, &report, &env, "quit_confirm_dismiss_returns");
+    common::save_feature_gif(&scenario, &report, &env, "quit_dismiss");
 }

@@ -33,5 +33,5 @@ fn projects_page_shows_cwd() {
     assertion::assert_text_in_region(&frame, "Agentty", &full);
     assertion::assert_text_in_region(&frame, "test-project", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "projects_page_shows_cwd");
+    common::save_feature_gif(&scenario, &report, &env, "projects_cwd");
 }

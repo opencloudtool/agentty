@@ -38,7 +38,7 @@ fn session_list_empty_state() {
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "No sessions", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "session_list_empty_state");
+    common::save_feature_gif(&scenario, &report, &env, "session_empty");
 }
 
 /// Verify that pressing `a` on the Sessions tab creates a session and
@@ -67,12 +67,7 @@ fn session_creation_opens_prompt_mode() {
     assertion::assert_text_in_region(&frame, "Enter: submit", &full);
     assertion::assert_text_in_region(&frame, "Esc: cancel", &full);
 
-    common::save_feature_gif(
-        &scenario,
-        &report,
-        &env,
-        "session_creation_opens_prompt_mode",
-    );
+    common::save_feature_gif(&scenario, &report, &env, "session_creation");
 }
 
 /// Verify that pressing `Esc` in an empty prompt for a new non-draft
@@ -101,12 +96,7 @@ fn session_prompt_cancel_returns_to_empty_list() {
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "No sessions", &full);
 
-    common::save_feature_gif(
-        &scenario,
-        &report,
-        &env,
-        "session_prompt_cancel_returns_to_empty_list",
-    );
+    common::save_feature_gif(&scenario, &report, &env, "prompt_cancel");
 }
 
 /// Verify that pressing `Enter` on a session opens the session view and
@@ -146,7 +136,7 @@ fn session_open_and_return_to_list() {
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "test", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "session_open_and_return_to_list");
+    common::save_feature_gif(&scenario, &report, &env, "session_open");
 }
 
 /// Verify that `j` and `k` navigate the session list when multiple
@@ -216,14 +206,12 @@ fn session_list_jk_navigation() {
     );
 
     // Assert — `j` and `k` navigate to different sessions when opening them.
-    assert_eq!(
+    assert!(
         opened_after_j_text.contains("alpha") || opened_after_j_text.contains("beta"),
-        true,
         "Expected the session opened after j to contain either alpha or beta"
     );
-    assert_eq!(
+    assert!(
         opened_after_k_text.contains("alpha") || opened_after_k_text.contains("beta"),
-        true,
         "Expected the session opened after k to contain either alpha or beta"
     );
     assert_ne!(
@@ -232,7 +220,7 @@ fn session_list_jk_navigation() {
         "Expected j and k to open different sessions"
     );
 
-    common::save_feature_gif(&scenario, &report, &env, "session_list_jk_navigation");
+    common::save_feature_gif(&scenario, &report, &env, "session_navigation");
 }
 
 /// Verify that pressing `d` on a selected session opens a delete
@@ -271,7 +259,7 @@ fn session_delete_with_confirmation() {
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "No sessions", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "session_delete_with_confirmation");
+    common::save_feature_gif(&scenario, &report, &env, "session_delete");
 }
 
 /// Verify that typed text appears in the prompt input.
@@ -300,7 +288,7 @@ fn prompt_typing_shows_text() {
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "hello world", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "prompt_typing_shows_text");
+    common::save_feature_gif(&scenario, &report, &env, "prompt_typing");
 }
 
 /// Verify that Alt+Enter inserts a newline in the prompt input,
@@ -339,5 +327,5 @@ fn prompt_multiline_via_alt_enter() {
     assertion::assert_text_in_region(&frame, "first line", &full);
     assertion::assert_text_in_region(&frame, "second line", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "prompt_multiline_via_alt_enter");
+    common::save_feature_gif(&scenario, &report, &env, "prompt_multiline");
 }

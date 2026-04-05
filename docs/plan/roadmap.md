@@ -11,7 +11,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 | Model availability scoping | Agentty now requires at least one locally runnable backend CLI at startup, `/model` and Settings filter model choices to runnable backends, and unavailable stored defaults fall back to the first available backend default. | Landed |
 | Draft session workflow | `Shift+A` now creates explicit draft sessions that persist ordered staged draft messages, while `a` keeps the immediate-start first-prompt flow. | Landed |
 | Session activity timing | `session` persists cumulative `InProgress` timing fields, and both chat and the grouped session list now show the same cumulative active-work timer. | Landed |
-| Deterministic scenario coverage | E2E tests live in `crates/agentty/tests/e2e/` multi-file layout with shared `Journey` builders and tests for tab cycling, reverse tab, help overlay, quit confirmation, session empty state, and project page; session-lifecycle and prompt E2E coverage remains open. | Partial |
+| Deterministic scenario coverage | E2E tests live in `crates/agentty/tests/e2e/` with shared `Journey` builders, `BuilderEnv` isolation, and high-quality VHS feature GIF generation; tests cover tab cycling, help overlay, quit confirmation, session lifecycle (creation, open, `j`/`k` navigation, deletion), prompt input (typing, multiline, cancel), and project page. | Landed |
 | Typed errors and hygiene | `DbError`, `GitError`, `AppServerTransportError`, `AppServerError`, `AgentError`, `SessionError`, and `AppError` enums propagate typed errors through all infra and app-layer boundaries; module-level regression tests cover session access, review replay, agent backend, CLI error formatting, and stdin write helpers; convention cleanup remains open. | Partial |
 | Agent instruction delivery | Codex and Gemini app-server turns now persist instruction-bootstrap state and reuse a compact reminder after the first full bootstrap for a provider context; Claude still resends the full wrapper until explicit session identity lands. | Partial |
 | Testty proof pipeline | PTY-driven sessions, VT100 frame parsing, VHS tape compilation, snapshot baselines, overlay renderer, recipe layer, proof reports (labeled captures, four backends: frame-text, PNG strip, GIF, HTML), native bitmap renderer, frame diffing, journey composition, and scale tooling are all landed. | Landed |
@@ -21,7 +21,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 
 - `Agents`: machine-scoped model availability for settings and slash-model selection.
 - `Forge`: GitHub review-request creation/update from session view while preserving GitLab branch publishing.
-- `Quality`: deterministic local session coverage, typed-error migration, and hygiene follow-up.
+- `Quality`: E2E expansion for settings/stats/resize, feature-test skill for agent-driven E2E creation, and convention hygiene follow-up.
 - `Delivery`: project-level landing strategy for review-ready sessions, including direct-merge vs. pull-request expectations.
 - `Protocol`: provider-managed session bootstrap instructions and compact context replay without repo-side agent files.
 
@@ -68,33 +68,6 @@ Pressing `p` in `Review` creates or refreshes the session pull request for GitHu
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/architecture/runtime-flow.md` to explain that `p` creates or refreshes GitHub pull requests while non-GitHub remotes continue to use the branch-publish flow.
 
-### [33150cab-7c16-4eea-b5a2-34f316243709] Quality: Add session lifecycle and prompt E2E tests
-
-#### Assignee
-
-`@andagaev`
-
-#### Why now
-
-The multi-file E2E layout with shared `Journey` builders just landed in `crates/agentty/tests/e2e/`, and the existing tests only cover navigation, confirmation, and empty-state rendering. Adding session lifecycle and prompt input coverage now exercises the next layer of user-facing flows while the scaffolding is fresh and the patterns are established.
-
-#### Usable outcome
-
-E2E tests cover session creation via `a` key, opening a session with `Enter`, session list `j`/`k` navigation, deleting a session with confirmation, prompt input basics (typing text, multiline via Alt+Enter, cancel via Esc), and returning to list from session view, all driven through full UI flows without pre-seeded database state.
-
-#### Substeps
-
-- [ ] **Add session creation and list navigation tests.** Create or extend `crates/agentty/tests/e2e/session.rs` with tests for `a` key creating a new session, `Enter` opening a session, `j`/`k` navigating the session list, and `Esc` returning to the list from session view; add any needed `Journey` builders to `crates/agentty/tests/e2e/common.rs`.
-- [ ] **Add session deletion and prompt input tests.** Add tests for deleting a session with confirmation dialog, typing text in the prompt input, multiline input via Alt+Enter, and cancelling prompt input via Esc; extend `crates/agentty/tests/e2e/common.rs` with any shared helpers needed for prompt-mode scenarios.
-
-#### Tests
-
-- [ ] Each substep above produces its own E2E tests. Run `cargo test -p agentty --test e2e` to validate the full suite passes.
-
-#### Docs
-
-- [ ] No user-facing behavior changes — no doc updates needed.
-
 ### [5a84d7a9-3346-4e01-90be-ce5d3783b32f] Quality: Add settings, stats, and resize E2E tests
 
 #### Assignee
@@ -122,7 +95,7 @@ E2E coverage validates settings navigation and edit overlays, stats-page empty-s
 
 - [ ] No user-facing behavior changes — no doc updates needed.
 
-### [a7f3c1d8-9e2b-4f16-8a5c-6d3e7f2b1a09] Quality: Add VHS feature GIF generation to E2E tests
+### [c3f5a7d9-2b4e-6f18-8a0c-5d7e9f1b3a5c] Quality: Add feature-test skill for agent-driven E2E test creation
 
 #### Assignee
 
@@ -130,34 +103,32 @@ E2E coverage validates settings navigation and edit overlays, stats-page empty-s
 
 #### Why now
 
-The E2E test layout and testty proof pipeline are fully landed, but tests only produce low-quality bitmap GIFs via an opt-in env var. Adding VHS-based high-quality GIF generation now integrates visual proof into the standard test workflow before hundreds of feature tests accumulate without visual documentation.
+Zola auto-discovery just landed, proving the full workflow from E2E test to VHS GIF to feature `.md` page to auto-rendered features page. Codifying this pattern into a reusable skill now ensures agents create feature tests consistently before the pattern diverges across contributors.
 
 #### Usable outcome
 
-Running `cargo test -p agentty --test e2e` generates high-quality VHS GIFs (3200×1600, font 36, OneDark theme) into `docs/site/static/features/` for each E2E test when VHS is installed, with frame-bytes content hashing that skips regeneration when the visual output is unchanged. Graceful skip when VHS is not installed.
+A `feature-test` skill in `skills/feature-test/SKILL.md` guides agents through creating E2E tests with VHS GIF generation for new visible UI features, including criteria for when a feature test is warranted (visible UI behavior change, user-facing, demonstrable in a scenario), naming conventions (test name = GIF filename = content page `extra.gif` reference), the `Scenario` + `save_feature_gif()` pattern, and Zola content page creation in `docs/site/content/features/`.
 
 #### Substeps
 
-- [ ] **Add `VhsTapeSettings` to testty with configurable VHS presets.** Add a `VhsTapeSettings` struct to `crates/testty/src/vhs.rs` with fields for `width`, `height`, `font_size`, `theme`, `framerate`, and `padding`; add a `VhsTapeSettings::feature_demo()` preset (3200×1600, font 36, `OneDark`, 30 fps); add `VhsTape::from_scenario_with_settings(scenario, binary_path, screenshot_path, env_vars, settings)` that passes settings into `compile_tape()`; keep the existing `from_scenario()` calling through with `VhsTapeSettings::default()`.
-- [ ] **Add `BuilderEnv` and `save_feature_gif()` with frame-bytes caching to E2E common helpers.** Add a `BuilderEnv` struct to `crates/agentty/tests/e2e/common.rs` carrying `agentty_root` and `workdir` paths with `builder()` returning a configured `PtySessionBuilder` and `as_vhs_env_pairs()` for VHS tape compilation; add `save_feature_gif(scenario, report, env, name)` that checks VHS availability via `vhs --version`, computes a content hash from all `report.captures[].frame_bytes` via `std::hash::DefaultHasher`, compares against a `.{name}.hash` sidecar file in the output dir, and skips VHS execution on cache hit; derive output dir from `CARGO_MANIFEST_DIR` → `../../docs/site/static/features/`; use `VhsTapeSettings::feature_demo()` for all feature GIFs; add `*.hash` and `*.tape` patterns to `docs/site/static/features/.gitignore`.
-- [ ] **Update all E2E tests to use `BuilderEnv` and `save_feature_gif()`.** Replace `common::test_builder()` with `BuilderEnv::new()` + `env.builder()` and replace `save_proof_gif()` with `save_feature_gif()` in `crates/agentty/tests/e2e/navigation.rs`, `session.rs`, `project.rs`, and `confirmation.rs`; remove the `TESTTY_PROOF_OUTPUT` env-var mechanism from `common.rs`.
+- [ ] **Create `skills/feature-test/SKILL.md` with the feature-test workflow.** Define when a feature test is warranted, the naming convention (`test_name` → `name.gif` → `content/features/name.md`), the `Scenario` + `BuilderEnv` + `save_feature_gif()` pattern from `crates/agentty/tests/e2e/common.rs`, and the Zola content page creation step with frontmatter fields (`title`, `description`, `weight`, `[extra]` with `gif`). Add `CLAUDE.md` and `GEMINI.md` symlinks.
+- [ ] **Register the skill in `skills/AGENTS.md` and update the root `CLAUDE.md` meta-agent inventory.** Add a `feature-test` entry to both the skill catalog and the Interactive Skills table.
 
 #### Tests
 
-- [ ] Add unit tests in `crates/testty/src/vhs.rs` for `VhsTapeSettings::feature_demo()` values and `from_scenario_with_settings()` tape content. Run the full E2E suite to validate all tests pass with the new infrastructure.
+- [ ] No Rust tests needed for a pure-markdown skill. Verify the skill file exists and symlinks resolve.
 
 #### Docs
 
-- [ ] No user-facing behavior changes — no doc updates needed for this infrastructure slice. Zola auto-discovery is queued separately.
+- [ ] No user-facing doc pages need updating — the skill itself is the documentation.
 
 ## Ready Now Execution Order
 
 ```mermaid
 flowchart TD
     R1["[ca014af3] Forge: GitHub review request publish"]
-    R2["[33150cab] Quality: session lifecycle + prompt E2E"]
-    R3["[5a84d7a9] Quality: settings, stats, and resize E2E"]
-    R4["[a7f3c1d8] Quality: VHS feature GIF generation"]
+    R2["[5a84d7a9] Quality: settings, stats, and resize E2E"]
+    R3["[c3f5a7d9] Quality: feature-test skill"]
 ```
 
 ## Queued Next
@@ -203,34 +174,6 @@ Promote when the compact app-server follow-up path proves stable enough that res
 #### Depends on
 
 `[d9307a06] Protocol: Bootstrap direct agent instructions once per app-server session` (landed)
-
-### [b2e4d6f8-1a3c-5e70-9b2d-4c6e8f0a2b4d] Quality: Add Zola auto-discovery for feature GIFs
-
-#### Outcome
-
-The features page at `docs/site/templates/features.html` auto-discovers feature entries from individual `.md` files in `docs/site/content/features/` using Zola's `get_section()` loop, with frontmatter fields (`title`, `description`, `weight`, `extra.gif`), replacing the current hardcoded HTML cards and scaling to hundreds of features without template edits. Existing showcase features (`sessions.gif`, `tab_tour.gif`) migrated to the same `.md` format.
-
-#### Promote when
-
-Promote when `[a7f3c1d8] Quality: Add VHS feature GIF generation to E2E tests` lands and GIF files exist in `docs/site/static/features/`.
-
-#### Depends on
-
-`[a7f3c1d8] Quality: Add VHS feature GIF generation to E2E tests`
-
-### [c3f5a7d9-2b4e-6f18-8a0c-5d7e9f1b3a5c] Quality: Add feature-test skill for agent-driven E2E test creation
-
-#### Outcome
-
-A `feature-test` skill in `skills/feature-test/SKILL.md` guides agents through creating E2E tests with VHS GIF generation for new visible UI features, including criteria for when a feature test is warranted (visible UI behavior change, user-facing, demonstrable in a scenario), naming conventions (test name = GIF filename = content page `extra.gif` reference), the `Scenario` + `save_feature_gif()` pattern, and Zola content page creation in `docs/site/content/features/`.
-
-#### Promote when
-
-Promote after `[b2e4d6f8] Quality: Add Zola auto-discovery for feature GIFs` lands and the full workflow from test to features page is proven.
-
-#### Depends on
-
-`[b2e4d6f8] Quality: Add Zola auto-discovery for feature GIFs`
 
 ## Parked
 
@@ -300,8 +243,9 @@ Promote when maintainers want Agentty to list, claim, reorder, or transition roa
 - The typed-error migration and module-test backfill are both complete. Convention cleanup remains open in the parked sweep card.
 - `Delivery: Add project commit strategy selection` should define the landing policy at the Agentty project level so merge and publish actions can present the right default path for each managed repository.
 - Testty proof pipeline is fully landed in `crates/testty/`. Future enhancements (e.g., additional proof backends, CI integration, or new recipe types) should be queued as new parked cards referencing that crate.
-- `Quality: Add VHS feature GIF generation to E2E tests` must add `VhsTapeSettings` to testty (not duplicate tape-building logic in test helpers), use `VhsTapeSettings::feature_demo()` for all feature GIFs (3200×1600, font 36, `OneDark`, 30 fps), separate env paths into `BuilderEnv` from `PtySessionBuilder`, hash `ProofReport` frame bytes via `DefaultHasher` with `.hash` sidecar files for caching, and gracefully skip VHS when not installed. The showcase tests in `crates/agentty/tests/showcase.rs` remain separate for polished marketing demos with seeded databases.
-- `Quality: Add Zola auto-discovery for feature GIFs` must use the existing blog/docs `get_section()` + `{% for page in section.pages %}` pattern from `docs/site/templates/blog.html`, with `weight` for ordering and `extra.gif` for the GIF filename. Keep the homepage feature card hardcoded (curated landing page) and let the `/features/` page auto-discover all entries.
+- VHS feature GIF generation is fully landed with `VhsTapeSettings::feature_demo()` in testty, `BuilderEnv` + `save_feature_gif()` in E2E common helpers, and content-hash caching via `.hash` sidecar files. The showcase tests in `crates/agentty/tests/showcase.rs` remain separate for polished marketing demos with seeded databases.
+- Zola auto-discovery for feature GIFs is fully landed with `get_section()` in `features.html`, individual `.md` pages in `content/features/` with `weight` ordering and `extra.gif` frontmatter, a `feature-page.html` template for standalone pages, and the pattern documented in `managing-docs-with-zola.md`. The homepage feature card in `index.html` remains hardcoded and curated separately.
+- `Quality: Add feature-test skill` should codify the proven E2E → VHS GIF → feature `.md` → auto-discovered features page workflow into `skills/feature-test/SKILL.md`, referencing the `Scenario` + `BuilderEnv` + `save_feature_gif()` pattern from `crates/agentty/tests/e2e/common.rs` and the Zola content page conventions from `docs/site/content/features/`.
 - E2E tests use the testty framework and drive the full UI flow (no pre-seeded database). Tests that require agent-dependent states (diff view from `Review`, question mode, follow-up task navigation) are deferred until an in-process mock agent channel can be wired into the PTY binary or the parked local session workflow harness lands.
 - The parked `[1c7b7080] Quality: Ship one deterministic local session workflow slice` covers in-process session testing with mock agent channels. The E2E test stream covers PTY-driven TUI testing. These are complementary, not overlapping.
 - Run `cargo run -q -p ag-xtask -- roadmap context-digest` before promoting queued or parked work to `Ready Now`.

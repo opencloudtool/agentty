@@ -13,30 +13,22 @@
         <h1 class="feature-demo-page-title">// features</h1>
         <p class="feature-demo-page-intro">Animated feature demos of the agentty terminal interface.</p>
     </header>
+    {% set features_section = get_section(path="features/_index.md") %}
     <div class="feature-demo-stack">
-        <article class="feature-demo-card">
-            <h3 class="feature-demo-title">Session management</h3>
-            <p class="feature-demo-text">
-                Track sessions across models with color-coded statuses. Active, queued, and archived work at a glance.
-            </p>
-            <div class="feature-demo-frame">
-                <img src="/features/sessions.gif"
-                     alt="Session management demo"
-                     width="800"
-                     height="400"
-                     loading="lazy" />
-            </div>
-        </article>
-        <article class="feature-demo-card">
-            <h3 class="feature-demo-title">Full workspace overview</h3>
-            <p class="feature-demo-text">Navigate between projects, sessions, stats, and settings without leaving the terminal.</p>
-            <div class="feature-demo-frame">
-                <img src="/features/tab_tour.gif"
-                     alt="Tab tour demo"
-                     width="800"
-                     height="400"
-                     loading="lazy" />
-            </div>
-        </article>
+        {% for feature in features_section.pages %}
+            <article class="feature-demo-card">
+                <h3 class="feature-demo-title">
+                    <a href="{{ feature.permalink }}">{{ feature.title }}</a>
+                </h3>
+                <p class="feature-demo-text">{{ feature.description }}</p>
+                <div class="feature-demo-frame">
+                    <img src="/features/{{ feature.extra.gif }}"
+                         alt="{{ feature.title }} demo"
+                         width="800"
+                         height="400"
+                         loading="lazy" />
+                </div>
+            </article>
+        {% endfor %}
     </div>
 {% endblock content %}

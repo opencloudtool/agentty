@@ -35,6 +35,27 @@ Use these conventions to keep Agentty documentation maintainable as it grows.
 - Keep node labels concise and let the docs-page template handle theme-aware Mermaid rendering.
 - Mermaid diagrams in docs pages now ship with built-in `fit`, zoom, and drag-to-pan controls automatically, so authors do not need to add extra wrapper markup.
 
+## Add a Feature Entry
+
+The `/features/` page auto-discovers entries from individual `.md` files in `content/features/`. To add a new feature:
+
+1. Place the GIF in `static/features/` (E2E tests do this automatically via `save_feature_gif()`).
+1. Create `content/features/<name>.md` with the following front matter:
+   ```toml
+   +++
+   title = "Feature title"
+   description = "One-line description shown on the card."
+   weight = <ordering number>
+
+   [extra]
+   gif = "<name>.gif"
+   +++
+   ```
+1. Choose a `weight` that slots the entry into the desired display position (lower weights appear first).
+1. Run `zola build` to verify the features page renders the new entry.
+
+The `features.html` template uses `get_section(path="features/_index.md")` and iterates `section.pages` ordered by `weight`. The homepage feature card in `index.html` is hardcoded and curated separately.
+
 ## Authoring Workflow
 
 1. Create a new Markdown page under `content/docs/`.

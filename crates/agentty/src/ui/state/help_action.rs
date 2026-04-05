@@ -435,11 +435,7 @@ fn append_view_prompt_actions(
     }
 
     actions.push(prompt_action_help_action(session_state));
-    actions.push(HelpAction::new(
-        "commands menu",
-        "/",
-        "Open commands menu",
-    ));
+    actions.push(HelpAction::new("commands menu", "/", "Open commands menu"));
 }
 
 /// Returns the `Enter` prompt-entry action label appropriate for the current
@@ -694,15 +690,11 @@ mod tests {
         );
         assert!(actions.iter().any(|action| action.key == "o"));
         assert!(actions.iter().any(|action| action.key == "Enter"));
-        assert!(
-            actions
-                .iter()
-                .any(|action| {
-                    action.key == "/"
-                        && action.footer_label == "commands menu"
-                        && action.popup_label == "Open commands menu"
-                })
-        );
+        assert!(actions.iter().any(|action| {
+            action.key == "/"
+                && action.footer_label == "commands menu"
+                && action.popup_label == "Open commands menu"
+        }));
         assert!(!actions.iter().any(|action| action.key == "S-Tab"));
         assert!(
             actions

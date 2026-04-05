@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}
+    {{ page.title }} | {{ config.title }} Features
+{% endblock title %}
+{% block canonical %}
+    {{ page.permalink }}
+{% endblock canonical %}
+{% block main_width_class %}
+    site-container
+{% endblock main_width_class %}
+{% block content %}
+    <header class="feature-demo-header">
+        <p class="feature-demo-page-intro">
+            <a href="/features/">&larr; all features</a>
+        </p>
+        <h1 class="feature-demo-page-title">{{ page.title }}</h1>
+        <p class="feature-demo-page-intro">{{ page.description }}</p>
+    </header>
+    <div class="feature-demo-stack">
+        <article class="feature-demo-card">
+            <div class="feature-demo-frame">
+                <img src="/features/{{ page.extra.gif }}"
+                     alt="{{ page.title }} demo"
+                     width="800"
+                     height="400"
+                     loading="lazy" />
+            </div>
+        </article>
+    </div>
+{% endblock content %}

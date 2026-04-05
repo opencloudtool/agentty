@@ -31,7 +31,7 @@ fn startup_shows_projects_tab() {
     assertion::assert_text_in_region(&frame, "Agentty", &full);
     assertion::assert_text_in_region(&frame, "test-project", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "startup_shows_projects_tab");
+    common::save_feature_gif(&scenario, &report, &env, "startup");
 }
 
 /// Verify that Tab key switches between tabs.
@@ -59,7 +59,7 @@ fn tab_key_switches_tabs() {
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "No sessions", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "tab_key_switches_tabs");
+    common::save_feature_gif(&scenario, &report, &env, "tab_switch");
 }
 
 /// Verify that pressing Tab cycles through all four tabs in order.
@@ -109,7 +109,7 @@ fn tab_cycles_through_all_tabs() {
     let stats_full = Region::full(stats_frame.cols(), stats_frame.rows());
     assertion::assert_text_in_region(&stats_frame, "TokenStats", &stats_full);
 
-    common::save_feature_gif(&scenario, &report, &env, "tab_cycles_through_all_tabs");
+    common::save_feature_gif(&scenario, &report, &env, "tab_full_cycle");
 }
 
 /// Verify that pressing `q` opens a quit confirmation dialog.
@@ -138,7 +138,7 @@ fn quit_shows_confirmation_dialog() {
     assertion::assert_text_in_region(&frame, "Confirm Quit", &full);
     assertion::assert_text_in_region(&frame, "Quit agentty?", &full);
 
-    common::save_feature_gif(&scenario, &report, &env, "quit_shows_confirmation_dialog");
+    common::save_feature_gif(&scenario, &report, &env, "quit_confirmation");
 }
 
 /// Verify that the footer shows keybinding hints on startup.
@@ -165,7 +165,7 @@ fn startup_shows_footer_hints() {
         "Footer should contain keybinding hints"
     );
 
-    common::save_feature_gif(&scenario, &report, &env, "startup_shows_footer_hints");
+    common::save_feature_gif(&scenario, &report, &env, "footer_hints");
 }
 
 /// Verify that `BackTab` (Shift+Tab) cycles tabs in reverse order.
@@ -218,7 +218,7 @@ fn backtab_cycles_tabs_reverse() {
     let projects_full = Region::full(projects_frame.cols(), projects_frame.rows());
     assertion::assert_text_in_region(&projects_frame, "test-project", &projects_full);
 
-    common::save_feature_gif(&scenario, &report, &env, "backtab_cycles_tabs_reverse");
+    common::save_feature_gif(&scenario, &report, &env, "backtab_reverse");
 }
 
 /// Verify that `?` opens the help overlay with keybinding content, and
@@ -262,5 +262,5 @@ fn help_overlay_toggle() {
         "Help overlay should be dismissed after Esc"
     );
 
-    common::save_feature_gif(&scenario, &report, &env, "help_overlay_toggle");
+    common::save_feature_gif(&scenario, &report, &env, "help_overlay");
 }
