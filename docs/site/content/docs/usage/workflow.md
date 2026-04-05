@@ -152,35 +152,58 @@ view, and start only after you press `s`.
 
 ### Typical Transitions
 
-```mermaid
-flowchart TD
-  new_regular["New"]
-  new_draft["New (draft staging)"]
-  in_progress["InProgress"]
-  review["Review"]
-  agent_review["AgentReview"]
-  question["Question"]
-  queued["Queued"]
-  rebasing["Rebasing"]
-  merging["Merging"]
-  done["Done"]
-  canceled["Canceled"]
+The lifecycle below groups session setup, active execution, and completion
+states into separate lanes so the main path is easier to scan.
 
-  new_regular --> in_progress
+```mermaid
+%%{init: { "flowchart": { "curve": "linear" } } }%%
+flowchart TB
+  classDef auxiliary stroke-dasharray: 4 2,stroke-width: 1.5px;
+  classDef terminal stroke-width: 1.5px;
+
+  subgraph start["Session Setup"]
+    direction LR
+    new_regular["New"]
+    new_draft["New<br/>draft staging"]
+  end
+
+  subgraph active["Active Turn"]
+    direction LR
+    in_progress["InProgress"]
+    question["Question"]
+  end
+
+  subgraph finish["Review & Finish"]
+    direction LR
+    review["Review"]
+    agent_review["AgentReview"]
+    rebasing["Rebasing"]
+    queued["Queued"]
+    merging["Merging"]
+    done["Done"]
+    canceled["Canceled"]
+  end
+
+  new_regular -->|submit first prompt| in_progress
   new_draft -->|stage more drafts| new_draft
   new_draft -->|start staged bundle| in_progress
-  in_progress --> review
-  in_progress --> question
-  review --> agent_review
-  agent_review --> review
-  review --> queued
-  queued --> merging
-  merging --> done
-  review --> rebasing
-  rebasing --> review
-  review --> canceled
+
+  in_progress -->|turn completes| review
+  in_progress -->|needs clarification| question
   question -->|submit clarifications| in_progress
   question -->|Esc end turn| review
+
+  review -->|generate focused review| agent_review
+  agent_review -->|review ready| review
+  review -->|rebase| rebasing
+  rebasing -->|rebase complete| review
+  review -->|queue merge| queued
+  queued --> merging
+  merging --> done
+  review -->|cancel| canceled
+
+  class agent_review,rebasing auxiliary
+  class done,canceled terminal
 ```
 
 While a session is **InProgress**, Agentty keeps the `Thinking...` status badge
