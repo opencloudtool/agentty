@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.1] - 2026-04-04
+
+### Added
+
+- Add session-scoped reasoning overrides.
+- Add conditional Tasks tab for roadmap-enabled projects.
+- Add interactive Mermaid controls and fit behavior to docs pages.
+- Add prefilled slash composer from session view.
+- Add transient `AgentReview` status for focused review generation.
+
+### Changed
+
+- Trigger immediate git status refresh after successful workflow outcomes.
+- Synchronize staged draft titles with active prompt snapshots.
+- Rename slash prompt action to commands menu.
+- Improve selected session list status contrast.
+- Constrain draft prompt routing to new sessions.
+- Normalize @lookups for agent delivery while preserving raw prompt text.
+- Refactor prompt composer into shared domain module.
+- Preserve focused review when exiting diff mode and suppress rebase during `AgentReview`.
+- Refine docs table wrapping, runtime-flow guidance, and session workflow diagrams.
+- Adopt promotion-based roadmap ownership process.
+
+### Fixed
+
+- Fix legacy Codex usage migration (`gpt-5.3-codex` to `gpt-5.4`).
+- Handle Gemini ACP usage parsing for additional quota payload formats.
+
+### Dependencies
+
+- Bump `agent-client-protocol` from 0.10.3 to 0.10.4.
+
+### Contributors
+
+- @dependabot[bot]
+- @minev-dev
+
 ## [v0.7.0] - 2026-04-02
 
 ### Added
