@@ -952,19 +952,10 @@ svg {
     margin-top: 0.28rem;
 }
 
-.docs-table-scroll {
-    width: 100%;
-    margin: 1rem 0 1.25rem;
-    border: 1px solid var(--color-border);
-    border-radius: 0.5rem;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-}
-
+/* Docs tables should wrap in place instead of forcing horizontal scrolling. */
 .docs-content table {
-    width: max-content;
-    min-width: 100%;
+    width: 100%;
+    min-width: 0;
     margin: 0;
     border-collapse: separate;
     border-spacing: 0;
@@ -988,7 +979,7 @@ svg {
     text-align: left;
     padding: 0.65rem 0.9rem;
     border-bottom: 1px solid var(--color-border);
-    white-space: nowrap;
+    white-space: normal;
 }
 
 .docs-content tbody tr {
@@ -1008,14 +999,16 @@ svg {
 
 .docs-content thead th,
 .docs-content tbody td {
-    overflow-wrap: normal;
+    overflow-wrap: break-word;
     word-break: normal;
+    hyphens: auto;
 }
 
 .docs-content thead th > code,
 .docs-content tbody td > code {
-    overflow-wrap: normal;
-    white-space: nowrap;
+    overflow-wrap: break-word;
+    word-break: normal;
+    white-space: normal;
 }
 
 .docs-content tbody tr:last-child td {
@@ -1139,10 +1132,6 @@ svg {
         border: 1px solid var(--color-border);
         border-radius: 10px;
         padding: 1rem;
-    }
-
-    .docs-table-scroll {
-        margin: 1rem 0 1.25rem;
     }
 
     .docs-content-wrapper {

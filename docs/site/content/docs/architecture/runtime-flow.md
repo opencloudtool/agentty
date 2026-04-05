@@ -83,12 +83,34 @@ Foreground loop details:
 <a id="architecture-runtime-flow-channels"></a>
 Agentty uses four primary runtime data channels:
 
-| Channel | Producer(s) | Consumer(s) | Payload | Purpose |
-|---------|-------------|-------------|---------|---------|
-| Terminal `Event` channel (`runtime/event.rs`) | Event-reader thread | `runtime::process_events()` | `crossterm::Event` | User input and terminal events. |
-| App event bus (`AppEvent`) | App background tasks, workers, task helpers | `App::apply_app_events()` reducer | `AppEvent` variants | Safe cross-task app-state mutation. |
-| Turn event stream (`TurnEvent`) | `AgentChannel` implementations | Session worker `consume_turn_events()` | Loader-thought/pid | Transient loader updates and PID updates while final transcript output waits for the completed turn result. |
-| Session handles (`SessionHandles`) | Workers/session task helpers | `SessionState::sync_from_handles()` | Shared `Arc<Mutex<...>>` output/status/pid | Fast snapshot sync without full DB reload. |
+### Terminal `Event` channel (`runtime/event.rs`)
+
+- Producer(s): Event-reader thread
+- Consumer(s): `runtime::process_events()`
+- Payload: `crossterm::Event`
+- Purpose: User input and terminal events.
+
+### App event bus (`AppEvent`)
+
+- Producer(s): App background tasks, workers, and task helpers
+- Consumer(s): `App::apply_app_events()` reducer
+- Payload: `AppEvent` variants
+- Purpose: Safe cross-task app-state mutation.
+
+### Turn event stream (`TurnEvent`)
+
+- Producer(s): `AgentChannel` implementations
+- Consumer(s): Session worker `consume_turn_events()`
+- Payload: Loader-thought and pid updates
+- Purpose: Transient loader updates and PID updates while final transcript
+  output waits for the completed turn result.
+
+### Session handles (`SessionHandles`)
+
+- Producer(s): Workers and session task helpers
+- Consumer(s): `SessionState::sync_from_handles()`
+- Payload: Shared `Arc<Mutex<...>>` output, status, and pid handles
+- Purpose: Fast snapshot sync without a full DB reload.
 
 ## App Event Reducer Flow
 
@@ -609,25 +631,149 @@ Pressing `Esc` instead ends question mode immediately, restores the session to
 <a id="architecture-runtime-flow-background-tasks"></a>
 Detached/background execution paths and their trigger conditions:
 
-| Task | Trigger | Spawn site | Emits / Writes | What it does |
-|------|---------|------------|----------------|--------------|
-| Terminal event reader thread | Runtime startup | `runtime/event::spawn_event_reader` | Terminal `Event` channel | Polls crossterm and forwards terminal events into the runtime loop. |
-| Git status poller loop | App startup (if project has git branch), project switch, and session refreshes that change active session branches | `TaskService::spawn_git_status_task` | `AppEvent::GitStatusUpdated` | Periodic fetch plus one repo-level upstream snapshot for the active project branch, then combines each active session branch's base-branch comparison with any tracked-remote snapshot before emitting one combined update (about every 30s). |
-| Version check one-shot | App startup | `TaskService::spawn_version_check_task` | `AppEvent::VersionAvailabilityUpdated` | Checks npm latest version tag and reports update availability. |
-| Per-session worker loop | First command enqueue for a session | `SessionWorkerService::spawn_session_worker` | DB `session_operation` updates, app/session updates | Serializes all turn commands per session and manages channel lifecycle. |
-| Per-turn turn-event consumer | Every queued turn execution | `run_channel_turn` | Loader updates, pid slot updates | Consumes `TurnEvent` stream and applies immediate side effects. |
-| CLI stdout/stderr readers | Every CLI-backed turn | `CliAgentChannel::run_turn` | `TurnEvent` stream + raw buffers | Reads subprocess streams and emits transient loader updates while buffering final output. |
-| App-server stream bridge | Every app-server-backed turn | `AppServerAgentChannel::run_turn` | `TurnEvent` stream | Bridges `AppServerStreamEvent` to unified turn events. |
-| Clipboard image persistence | Prompt input `Ctrl+V` or `Alt+V` | `runtime/mode/prompt::handle_prompt_image_paste` | Temp PNG under `AGENTTY_ROOT/tmp/<session-id>/images/`, prompt attachment state | Reads a clipboard image or PNG path via `spawn_blocking`, persists it, and inserts an inline `[Image #n]` placeholder. |
-| Session title generation | First `Start` turn, before main turn execution | `spawn_start_turn_title_generation` | DB title + `AppEvent::RefreshSessions` | Runs one-shot title prompt in background and persists generated title if valid. |
-| At-mention file indexing | Prompt input or question free-text input activates `@` mention mode | `runtime/mode/prompt::activate_at_mention`, `runtime/mode/question::activate_question_at_mention` | `AppEvent::AtMentionEntriesLoaded` | Lists session files (`spawn_blocking`) and updates mention picker entries for the active composer. |
-| Background session-size refresh | Enter on session in list mode | `App::refresh_session_size_in_background` | DB size + `AppEvent::RefreshSessions` | Computes diff-size bucket without blocking key handling path. |
-| Session-view branch-publish action | Session view `p` in `Review`, then publish popup `Enter` | `App::start_publish_branch_action` | `AppEvent::BranchPublishActionCompleted` | Collects an optional remote branch name before first publish, locks to the existing upstream after publish, then runs `git push --force-with-lease` for the session branch in the background and updates the session-view popup with success or recovery guidance. |
-| Deferred session cleanup | Delete with deferred cleanup path | `delete_selected_session_deferred_cleanup` | Filesystem/git side effects | Removes worktree folder and branch asynchronously after DB deletion. |
-| Focused review assist | View mode focused-review open when diff is reviewable | `TaskService::spawn_review_assist_task` | `ReviewPrepared` / `ReviewPreparationFailed` | Runs model review prompt and stores final review text or error. |
-| Sync-main workflow task | List-mode sync action (`s`) | `TokioSyncMainRunner::start_sync_main` | `AppEvent::SyncMainCompleted` | Pull-rebase/push selected project branch, with assisted conflict flow. |
-| Session merge task | Merge confirmation accepted | `SessionMergeService::merge_session` | Output append, status updates, session metadata updates | Runs rebase, reuses the single evolving session-branch `HEAD` commit message for squash merge, then cleans up the worktree in background. |
-| Session rebase task | Rebase action in view mode | `SessionMergeService::rebase_session` | Output append, status updates | Runs assisted rebase and returns session to `Review`/`Question`. |
+### Terminal event reader thread
+
+- Trigger: Runtime startup
+- Spawn site: `runtime/event::spawn_event_reader`
+- Emits or writes: Terminal `Event` channel
+- What it does: Polls crossterm and forwards terminal events into the runtime
+  loop.
+
+### Git status poller loop
+
+- Trigger: App startup when the project has a git branch, project switch, and
+  session refreshes that change active session branches
+- Spawn site: `TaskService::spawn_git_status_task`
+- Emits or writes: `AppEvent::GitStatusUpdated`
+- What it does: Runs a periodic fetch plus one repo-level upstream snapshot
+  for the active project branch, then combines each active session branch's
+  base-branch comparison with any tracked-remote snapshot before emitting one
+  combined update about every `30s`.
+
+### Version check one-shot
+
+- Trigger: App startup
+- Spawn site: `TaskService::spawn_version_check_task`
+- Emits or writes: `AppEvent::VersionAvailabilityUpdated`
+- What it does: Checks the latest npm version tag and reports update
+  availability.
+
+### Per-session worker loop
+
+- Trigger: First command enqueue for a session
+- Spawn site: `SessionWorkerService::spawn_session_worker`
+- Emits or writes: DB `session_operation` updates plus app or session updates
+- What it does: Serializes all turn commands per session and manages channel
+  lifecycle.
+
+### Per-turn turn-event consumer
+
+- Trigger: Every queued turn execution
+- Spawn site: `run_channel_turn`
+- Emits or writes: Loader updates and pid slot updates
+- What it does: Consumes the `TurnEvent` stream and applies immediate side
+  effects.
+
+### CLI stdout and stderr readers
+
+- Trigger: Every CLI-backed turn
+- Spawn site: `CliAgentChannel::run_turn`
+- Emits or writes: `TurnEvent` stream plus raw output buffers
+- What it does: Reads subprocess streams and emits transient loader updates
+  while buffering final output.
+
+### App-server stream bridge
+
+- Trigger: Every app-server-backed turn
+- Spawn site: `AppServerAgentChannel::run_turn`
+- Emits or writes: `TurnEvent` stream
+- What it does: Bridges `AppServerStreamEvent` values into the unified turn
+  event stream.
+
+### Clipboard image persistence
+
+- Trigger: Prompt input `Ctrl+V` or `Alt+V`
+- Spawn site: `runtime/mode/prompt::handle_prompt_image_paste`
+- Emits or writes: Temporary PNG files under
+  `AGENTTY_ROOT/tmp/<session-id>/images/` plus prompt attachment state
+- What it does: Reads a clipboard image or PNG path via `spawn_blocking`,
+  persists it, and inserts an inline `[Image #n]` placeholder.
+
+### Session title generation
+
+- Trigger: First `Start` turn, before main turn execution
+- Spawn site: `spawn_start_turn_title_generation`
+- Emits or writes: Database title update plus `AppEvent::RefreshSessions`
+- What it does: Runs a one-shot title prompt in the background and persists
+  the generated title when valid.
+
+### At-mention file indexing
+
+- Trigger: Prompt input or question free-text input activates `@` mention mode
+- Spawn site: `runtime/mode/prompt::activate_at_mention` and
+  `runtime/mode/question::activate_question_at_mention`
+- Emits or writes: `AppEvent::AtMentionEntriesLoaded`
+- What it does: Lists session files via `spawn_blocking` and updates mention
+  picker entries for the active composer.
+
+### Background session-size refresh
+
+- Trigger: `Enter` on a session in list mode
+- Spawn site: `App::refresh_session_size_in_background`
+- Emits or writes: Database size update plus `AppEvent::RefreshSessions`
+- What it does: Computes the diff-size bucket without blocking the key-handling
+  path.
+
+### Session-view branch-publish action
+
+- Trigger: Session view `p` in `Review`, then publish popup `Enter`
+- Spawn site: `App::start_publish_branch_action`
+- Emits or writes: `AppEvent::BranchPublishActionCompleted`
+- What it does: Collects an optional remote branch name before first publish,
+  locks to the existing upstream after publish, then runs
+  `git push --force-with-lease` for the session branch in the background and
+  updates the session-view popup with success or recovery guidance.
+
+### Deferred session cleanup
+
+- Trigger: Delete with the deferred cleanup path
+- Spawn site: `delete_selected_session_deferred_cleanup`
+- Emits or writes: Filesystem and git side effects
+- What it does: Removes the worktree folder and branch asynchronously after
+  database deletion.
+
+### Focused review assist
+
+- Trigger: View mode focused-review open when the diff is reviewable
+- Spawn site: `TaskService::spawn_review_assist_task`
+- Emits or writes: `ReviewPrepared` or `ReviewPreparationFailed`
+- What it does: Runs the model review prompt and stores the final review text
+  or error.
+
+### Sync-main workflow task
+
+- Trigger: List-mode sync action `s`
+- Spawn site: `TokioSyncMainRunner::start_sync_main`
+- Emits or writes: `AppEvent::SyncMainCompleted`
+- What it does: Pulls, rebases, and pushes the selected project branch with
+  the assisted conflict flow when needed.
+
+### Session merge task
+
+- Trigger: Merge confirmation accepted
+- Spawn site: `SessionMergeService::merge_session`
+- Emits or writes: Output append, status updates, and session metadata updates
+- What it does: Runs rebase, reuses the single evolving session-branch `HEAD`
+  commit message for squash merge, then cleans up the worktree in the
+  background.
+
+### Session rebase task
+
+- Trigger: Rebase action in view mode
+- Spawn site: `SessionMergeService::rebase_session`
+- Emits or writes: Output append and status updates
+- What it does: Runs the assisted rebase flow and returns the session to
+  `Review` or `Question`.
 
 ## Sync, Merge, and Rebase Flows
 

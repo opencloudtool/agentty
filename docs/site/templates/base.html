@@ -182,28 +182,9 @@
         }
       }
 
-      /**
-       * Wrap rendered markdown tables in a dedicated scroll container so the
-       * browser keeps native table layout semantics while still allowing
-       * horizontal overflow on narrower viewports.
-       */
-      function wrapDocsTables() {
-        document.querySelectorAll('.docs-content table').forEach(function (table) {
-          if (table.closest('.docs-table-scroll')) {
-            return;
-          }
-
-          var wrapper = document.createElement('div');
-          wrapper.className = 'docs-table-scroll';
-          table.parentNode.insertBefore(wrapper, table);
-          wrapper.appendChild(table);
-        });
-      }
-
       // Sync button states with the theme already applied by the <head> script.
       applyTheme(localStorage.getItem(STORAGE_KEY) || 'hacker');
       void loadGithubMetadata();
-      wrapDocsTables();
 
       themeBtns.forEach(function (btn) {
         btn.addEventListener('click', function () { applyTheme(btn.dataset.theme); });
