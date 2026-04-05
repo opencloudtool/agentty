@@ -20,6 +20,11 @@ use crate::ui::state::prompt::{
 };
 use crate::ui::util::{format_token_count, move_input_cursor_down, move_input_cursor_up};
 
+/// Captures prompt-mode routing flags derived from the current session.
+///
+/// Draft sessions only stage prompts while they remain in `Status::New`.
+/// After the first turn starts, follow-up submissions must route through the
+/// normal reply path even though the session still records draft origin.
 struct PromptContext {
     can_delete_on_cancel: bool,
     is_at_mention: bool,
@@ -191,6 +196,7 @@ pub(crate) fn handle_paste(app: &mut App, pasted_text: &str) {
     sync_prompt_at_mention_state(app);
 }
 
+/// Returns the active prompt context for the currently edited session.
 fn prompt_context(app: &mut App) -> Option<PromptContext> {
     let (is_at_mention, is_slash_command, scroll_offset, session_id) = match &app.mode {
         AppMode::Prompt {
@@ -219,12 +225,12 @@ fn prompt_context(app: &mut App) -> Option<PromptContext> {
         .sessions
         .get(session_index)
         .map_or((false, false, false), |session| {
+            let is_new_session = session.status == crate::domain::session::Status::New;
+
             (
-                session.status == crate::domain::session::Status::New
-                    && !session.is_draft_session()
-                    && !session.has_staged_drafts(),
-                session.is_draft_session(),
-                session.status == crate::domain::session::Status::New,
+                is_new_session && !session.is_draft_session() && !session.has_staged_drafts(),
+                is_new_session && session.is_draft_session(),
+                is_new_session,
             )
         });
 
@@ -2585,6 +2591,26 @@ mod tests {
             }
         ));
         assert!(!app.review_cache.contains_key(&session_id));
+    }
+
+    #[tokio::test]
+    async fn test_handle_prompt_submit_key_replies_after_started_draft_session_reaches_review() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_draft_prompt_app("follow up", None).await;
+        app.sessions.sessions[0].status = crate::domain::session::Status::Review;
+        let prompt_context = prompt_context(&mut app).expect("expected prompt context");
+
+        // Act
+        handle_prompt_submit_key(&mut app, &prompt_context).await;
+
+        // Assert
+        assert!(!prompt_context.is_draft_session);
+        assert!(matches!(app.mode, AppMode::View { .. }));
+        assert!(
+            !app.sessions.sessions[0]
+                .output
+                .contains("Only `New` sessions can stage drafts")
+        );
     }
 
     #[tokio::test]
