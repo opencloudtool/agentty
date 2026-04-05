@@ -1489,6 +1489,7 @@ mod tests {
         assert!(help_text.contains("o: open"));
         assert!(help_text.contains("m: add to merge queue"));
         assert!(help_text.contains("r: rebase"));
+        assert!(help_text.contains("/: commands menu"));
         assert!(!help_text.contains("d: diff"));
     }
 
@@ -1505,6 +1506,7 @@ mod tests {
         assert!(!help_text.contains("d: diff"));
         assert!(help_text.contains("f: review"));
         assert!(help_text.contains("Enter: reply"));
+        assert!(help_text.contains("/: commands menu"));
     }
 
     #[test]
