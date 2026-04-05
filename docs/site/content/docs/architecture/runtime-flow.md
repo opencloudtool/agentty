@@ -290,19 +290,103 @@ flowchart TD
 
 ### What Prints, When It Prints, and When It Stops Showing
 
-| Artifact | Where it comes from | When it prints | When it is hidden or removed |
-|---------|----------------------|----------------|------------------------------|
-| User prompt blocks | `session.output` and `active_prompt_output` | Immediately after start/reply submission. The same block stays in the transcript after the turn finishes. | The transcript entry is durable. Only the transient `active_prompt_output` cache is removed after turn metadata is applied or when the session is no longer active. |
-| Assistant answer | `session.output` | After a successful turn when protocol `answer` is non-empty. | Durable transcript entry; not removed by `SessionOutput`. It can be hidden from view only when `DoneSessionOutputMode::Summary` replaces the base body with rendered summary text. |
-| Clarification question text from the assistant | `session.output` fallback when no `answer` exists | After a successful turn with questions but without top-level `answer` text. | Durable transcript entry once appended. Pending structured `session.questions` continue separately in question mode until answered. |
-| Structured clarification questions | `session.questions` | In `AppMode::Question`, inside the bottom question panel, not inside `SessionOutput`. | Cleared when the resumed turn starts; the output panel never renders these as synthetic transcript rows. |
-| Clarification answers | New reply prompt built by runtime and appended into `session.output` | When the user finishes all questions and submits the generated `Clarifications:` reply turn. | Durable transcript entry. `SessionOutput` only adjusts spacing between numbered question groups for readability. If the user ends question mode with `Esc`, no clarification reply is built and the session returns to `Review`. |
-| Summary block | `session.summary` | Appended after transcript content for most statuses. In `Done + Summary` mode it becomes the primary body instead. | Hidden for `Canceled` sessions. Also not appended a second time when `Done + Summary` mode already uses the summary as the base body. |
-| Follow-up tasks | `session.follow_up_tasks` | Always appended synthetically after the summary block when any tasks exist. | Replaced wholesale by the next completed turn's follow-up-task set. Not stored inside `session.output`. |
-| Commit footer | Trailing lines in `session.output` that begin with `[Commit]` or `[Commit Error]` | Reattached after summary and follow-up sections so commit notes stay tied to the completed turn footer. | Durable transcript content; only moved later in render order. |
-| Focused review loader | `review_status_message` with `Status::AgentReview` | While review assist is running or when the latest review attempt failed. | Removed when a review result arrives, when session view leaves review state, or when a new reply clears the review cache. |
-| Focused review text | `review_text` from review cache / view state | Appended after transcript content once review assist succeeds. | Cleared when a new reply starts, when the session returns to `InProgress`, or when a later review result fails and replaces it with an error status message. |
-| In-progress loader | `active_progress` | While a turn is running in `InProgress`. | Removed when the turn finishes or the session leaves an active status. |
+Use the artifact-by-artifact reference below instead of a wide comparison
+table. Each item keeps the same four questions grouped vertically so the page
+stays readable on narrow screens.
+
+#### User prompt blocks
+
+- Comes from: `session.output` and `active_prompt_output`
+- Prints: immediately after start or reply submission. The same block stays in
+  the transcript after the turn finishes.
+- Hidden or removed: the transcript entry is durable. Only the transient
+  `active_prompt_output` cache is removed after turn metadata is applied or
+  when the session is no longer active.
+
+#### Assistant answer
+
+- Comes from: `session.output`
+- Prints: after a successful turn when protocol `answer` is non-empty.
+- Hidden or removed: durable transcript entry; not removed by
+  `SessionOutput`. It can be hidden from view only when
+  `DoneSessionOutputMode::Summary` replaces the base body with rendered summary
+  text.
+
+#### Clarification question text from the assistant
+
+- Comes from: `session.output` fallback when no `answer` exists
+- Prints: after a successful turn with questions but without top-level
+  `answer` text.
+- Hidden or removed: durable transcript entry once appended. Pending
+  structured `session.questions` continue separately in question mode until
+  answered.
+
+#### Structured clarification questions
+
+- Comes from: `session.questions`
+- Prints: in `AppMode::Question`, inside the bottom question panel, not inside
+  `SessionOutput`.
+- Hidden or removed: cleared when the resumed turn starts. The output panel
+  never renders these as synthetic transcript rows.
+
+#### Clarification answers
+
+- Comes from: a new reply prompt built by runtime and appended into
+  `session.output`
+- Prints: when the user finishes all questions and submits the generated
+  `Clarifications:` reply turn.
+- Hidden or removed: durable transcript entry. `SessionOutput` only adjusts
+  spacing between numbered question groups for readability. If the user ends
+  question mode with `Esc`, no clarification reply is built and the session
+  returns to `Review`.
+
+#### Summary block
+
+- Comes from: `session.summary`
+- Prints: appended after transcript content for most statuses. In `Done + Summary` mode it becomes the primary body instead.
+- Hidden or removed: hidden for `Canceled` sessions. It is also not appended a
+  second time when `Done + Summary` mode already uses the summary as the base
+  body.
+
+#### Follow-up tasks
+
+- Comes from: `session.follow_up_tasks`
+- Prints: always appended synthetically after the summary block when any tasks
+  exist.
+- Hidden or removed: replaced wholesale by the next completed turn's
+  follow-up-task set. Not stored inside `session.output`.
+
+#### Commit footer
+
+- Comes from: trailing lines in `session.output` that begin with `[Commit]` or
+  `[Commit Error]`
+- Prints: reattached after summary and follow-up sections so commit notes stay
+  tied to the completed turn footer.
+- Hidden or removed: durable transcript content; only moved later in render
+  order.
+
+#### Focused review loader
+
+- Comes from: `review_status_message` with `Status::AgentReview`
+- Prints: while review assist is running or when the latest review attempt
+  failed.
+- Hidden or removed: removed when a review result arrives, when session view
+  leaves review state, or when a new reply clears the review cache.
+
+#### Focused review text
+
+- Comes from: `review_text` from review cache or view state
+- Prints: appended after transcript content once review assist succeeds.
+- Hidden or removed: cleared when a new reply starts, when the session returns
+  to `InProgress`, or when a later review result fails and replaces it with an
+  error status message.
+
+#### In-progress loader
+
+- Comes from: `active_progress`
+- Prints: while a turn is running in `InProgress`.
+- Hidden or removed: removed when the turn finishes or the session leaves an
+  active status.
 
 ### Mode Rules
 
