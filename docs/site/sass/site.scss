@@ -751,12 +751,13 @@ svg {
     color: var(--color-muted);
     line-height: 1.75;
     font-size: 0.95rem;
-    /* Prevent long inline tokens from spilling under the right sidebar. */
-    overflow-wrap: anywhere;
+    /* Keep prose readable while still allowing long tokens to break when required. */
+    overflow-wrap: break-word;
+    word-break: normal;
 }
 
 .docs-content :not(pre) > code {
-    display: inline-block;
+    display: inline;
     border: 1px solid var(--color-border);
     border-radius: 0.3rem;
     background: var(--color-surface);
@@ -764,6 +765,9 @@ svg {
     padding: 0 0.35rem;
     line-height: 1.4;
     font-size: 0.92em;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    word-break: normal;
 }
 
 .docs-content pre {
@@ -955,7 +959,11 @@ svg {
     border-spacing: 0;
     border: 1px solid var(--color-border);
     border-radius: 0.5rem;
-    overflow: hidden;
+    /* Let dense reference tables scroll instead of forcing unreadable mid-word wrapping. */
+    display: block;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
     font-size: 0.88rem;
     line-height: 1.5;
 }
@@ -989,6 +997,18 @@ svg {
     border-bottom: 1px solid var(--color-border);
     color: var(--color-muted);
     vertical-align: top;
+}
+
+.docs-content thead th,
+.docs-content tbody td {
+    overflow-wrap: normal;
+    word-break: normal;
+}
+
+.docs-content thead th > code,
+.docs-content tbody td > code {
+    overflow-wrap: normal;
+    white-space: nowrap;
 }
 
 .docs-content tbody tr:last-child td {
