@@ -26,6 +26,9 @@ use testty::vhs::{VhsTape, VhsTapeSettings, check_vhs_installed};
 pub(crate) struct BuilderEnv {
     /// Path used as `AGENTTY_ROOT` for database and session isolation.
     pub(crate) agentty_root: PathBuf,
+    /// Directory containing stub agent executables so the app passes startup
+    /// availability validation even when no real agent CLI is installed.
+    pub(crate) stub_bin: PathBuf,
     /// Deterministic working directory registered as a project on startup.
     pub(crate) workdir: PathBuf,
 }
@@ -42,23 +45,41 @@ impl BuilderEnv {
     pub(crate) fn new(temp_root: &Path) -> std::io::Result<Self> {
         let agentty_root = temp_root.join("agentty_root");
         let workdir = temp_root.join("test-project");
+        let stub_bin = temp_root.join("stub-bin");
 
         std::fs::create_dir_all(&agentty_root)?;
         std::fs::create_dir_all(&workdir)?;
+        std::fs::create_dir_all(&stub_bin)?;
+
+        // Create a stub `claude` executable so the app passes startup agent
+        // availability validation on machines without real agent CLIs (CI).
+        let stub_agent_path = stub_bin.join("claude");
+        std::fs::write(&stub_agent_path, "#!/bin/sh\nexit 1\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub_agent_path, std::fs::Permissions::from_mode(0o755))?;
+        }
 
         Ok(Self {
             agentty_root,
+            stub_bin,
             workdir,
         })
     }
 
     /// Return a configured [`PtySessionBuilder`] using this environment.
     ///
-    /// Sets `AGENTTY_ROOT`, working directory, and 80×24 terminal size.
+    /// Sets `AGENTTY_ROOT`, working directory, 80×24 terminal size, and
+    /// prepends the stub agent bin directory to `PATH` so the app passes
+    /// startup agent availability validation.
     pub(crate) fn builder(&self) -> PtySessionBuilder {
+        let path_with_stub_bin = self.path_with_stub_bin();
+
         PtySessionBuilder::new(cargo_bin("agentty"))
             .size(80, 24)
             .env("AGENTTY_ROOT", self.agentty_root.to_string_lossy())
+            .env("PATH", path_with_stub_bin)
             .workdir(&self.workdir)
     }
 
@@ -67,10 +88,26 @@ impl BuilderEnv {
     /// These match the variables set by [`BuilderEnv::builder`] so the VHS
     /// recording reproduces the same environment as the PTY session.
     pub(crate) fn as_vhs_env_pairs(&self) -> Vec<(String, String)> {
-        vec![(
-            "AGENTTY_ROOT".to_string(),
-            self.agentty_root.to_string_lossy().into_owned(),
-        )]
+        vec![
+            (
+                "AGENTTY_ROOT".to_string(),
+                self.agentty_root.to_string_lossy().into_owned(),
+            ),
+            ("PATH".to_string(), self.path_with_stub_bin()),
+        ]
+    }
+
+    /// Build a `PATH` value with the stub bin directory prepended to the
+    /// inherited system `PATH`.
+    fn path_with_stub_bin(&self) -> String {
+        let system_path = std::env::var("PATH").unwrap_or_default();
+        let mut paths = vec![self.stub_bin.clone()];
+        paths.extend(std::env::split_paths(&system_path));
+
+        std::env::join_paths(paths)
+            .expect("valid PATH")
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
