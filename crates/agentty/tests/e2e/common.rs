@@ -12,7 +12,6 @@ use assert_cmd::cargo::cargo_bin;
 use testty::frame::TerminalFrame;
 use testty::journey::Journey;
 use testty::proof::report::{ProofCapture, ProofReport};
-use testty::region::Region;
 use testty::scenario::Scenario;
 use testty::session::PtySessionBuilder;
 use testty::step::Step;
@@ -185,15 +184,6 @@ pub(crate) fn frame_from_capture(capture: &ProofCapture) -> TerminalFrame {
     TerminalFrame::new(capture.cols, capture.rows, &capture.frame_bytes)
 }
 
-/// Header region covering the title bar and tab bar (rows 0-3).
-///
-/// Agentty renders a title bar at row 0 and a tab bar at row 2. This region
-/// is wider than a single row so tab-related assertions match the actual
-/// layout.
-pub(crate) fn header_region(cols: u16) -> Region {
-    Region::new(0, 0, cols, 4)
-}
-
 impl BuilderEnv {
     /// Initialize a git repository in the workdir so sessions can create
     /// worktrees.
@@ -233,12 +223,13 @@ impl BuilderEnv {
 
 /// Wait for agentty to start up and render a stable initial frame.
 ///
-/// Uses the standard startup timeouts: 500ms stability window with a
-/// 10-second maximum wait.
+/// Waits for the initial TUI frame to appear and then settle briefly before
+/// the scenario starts interacting with the app.
 pub(crate) fn wait_for_agentty_startup() -> Journey {
     Journey::new("agentty_startup")
         .with_description("Wait for agentty startup and initial render")
-        .step(Step::wait_for_stable_frame(500, 10000))
+        .step(Step::wait_for_text("Agentty", 30000))
+        .step(Step::wait_for_stable_frame(300, 5000))
 }
 
 /// Switch to a tab by pressing `Tab` and waiting for the tab label text.
@@ -293,12 +284,25 @@ pub(crate) fn open_help_overlay() -> Journey {
 ///
 /// Requires the Sessions tab to be active and a git-initialized workdir.
 pub(crate) fn create_session_and_return_to_list() -> Journey {
+    create_session_with_prompt_and_return_to_list("test")
+}
+
+/// Create a session with a caller-provided prompt, submit it, and return to
+/// the Sessions list.
+///
+/// Uses fixed sleeps instead of stable-frame waits because the agent may
+/// produce continuous output after submit.
+///
+/// Requires the Sessions tab to be active and a git-initialized workdir.
+pub(crate) fn create_session_with_prompt_and_return_to_list(prompt: &str) -> Journey {
     Journey::new("create_session")
-        .with_description("Create session via a, type test, submit, return to list")
+        .with_description(format!(
+            "Create session via a, type {prompt}, submit, return to list"
+        ))
         .step(Step::press_key("a"))
         .step(Step::wait_for_stable_frame(300, 5000))
-        .step(Step::write_text("test"))
-        .step(Step::wait_for_text("test", 3000))
+        .step(Step::write_text(prompt))
+        .step(Step::wait_for_text(prompt, 3000))
         .step(Step::press_key("Enter"))
         .step(Step::sleep(Duration::from_secs(2)))
         .step(Step::press_key("q"))

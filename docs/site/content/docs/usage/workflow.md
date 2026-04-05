@@ -15,11 +15,13 @@ For keyboard shortcuts by view, see [Keybindings](@/docs/usage/keybindings.md).
 ## Interface Layout
 
 <a id="usage-interface-layout"></a>
-Agentty organizes its interface into four tabs, accessible with `Tab`:
+Agentty organizes its interface into four base tabs, with one conditional
+project tab also accessible with `Tab`:
 
 | Tab | Purpose |
 |-----|---------|
 | **Sessions** | List, create, and manage agent sessions. When a project is active, this tab appears as `Sessions (<project-name>)`. |
+| **Tasks** | Shown only when the active project contains `docs/plan/roadmap.md`. |
 | **Projects** | Select between projects (git repositories) in a split view: Agentty info (ASCII art, version, short description) on top, project table below. Agentty skips stale entries whose project directories no longer exist. |
 | **Stats** | View usage statistics. |
 | **Settings** | Configure reasoning level, smart/fast/review model defaults, the optional `Last used model as default` smart-model mode, the session commit coauthor trailer, and `Open Commands` for the active project. |

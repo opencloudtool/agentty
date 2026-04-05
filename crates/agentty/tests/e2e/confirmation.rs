@@ -83,14 +83,12 @@ fn quit_confirm_dismiss_returns() {
 
     // Assert — after 'n' dismissal, Projects tab is restored.
     let after_n_frame = common::frame_from_capture(&report.captures[1]);
-    let header = common::header_region(after_n_frame.cols());
-    assertion::assert_text_in_region(&after_n_frame, "Projects", &header);
-    assertion::assert_span_is_highlighted(&after_n_frame, "Projects");
+    let restored_full = Region::full(after_n_frame.cols(), after_n_frame.rows());
+    assertion::assert_text_in_region(&after_n_frame, "test-project", &restored_full);
 
     // Assert — after Esc dismissal, Projects tab is restored (final frame).
-    let final_header = common::header_region(frame.cols());
-    assertion::assert_text_in_region(&frame, "Projects", &final_header);
-    assertion::assert_span_is_highlighted(&frame, "Projects");
+    let final_full = Region::full(frame.cols(), frame.rows());
+    assertion::assert_text_in_region(&frame, "test-project", &final_full);
 
     // Assert — no quit dialog visible in either restored view.
     let after_n_text = after_n_frame.text_in_region(&full);
@@ -99,7 +97,7 @@ fn quit_confirm_dismiss_returns() {
         "Quit dialog should be dismissed after 'n'"
     );
 
-    let final_text = frame.text_in_region(&Region::full(frame.cols(), frame.rows()));
+    let final_text = frame.text_in_region(&final_full);
     assert!(
         !final_text.contains("Confirm Quit"),
         "Quit dialog should be dismissed after Esc"

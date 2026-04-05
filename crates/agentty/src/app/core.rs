@@ -68,6 +68,9 @@ use crate::{app, ui};
 /// Relative directory name used for session git worktrees within the
 /// `agentty` home directory.
 pub const AGENTTY_WT_DIR: &str = "wt";
+/// Repository-relative roadmap path that enables the project-specific
+/// `Tasks` tab when present.
+pub(crate) const TASKS_ROADMAP_PATH: &str = "docs/plan/roadmap.md";
 
 /// Returns the resolved `agentty` home directory.
 ///
@@ -450,6 +453,16 @@ impl AppClients {
 
         self
     }
+
+    /// Replaces the filesystem boundary while preserving the remaining
+    /// clients.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_fs_client(mut self, fs_client: Arc<dyn FsClient>) -> Self {
+        self.fs_client = fs_client;
+
+        self
+    }
 }
 
 // SessionState definition moved to session_state.rs
@@ -475,6 +488,9 @@ pub struct App {
     pub(crate) sessions: SessionManager,
     /// Runs sync-to-main workflows behind an injectable boundary.
     pub(crate) sync_main_runner: Arc<dyn SyncMainRunner>,
+    /// Caches whether the active project exposes `docs/plan/roadmap.md`,
+    /// avoiding a filesystem probe on every render tick.
+    active_project_has_tasks_tab: bool,
     /// Receives app events emitted by background tasks and workflows.
     event_rx: mpsc::UnboundedReceiver<AppEvent>,
     /// Stores the latest available stable `agentty` version when one is
@@ -603,6 +619,8 @@ impl App {
             project_items,
             startup_working_dir.clone(),
         );
+        let active_project_has_tasks_tab =
+            Self::project_has_tasks_tab(clients.fs_client.as_ref(), startup_working_dir.as_path());
         let settings = SettingsManager::new(&services, active_project_id).await;
         let default_session_model = SessionManager::load_default_session_model(
             &services,
@@ -629,6 +647,7 @@ impl App {
             projects,
             services,
             sessions,
+            active_project_has_tasks_tab,
             event_rx,
             review_cache: HashMap::new(),
             latest_available_version: None,
@@ -687,6 +706,8 @@ impl App {
     /// Renders a complete UI frame by assembling a [`ui::RenderContext`] from
     /// current app state and dispatching to the UI render pipeline.
     pub fn draw(&mut self, frame: &mut Frame) {
+        let has_tasks_tab = self.active_project_has_tasks_tab();
+        self.tabs.normalize(has_tasks_tab);
         let active_project_id = self.projects.active_project_id();
         let current_tab = self.tabs.current();
         let working_dir = self.projects.working_dir().to_path_buf();
@@ -712,6 +733,7 @@ impl App {
             ui::RenderContext {
                 active_project_id,
                 current_tab,
+                has_tasks_tab,
                 git_branch: git_branch.as_deref(),
                 git_upstream_ref: git_upstream_ref.as_deref(),
                 git_status,
@@ -731,6 +753,32 @@ impl App {
                 working_dir: &working_dir,
                 wall_clock_unix_seconds,
             },
+        );
+    }
+
+    /// Returns whether the active project exposes the roadmap file required by
+    /// the `Tasks` tab.
+    pub fn active_project_has_tasks_tab(&self) -> bool {
+        self.active_project_has_tasks_tab
+    }
+
+    /// Cycles the active list tab forward using the active project's available
+    /// tab set.
+    pub fn next_tab(&mut self) {
+        self.tabs.next(self.active_project_has_tasks_tab());
+    }
+
+    /// Cycles the active list tab backward using the active project's
+    /// available tab set.
+    pub fn previous_tab(&mut self) {
+        self.tabs.previous(self.active_project_has_tasks_tab());
+    }
+
+    /// Refreshes the cached `Tasks`-tab availability for the active project.
+    fn refresh_active_project_tasks_tab(&mut self) {
+        self.active_project_has_tasks_tab = Self::project_has_tasks_tab(
+            self.services.fs_client().as_ref(),
+            self.projects.working_dir(),
         );
     }
 
@@ -816,6 +864,8 @@ impl App {
             git_upstream_ref,
             project.path,
         );
+        self.refresh_active_project_tasks_tab();
+        self.tabs.normalize(self.active_project_has_tasks_tab());
         self.settings = SettingsManager::new(&self.services, project.id).await;
         let default_session_model = SessionManager::load_default_session_model(
             &self.services,
@@ -2267,6 +2317,12 @@ impl App {
         AppStartup::is_existing_project_path(fs_client, project_path)
     }
 
+    /// Returns whether one project directory exposes the roadmap file that
+    /// enables the `Tasks` tab.
+    fn project_has_tasks_tab(fs_client: &dyn FsClient, working_dir: &Path) -> bool {
+        fs_client.is_file(working_dir.join(TASKS_ROADMAP_PATH))
+    }
+
     /// Converts a project row into domain project model.
     fn project_from_row(project_row: db::ProjectRow) -> Project {
         AppStartup::project_from_row(project_row)
@@ -2424,6 +2480,22 @@ mod tests {
         new_test_app_with_tmux_client(Arc::new(MockTmuxClient::new())).await
     }
 
+    /// Builds a test app rooted at `working_dir` with one injected filesystem
+    /// boundary.
+    async fn app_with_fs_client(working_dir: PathBuf, fs_client: Arc<dyn FsClient>) -> App {
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let clients = test_app_clients()
+            .with_app_server_client_override(mock_app_server())
+            .with_tmux_client(Arc::new(MockTmuxClient::new()))
+            .with_fs_client(fs_client);
+
+        App::new_with_clients(working_dir.clone(), working_dir, None, database, clients)
+            .await
+            .expect("failed to build test app")
+    }
+
     #[tokio::test]
     async fn test_new_with_clients_fails_when_no_backend_cli_is_available() {
         // Arrange
@@ -2537,6 +2609,56 @@ mod tests {
         // Assert
         assert_eq!(app.settings.default_smart_model, AgentModel::Gpt54);
         assert_eq!(app.settings.open_command, "cargo test");
+    }
+
+    #[tokio::test]
+    async fn test_switch_project_refreshes_tasks_tab_cache() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let second_project_dir = tempdir().expect("failed to create second temp dir");
+        let roadmap_dir = second_project_dir.path().join("docs/plan");
+        tokio::fs::create_dir_all(&roadmap_dir)
+            .await
+            .expect("failed to create roadmap dir");
+        tokio::fs::write(roadmap_dir.join("roadmap.md"), "# roadmap")
+            .await
+            .expect("failed to create roadmap file");
+        let base_path = base_dir.path().to_path_buf();
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let first_project_id = database
+            .upsert_project(&base_path.to_string_lossy(), None)
+            .await
+            .expect("failed to insert first project");
+        let second_project_id = database
+            .upsert_project(&second_project_dir.path().to_string_lossy(), None)
+            .await
+            .expect("failed to insert second project");
+        database
+            .set_active_project_id(first_project_id)
+            .await
+            .expect("failed to persist initial active project");
+        let mut app = App::new_with_clients(
+            base_path.clone(),
+            base_path,
+            None,
+            database,
+            test_app_clients(),
+        )
+        .await
+        .expect("failed to build app");
+
+        // Act
+        let before_switch = app.active_project_has_tasks_tab();
+        app.switch_project(second_project_id)
+            .await
+            .expect("failed to switch project");
+        let after_switch = app.active_project_has_tasks_tab();
+
+        // Assert
+        assert!(!before_switch);
+        assert!(after_switch);
     }
 
     #[tokio::test]
@@ -4369,6 +4491,52 @@ mod tests {
 
         // Assert
         assert!(project_exists);
+    }
+
+    #[tokio::test]
+    async fn active_project_has_tasks_tab_returns_true_when_roadmap_file_exists() {
+        // Arrange
+        let project_path = PathBuf::from("/home/test/src/agentty");
+        let roadmap_path = project_path.join(TASKS_ROADMAP_PATH);
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client.expect_is_dir().returning(|_| true);
+        fs_client
+            .expect_is_file()
+            .once()
+            .withf(move |path| path == &roadmap_path)
+            .return_const(true);
+        let app = app_with_fs_client(project_path, Arc::new(fs_client)).await;
+
+        // Act
+        let has_tasks_tab = app.active_project_has_tasks_tab();
+        let cached_has_tasks_tab = app.active_project_has_tasks_tab();
+
+        // Assert
+        assert!(has_tasks_tab);
+        assert!(cached_has_tasks_tab);
+    }
+
+    #[tokio::test]
+    async fn active_project_has_tasks_tab_returns_false_when_roadmap_file_is_missing() {
+        // Arrange
+        let project_path = PathBuf::from("/home/test/src/agentty");
+        let roadmap_path = project_path.join(TASKS_ROADMAP_PATH);
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client.expect_is_dir().returning(|_| true);
+        fs_client
+            .expect_is_file()
+            .once()
+            .withf(move |path| path == &roadmap_path)
+            .return_const(false);
+        let app = app_with_fs_client(project_path, Arc::new(fs_client)).await;
+
+        // Act
+        let has_tasks_tab = app.active_project_has_tasks_tab();
+        let cached_has_tasks_tab = app.active_project_has_tasks_tab();
+
+        // Assert
+        assert!(!has_tasks_tab);
+        assert!(!cached_has_tasks_tab);
     }
 
     #[test]

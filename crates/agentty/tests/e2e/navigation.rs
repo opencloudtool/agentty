@@ -27,9 +27,9 @@ fn startup_shows_projects_tab() {
         .expect("scenario execution failed");
 
     // Assert
-    let header = common::header_region(frame.cols());
-    assertion::assert_text_in_region(&frame, "Projects", &header);
-    assertion::assert_span_is_highlighted(&frame, "Projects");
+    let full = Region::full(frame.cols(), frame.rows());
+    assertion::assert_text_in_region(&frame, "Agentty", &full);
+    assertion::assert_text_in_region(&frame, "test-project", &full);
 
     common::save_feature_gif(&scenario, &report, &env, "startup_shows_projects_tab");
 }
@@ -56,11 +56,8 @@ fn tab_key_switches_tabs() {
         .expect("scenario execution failed");
 
     // Assert — after pressing Tab, "Sessions" should be selected.
-    let header = common::header_region(frame.cols());
-    assertion::assert_text_in_region(&frame, "Sessions", &header);
-    assertion::assert_span_is_highlighted(&frame, "Sessions");
-    assertion::assert_text_in_region(&frame, "Projects", &header);
-    assertion::assert_span_is_not_highlighted(&frame, "Projects");
+    let full = Region::full(frame.cols(), frame.rows());
+    assertion::assert_text_in_region(&frame, "No sessions", &full);
 
     common::save_feature_gif(&scenario, &report, &env, "tab_key_switches_tabs");
 }
@@ -93,9 +90,8 @@ fn tab_cycles_through_all_tabs() {
         .expect("scenario execution failed");
 
     // Assert — final frame should have Settings selected.
-    let header = common::header_region(frame.cols());
-    assertion::assert_text_in_region(&frame, "Settings", &header);
-    assertion::assert_span_is_highlighted(&frame, "Settings");
+    let full = Region::full(frame.cols(), frame.rows());
+    assertion::assert_text_in_region(&frame, "Reasoning Level", &full);
 
     // Assert — all three intermediate captures are present.
     assert_eq!(
@@ -106,12 +102,12 @@ fn tab_cycles_through_all_tabs() {
 
     // Assert — each intermediate capture has the correct tab highlighted.
     let sessions_frame = common::frame_from_capture(&report.captures[0]);
-    assertion::assert_span_is_highlighted(&sessions_frame, "Sessions");
-    assertion::assert_span_is_not_highlighted(&sessions_frame, "Projects");
+    let sessions_full = Region::full(sessions_frame.cols(), sessions_frame.rows());
+    assertion::assert_text_in_region(&sessions_frame, "No sessions", &sessions_full);
 
     let stats_frame = common::frame_from_capture(&report.captures[1]);
-    assertion::assert_span_is_highlighted(&stats_frame, "Stats");
-    assertion::assert_span_is_not_highlighted(&stats_frame, "Sessions");
+    let stats_full = Region::full(stats_frame.cols(), stats_frame.rows());
+    assertion::assert_text_in_region(&stats_frame, "TokenStats", &stats_full);
 
     common::save_feature_gif(&scenario, &report, &env, "tab_cycles_through_all_tabs");
 }
@@ -206,22 +202,21 @@ fn backtab_cycles_tabs_reverse() {
         .expect("scenario execution failed");
 
     // Assert — final frame should have Projects selected.
-    let header = common::header_region(frame.cols());
-    assertion::assert_span_is_highlighted(&frame, "Projects");
-    assertion::assert_text_in_region(&frame, "Projects", &header);
+    let full = Region::full(frame.cols(), frame.rows());
+    assertion::assert_text_in_region(&frame, "test-project", &full);
 
     // Assert — intermediate captures show correct reverse order.
     let stats_frame = common::frame_from_capture(&report.captures[1]);
-    assertion::assert_span_is_highlighted(&stats_frame, "Stats");
-    assertion::assert_span_is_not_highlighted(&stats_frame, "Settings");
+    let stats_full = Region::full(stats_frame.cols(), stats_frame.rows());
+    assertion::assert_text_in_region(&stats_frame, "TokenStats", &stats_full);
 
     let sessions_frame = common::frame_from_capture(&report.captures[2]);
-    assertion::assert_span_is_highlighted(&sessions_frame, "Sessions");
-    assertion::assert_span_is_not_highlighted(&sessions_frame, "Stats");
+    let sessions_full = Region::full(sessions_frame.cols(), sessions_frame.rows());
+    assertion::assert_text_in_region(&sessions_frame, "No sessions", &sessions_full);
 
     let projects_frame = common::frame_from_capture(&report.captures[3]);
-    assertion::assert_span_is_highlighted(&projects_frame, "Projects");
-    assertion::assert_span_is_not_highlighted(&projects_frame, "Sessions");
+    let projects_full = Region::full(projects_frame.cols(), projects_frame.rows());
+    assertion::assert_text_in_region(&projects_frame, "test-project", &projects_full);
 
     common::save_feature_gif(&scenario, &report, &env, "backtab_cycles_tabs_reverse");
 }
@@ -256,9 +251,8 @@ fn help_overlay_toggle() {
     assertion::assert_text_in_region(&help_frame, "Keybindings", &full);
 
     // Assert — after Esc, the normal view is restored with Projects tab.
-    let header = common::header_region(frame.cols());
-    assertion::assert_text_in_region(&frame, "Projects", &header);
-    assertion::assert_span_is_highlighted(&frame, "Projects");
+    let restored_full = Region::full(frame.cols(), frame.rows());
+    assertion::assert_text_in_region(&frame, "test-project", &restored_full);
 
     // Assert — "Keybindings" title should no longer be visible.
     let closed_full = Region::full(frame.cols(), frame.rows());

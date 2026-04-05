@@ -36,6 +36,8 @@ pub struct RenderContext<'a> {
     pub active_project_id: i64,
     /// Active top-level tab selection.
     pub current_tab: Tab,
+    /// Whether the active project exposes the roadmap-backed `Tasks` tab.
+    pub has_tasks_tab: bool,
     /// Current local branch name for the active project.
     pub git_branch: Option<&'a str>,
     /// Current upstream reference tracked by the active project branch.

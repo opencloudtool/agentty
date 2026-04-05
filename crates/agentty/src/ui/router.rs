@@ -17,6 +17,7 @@ pub(crate) struct ListBackgroundRenderContext<'a> {
     /// Identifier for the currently active project in the project list tab.
     pub(crate) active_project_id: i64,
     pub(crate) current_tab: Tab,
+    pub(crate) has_tasks_tab: bool,
     pub(crate) project_table_state: &'a mut TableState,
     pub(crate) projects: &'a [ProjectListItem],
     pub(crate) sessions: &'a [Session],
@@ -30,6 +31,7 @@ struct RouteSharedContext<'a> {
     /// Identifier for the active project shared across list-mode renders.
     active_project_id: i64,
     current_tab: Tab,
+    has_tasks_tab: bool,
     project_table_state: &'a mut TableState,
     projects: &'a [ProjectListItem],
     sessions: &'a [Session],
@@ -45,6 +47,7 @@ impl RouteSharedContext<'_> {
         ListBackgroundRenderContext {
             active_project_id: self.active_project_id,
             current_tab: self.current_tab,
+            has_tasks_tab: self.has_tasks_tab,
             project_table_state: self.project_table_state,
             projects: self.projects,
             sessions: self.sessions,
@@ -98,6 +101,7 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
         active_project_id,
         active_prompt_outputs,
         current_tab,
+        has_tasks_tab,
         mode,
         project_table_state,
         projects,
@@ -113,6 +117,7 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
     let mut shared = RouteSharedContext {
         active_project_id,
         current_tab,
+        has_tasks_tab,
         project_table_state,
         projects,
         sessions,
@@ -550,6 +555,7 @@ pub(crate) fn render_list_background(
     let ListBackgroundRenderContext {
         active_project_id,
         current_tab,
+        has_tasks_tab,
         project_table_state,
         projects,
         sessions,
@@ -562,7 +568,8 @@ pub(crate) fn render_list_background(
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(content_area);
 
-    component::tab::Tabs::new(current_tab, active_project_id, projects).render(f, chunks[0]);
+    component::tab::Tabs::new(current_tab, active_project_id, has_tasks_tab, projects)
+        .render(f, chunks[0]);
 
     match current_tab {
         Tab::Projects => {
@@ -580,6 +587,10 @@ pub(crate) fn render_list_background(
                 wall_clock_unix_seconds,
             )
             .render(f, chunks[1]);
+        }
+        Tab::Tasks => {
+            let mut page = page::task::TasksPage;
+            page.render(f, chunks[1]);
         }
         Tab::Stats => {
             page::stat::StatsPage::new(sessions, stats_activity).render(f, chunks[1]);

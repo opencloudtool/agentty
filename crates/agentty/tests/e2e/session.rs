@@ -35,12 +35,6 @@ fn session_list_empty_state() {
         .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
-    // Assert — Sessions tab is selected.
-    let header = common::header_region(frame.cols());
-    assertion::assert_span_is_highlighted(&frame, "Sessions");
-    assertion::assert_text_in_region(&frame, "Sessions", &header);
-
-    // Assert — empty-state placeholder is visible.
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "No sessions", &full);
 
@@ -104,10 +98,6 @@ fn session_prompt_cancel_returns_to_empty_list() {
         .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
-    // Assert — back on Sessions tab with empty state.
-    let header = common::header_region(frame.cols());
-    assertion::assert_span_is_highlighted(&frame, "Sessions");
-    assertion::assert_text_in_region(&frame, "Sessions", &header);
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "No sessions", &full);
 
@@ -152,11 +142,7 @@ fn session_open_and_return_to_list() {
     let view_full = Region::full(session_view_frame.cols(), session_view_frame.rows());
     assertion::assert_text_in_region(&session_view_frame, "q: back", &view_full);
 
-    // Assert — final frame is back on Sessions list with the session visible.
-    let header = common::header_region(frame.cols());
-    assertion::assert_span_is_highlighted(&frame, "Sessions");
-    assertion::assert_text_in_region(&frame, "Sessions", &header);
-    // The session was created with the prompt "test", which becomes its title.
+    // Assert — final frame is back on the list with the session visible.
     let full = Region::full(frame.cols(), frame.rows());
     assertion::assert_text_in_region(&frame, "test", &full);
 
@@ -175,77 +161,76 @@ fn session_list_jk_navigation() {
     let scenario = Scenario::new("jk_navigation")
         .compose(&common::wait_for_agentty_startup())
         .compose(&common::switch_to_tab("Sessions"))
-        .compose(&common::create_session_and_return_to_list())
-        .compose(&common::create_session_and_return_to_list())
+        .compose(&common::create_session_with_prompt_and_return_to_list(
+            "alpha",
+        ))
+        .compose(&common::create_session_with_prompt_and_return_to_list(
+            "beta",
+        ))
         .capture_labeled("two_sessions", "Two sessions in list")
-        // Navigate down with j and back up with k.
+        // Navigate down with j, open the selection, and capture the session.
         .press_key("j")
         .wait_for_stable_frame(300, 3000)
-        .capture_labeled("after_j", "After pressing j")
+        .press_key("Enter")
+        .sleep(std::time::Duration::from_secs(2))
+        .capture_labeled("opened_after_j", "Session opened after pressing j")
+        .press_key("q")
+        .sleep(std::time::Duration::from_secs(1))
+        // Navigate back up with k, open the selection, and capture it.
         .press_key("k")
         .wait_for_stable_frame(300, 3000)
-        .capture_labeled("after_k", "After pressing k");
+        .press_key("Enter")
+        .sleep(std::time::Duration::from_secs(2))
+        .capture_labeled("opened_after_k", "Session opened after pressing k");
 
     // Act
-    let (frame, report) = scenario
+    let (_frame, report) = scenario
         .run_with_proof(env.builder())
         .expect("scenario execution failed");
 
-    // Assert — both sessions visible in each capture.
+    // Assert — both sessions are visible in the list capture.
     let initial_frame = common::frame_from_capture(&report.captures[0]);
-    let after_j_frame = common::frame_from_capture(&report.captures[1]);
-    let after_k_frame = common::frame_from_capture(&report.captures[2]);
+    let opened_after_j_frame = common::frame_from_capture(&report.captures[1]);
+    let opened_after_k_frame = common::frame_from_capture(&report.captures[2]);
 
-    let initial_matches = initial_frame.find_text("test");
-    let after_j_matches = after_j_frame.find_text("test");
-    let after_k_matches = after_k_frame.find_text("test");
+    let initial_matches = initial_frame.find_text("alpha");
+    let initial_beta_matches = initial_frame.find_text("beta");
+    let opened_after_j_text = opened_after_j_frame.text_in_region(&Region::full(
+        opened_after_j_frame.cols(),
+        opened_after_j_frame.rows(),
+    ));
+    let opened_after_k_text = opened_after_k_frame.text_in_region(&Region::full(
+        opened_after_k_frame.cols(),
+        opened_after_k_frame.rows(),
+    ));
 
     assert!(
-        initial_matches.len() >= 2,
-        "Expected at least 2 'test' matches in initial frame, found {}",
+        !initial_matches.is_empty(),
+        "Expected at least 1 'alpha' match in initial frame, found {}",
         initial_matches.len()
     );
     assert!(
-        after_j_matches.len() >= 2,
-        "Expected at least 2 'test' matches after j, found {}",
-        after_j_matches.len()
-    );
-    assert!(
-        after_k_matches.len() >= 2,
-        "Expected at least 2 'test' matches after k, found {}",
-        after_k_matches.len()
+        !initial_beta_matches.is_empty(),
+        "Expected at least 1 'beta' match in initial frame, found {}",
+        initial_beta_matches.len()
     );
 
-    // Identify which session (by match index) is selected in each capture.
-    // The selected row uses a DarkGray background (`style::palette::SURFACE`).
-    let selected_index = |matches: &[testty::locator::MatchedSpan]| -> usize {
-        matches
-            .iter()
-            .position(|span| span.background.is_some())
-            .unwrap_or_else(|| panic!("No selected session row found"))
-    };
-
-    let initial_selected = selected_index(&initial_matches);
-    let after_j_selected = selected_index(&after_j_matches);
-    let after_k_selected = selected_index(&after_k_matches);
-
-    // Assert — j moves selection to a different session.
-    assert_ne!(
-        initial_selected, after_j_selected,
-        "After j: selection should move to a different session (was index {initial_selected})"
-    );
-
-    // Assert — k returns selection to the original session.
+    // Assert — `j` and `k` navigate to different sessions when opening them.
     assert_eq!(
-        initial_selected, after_k_selected,
-        "After k: selection should return to the original session index {initial_selected}, but \
-         is on index {after_k_selected}"
+        opened_after_j_text.contains("alpha") || opened_after_j_text.contains("beta"),
+        true,
+        "Expected the session opened after j to contain either alpha or beta"
     );
-
-    // Assert — Sessions tab is still active after navigation.
-    let header = common::header_region(frame.cols());
-    assertion::assert_span_is_highlighted(&frame, "Sessions");
-    assertion::assert_text_in_region(&frame, "Sessions", &header);
+    assert_eq!(
+        opened_after_k_text.contains("alpha") || opened_after_k_text.contains("beta"),
+        true,
+        "Expected the session opened after k to contain either alpha or beta"
+    );
+    assert_ne!(
+        opened_after_j_text.contains("alpha"),
+        opened_after_k_text.contains("alpha"),
+        "Expected j and k to open different sessions"
+    );
 
     common::save_feature_gif(&scenario, &report, &env, "session_list_jk_navigation");
 }

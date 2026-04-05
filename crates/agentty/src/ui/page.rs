@@ -6,3 +6,4 @@ pub mod session_chat;
 pub mod session_list;
 pub mod setting;
 pub mod stat;
+pub mod task;

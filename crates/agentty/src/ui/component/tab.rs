@@ -12,16 +12,23 @@ use crate::ui::{Component, style};
 pub struct Tabs<'a> {
     active_project_id: i64,
     current_tab: Tab,
+    has_tasks_tab: bool,
     projects: &'a [ProjectListItem],
 }
 
 impl Tabs<'_> {
     /// Creates a tabs component with the provided active tab and project
     /// context used to label the project-scoped tab group.
-    pub fn new(current_tab: Tab, active_project_id: i64, projects: &[ProjectListItem]) -> Tabs<'_> {
+    pub fn new(
+        current_tab: Tab,
+        active_project_id: i64,
+        has_tasks_tab: bool,
+        projects: &[ProjectListItem],
+    ) -> Tabs<'_> {
         Tabs {
             active_project_id,
             current_tab,
+            has_tasks_tab,
             projects,
         }
     }
@@ -32,6 +39,7 @@ impl Component for Tabs<'_> {
         let line = Line::from(tab_spans(
             self.current_tab,
             self.active_project_id,
+            self.has_tasks_tab,
             self.projects,
         ));
         let paragraph = Paragraph::new(line).block(
@@ -48,17 +56,19 @@ impl Component for Tabs<'_> {
 fn tab_spans(
     current_tab: Tab,
     active_project_id: i64,
+    has_tasks_tab: bool,
     projects: &[ProjectListItem],
 ) -> Vec<Span<'static>> {
-    let mut spans = Vec::with_capacity(9);
+    let tab_count = Tab::project_scoped_tabs(has_tasks_tab).len();
+    let mut spans = Vec::with_capacity(2 * tab_count + 3);
 
     spans.push(tab_span(Tab::Projects, current_tab));
     spans.push(tab_separator_span());
     spans.push(project_context_span(active_project_id, projects));
 
-    for tab in Tab::PROJECT_SCOPED {
+    for tab in Tab::project_scoped_tabs(has_tasks_tab) {
         spans.push(tab_separator_span());
-        spans.push(tab_span(tab, current_tab));
+        spans.push(tab_span(*tab, current_tab));
     }
 
     spans
@@ -77,6 +87,7 @@ fn tab_span(tab: Tab, current_tab: Tab) -> Span<'static> {
         return Span::styled(
             label,
             Style::default()
+                .bg(style::palette::SURFACE)
                 .fg(style::palette::WARNING)
                 .add_modifier(Modifier::BOLD),
         );
@@ -135,7 +146,7 @@ mod tests {
         let current_tab = Tab::Projects;
 
         // Act
-        let spans = tab_spans(current_tab, 0, &[]);
+        let spans = tab_spans(current_tab, 0, false, &[]);
         let rendered_tabs: String = spans
             .iter()
             .map(|span| span.content.as_ref())
@@ -155,14 +166,14 @@ mod tests {
         let current_tab = Tab::Stats;
 
         // Act
-        let spans = tab_spans(current_tab, 0, &[]);
+        let spans = tab_spans(current_tab, 0, false, &[]);
 
         // Assert
         assert_eq!(spans[0].style.fg, Some(style::palette::TEXT_MUTED));
         assert_eq!(spans[2].style.fg, Some(style::palette::TEXT_SUBTLE));
         assert_eq!(spans[4].style.fg, Some(style::palette::TEXT_MUTED));
         assert_eq!(spans[6].style.fg, Some(style::palette::WARNING));
-        assert_eq!(spans[6].style.bg, None);
+        assert_eq!(spans[6].style.bg, Some(style::palette::SURFACE));
         assert_eq!(spans[8].style.fg, Some(style::palette::TEXT_MUTED));
         assert!(spans[6].style.add_modifier.contains(Modifier::BOLD));
     }
@@ -177,7 +188,7 @@ mod tests {
         ];
 
         // Act
-        let spans = tab_spans(current_tab, 7, &projects);
+        let spans = tab_spans(current_tab, 7, false, &projects);
         let rendered_tabs: String = spans
             .iter()
             .map(|span| span.content.as_ref())
@@ -192,7 +203,7 @@ mod tests {
         assert_eq!(spans[2].style.fg, Some(style::palette::ACCENT_SOFT));
         assert!(spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(spans[4].style.fg, Some(style::palette::WARNING));
-        assert_eq!(spans[4].style.bg, None);
+        assert_eq!(spans[4].style.bg, Some(style::palette::SURFACE));
     }
 
     #[test]
@@ -201,7 +212,7 @@ mod tests {
         let current_tab = Tab::Projects;
 
         // Act
-        let spans = tab_spans(current_tab, 0, &[]);
+        let spans = tab_spans(current_tab, 0, false, &[]);
 
         // Assert
         assert_eq!(spans[1].content.as_ref(), "|");
@@ -220,11 +231,33 @@ mod tests {
         let current_tab = Tab::Stats;
 
         // Act
-        let spans = tab_spans(current_tab, 0, &[]);
+        let spans = tab_spans(current_tab, 0, false, &[]);
 
         // Assert
         assert_eq!(spans[2].content.as_ref(), " Project: None ");
         assert_eq!(spans[2].style.fg, Some(style::palette::TEXT_SUBTLE));
+    }
+
+    #[test]
+    fn test_tab_spans_include_tasks_tab_when_project_has_roadmap() {
+        // Arrange
+        let current_tab = Tab::Tasks;
+
+        // Act
+        let spans = tab_spans(current_tab, 0, true, &[]);
+        let rendered_tabs: String = spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+
+        // Assert
+        assert_eq!(
+            rendered_tabs,
+            " Projects | Project: None | Sessions | Tasks | Stats | Settings "
+        );
+        assert_eq!(spans[6].style.fg, Some(style::palette::WARNING));
+        assert_eq!(spans[6].style.bg, Some(style::palette::SURFACE));
     }
 
     /// Creates a `ProjectListItem` for tab-label rendering tests.

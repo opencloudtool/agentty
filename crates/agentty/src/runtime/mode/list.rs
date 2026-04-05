@@ -42,10 +42,10 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
             return Ok(EventResult::Continue);
         }
         KeyCode::Tab => {
-            app.tabs.next();
+            app.next_tab();
         }
         KeyCode::BackTab => {
-            app.tabs.previous();
+            app.previous_tab();
         }
         KeyCode::Char('a')
             if app.tabs.current() == Tab::Sessions && key.modifiers == KeyModifiers::NONE =>
@@ -60,12 +60,14 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
         KeyCode::Char('j') | KeyCode::Down => match app.tabs.current() {
             Tab::Projects => app.next_project(),
             Tab::Sessions => app.next(),
+            Tab::Tasks => {}
             Tab::Stats => {}
             Tab::Settings => app.settings.next(),
         },
         KeyCode::Char('k') | KeyCode::Up => match app.tabs.current() {
             Tab::Projects => app.previous_project(),
             Tab::Sessions => app.previous(),
+            Tab::Tasks => {}
             Tab::Stats => {}
             Tab::Settings => app.settings.previous(),
         },
@@ -160,6 +162,7 @@ async fn handle_enter_key(app: &mut App) -> io::Result<EventResult> {
         Tab::Settings => {
             app.settings.handle_enter(&app.services).await;
         }
+        Tab::Tasks => {}
         Tab::Stats => {}
     }
 
@@ -277,7 +280,7 @@ fn list_keybindings(app: &App) -> Vec<HelpAction> {
         return settings_actions();
     }
 
-    if app.tabs.current() == Tab::Stats {
+    if app.tabs.current() == Tab::Stats || app.tabs.current() == Tab::Tasks {
         return stats_actions();
     }
 

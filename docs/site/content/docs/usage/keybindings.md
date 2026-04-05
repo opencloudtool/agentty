@@ -61,6 +61,17 @@ The Settings tab includes:
 - `Coauthored by Agentty` to enable or disable the `Co-Authored-By` trailer on generated session commit messages for the active project.
 - `Open Commands` for launching session worktrees in the active project (one command per line).
 
+## Tasks
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `Tab` | Switch tab |
+| `?` | Help |
+
+The Tasks tab appears only when the active project contains
+`docs/plan/roadmap.md`.
+
 ## Session View
 
 <a id="usage-session-view-actions"></a>

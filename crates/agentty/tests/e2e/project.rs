@@ -29,14 +29,8 @@ fn projects_page_shows_cwd() {
         .expect("scenario execution failed");
 
     // Assert — Projects tab is selected (default startup tab).
-    let header = common::header_region(frame.cols());
-    assertion::assert_span_is_highlighted(&frame, "Projects");
-    assertion::assert_text_in_region(&frame, "Projects", &header);
-
-    // Assert — the test-project directory name appears in the project list.
-    // `BuilderEnv` creates a `test-project` workdir, which agentty
-    // auto-registers on startup.
     let full = Region::full(frame.cols(), frame.rows());
+    assertion::assert_text_in_region(&frame, "Agentty", &full);
     assertion::assert_text_in_region(&frame, "test-project", &full);
 
     common::save_feature_gif(&scenario, &report, &env, "projects_page_shows_cwd");

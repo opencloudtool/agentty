@@ -59,6 +59,9 @@ pub trait FsClient: Send + Sync {
 
     /// Returns whether `path` currently resolves to an existing directory.
     fn is_dir(&self, path: PathBuf) -> bool;
+
+    /// Returns whether `path` currently resolves to an existing regular file.
+    fn is_file(&self, path: PathBuf) -> bool;
 }
 
 /// Production [`FsClient`] implementation backed by real filesystem calls.
@@ -97,6 +100,10 @@ impl FsClient for RealFsClient {
 
     fn is_dir(&self, path: PathBuf) -> bool {
         path.is_dir()
+    }
+
+    fn is_file(&self, path: PathBuf) -> bool {
+        path.is_file()
     }
 }
 
@@ -146,5 +153,26 @@ mod tests {
         // Assert
         let message = error.to_string();
         assert!(message.contains("No such file") || message.contains("cannot find the path"));
+    }
+
+    /// Verifies `RealFsClient::is_file()` distinguishes files from
+    /// directories.
+    #[tokio::test]
+    async fn test_real_fs_client_is_file_returns_true_only_for_regular_files() {
+        // Arrange
+        let temp_dir = tempdir().expect("create temp dir");
+        let file_path = temp_dir.path().join("example.txt");
+        tokio::fs::write(&file_path, b"hello world")
+            .await
+            .expect("write file");
+        let fs_client = RealFsClient;
+
+        // Act
+        let file_exists = fs_client.is_file(file_path);
+        let directory_exists = fs_client.is_file(temp_dir.path().to_path_buf());
+
+        // Assert
+        assert!(file_exists);
+        assert!(!directory_exists);
     }
 }
