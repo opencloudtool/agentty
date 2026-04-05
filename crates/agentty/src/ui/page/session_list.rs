@@ -437,6 +437,35 @@ mod tests {
             .collect()
     }
 
+    /// Returns the first rendered cell that starts the requested text.
+    fn find_text_start_cell<'a>(
+        buffer: &'a ratatui::buffer::Buffer,
+        needle: &str,
+    ) -> Option<&'a ratatui::buffer::Cell> {
+        let width = usize::from(buffer.area.width.max(1));
+        let needle_symbols = needle.chars().map(|character| character.to_string());
+        let needle_symbols = needle_symbols.collect::<Vec<_>>();
+        let content = buffer.content();
+
+        for row_start in (0..content.len()).step_by(width) {
+            let row_end = row_start + width.min(content.len().saturating_sub(row_start));
+            let row = &content[row_start..row_end];
+
+            for (index, window) in row.windows(needle_symbols.len()).enumerate() {
+                let window_matches = window
+                    .iter()
+                    .zip(&needle_symbols)
+                    .all(|(cell, symbol)| cell.symbol() == symbol);
+
+                if window_matches {
+                    return Some(&row[index]);
+                }
+            }
+        }
+
+        None
+    }
+
     #[test]
     fn test_content_chunks_use_shared_page_margin() {
         // Arrange
@@ -848,5 +877,30 @@ mod tests {
         // Assert
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("AgentReview"));
+    }
+
+    #[test]
+    fn test_render_keeps_selected_new_status_text_visible() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(100, 12);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let mut table_state = TableState::default();
+        table_state.select(Some(0));
+        let sessions = vec![test_session("new-1", Status::New)];
+
+        // Act
+        terminal
+            .draw(|frame| {
+                SessionListPage::new(&sessions, &mut table_state, 0).render(frame, frame.area());
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let buffer = terminal.backend().buffer();
+        let fallback_cell = &buffer.content()[0];
+        let new_cell = find_text_start_cell(buffer, "New").unwrap_or(fallback_cell);
+        assert_eq!(new_cell.fg, style::palette::TEXT_MUTED);
+        assert_eq!(new_cell.bg, style::palette::SURFACE);
+        assert_ne!(new_cell.fg, new_cell.bg);
     }
 }

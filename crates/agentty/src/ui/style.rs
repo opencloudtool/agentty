@@ -50,7 +50,7 @@ pub mod palette {
 /// Returns the terminal color used for one session status label.
 pub fn status_color(status: Status) -> Color {
     match status {
-        Status::New => palette::TEXT_SUBTLE,
+        Status::New => palette::TEXT_MUTED,
         Status::InProgress => palette::WARNING,
         Status::Review | Status::AgentReview => palette::INFO,
         Status::Question => palette::QUESTION,
@@ -76,6 +76,15 @@ pub fn status_icon(status: Status) -> Icon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_color_returns_muted_text_for_new() {
+        // Arrange / Act
+        let color = status_color(Status::New);
+
+        // Assert
+        assert_eq!(color, palette::TEXT_MUTED);
+    }
 
     #[test]
     fn status_color_returns_success_for_done() {
