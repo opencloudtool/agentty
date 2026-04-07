@@ -576,6 +576,7 @@ impl<'a> SessionChatPage<'a> {
             .and_then(|position| session.follow_up_task(position))
             .map(crate::domain::session::SessionFollowUpTask::action);
         let mut actions = help_action::view_footer_actions(ViewHelpState {
+            can_sync_review_request: session.can_sync_review_request(),
             follow_up_task_action: selected_follow_up_task_action,
             has_multiple_follow_up_tasks: session.follow_up_tasks.len() > 1,
             publish_branch_action: session.publish_branch_action(),

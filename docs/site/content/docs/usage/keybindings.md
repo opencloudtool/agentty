@@ -83,7 +83,7 @@ state:
 | `q` | Back to list |
 | `Enter` | Compose the first prompt or reply; in draft sessions it adds a draft |
 | `/` | Open the composer with `/` prefilled for slash commands |
-| `s` | Start a staged draft session |
+| `s` | Start a staged draft session; or sync review request status when a branch is published |
 | `o` | Open worktree in tmux |
 | `p` | Publish session branch |
 | `d` | Show diff |

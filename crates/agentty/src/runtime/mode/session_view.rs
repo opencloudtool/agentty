@@ -4,6 +4,7 @@ use crossterm::event::{self, KeyCode, KeyEvent};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 
+use crate::app::session::remote_branch_name_from_upstream_ref;
 use crate::app::{
     App, ReviewCacheEntry, diff_content_hash, is_review_loading_status_message,
     review_loading_message,
@@ -68,6 +69,7 @@ struct ViewKeyContext<'a> {
 /// Snapshot of session-derived state used by view-mode key handling.
 struct ViewSessionSnapshot {
     can_start_staged_session: bool,
+    can_sync_review_request: bool,
     can_open_worktree: bool,
     follow_up_task_action: Option<FollowUpTaskAction>,
     has_multiple_follow_up_tasks: bool,
@@ -165,6 +167,12 @@ async fn handle_view_key(
 
             return false;
         }
+        KeyCode::Char('s') if view_session_snapshot.can_sync_review_request => {
+            let restore_view = confirmation_view_mode(view_context);
+            app.start_sync_review_request_action(restore_view, &view_context.session_id);
+
+            return false;
+        }
         KeyCode::Char('[') if view_session_snapshot.has_multiple_follow_up_tasks => {
             app.select_previous_follow_up_task(&view_context.session_id);
         }
@@ -257,6 +265,7 @@ async fn handle_view_key(
             open_view_help_overlay(
                 app,
                 view_context,
+                view_session_snapshot.can_sync_review_request,
                 view_session_snapshot.follow_up_task_action,
                 view_session_snapshot.has_multiple_follow_up_tasks,
                 view_session_snapshot.publish_branch_action,
@@ -372,6 +381,7 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
         can_start_staged_session: session.is_draft_session()
             && session.status == Status::New
             && session.has_staged_drafts(),
+        can_sync_review_request: session.can_sync_review_request(),
         can_open_worktree: is_view_worktree_open_allowed(session_status)
             && can_open_session_worktree(session_status),
         follow_up_task_action: app.selected_follow_up_task_action(&view_context.session_id),
@@ -495,6 +505,7 @@ fn can_open_session_worktree(status: Status) -> bool {
 fn open_view_help_overlay(
     app: &mut App,
     view_context: &ViewContext,
+    can_sync_review_request: bool,
     follow_up_task_action: Option<FollowUpTaskAction>,
     has_multiple_follow_up_tasks: bool,
     publish_branch_action: Option<PublishBranchAction>,
@@ -502,6 +513,7 @@ fn open_view_help_overlay(
 ) {
     app.mode = AppMode::Help {
         context: HelpContext::View {
+            can_sync_review_request,
             done_session_output_mode: view_context.done_session_output_mode,
             follow_up_task_action,
             has_multiple_follow_up_tasks,
@@ -539,14 +551,6 @@ fn open_publish_branch_input(
         publish_branch_action,
         restore_view: confirmation_view_mode(view_context),
     };
-}
-
-/// Extracts the remote branch portion from one upstream reference.
-fn remote_branch_name_from_upstream_ref(upstream_ref: &str) -> String {
-    upstream_ref.split_once('/').map_or_else(
-        || upstream_ref.to_string(),
-        |(_, branch_name)| branch_name.to_string(),
-    )
 }
 
 fn view_context(app: &mut App) -> Option<ViewContext> {
@@ -1280,6 +1284,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_view_session_snapshot_enables_sync_for_review_with_published_ref() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.sessions.sessions[0].status = Status::Review;
+        app.sessions.sessions[0].published_upstream_ref =
+            Some("origin/agentty/session-id".to_string());
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            session_id,
+            scroll_offset: Some(1),
+        };
+        let context = view_context(&mut app).expect("expected view context");
+
+        // Act
+        let snapshot = view_session_snapshot(&app, &context).expect("expected view snapshot");
+
+        // Assert
+        assert!(snapshot.can_sync_review_request);
+    }
+
+    #[tokio::test]
+    async fn test_view_session_snapshot_disables_sync_for_in_progress_with_published_ref() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.sessions.sessions[0].status = Status::InProgress;
+        app.sessions.sessions[0].published_upstream_ref =
+            Some("origin/agentty/session-id".to_string());
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            session_id,
+            scroll_offset: Some(1),
+        };
+        let context = view_context(&mut app).expect("expected view context");
+
+        // Act
+        let snapshot = view_session_snapshot(&app, &context).expect("expected view snapshot");
+
+        // Assert
+        assert!(!snapshot.can_sync_review_request);
+    }
+
+    #[tokio::test]
+    async fn test_view_session_snapshot_disables_sync_without_forge_context() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.sessions.sessions[0].status = Status::Review;
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            session_id,
+            scroll_offset: Some(1),
+        };
+        let context = view_context(&mut app).expect("expected view context");
+
+        // Act
+        let snapshot = view_session_snapshot(&app, &context).expect("expected view snapshot");
+
+        // Assert
+        assert!(!snapshot.can_sync_review_request);
+    }
+
+    #[tokio::test]
     async fn test_view_total_lines_counts_wrapped_output_lines() {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
@@ -1951,6 +2022,7 @@ mod tests {
         open_view_help_overlay(
             &mut app,
             &view_context,
+            false,
             None,
             false,
             Some(PublishBranchAction::Push),
@@ -1962,6 +2034,7 @@ mod tests {
             app.mode,
             AppMode::Help {
                 context: HelpContext::View {
+                    can_sync_review_request: false,
                     done_session_output_mode: DoneSessionOutputMode::Review,
                     follow_up_task_action: None,
                     has_multiple_follow_up_tasks: false,
@@ -2333,6 +2406,7 @@ mod tests {
         let mut pending_update = ViewPendingUpdate::from_context(&view_context);
         let view_session_snapshot = ViewSessionSnapshot {
             can_start_staged_session: false,
+            can_sync_review_request: false,
             can_open_worktree: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
@@ -2445,6 +2519,7 @@ mod tests {
         let mut pending_update = ViewPendingUpdate::from_context(&view_context);
         let view_session_snapshot = ViewSessionSnapshot {
             can_start_staged_session: false,
+            can_sync_review_request: false,
             can_open_worktree: true,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
@@ -2522,6 +2597,7 @@ mod tests {
             let mut pending_update = ViewPendingUpdate::from_context(&view_context);
             let view_session_snapshot = ViewSessionSnapshot {
                 can_start_staged_session: false,
+                can_sync_review_request: false,
                 can_open_worktree: false,
                 follow_up_task_action: None,
                 has_multiple_follow_up_tasks: false,

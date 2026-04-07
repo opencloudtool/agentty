@@ -279,6 +279,7 @@ pub enum HelpContext {
     /// Generic list-mode help context with precomputed keybindings.
     List { keybindings: Vec<HelpAction> },
     View {
+        can_sync_review_request: bool,
         done_session_output_mode: DoneSessionOutputMode,
         follow_up_task_action: Option<FollowUpTaskAction>,
         has_multiple_follow_up_tasks: bool,
@@ -305,12 +306,14 @@ impl HelpContext {
     pub fn keybindings(&self) -> Vec<HelpAction> {
         match self {
             HelpContext::View {
+                can_sync_review_request,
                 follow_up_task_action,
                 has_multiple_follow_up_tasks,
                 publish_branch_action,
                 session_state,
                 ..
             } => help_action::view_actions(ViewHelpState {
+                can_sync_review_request: *can_sync_review_request,
                 follow_up_task_action: *follow_up_task_action,
                 has_multiple_follow_up_tasks: *has_multiple_follow_up_tasks,
                 publish_branch_action: *publish_branch_action,
@@ -423,6 +426,7 @@ mod tests {
     fn test_help_context_view_keybindings_for_in_progress_hide_edit_actions() {
         // Arrange
         let context = HelpContext::View {
+            can_sync_review_request: false,
             done_session_output_mode: DoneSessionOutputMode::Summary,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
@@ -453,6 +457,7 @@ mod tests {
     fn test_help_context_restore_mode_ignores_view_help_flags() {
         // Arrange
         let context = HelpContext::View {
+            can_sync_review_request: false,
             done_session_output_mode: DoneSessionOutputMode::Summary,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
@@ -486,6 +491,7 @@ mod tests {
     fn test_help_context_view_keybindings_include_publish_branch_action() {
         // Arrange
         let context = HelpContext::View {
+            can_sync_review_request: false,
             done_session_output_mode: DoneSessionOutputMode::Summary,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,

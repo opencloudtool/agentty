@@ -98,6 +98,7 @@ mod tests {
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::Help {
             context: HelpContext::View {
+                can_sync_review_request: false,
                 done_session_output_mode: DoneSessionOutputMode::Summary,
                 follow_up_task_action: None,
                 has_multiple_follow_up_tasks: false,

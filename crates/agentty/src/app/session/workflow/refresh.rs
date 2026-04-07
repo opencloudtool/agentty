@@ -258,6 +258,30 @@ impl SessionManager {
     }
 }
 
+/// Outcome from syncing one session's review request state with the forge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SyncReviewRequestOutcome {
+    /// The linked review request is still open.
+    Open {
+        /// Short display identifier (for example `#42`).
+        display_id: String,
+        /// Optional provider-specific status detail.
+        status_summary: Option<String>,
+    },
+    /// The linked review request was merged upstream.
+    Merged {
+        /// Short display identifier (for example `#42`).
+        display_id: String,
+    },
+    /// The linked review request was closed without merge.
+    Closed {
+        /// Short display identifier (for example `#42`).
+        display_id: String,
+    },
+    /// No review request was found for the session branch.
+    NoReviewRequest,
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

@@ -79,7 +79,7 @@ impl Page for SessionListPage<'_> {
             Constraint::Fill(1),
             model_column_width(self.sessions),
             size_column_width(),
-            status_column_width(),
+            status_column_width(self.sessions),
             timer_column_width(self.sessions, self.wall_clock_unix_seconds),
         ];
         let title_column_width = first_table_column_width(
@@ -311,11 +311,17 @@ fn render_session_row(
     } else {
         String::new()
     };
+    let forge_indicator = session.forge_indicator();
+    let status_label = if forge_indicator.is_empty() {
+        format!("{status}")
+    } else {
+        format!("{status} {forge_indicator}")
+    };
     let cells = vec![
         Cell::from(Line::from(title_spans)),
         Cell::from(session.model.as_str()),
         Cell::from(session.size.to_string()).style(Style::default().fg(size_color(session.size))),
-        Cell::from(format!("{status}")).style(Style::default().fg(style::status_color(status))),
+        Cell::from(status_label).style(Style::default().fg(style::status_color(status))),
         Cell::from(timer_label),
     ];
 
@@ -348,12 +354,31 @@ fn size_column_width() -> Constraint {
 }
 
 /// Calculates the width of the status column from every supported session
-/// status label.
-fn status_column_width() -> Constraint {
-    text_column_width(
+/// status label plus the widest possible forge indicator suffix.
+fn status_column_width(sessions: &[Session]) -> Constraint {
+    let static_width = text_column_width(
         "Status",
         Status::ALL.iter().map(std::string::ToString::to_string),
-    )
+    );
+
+    let session_width = text_column_width(
+        "Status",
+        sessions.iter().map(|session| {
+            let forge_indicator = session.forge_indicator();
+            if forge_indicator.is_empty() {
+                session.status.to_string()
+            } else {
+                format!("{} {forge_indicator}", session.status)
+            }
+        }),
+    );
+
+    match (static_width, session_width) {
+        (Constraint::Length(static_len), Constraint::Length(session_len)) => {
+            Constraint::Length(static_len.max(session_len))
+        }
+        _ => static_width,
+    }
 }
 
 /// Calculates the width of the timer column from known session durations.
@@ -737,7 +762,38 @@ mod tests {
         let expected_width = u16::try_from("AgentReview".chars().count()).unwrap_or(u16::MAX);
 
         // Act
-        let width = status_column_width();
+        let width = status_column_width(&[]);
+
+        // Assert
+        assert_eq!(width, Constraint::Length(expected_width));
+    }
+
+    #[test]
+    fn test_status_column_width_expands_for_forge_indicator() {
+        // Arrange
+        use crate::domain::session::{
+            ForgeKind, ReviewRequest, ReviewRequestState, ReviewRequestSummary,
+        };
+        let mut session = test_session("session-1", Status::Review);
+        session.review_request = Some(ReviewRequest {
+            last_refreshed_at: 0,
+            summary: ReviewRequestSummary {
+                display_id: "#42".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "agentty/session-id".to_string(),
+                state: ReviewRequestState::Open,
+                status_summary: None,
+                target_branch: "main".to_string(),
+                title: "feat".to_string(),
+                web_url: String::new(),
+            },
+        });
+        let sessions = vec![session];
+        // "Review ⊙ #42" is wider than "AgentReview"
+        let expected_width = u16::try_from("Review ⊙ #42".chars().count()).unwrap_or(u16::MAX);
+
+        // Act
+        let width = status_column_width(&sessions);
 
         // Assert
         assert_eq!(width, Constraint::Length(expected_width));

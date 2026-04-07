@@ -63,6 +63,8 @@ pub enum ViewSessionState {
 /// Action availability snapshot for view-mode help projection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ViewHelpState {
+    /// Whether the session can sync its review request state from the forge.
+    pub(crate) can_sync_review_request: bool,
     /// Launch/open action available for the selected follow-up task, when the
     /// current session exposes one.
     pub(crate) follow_up_task_action: Option<FollowUpTaskAction>,
@@ -272,6 +274,10 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
 
     if let Some(publish_branch_action) = state.publish_branch_action {
         actions.push(publish_branch_help_action(publish_branch_action));
+    }
+
+    if state.can_sync_review_request {
+        actions.push(HelpAction::new("sync", "s", "Sync review request status"));
     }
 
     if can_edit_session {
@@ -611,6 +617,7 @@ mod tests {
     fn test_view_actions_in_progress_shows_open_and_hides_edit_actions() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -631,6 +638,7 @@ mod tests {
     fn test_view_actions_rebasing_shows_open_without_stop() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -651,6 +659,7 @@ mod tests {
     fn test_view_actions_merge_queue_hides_worktree_shortcuts_and_stop() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -671,6 +680,7 @@ mod tests {
     fn test_view_actions_review_shows_diff() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: Some(PublishBranchAction::Push),
@@ -707,6 +717,7 @@ mod tests {
     fn test_view_actions_agent_review_hides_rebase() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: Some(PublishBranchAction::Push),
@@ -727,6 +738,7 @@ mod tests {
     fn test_view_actions_interactive_hides_diff() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -747,6 +759,7 @@ mod tests {
     fn test_view_actions_new_session_shows_add_draft_and_start() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -770,6 +783,7 @@ mod tests {
     fn test_view_actions_done_shows_toggle_and_hides_edit_actions() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: Some(PublishBranchAction::Push),
@@ -793,6 +807,7 @@ mod tests {
     fn test_view_footer_actions_review_shows_advanced_actions() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: Some(PublishBranchAction::Push),
@@ -816,6 +831,7 @@ mod tests {
     fn test_view_footer_actions_agent_review_hides_rebase() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: Some(PublishBranchAction::Push),
@@ -839,6 +855,7 @@ mod tests {
     fn test_view_footer_actions_rebasing_shows_open_without_stop() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: Some(PublishBranchAction::Push),
@@ -859,6 +876,7 @@ mod tests {
     fn test_view_footer_actions_new_session_keeps_edit_actions_grouped() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -877,6 +895,7 @@ mod tests {
     fn test_view_footer_actions_merge_queue_hides_worktree_shortcuts_and_stop() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -898,6 +917,7 @@ mod tests {
     fn test_view_actions_canceled_without_branch_publish_action() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -964,5 +984,50 @@ mod tests {
         // Assert
         assert_eq!(span.content, " | ");
         assert_eq!(span.style, Style::default().fg(Color::DarkGray));
+    }
+
+    #[test]
+    fn test_view_actions_shows_sync_when_can_sync_review_request_true() {
+        // Arrange
+        let state = ViewHelpState {
+            can_sync_review_request: true,
+            follow_up_task_action: None,
+            has_multiple_follow_up_tasks: false,
+            publish_branch_action: Some(PublishBranchAction::Push),
+            session_state: ViewSessionState::Review,
+        };
+
+        // Act
+        let actions = view_actions(state);
+
+        // Assert
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.key == "s"
+                    && action.popup_label == "Sync review request status")
+        );
+    }
+
+    #[test]
+    fn test_view_actions_hides_sync_when_can_sync_review_request_false() {
+        // Arrange
+        let state = ViewHelpState {
+            can_sync_review_request: false,
+            follow_up_task_action: None,
+            has_multiple_follow_up_tasks: false,
+            publish_branch_action: Some(PublishBranchAction::Push),
+            session_state: ViewSessionState::Review,
+        };
+
+        // Act
+        let actions = view_actions(state);
+
+        // Assert
+        assert!(
+            !actions
+                .iter()
+                .any(|action| action.popup_label == "Sync review request status")
+        );
     }
 }

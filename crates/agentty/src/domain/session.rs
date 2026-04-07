@@ -85,6 +85,7 @@ impl Status {
                         | Status::Merging
                         | Status::Canceled
                 )
+                | (Status::Review | Status::AgentReview, Status::Done)
                 | (
                     Status::Queued,
                     Status::Merging | Status::Review | Status::AgentReview
@@ -433,6 +434,44 @@ impl Session {
 
         self.in_progress_total_seconds
             .saturating_add(open_interval_seconds)
+    }
+
+    /// Returns a short forge indicator suffix for the session list status
+    /// column.
+    ///
+    /// The indicator reflects the most specific known forge state:
+    /// - `↑` when the branch was pushed but no review request is linked.
+    /// - `⊙ #N` when a linked review request is open.
+    /// - `✓ #N` when a linked review request was merged.
+    /// - `✗ #N` when a linked review request was closed without merge.
+    /// - Empty when neither published nor linked.
+    pub fn forge_indicator(&self) -> String {
+        if let Some(review_request) = &self.review_request {
+            let display_id = &review_request.summary.display_id;
+
+            return match review_request.summary.state {
+                ReviewRequestState::Open => format!("⊙ {display_id}"),
+                ReviewRequestState::Merged => format!("✓ {display_id}"),
+                ReviewRequestState::Closed => format!("✗ {display_id}"),
+            };
+        }
+
+        if self.published_upstream_ref.is_some() {
+            return "↑".to_string();
+        }
+
+        String::new()
+    }
+
+    /// Returns whether this session can trigger a forge review request sync.
+    ///
+    /// Sync is available when the session has a published branch or a linked
+    /// review request and the status allows review actions.
+    pub fn can_sync_review_request(&self) -> bool {
+        let has_forge_context =
+            self.published_upstream_ref.is_some() || self.review_request.is_some();
+
+        has_forge_context && matches!(self.status, Status::Review | Status::AgentReview)
     }
 
     /// Returns the session-branch action currently available in session view.
@@ -961,5 +1000,250 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
 
         // Assert
         assert_eq!(duration_seconds, 150);
+    }
+
+    // -- forge_indicator tests -----------------------------------------------
+
+    #[test]
+    fn test_forge_indicator_returns_open_symbol_with_display_id() {
+        // Arrange
+        let mut session = test_session(None);
+        session.review_request = Some(ReviewRequest {
+            last_refreshed_at: 0,
+            summary: ReviewRequestSummary {
+                display_id: "#42".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "agentty/session-id".to_string(),
+                state: ReviewRequestState::Open,
+                status_summary: None,
+                target_branch: "main".to_string(),
+                title: "feat".to_string(),
+                web_url: String::new(),
+            },
+        });
+
+        // Act
+        let indicator = session.forge_indicator();
+
+        // Assert
+        assert_eq!(indicator, "⊙ #42");
+    }
+
+    #[test]
+    fn test_forge_indicator_returns_merged_symbol_with_display_id() {
+        // Arrange
+        let mut session = test_session(None);
+        session.review_request = Some(ReviewRequest {
+            last_refreshed_at: 0,
+            summary: ReviewRequestSummary {
+                display_id: "#99".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "agentty/session-id".to_string(),
+                state: ReviewRequestState::Merged,
+                status_summary: None,
+                target_branch: "main".to_string(),
+                title: "feat".to_string(),
+                web_url: String::new(),
+            },
+        });
+
+        // Act
+        let indicator = session.forge_indicator();
+
+        // Assert
+        assert_eq!(indicator, "✓ #99");
+    }
+
+    #[test]
+    fn test_forge_indicator_returns_closed_symbol_with_display_id() {
+        // Arrange
+        let mut session = test_session(None);
+        session.review_request = Some(ReviewRequest {
+            last_refreshed_at: 0,
+            summary: ReviewRequestSummary {
+                display_id: "#7".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "agentty/session-id".to_string(),
+                state: ReviewRequestState::Closed,
+                status_summary: None,
+                target_branch: "main".to_string(),
+                title: "feat".to_string(),
+                web_url: String::new(),
+            },
+        });
+
+        // Act
+        let indicator = session.forge_indicator();
+
+        // Assert
+        assert_eq!(indicator, "✗ #7");
+    }
+
+    #[test]
+    fn test_forge_indicator_returns_arrow_for_published_branch_without_review_request() {
+        // Arrange
+        let mut session = test_session(None);
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+
+        // Act
+        let indicator = session.forge_indicator();
+
+        // Assert
+        assert_eq!(indicator, "↑");
+    }
+
+    #[test]
+    fn test_forge_indicator_returns_empty_when_no_forge_context() {
+        // Arrange
+        let session = test_session(None);
+
+        // Act
+        let indicator = session.forge_indicator();
+
+        // Assert
+        assert_eq!(indicator, "");
+    }
+
+    #[test]
+    fn test_forge_indicator_prefers_review_request_over_published_ref() {
+        // Arrange
+        let mut session = test_session(None);
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.review_request = Some(ReviewRequest {
+            last_refreshed_at: 0,
+            summary: ReviewRequestSummary {
+                display_id: "#10".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "agentty/session-id".to_string(),
+                state: ReviewRequestState::Open,
+                status_summary: None,
+                target_branch: "main".to_string(),
+                title: "feat".to_string(),
+                web_url: String::new(),
+            },
+        });
+
+        // Act
+        let indicator = session.forge_indicator();
+
+        // Assert
+        assert_eq!(indicator, "⊙ #10");
+    }
+
+    // -- can_sync_review_request tests ---------------------------------------
+
+    #[test]
+    fn test_can_sync_review_request_true_for_review_with_published_ref() {
+        // Arrange
+        let mut session = test_session(None);
+        session.status = Status::Review;
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+
+        // Act / Assert
+        assert!(session.can_sync_review_request());
+    }
+
+    #[test]
+    fn test_can_sync_review_request_true_for_agent_review_with_review_request() {
+        // Arrange
+        let mut session = test_session(None);
+        session.status = Status::AgentReview;
+        session.review_request = Some(ReviewRequest {
+            last_refreshed_at: 0,
+            summary: ReviewRequestSummary {
+                display_id: "#1".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "agentty/session-id".to_string(),
+                state: ReviewRequestState::Open,
+                status_summary: None,
+                target_branch: "main".to_string(),
+                title: "feat".to_string(),
+                web_url: String::new(),
+            },
+        });
+
+        // Act / Assert
+        assert!(session.can_sync_review_request());
+    }
+
+    #[test]
+    fn test_can_sync_review_request_false_for_question_with_published_ref() {
+        // Arrange
+        let mut session = test_session(None);
+        session.status = Status::Question;
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+
+        // Act / Assert
+        assert!(!session.can_sync_review_request());
+    }
+
+    #[test]
+    fn test_can_sync_review_request_false_for_in_progress() {
+        // Arrange
+        let mut session = test_session(None);
+        session.status = Status::InProgress;
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+
+        // Act / Assert
+        assert!(!session.can_sync_review_request());
+    }
+
+    #[test]
+    fn test_can_sync_review_request_false_for_done() {
+        // Arrange
+        let mut session = test_session(None);
+        session.status = Status::Done;
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+
+        // Act / Assert
+        assert!(!session.can_sync_review_request());
+    }
+
+    #[test]
+    fn test_can_sync_review_request_false_without_forge_context() {
+        // Arrange
+        let mut session = test_session(None);
+        session.status = Status::Review;
+
+        // Act / Assert
+        assert!(!session.can_sync_review_request());
+    }
+
+    // -- status transition: Review/AgentReview/Question → Done ---------------
+
+    #[test]
+    fn test_status_transition_review_to_done() {
+        // Arrange
+        let current_status = Status::Review;
+
+        // Act
+        let can_transition = current_status.can_transition_to(Status::Done);
+
+        // Assert
+        assert!(can_transition);
+    }
+
+    #[test]
+    fn test_status_transition_agent_review_to_done() {
+        // Arrange
+        let current_status = Status::AgentReview;
+
+        // Act
+        let can_transition = current_status.can_transition_to(Status::Done);
+
+        // Assert
+        assert!(can_transition);
+    }
+
+    #[test]
+    fn test_status_transition_question_to_done_rejected() {
+        // Arrange
+        let current_status = Status::Question;
+
+        // Act
+        let can_transition = current_status.can_transition_to(Status::Done);
+
+        // Assert
+        assert!(!can_transition);
     }
 }

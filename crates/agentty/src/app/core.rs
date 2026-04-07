@@ -191,6 +191,12 @@ pub(crate) enum AppEvent {
         session_id: String,
         turn_applied_state: TurnAppliedState,
     },
+    /// Indicates completion of a session-view review request sync action.
+    SyncReviewRequestCompleted {
+        restore_view: ConfirmationViewMode,
+        result: Result<SyncReviewRequestTaskResult, String>,
+        session_id: String,
+    },
 }
 
 /// Reduced representation of all app events currently queued for one tick.
@@ -213,6 +219,7 @@ struct AppEventBatch {
     session_title_generation_finished: HashMap<String, u64>,
     should_refresh_git_status: bool,
     should_force_reload: bool,
+    sync_review_request_update: Option<SyncReviewRequestUpdate>,
     sync_main_result: Option<Result<SyncMainOutcome, SyncSessionStartError>>,
     update_status: Option<UpdateStatus>,
 }
@@ -343,6 +350,17 @@ impl AppEventBatch {
                 session_id,
                 turn_applied_state,
             } => self.collect_agent_response_received(session_id, turn_applied_state),
+            AppEvent::SyncReviewRequestCompleted {
+                restore_view,
+                result,
+                session_id,
+            } => {
+                self.sync_review_request_update = Some(SyncReviewRequestUpdate {
+                    restore_view,
+                    result,
+                    session_id,
+                });
+            }
         }
     }
 
@@ -372,6 +390,23 @@ impl AppEventBatch {
 struct SyncPopupContext {
     default_branch: String,
     project_name: String,
+}
+
+/// Background sync task result carrying the normalized summary for
+/// persistence alongside the UI outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SyncReviewRequestTaskResult {
+    pub(crate) outcome: session::SyncReviewRequestOutcome,
+    /// Normalized summary to persist when a review request was found or
+    /// refreshed.
+    pub(crate) summary: Option<crate::domain::session::ReviewRequestSummary>,
+}
+
+/// Completed review request sync payload ready for reducer application.
+struct SyncReviewRequestUpdate {
+    restore_view: ConfirmationViewMode,
+    result: Result<SyncReviewRequestTaskResult, String>,
+    session_id: String,
 }
 
 /// Token-usage totals for one model used by the `/stats` prompt command.
@@ -1604,6 +1639,11 @@ impl App {
             self.apply_branch_publish_action_update(branch_publish_action_update);
         }
 
+        if let Some(sync_review_request_update) = event_batch.sync_review_request_update {
+            self.apply_sync_review_request_update(sync_review_request_update)
+                .await;
+        }
+
         for (session_id, progress_message) in event_batch.session_progress_updates {
             if let Some(progress_message) = progress_message {
                 self.session_progress_messages
@@ -1951,6 +1991,182 @@ impl App {
             ),
         };
         self.mode = popup_mode;
+    }
+
+    /// Starts a background review request sync for one session.
+    ///
+    /// Shows a loading popup while the sync runs, then emits a
+    /// [`AppEvent::SyncReviewRequestCompleted`] when the forge responds.
+    pub(crate) fn start_sync_review_request_action(
+        &mut self,
+        restore_view: ConfirmationViewMode,
+        session_id: &str,
+    ) {
+        let Some(sync_session) = self.sessions.session_or_err(session_id).ok() else {
+            return;
+        };
+
+        self.mode = Self::view_info_popup_mode(
+            "Sync review request".to_string(),
+            "Checking review request status\u{2026}".to_string(),
+            true,
+            "syncing".to_string(),
+            restore_view.clone(),
+        );
+
+        let event_sender = self.services.event_sender();
+        let git_client = self.services.git_client();
+        let review_request_client = self.services.review_request_client();
+        let linked_review_request = sync_session.review_request.clone();
+        let published_upstream_ref = sync_session.published_upstream_ref.clone();
+        let folder = sync_session.folder.clone();
+        let background_session_id = session_id.to_string();
+        let background_restore_view = restore_view;
+
+        tokio::spawn(async move {
+            let result = run_sync_review_request(
+                folder,
+                git_client,
+                linked_review_request,
+                published_upstream_ref,
+                review_request_client,
+            )
+            .await;
+            let _ = event_sender.send(AppEvent::SyncReviewRequestCompleted {
+                restore_view: background_restore_view,
+                result,
+                session_id: background_session_id,
+            });
+        });
+    }
+
+    /// Applies the result of a completed review request sync action.
+    async fn apply_sync_review_request_update(
+        &mut self,
+        sync_review_request_update: SyncReviewRequestUpdate,
+    ) {
+        let SyncReviewRequestUpdate {
+            restore_view,
+            result,
+            session_id,
+        } = sync_review_request_update;
+
+        let popup_mode = match result {
+            Ok(task_result) => {
+                let persistence_warning = if let Some(summary) = task_result.summary {
+                    self.sessions
+                        .store_review_request_summary(&self.services, &session_id, summary)
+                        .await
+                        .err()
+                        .map(|error| format!("Failed to persist review request: {error}"))
+                } else {
+                    None
+                };
+
+                let (title, mut body) = match task_result.outcome {
+                    session::SyncReviewRequestOutcome::Merged { display_id } => {
+                        let cleanup_warning =
+                            self.complete_externally_merged_session(&session_id).await;
+                        let mut merged_body = format!(
+                            "Review request {display_id} was merged. Session moved to Done."
+                        );
+                        if let Some(warning) = cleanup_warning {
+                            merged_body.push_str("\n\n");
+                            merged_body.push_str(&warning);
+                        }
+
+                        ("Review request merged".to_string(), merged_body)
+                    }
+                    session::SyncReviewRequestOutcome::Open {
+                        display_id,
+                        status_summary,
+                    } => {
+                        let status_detail = status_summary
+                            .map(|summary| format!(" ({summary})"))
+                            .unwrap_or_default();
+
+                        (
+                            "Review request open".to_string(),
+                            format!(
+                                "Review request {display_id} is still open{status_detail}. No \
+                                 changes made."
+                            ),
+                        )
+                    }
+                    session::SyncReviewRequestOutcome::Closed { display_id } => (
+                        "Review request closed".to_string(),
+                        format!(
+                            "Review request {display_id} was closed without merge. Cancel the \
+                             session to clean up."
+                        ),
+                    ),
+                    session::SyncReviewRequestOutcome::NoReviewRequest => (
+                        "No review request found".to_string(),
+                        "No review request was found for this session branch.".to_string(),
+                    ),
+                };
+
+                if let Some(warning) = persistence_warning {
+                    body.push_str("\n\n");
+                    body.push_str(&warning);
+                }
+
+                Self::view_info_popup_mode(title, body, false, String::new(), restore_view)
+            }
+            Err(error) => Self::view_info_popup_mode(
+                "Sync failed".to_string(),
+                error,
+                false,
+                String::new(),
+                restore_view,
+            ),
+        };
+
+        self.mode = popup_mode;
+        self.refresh_sessions_now().await;
+    }
+
+    /// Transitions one externally merged session to `Done` with best-effort
+    /// worktree and branch cleanup.
+    ///
+    /// Returns an optional warning message when worktree cleanup fails. The
+    /// session is still moved to `Done` because the merge already happened
+    /// upstream, but the caller should surface the warning to the user.
+    async fn complete_externally_merged_session(&self, session_id: &str) -> Option<String> {
+        let Ok(session) = self.sessions.session_or_err(session_id) else {
+            return None;
+        };
+        let Ok(handles) = self.sessions.session_handles_or_err(session_id) else {
+            return None;
+        };
+
+        let folder = session.folder.clone();
+        let source_branch = session::session_branch(session_id);
+
+        let cleanup_warning = SessionManager::cleanup_merged_session_worktree(
+            folder,
+            self.services.fs_client(),
+            self.services.git_client(),
+            source_branch,
+            None,
+        )
+        .await
+        .err()
+        .map(|error| format!("Worktree cleanup failed: {error}"));
+
+        let app_event_tx = self.services.event_sender();
+
+        SessionTaskService::update_status(
+            handles.status.as_ref(),
+            self.services.clock().as_ref(),
+            self.services.db(),
+            &app_event_tx,
+            session_id,
+            Status::Done,
+        )
+        .await;
+
+        cleanup_warning
     }
 
     /// Validates whether a session is currently eligible for merge queueing.
@@ -2408,6 +2624,78 @@ impl App {
     }
 }
 
+/// Runs a review request sync against the forge in a background task.
+///
+/// When the session has a linked review request, this refreshes it by display
+/// id. Otherwise, when the branch was published, this searches for an
+/// externally created review request by source branch name.
+async fn run_sync_review_request(
+    folder: PathBuf,
+    git_client: Arc<dyn GitClient>,
+    linked_review_request: Option<crate::domain::session::ReviewRequest>,
+    published_upstream_ref: Option<String>,
+    review_request_client: Arc<dyn ReviewRequestClient>,
+) -> Result<SyncReviewRequestTaskResult, String> {
+    let repo_url = git_client
+        .repo_url(folder)
+        .await
+        .map_err(|error| format!("Failed to resolve repository remote: {error}"))?;
+    let remote = review_request_client
+        .detect_remote(repo_url)
+        .map_err(|error| error.detail_message())?;
+
+    if let Some(review_request) = linked_review_request {
+        let refreshed_summary = review_request_client
+            .refresh_review_request(remote, review_request.summary.display_id)
+            .await
+            .map_err(|error| error.detail_message())?;
+
+        return Ok(sync_task_result_from_summary(refreshed_summary));
+    }
+
+    let upstream_ref = published_upstream_ref
+        .ok_or_else(|| "Session branch has not been published yet".to_string())?;
+    let source_branch = session::remote_branch_name_from_upstream_ref(&upstream_ref);
+    let found_summary = review_request_client
+        .find_by_source_branch(remote, source_branch)
+        .await
+        .map_err(|error| error.detail_message())?;
+
+    match found_summary {
+        Some(summary) => Ok(sync_task_result_from_summary(summary)),
+        None => Ok(SyncReviewRequestTaskResult {
+            outcome: session::SyncReviewRequestOutcome::NoReviewRequest,
+            summary: None,
+        }),
+    }
+}
+
+/// Builds a sync task result from one normalized review request summary.
+fn sync_task_result_from_summary(
+    summary: crate::domain::session::ReviewRequestSummary,
+) -> SyncReviewRequestTaskResult {
+    let display_id = summary.display_id.clone();
+    let outcome = match summary.state {
+        crate::domain::session::ReviewRequestState::Open => {
+            session::SyncReviewRequestOutcome::Open {
+                display_id,
+                status_summary: summary.status_summary.clone(),
+            }
+        }
+        crate::domain::session::ReviewRequestState::Merged => {
+            session::SyncReviewRequestOutcome::Merged { display_id }
+        }
+        crate::domain::session::ReviewRequestState::Closed => {
+            session::SyncReviewRequestOutcome::Closed { display_id }
+        }
+    };
+
+    SyncReviewRequestTaskResult {
+        outcome,
+        summary: Some(summary),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -2426,8 +2714,8 @@ mod tests {
     use crate::app::{diff_content_hash, review_loading_message};
     use crate::domain::agent::AgentModel;
     use crate::domain::session::{
-        SESSION_DATA_DIR, Session, SessionFollowUpTask, SessionHandles, SessionSize, SessionStats,
-        Status,
+        ForgeKind, ReviewRequestState, ReviewRequestSummary, SESSION_DATA_DIR, Session,
+        SessionFollowUpTask, SessionHandles, SessionSize, SessionStats, Status,
     };
     use crate::domain::setting::SettingName;
     use crate::infra::agent::protocol::{AgentResponseSummary, QuestionItem};
@@ -5225,5 +5513,248 @@ mod tests {
 
         // Assert
         assert!(!app.review_cache.contains_key(&session_id));
+    }
+
+    // -- sync_task_result_from_summary tests ---------------------------------
+
+    /// Builds one test review request summary for sync tests.
+    fn test_review_request_summary(
+        display_id: &str,
+        state: ReviewRequestState,
+    ) -> ReviewRequestSummary {
+        ReviewRequestSummary {
+            display_id: display_id.to_string(),
+            forge_kind: ForgeKind::GitHub,
+            source_branch: "agentty/session-id".to_string(),
+            state,
+            status_summary: None,
+            target_branch: "main".to_string(),
+            title: "feat".to_string(),
+            web_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_sync_task_result_from_open_summary() {
+        // Arrange
+        let mut summary = test_review_request_summary("#42", ReviewRequestState::Open);
+        summary.status_summary = Some("Checks passing".to_string());
+
+        // Act
+        let result = sync_task_result_from_summary(summary);
+
+        // Assert
+        assert_eq!(
+            result.outcome,
+            session::SyncReviewRequestOutcome::Open {
+                display_id: "#42".to_string(),
+                status_summary: Some("Checks passing".to_string()),
+            }
+        );
+        assert!(result.summary.is_some());
+    }
+
+    #[test]
+    fn test_sync_task_result_from_merged_summary() {
+        // Arrange
+        let summary = test_review_request_summary("#99", ReviewRequestState::Merged);
+
+        // Act
+        let result = sync_task_result_from_summary(summary);
+
+        // Assert
+        assert_eq!(
+            result.outcome,
+            session::SyncReviewRequestOutcome::Merged {
+                display_id: "#99".to_string(),
+            }
+        );
+        assert!(result.summary.is_some());
+    }
+
+    #[test]
+    fn test_sync_task_result_from_closed_summary() {
+        // Arrange
+        let summary = test_review_request_summary("#7", ReviewRequestState::Closed);
+
+        // Act
+        let result = sync_task_result_from_summary(summary);
+
+        // Assert
+        assert_eq!(
+            result.outcome,
+            session::SyncReviewRequestOutcome::Closed {
+                display_id: "#7".to_string(),
+            }
+        );
+        assert!(result.summary.is_some());
+    }
+
+    // -- apply_sync_review_request_update tests ------------------------------
+
+    #[tokio::test]
+    async fn test_apply_sync_review_request_update_open_shows_open_popup() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let session_folder = PathBuf::from("/tmp/session-sync");
+        let mut sync_session = test_session(session_folder);
+        sync_session.status = Status::Review;
+        sync_session.published_upstream_ref = Some("origin/agentty/session-1".to_string());
+        app.sessions.sessions.push(sync_session);
+
+        let restore_view = ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            scroll_offset: None,
+            session_id: "session-1".to_string(),
+        };
+
+        let summary = test_review_request_summary("#10", ReviewRequestState::Open);
+        let task_result = SyncReviewRequestTaskResult {
+            outcome: session::SyncReviewRequestOutcome::Open {
+                display_id: "#10".to_string(),
+                status_summary: None,
+            },
+            summary: Some(summary),
+        };
+
+        let update = SyncReviewRequestUpdate {
+            restore_view,
+            result: Ok(task_result),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_review_request_update(update).await;
+
+        // Assert
+        assert!(matches!(
+            &app.mode,
+            AppMode::ViewInfoPopup { title, .. } if title == "Review request open"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_apply_sync_review_request_update_error_shows_sync_failed() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let restore_view = ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            scroll_offset: None,
+            session_id: "session-1".to_string(),
+        };
+
+        let update = SyncReviewRequestUpdate {
+            restore_view,
+            result: Err("network timeout".to_string()),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_review_request_update(update).await;
+
+        // Assert
+        assert!(matches!(
+            &app.mode,
+            AppMode::ViewInfoPopup { title, .. } if title == "Sync failed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_apply_sync_review_request_update_persists_summary() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let project_id = app.active_project_id();
+        let session_id = "session-1";
+        app.services
+            .db()
+            .insert_session(
+                session_id,
+                "gemini-3-flash-preview",
+                "main",
+                &Status::Review.to_string(),
+                project_id,
+            )
+            .await
+            .expect("failed to insert session");
+        let session_folder_name = session_id.chars().take(8).collect::<String>();
+        let session_data_dir = app
+            .services
+            .base_path()
+            .join(session_folder_name)
+            .join(SESSION_DATA_DIR);
+        fs::create_dir_all(session_data_dir).expect("failed to create session data dir");
+        app.refresh_sessions_now().await;
+
+        let restore_view = ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            scroll_offset: None,
+            session_id: "session-1".to_string(),
+        };
+
+        let summary = test_review_request_summary("#5", ReviewRequestState::Open);
+        let task_result = SyncReviewRequestTaskResult {
+            outcome: session::SyncReviewRequestOutcome::Open {
+                display_id: "#5".to_string(),
+                status_summary: None,
+            },
+            summary: Some(summary),
+        };
+
+        let update = SyncReviewRequestUpdate {
+            restore_view,
+            result: Ok(task_result),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_review_request_update(update).await;
+
+        // Assert — the in-memory session now has the linked review request.
+        assert_eq!(app.sessions.sessions.len(), 1);
+        let session = &app.sessions.sessions[0];
+        let review_request = session
+            .review_request
+            .as_ref()
+            .expect("expected linked review request after sync");
+        assert_eq!(review_request.summary.display_id, "#5");
+    }
+
+    #[tokio::test]
+    async fn test_apply_sync_review_request_update_no_review_request_shows_not_found() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let restore_view = ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            scroll_offset: None,
+            session_id: "session-1".to_string(),
+        };
+
+        let task_result = SyncReviewRequestTaskResult {
+            outcome: session::SyncReviewRequestOutcome::NoReviewRequest,
+            summary: None,
+        };
+
+        let update = SyncReviewRequestUpdate {
+            restore_view,
+            result: Ok(task_result),
+            session_id: "session-1".to_string(),
+        };
+
+        // Act
+        app.apply_sync_review_request_update(update).await;
+
+        // Assert
+        assert!(matches!(
+            &app.mode,
+            AppMode::ViewInfoPopup { title, .. } if title == "No review request found"
+        ));
     }
 }

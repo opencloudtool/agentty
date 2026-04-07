@@ -479,6 +479,17 @@ pub(crate) fn session_branch(session_id: &str) -> String {
     format!("agentty/{}", &session_id[..len])
 }
 
+/// Extracts the remote branch portion from one upstream reference.
+///
+/// For example, `origin/agentty/abc12345` returns `agentty/abc12345`. When the
+/// reference contains no `/` separator, the full input is returned as-is.
+pub(crate) fn remote_branch_name_from_upstream_ref(upstream_ref: &str) -> String {
+    upstream_ref.split_once('/').map_or_else(
+        || upstream_ref.to_string(),
+        |(_, branch_name)| branch_name.to_string(),
+    )
+}
+
 /// Converts one wall-clock timestamp into Unix seconds.
 pub(crate) fn unix_timestamp_from_system_time(system_time: SystemTime) -> i64 {
     system_time
@@ -4639,5 +4650,25 @@ mod tests {
 
         // Assert
         assert_eq!(branch, "agentty/a1b2c3d4");
+    }
+
+    // -- remote_branch_name_from_upstream_ref tests --------------------------
+
+    #[test]
+    fn test_remote_branch_name_strips_remote_prefix() {
+        // Act
+        let branch = remote_branch_name_from_upstream_ref("origin/agentty/abc12345");
+
+        // Assert
+        assert_eq!(branch, "agentty/abc12345");
+    }
+
+    #[test]
+    fn test_remote_branch_name_returns_input_for_bare_ref() {
+        // Act
+        let branch = remote_branch_name_from_upstream_ref("no-slash");
+
+        // Assert
+        assert_eq!(branch, "no-slash");
     }
 }

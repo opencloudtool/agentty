@@ -55,8 +55,8 @@ Session statuses and what you can do in each state:
 |--------|-------------|-------------------|
 | **New** | Session created but not yet started. Regular sessions submit their first prompt immediately; draft sessions can stage multiple prompts locally first. | `Enter` compose first prompt or add draft, `/` open slash-command composer, `s` start staged draft session, `m` add to merge queue, `r` rebase, `o` open worktree, scroll, help |
 | **InProgress** | Agent is actively working. | `o` open worktree, scroll, help |
-| **Review** | Agent finished; changes are ready for review. | `Enter` reply, `/` open slash-command composer, `m` add to merge queue, `r` rebase, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
-| **AgentReview** | Agentty is generating the focused review output in the background. | `Enter` reply, `/` open slash-command composer, `m` add to merge queue, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
+| **Review** | Agent finished; changes are ready for review. | `Enter` reply, `/` open slash-command composer, `s` sync review request, `m` add to merge queue, `r` rebase, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
+| **AgentReview** | Agentty is generating the focused review output in the background. | `Enter` reply, `/` open slash-command composer, `s` sync review request, `m` add to merge queue, `o` open worktree, `p` publish branch, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
 | **Question** | Agent requested clarification before continuing. | question input mode (`Enter` submit, `Tab` toggle chat scroll, `Esc` end turn) |
 | **Queued** | Session is waiting in the merge queue. | read-only view (`q`, scroll, help) |
 | **Rebasing** | Worktree branch is rebasing onto the base branch. | `o` open worktree, scroll, help |
@@ -147,6 +147,26 @@ Branch publishing on `p` uses regular Git authentication only:
 - HTTPS remotes need a working credential helper or PAT.
 - SSH remotes need a working SSH key.
 
+## Review Request Sync
+
+<a id="usage-review-request-sync"></a>
+After publishing a branch, press `s` in session view to sync the review request
+status from the forge (GitHub). The `s` shortcut is available when the session
+has a published branch or a linked review request and is in **Review** or
+**AgentReview** status.
+
+The session list shows forge indicators next to the status label:
+
+| Indicator | Meaning |
+|-----------|---------|
+| `↑` | Branch published, no review request found yet. |
+| `⊙ #N` | Review request `#N` is open. |
+| `✓ #N` | Review request `#N` was merged. |
+| `✗ #N` | Review request `#N` was closed. |
+
+When a sync detects that the review request was merged, Agentty transitions the
+session straight to **Done**.
+
 From the **Sessions** tab, press `a` to create a regular session or `Shift+A`
 to create a draft session. Regular sessions keep the fast path: type the first
 prompt and press `Enter` to start the agent immediately. Draft sessions stage
@@ -204,6 +224,7 @@ flowchart TB
   queued --> merging
   merging --> done
   review -->|cancel| canceled
+  review -->|sync detects merge| done
 
   class agent_review,rebasing auxiliary
   class done,canceled terminal
