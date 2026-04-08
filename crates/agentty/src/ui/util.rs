@@ -23,6 +23,7 @@ pub use crate::ui::layout::{
     first_table_column_width, input_cursor_position, move_input_cursor_down, move_input_cursor_up,
     placeholder_cursor_position, question_panel_layout, suggestion_dropdown_height,
 };
+pub(crate) use crate::ui::task_roadmap::{roadmap_task_lines, roadmap_task_max_scroll_offset};
 pub use crate::ui::text_util::{
     format_duration_compact, format_token_count, inline_text, split_trailing_line_block,
     truncate_spans_with_ellipsis, truncate_with_ellipsis, wrap_lines, wrap_styled_line,

@@ -66,11 +66,14 @@ The Settings tab includes:
 | Key | Action |
 |-----|--------|
 | `q` | Quit |
+| `j` / `k` | Scroll roadmap |
+| `g` | Scroll to top |
 | `Tab` | Switch tab |
 | `?` | Help |
 
 The Tasks tab appears only when the active project contains
-`docs/plan/roadmap.md`.
+`docs/plan/roadmap.md`, and it renders the roadmap's `Ready Now`, `Queued Next`,
+and `Parked` cards.
 
 ## Session View
 

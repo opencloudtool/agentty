@@ -85,8 +85,7 @@ pub(crate) fn session_view_state(session: &Session) -> ViewSessionState {
         Status::Canceled => ViewSessionState::Canceled,
         Status::InProgress => ViewSessionState::InProgress,
         Status::New if session.is_draft_session() => ViewSessionState::NewSession,
-        Status::New => ViewSessionState::Interactive,
-        Status::Question => ViewSessionState::Interactive,
+        Status::New | Status::Question => ViewSessionState::Interactive,
         Status::Rebasing => ViewSessionState::Rebasing,
         Status::Merging | Status::Queued => ViewSessionState::MergeQueue,
         Status::Review => ViewSessionState::Review,
@@ -218,6 +217,29 @@ pub(crate) fn stats_actions() -> Vec<HelpAction> {
 pub(crate) fn stats_footer_actions() -> Vec<HelpAction> {
     vec![
         HelpAction::new("quit", "q", "Quit"),
+        HelpAction::new("help", "?", "Help"),
+    ]
+}
+
+/// Returns help actions for the tasks page.
+/// These entries are used by the help overlay and include all available
+/// actions.
+pub(crate) fn task_actions() -> Vec<HelpAction> {
+    let mut actions = list_base_actions();
+    actions.push(HelpAction::new("scroll", "j/k", "Scroll roadmap"));
+    actions.push(HelpAction::new("top", "g", "Scroll to top"));
+    actions.push(HelpAction::new("next tab", "Tab", "Switch tab"));
+    actions.push(HelpAction::new("help", "?", "Help"));
+
+    actions
+}
+
+/// Returns compact tasks footer actions for the page-level hint line.
+pub(crate) fn task_footer_actions() -> Vec<HelpAction> {
+    vec![
+        HelpAction::new("quit", "q", "Quit"),
+        HelpAction::new("scroll", "j/k", "Scroll roadmap"),
+        HelpAction::new("top", "g", "Scroll to top"),
         HelpAction::new("help", "?", "Help"),
     ]
 }
@@ -584,6 +606,17 @@ mod tests {
 
         // Assert
         assert!(!actions.iter().any(|action| action.key == "a"));
+    }
+
+    #[test]
+    fn test_task_actions_include_scroll_shortcuts() {
+        // Arrange
+        // Act
+        let actions = task_actions();
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "j/k"));
+        assert!(actions.iter().any(|action| action.key == "g"));
     }
 
     #[test]

@@ -82,9 +82,7 @@ fn main() {
     report
         .save(&ScreenshotStripBackend, &strip_path)
         .expect("strip render failed");
-    let strip_size = std::fs::metadata(&strip_path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
+    let strip_size = std::fs::metadata(&strip_path).map_or(0, |metadata| metadata.len());
     println!(
         "\nPNG strip written to: {} ({} bytes)",
         strip_path.display(),
@@ -97,9 +95,7 @@ fn main() {
     report
         .save(&gif_backend, &gif_path)
         .expect("GIF render failed");
-    let gif_size = std::fs::metadata(&gif_path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
+    let gif_size = std::fs::metadata(&gif_path).map_or(0, |metadata| metadata.len());
     println!(
         "Animated GIF written to: {} ({} bytes)",
         gif_path.display(),
@@ -111,9 +107,7 @@ fn main() {
     report
         .save(&HtmlBackend, &html_path)
         .expect("HTML render failed");
-    let html_size = std::fs::metadata(&html_path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
+    let html_size = std::fs::metadata(&html_path).map_or(0, |metadata| metadata.len());
     println!(
         "HTML report written to: {} ({} bytes)",
         html_path.display(),

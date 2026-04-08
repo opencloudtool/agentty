@@ -24,6 +24,9 @@ pub(crate) struct ListBackgroundRenderContext<'a> {
     pub(crate) sessions: &'a [Session],
     pub(crate) settings: &'a mut SettingsManager,
     pub(crate) stats_activity: &'a [DailyActivity],
+    pub(crate) task_roadmap: Option<&'a str>,
+    pub(crate) task_roadmap_error: Option<&'a str>,
+    pub(crate) task_roadmap_scroll_offset: u16,
     pub(crate) table_state: &'a mut TableState,
 }
 
@@ -38,6 +41,9 @@ struct RouteSharedContext<'a> {
     sessions: &'a [Session],
     settings: &'a mut SettingsManager,
     stats_activity: &'a [DailyActivity],
+    task_roadmap: Option<&'a str>,
+    task_roadmap_error: Option<&'a str>,
+    task_roadmap_scroll_offset: u16,
     table_state: &'a mut TableState,
 }
 
@@ -54,6 +60,9 @@ impl RouteSharedContext<'_> {
             sessions: self.sessions,
             settings: self.settings,
             stats_activity: self.stats_activity,
+            task_roadmap: self.task_roadmap,
+            task_roadmap_error: self.task_roadmap_error,
+            task_roadmap_scroll_offset: self.task_roadmap_scroll_offset,
             table_state: self.table_state,
         }
     }
@@ -112,6 +121,9 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
         session_progress_messages,
         settings,
         stats_activity,
+        task_roadmap,
+        task_roadmap_error,
+        task_roadmap_scroll_offset,
         sessions,
         table_state,
         wall_clock_unix_seconds,
@@ -127,6 +139,9 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
         sessions,
         settings,
         stats_activity,
+        task_roadmap,
+        task_roadmap_error,
+        task_roadmap_scroll_offset,
         table_state,
     };
 
@@ -578,6 +593,9 @@ pub(crate) fn render_list_background(
         sessions,
         settings,
         stats_activity,
+        task_roadmap,
+        task_roadmap_error,
+        task_roadmap_scroll_offset,
         table_state,
     } = context;
 
@@ -606,7 +624,11 @@ pub(crate) fn render_list_background(
             .render(f, chunks[1]);
         }
         Tab::Tasks => {
-            let mut page = page::task::TasksPage;
+            let mut page = page::task::TasksPage::new(
+                task_roadmap,
+                task_roadmap_error,
+                task_roadmap_scroll_offset,
+            );
             page.render(f, chunks[1]);
         }
         Tab::Stats => {

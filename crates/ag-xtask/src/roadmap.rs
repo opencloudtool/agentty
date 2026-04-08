@@ -351,15 +351,11 @@ fn parse_headings(content: &str) -> Vec<ParsedHeading> {
                 current_start = range.start;
                 current_title.clear();
             }
-            Event::Text(text) | Event::Code(text) => {
-                if current_level.is_some() {
-                    current_title.push_str(&text);
-                }
+            Event::Text(text) | Event::Code(text) if current_level.is_some() => {
+                current_title.push_str(&text);
             }
-            Event::SoftBreak | Event::HardBreak => {
-                if current_level.is_some() {
-                    current_title.push(' ');
-                }
+            Event::SoftBreak | Event::HardBreak if current_level.is_some() => {
+                current_title.push(' ');
             }
             Event::End(TagEnd::Heading(_)) => {
                 if let Some(level) = current_level.take() {

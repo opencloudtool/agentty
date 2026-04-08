@@ -267,8 +267,10 @@ also writes a machine-readable workspace summary to
 - `crates/agentty/src/ui/page/session_list.rs`: Session list page.
 - `crates/agentty/src/ui/page/setting.rs`: Settings page.
 - `crates/agentty/src/ui/page/stat.rs`: Stats and analytics page.
-- `crates/agentty/src/ui/page/task.rs`: Tasks placeholder page shown only for
-  projects with `docs/plan/roadmap.md`.
+- `crates/agentty/src/ui/page/task.rs`: Tasks page that renders roadmap queue
+  summaries for projects with `docs/plan/roadmap.md`.
+- `crates/agentty/src/ui/task_roadmap.rs`: Roadmap parsing and formatting
+  helpers used by the Tasks page.
 - `crates/agentty/src/ui/component/chat_input.rs`: Chat input widget.
 - `crates/agentty/src/ui/component/confirmation_overlay.rs`: Confirmation
   dialog overlay.

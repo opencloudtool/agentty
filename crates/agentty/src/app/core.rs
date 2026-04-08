@@ -72,6 +72,15 @@ pub const AGENTTY_WT_DIR: &str = "wt";
 /// `Tasks` tab when present.
 pub(crate) const TASKS_ROADMAP_PATH: &str = "docs/plan/roadmap.md";
 
+/// Cached roadmap snapshot for the active project `Tasks` tab.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ActiveProjectRoadmap {
+    /// Successfully loaded roadmap markdown from `docs/plan/roadmap.md`.
+    Loaded(String),
+    /// Roadmap file exists but could not be read.
+    LoadError(String),
+}
+
 /// Returns the resolved `agentty` home directory.
 ///
 /// The `AGENTTY_ROOT` environment variable takes precedence when set to a
@@ -563,6 +572,12 @@ pub struct App {
     /// Caches whether the active project exposes `docs/plan/roadmap.md`,
     /// avoiding a filesystem probe on every render tick.
     active_project_has_tasks_tab: bool,
+    /// Caches the active project's roadmap content or load failure for the
+    /// `Tasks` page.
+    active_project_roadmap: Option<ActiveProjectRoadmap>,
+    /// Stores the current vertical scroll offset for the active project's
+    /// `Tasks` page.
+    task_roadmap_scroll_offset: u16,
     /// Receives app events emitted by background tasks and workflows.
     event_rx: mpsc::UnboundedReceiver<AppEvent>,
     /// Stores the latest available stable `agentty` version when one is
@@ -691,8 +706,10 @@ impl App {
             project_items,
             startup_working_dir.clone(),
         );
-        let active_project_has_tasks_tab =
-            Self::project_has_tasks_tab(clients.fs_client.as_ref(), startup_working_dir.as_path());
+        let active_project_roadmap =
+            Self::load_project_roadmap(clients.fs_client.as_ref(), startup_working_dir.as_path())
+                .await;
+        let active_project_has_tasks_tab = active_project_roadmap.is_some();
         let settings = SettingsManager::new(&services, active_project_id).await;
         let default_session_model = SessionManager::load_default_session_model(
             &services,
@@ -720,6 +737,8 @@ impl App {
             services,
             sessions,
             active_project_has_tasks_tab,
+            active_project_roadmap,
+            task_roadmap_scroll_offset: 0,
             event_rx,
             review_cache: HashMap::new(),
             latest_available_version: None,
@@ -787,6 +806,20 @@ impl App {
         let git_upstream_ref = self.projects.git_upstream_ref().map(str::to_string);
         let git_status = self.projects.git_status();
         let latest_available_version = self.latest_available_version.as_deref().map(str::to_string);
+        let task_roadmap = self.active_project_roadmap.as_ref().and_then(|roadmap| {
+            if let ActiveProjectRoadmap::Loaded(content) = roadmap {
+                return Some(content.clone());
+            }
+
+            None
+        });
+        let task_roadmap_error = self.active_project_roadmap.as_ref().and_then(|roadmap| {
+            if let ActiveProjectRoadmap::LoadError(message) = roadmap {
+                return Some(message.clone());
+            }
+
+            None
+        });
         let session_git_statuses = self.sessions.session_git_statuses().clone();
         let follow_up_task_positions = self.sessions.state().follow_up_task_positions.clone();
         let active_prompt_outputs = self.sessions.active_prompt_outputs().clone();
@@ -814,6 +847,9 @@ impl App {
                 mode,
                 project_table_state,
                 projects: &projects,
+                task_roadmap: task_roadmap.as_deref(),
+                task_roadmap_error: task_roadmap_error.as_deref(),
+                task_roadmap_scroll_offset: self.task_roadmap_scroll_offset,
                 active_prompt_outputs: &active_prompt_outputs,
                 follow_up_task_positions: &follow_up_task_positions,
                 session_git_statuses: &session_git_statuses,
@@ -846,12 +882,36 @@ impl App {
         self.tabs.previous(self.active_project_has_tasks_tab());
     }
 
-    /// Refreshes the cached `Tasks`-tab availability for the active project.
-    fn refresh_active_project_tasks_tab(&mut self) {
-        self.active_project_has_tasks_tab = Self::project_has_tasks_tab(
+    /// Returns the current `Tasks`-tab vertical scroll offset.
+    pub fn task_roadmap_scroll_offset(&self) -> u16 {
+        self.task_roadmap_scroll_offset
+    }
+
+    /// Scrolls the active project's roadmap view down by one wrapped line.
+    pub fn scroll_task_roadmap_down(&mut self) {
+        self.task_roadmap_scroll_offset = self.task_roadmap_scroll_offset.saturating_add(1);
+    }
+
+    /// Scrolls the active project's roadmap view up by one wrapped line.
+    pub fn scroll_task_roadmap_up(&mut self) {
+        self.task_roadmap_scroll_offset = self.task_roadmap_scroll_offset.saturating_sub(1);
+    }
+
+    /// Resets the active project's roadmap view back to the top.
+    pub fn reset_task_roadmap_scroll(&mut self) {
+        self.task_roadmap_scroll_offset = 0;
+    }
+
+    /// Refreshes cached roadmap availability and content for the active
+    /// project.
+    async fn refresh_active_project_roadmap(&mut self) {
+        self.active_project_roadmap = Self::load_project_roadmap(
             self.services.fs_client().as_ref(),
             self.projects.working_dir(),
-        );
+        )
+        .await;
+        self.active_project_has_tasks_tab = self.active_project_roadmap.is_some();
+        self.task_roadmap_scroll_offset = 0;
     }
 
     /// Moves selection to the next session in the list.
@@ -936,7 +996,7 @@ impl App {
             git_upstream_ref,
             project.path,
         );
-        self.refresh_active_project_tasks_tab();
+        self.refresh_active_project_roadmap().await;
         self.tabs.normalize(self.active_project_has_tasks_tab());
         self.settings = SettingsManager::new(&self.services, project.id).await;
         let default_session_model = SessionManager::load_default_session_model(
@@ -2607,10 +2667,25 @@ impl App {
         AppStartup::is_existing_project_path(fs_client, project_path)
     }
 
-    /// Returns whether one project directory exposes the roadmap file that
-    /// enables the `Tasks` tab.
-    fn project_has_tasks_tab(fs_client: &dyn FsClient, working_dir: &Path) -> bool {
-        fs_client.is_file(working_dir.join(TASKS_ROADMAP_PATH))
+    /// Loads the active project's roadmap snapshot when the roadmap file
+    /// exists.
+    async fn load_project_roadmap(
+        fs_client: &dyn FsClient,
+        working_dir: &Path,
+    ) -> Option<ActiveProjectRoadmap> {
+        let roadmap_path = working_dir.join(TASKS_ROADMAP_PATH);
+        if !fs_client.is_file(roadmap_path.clone()) {
+            return None;
+        }
+
+        match fs_client.read_file(roadmap_path).await {
+            Ok(contents) => Some(ActiveProjectRoadmap::Loaded(
+                String::from_utf8_lossy(&contents).into_owned(),
+            )),
+            Err(error) => Some(ActiveProjectRoadmap::LoadError(format!(
+                "Failed to load `{TASKS_ROADMAP_PATH}`: {error}"
+            ))),
+        }
     }
 
     /// Converts a project row into domain project model.
@@ -3012,6 +3087,8 @@ mod tests {
         )
         .await
         .expect("failed to build app");
+        app.scroll_task_roadmap_down();
+        app.scroll_task_roadmap_down();
 
         // Act
         let before_switch = app.active_project_has_tasks_tab();
@@ -3019,10 +3096,12 @@ mod tests {
             .await
             .expect("failed to switch project");
         let after_switch = app.active_project_has_tasks_tab();
+        let task_scroll_offset = app.task_roadmap_scroll_offset();
 
         // Assert
         assert!(!before_switch);
         assert!(after_switch);
+        assert_eq!(task_scroll_offset, 0);
     }
 
     #[tokio::test]
@@ -4969,6 +5048,12 @@ mod tests {
             .once()
             .withf(move |path| path == &roadmap_path)
             .return_const(true);
+        let roadmap_path = project_path.join(TASKS_ROADMAP_PATH);
+        fs_client
+            .expect_read_file()
+            .once()
+            .withf(move |path| path == &roadmap_path)
+            .return_once(|_| Box::pin(async { Ok(b"# roadmap".to_vec()) }));
         let app = app_with_fs_client(project_path, Arc::new(fs_client)).await;
 
         // Act

@@ -21,7 +21,7 @@ project tab also accessible with `Tab`:
 | Tab | Purpose |
 |-----|---------|
 | **Sessions** | List, create, and manage agent sessions. When a project is active, this tab appears as `Sessions (<project-name>)`. |
-| **Tasks** | Shown only when the active project contains `docs/plan/roadmap.md`. |
+| **Tasks** | Shown only when the active project contains `docs/plan/roadmap.md`, summarizing the roadmap's `Ready Now`, `Queued Next`, and `Parked` task queues. |
 | **Projects** | Select between projects (git repositories) in a split view: Agentty info (ASCII art, version, short description) on top, project table below. Agentty skips stale entries whose project directories no longer exist. |
 | **Stats** | View usage statistics. |
 | **Settings** | Configure the default reasoning level, smart/fast/review model defaults, the optional `Last used model as default` smart-model mode, the session commit coauthor trailer, and `Open Commands` for the active project. |

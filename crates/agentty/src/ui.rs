@@ -11,6 +11,7 @@ pub mod router;
 pub mod state;
 /// Shared UI styling constants and status-display helpers.
 pub mod style;
+mod task_roadmap;
 pub mod text_util;
 pub mod util;
 

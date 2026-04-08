@@ -61,6 +61,12 @@ pub struct RenderContext<'a> {
     pub settings: &'a mut SettingsManager,
     /// Daily session activity series used by the stats view.
     pub stats_activity: &'a [DailyActivity],
+    /// Loaded roadmap markdown for the active project, when available.
+    pub task_roadmap: Option<&'a str>,
+    /// User-visible roadmap load failure for the active project, when present.
+    pub task_roadmap_error: Option<&'a str>,
+    /// Current vertical scroll offset for the roadmap-backed `Tasks` page.
+    pub task_roadmap_scroll_offset: u16,
     /// Session rows available for rendering.
     pub sessions: &'a [Session],
     /// Table selection state for the session list.
