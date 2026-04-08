@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.2] - 2026-04-07
+
+### Added
+
+- Add review request sync action and forge indicators in session view.
+- Add `Ctrl+c` stop-session shortcut in session view.
+- Render inline markdown formatting in session titles.
+
+### Changed
+
+- Color forge indicators by review-request state in session list.
+- Add `FeatureDemo` builder to testty and migrate E2E tests to `FeatureTest`.
+- Add stub agent executables to e2e test environment for CI compatibility.
+
+### Contributors
+
+- @minev-dev
+
 ## [v0.7.1] - 2026-04-04
 
 ### Added
