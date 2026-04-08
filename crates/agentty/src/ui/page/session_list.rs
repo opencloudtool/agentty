@@ -1,7 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use crate::domain::session::{Session, SessionSize, Status};
@@ -312,16 +312,25 @@ fn render_session_row(
         String::new()
     };
     let forge_indicator = session.forge_indicator();
-    let status_label = if forge_indicator.is_empty() {
-        format!("{status}")
+    let status_cell = if forge_indicator.is_empty() {
+        Cell::from(format!("{status}")).style(Style::default().fg(style::status_color(status)))
     } else {
-        format!("{status} {forge_indicator}")
+        let review_state = session.review_request.as_ref().map(|rr| rr.summary.state);
+        let indicator_color = style::forge_indicator_color(review_state);
+
+        Cell::from(Line::from(vec![
+            Span::styled(
+                format!("{status} "),
+                Style::default().fg(style::status_color(status)),
+            ),
+            Span::styled(forge_indicator, Style::default().fg(indicator_color)),
+        ]))
     };
     let cells = vec![
         Cell::from(Line::from(title_spans)),
         Cell::from(session.model.as_str()),
         Cell::from(session.size.to_string()).style(Style::default().fg(size_color(session.size))),
-        Cell::from(status_label).style(Style::default().fg(style::status_color(status))),
+        status_cell,
         Cell::from(timer_label),
     ];
 

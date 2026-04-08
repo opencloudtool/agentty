@@ -1,7 +1,7 @@
 use ratatui::style::Color;
 
 use super::icon::Icon;
-use crate::domain::session::Status;
+use crate::domain::session::{ReviewRequestState, Status};
 
 /// Shared semantic color tokens for the terminal UI.
 pub mod palette {
@@ -70,6 +70,19 @@ pub fn status_icon(status: Status) -> Icon {
         }
         Status::Done => Icon::Check,
         Status::Canceled => Icon::Cross,
+    }
+}
+
+/// Returns the terminal color for a forge indicator suffix.
+///
+/// The color reflects the review-request lifecycle state when one is linked,
+/// or a soft accent when only a published branch exists (`None`).
+pub fn forge_indicator_color(state: Option<ReviewRequestState>) -> Color {
+    match state {
+        Some(ReviewRequestState::Open) => palette::WARNING,
+        Some(ReviewRequestState::Merged) => palette::SUCCESS,
+        Some(ReviewRequestState::Closed) => palette::DANGER,
+        None => palette::ACCENT_SOFT,
     }
 }
 
@@ -156,5 +169,41 @@ mod tests {
 
         // Assert
         assert!(matches!(icon, Icon::Pending));
+    }
+
+    #[test]
+    fn forge_indicator_color_returns_warning_for_open() {
+        // Arrange / Act
+        let color = forge_indicator_color(Some(ReviewRequestState::Open));
+
+        // Assert
+        assert_eq!(color, palette::WARNING);
+    }
+
+    #[test]
+    fn forge_indicator_color_returns_success_for_merged() {
+        // Arrange / Act
+        let color = forge_indicator_color(Some(ReviewRequestState::Merged));
+
+        // Assert
+        assert_eq!(color, palette::SUCCESS);
+    }
+
+    #[test]
+    fn forge_indicator_color_returns_danger_for_closed() {
+        // Arrange / Act
+        let color = forge_indicator_color(Some(ReviewRequestState::Closed));
+
+        // Assert
+        assert_eq!(color, palette::DANGER);
+    }
+
+    #[test]
+    fn forge_indicator_color_returns_accent_soft_for_published_only() {
+        // Arrange / Act
+        let color = forge_indicator_color(None);
+
+        // Assert
+        assert_eq!(color, palette::ACCENT_SOFT);
     }
 }
