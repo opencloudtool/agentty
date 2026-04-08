@@ -978,6 +978,7 @@ mod tests {
     fn test_view_footer_actions_in_progress_shows_stop_and_open() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -998,6 +999,7 @@ mod tests {
     fn test_view_actions_review_hides_stop() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
@@ -1015,6 +1017,7 @@ mod tests {
     fn test_view_footer_actions_review_hides_stop() {
         // Arrange
         let state = ViewHelpState {
+            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_branch_action: None,
