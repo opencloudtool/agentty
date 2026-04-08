@@ -26,12 +26,12 @@ project tab also accessible with `Tab`:
 | **Stats** | View usage statistics. |
 | **Settings** | Configure the default reasoning level, smart/fast/review model defaults, the optional `Last used model as default` smart-model mode, the session commit coauthor trailer, and `Open Commands` for the active project. |
 
-In session chat view, the status and session title render in a dedicated
+In session chat view, the status-colored session title renders in a dedicated
 header row above the output panel. A second metadata row shows the persisted
 size bucket, current `+added` / `-deleted` line totals, the cumulative
-active-work timer, the effective reasoning level, and token usage. The timer
-keeps ticking only while the session is actively working and freezes between
-turns.
+active-work timer, the current model, the effective reasoning level, and
+token usage. The timer keeps ticking only while the session is actively
+working and freezes between turns.
 
 The grouped **Sessions** tab also shows that same cumulative active-work timer
 in its own `Timer` column, so in-progress rows keep ticking live there while

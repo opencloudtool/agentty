@@ -193,11 +193,12 @@ impl<'a> SessionChatPage<'a> {
     /// is submitted so reopening the composer does not hide the review block.
     fn review_text(&self) -> Option<&str> {
         match self.mode {
-            AppMode::View { review_text, .. } => review_text.as_deref(),
             AppMode::OpenCommandSelector { restore_view, .. }
             | AppMode::PublishBranchInput { restore_view, .. }
             | AppMode::ViewInfoPopup { restore_view, .. } => restore_view.review_text.as_deref(),
-            AppMode::Prompt { review_text, .. } => review_text.as_deref(),
+            AppMode::View { review_text, .. } | AppMode::Prompt { review_text, .. } => {
+                review_text.as_deref()
+            }
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
@@ -395,8 +396,8 @@ impl<'a> SessionChatPage<'a> {
         ]
     }
 
-    /// Formats the size, timer, and token-usage summary for the second header
-    /// row.
+    /// Formats the size, timer, token-usage, model, and reasoning summary for
+    /// the second header row.
     fn session_metadata_text(
         session: &Session,
         header_width: u16,
@@ -411,9 +412,10 @@ impl<'a> SessionChatPage<'a> {
         let input_tokens = format_token_count(session.stats.input_tokens);
         let output_tokens = format_token_count(session.stats.output_tokens);
         let metadata = format!(
-            "Size: {}  Lines: +{added_lines} / -{deleted_lines}  Timer: {timer}  Tokens: \
-             {input_tokens}/{output_tokens}  Reasoning: {}",
+            "Size: {}  Lines: +{added_lines} / -{deleted_lines}  Timer: {timer}  Model: {}  \
+             Reasoning: {}  Tokens: {input_tokens}/{output_tokens}",
             session.size,
+            session.model.as_str(),
             reasoning_level.as_str(),
         );
         let metadata_width = usize::from(header_width);
@@ -1923,6 +1925,7 @@ mod tests {
         // Arrange
         let mut session = session_fixture();
         session.title = Some("Header Session".to_string());
+        session.model = AgentModel::Gpt54;
         session.stats.added_lines = 12;
         session.stats.deleted_lines = 4;
         session.stats.input_tokens = 1_250;
@@ -1938,7 +1941,7 @@ mod tests {
             None,
             0,
         );
-        let width = 80;
+        let width = 120;
         let backend = ratatui::backend::TestBackend::new(width, 20);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
 
@@ -1960,8 +1963,13 @@ mod tests {
         assert!(metadata_row.contains("Size: XS"));
         assert!(metadata_row.contains("Lines: +12 / -4"));
         assert!(metadata_row.contains("Timer: 0s"));
-        assert!(metadata_row.contains("Tokens: 1.3k/2.5k"));
+        assert!(metadata_row.contains("Model: gpt-5.4"));
         assert!(metadata_row.contains("Reasoning: high"));
+        assert!(metadata_row.contains("Tokens: 1.3k/2.5k"));
+        assert!(
+            metadata_row.find("Model: gpt-5.4") < metadata_row.find("Reasoning: high"),
+            "model should appear before reasoning in the metadata row"
+        );
         assert!(!output_border_row.contains("Header Session"));
     }
 
@@ -1971,6 +1979,7 @@ mod tests {
         let mut session = session_fixture();
         let long_title = "This is a very long session title for truncation behavior validation";
         session.title = Some(long_title.to_string());
+        session.model = AgentModel::Gpt54;
         let mode = AppMode::List;
         let mut page = SessionChatPage::new(
             std::slice::from_ref(&session),
@@ -2015,7 +2024,7 @@ mod tests {
             None,
             0,
         );
-        let width = 90;
+        let width = 120;
         let backend = ratatui::backend::TestBackend::new(width, 20);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
 
@@ -2032,6 +2041,8 @@ mod tests {
         let metadata_row = buffer_row_text(terminal.backend().buffer(), 2, width);
         assert!(header_row.contains("Header Session"));
         assert!(!header_row.contains("GitHub"));
+        assert!(metadata_row.contains("Model: gemini-3-flash-preview"));
+        assert!(metadata_row.contains("Reasoning: high"));
         assert!(metadata_row.contains("Tokens:"));
     }
 
@@ -2039,6 +2050,7 @@ mod tests {
     fn test_session_metadata_text_ticks_live_in_progress_timer() {
         // Arrange
         let mut session = session_fixture();
+        session.model = AgentModel::Gpt54;
         session.stats.added_lines = 9;
         session.stats.deleted_lines = 3;
         session.status = Status::InProgress;
@@ -2047,13 +2059,19 @@ mod tests {
 
         // Act
         let early_metadata =
-            SessionChatPage::session_metadata_text(&session, 80, ReasoningLevel::default(), 90);
+            SessionChatPage::session_metadata_text(&session, 120, ReasoningLevel::default(), 90);
         let later_metadata =
-            SessionChatPage::session_metadata_text(&session, 80, ReasoningLevel::default(), 3_720);
+            SessionChatPage::session_metadata_text(&session, 120, ReasoningLevel::default(), 3_720);
 
         // Assert
         assert!(early_metadata.contains("Lines: +9 / -3"));
         assert!(early_metadata.contains("Timer: 30s"));
+        assert!(early_metadata.contains("Model: gpt-5.4"));
+        assert!(early_metadata.contains("Tokens: 0/0"));
+        assert!(
+            early_metadata.find("Model: gpt-5.4") < early_metadata.find("Reasoning: high"),
+            "model should appear before reasoning in metadata text"
+        );
         assert!(later_metadata.contains("Timer: 1h1m0s"));
     }
 
@@ -2082,6 +2100,7 @@ mod tests {
         let mut session = session_fixture();
         session.status = Status::InProgress;
         session.title = Some("This is a very long timer-aware session header title".to_string());
+        session.model = AgentModel::Gpt54;
         session.in_progress_started_at = Some(0);
         let mode = AppMode::List;
         let mut page = SessionChatPage::new(
