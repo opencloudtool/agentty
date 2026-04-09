@@ -972,6 +972,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_publish_branch_input_key_enter_starts_pull_request_publish() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let session_id = app
+            .create_session()
+            .await
+            .expect("failed to create session");
+        set_session_status_for_test(
+            &mut app,
+            &session_id,
+            crate::domain::session::Status::Review,
+        );
+        app.mode = AppMode::PublishBranchInput {
+            default_branch_name: "agentty/session".to_string(),
+            input: crate::domain::input::InputState::with_text("review/custom".to_string()),
+            locked_upstream_ref: None,
+            publish_branch_action: crate::domain::session::PublishBranchAction::PublishPullRequest,
+            restore_view: ConfirmationViewMode {
+                done_session_output_mode: DoneSessionOutputMode::Review,
+                review_status_message: None,
+                review_text: None,
+                scroll_offset: Some(4),
+                session_id: session_id.clone(),
+            },
+        };
+
+        // Act
+        let event_result = handle_publish_branch_input_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::ViewInfoPopup {
+                is_loading: true,
+                ref message,
+                ref title,
+                ..
+            } if title == "Publishing GitHub pull request"
+                && message.contains("`review/custom`")
+        ));
+    }
+
+    #[tokio::test]
     async fn test_handle_publish_branch_input_key_char_updates_input_state() {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;

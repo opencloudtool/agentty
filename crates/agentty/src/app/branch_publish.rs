@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use ag_forge as forge;
 
-use super::session;
-use crate::domain::session::{PublishBranchAction, Session, Status};
+use super::session::{self, Clock, unix_timestamp_from_system_time};
+use crate::app::review_request;
+use crate::domain::session::{PublishBranchAction, ReviewRequest, Session, Status};
 use crate::infra::db;
 use crate::infra::git::GitClient;
 use crate::ui::state::app_mode::ConfirmationViewMode;
@@ -21,6 +22,8 @@ pub(crate) struct BranchPublishTaskSession {
     pub(crate) folder: PathBuf,
     /// Stable session identifier.
     pub(crate) id: String,
+    /// Persisted linked review request, when the session already tracks one.
+    pub(crate) review_request: Option<ReviewRequest>,
     /// Current session lifecycle state checked before push.
     pub(crate) status: Status,
 }
@@ -32,6 +35,7 @@ impl BranchPublishTaskSession {
             base_branch: session.base_branch.clone(),
             folder: session.folder.clone(),
             id: session.id.clone(),
+            review_request: session.review_request.clone(),
             status: session.status,
         }
     }
@@ -60,18 +64,28 @@ pub(crate) struct BranchPublishTaskFailure {
 
 impl BranchPublishTaskFailure {
     /// Builds one blocked-state popup payload from an actionable message.
-    pub(crate) fn blocked(message: String) -> Self {
+    pub(crate) fn blocked(publish_branch_action: PublishBranchAction, message: String) -> Self {
         Self {
             message,
-            title: "Branch push blocked".to_string(),
+            title: match publish_branch_action {
+                PublishBranchAction::Push => "Branch push blocked".to_string(),
+                PublishBranchAction::PublishPullRequest => {
+                    "GitHub pull request publish blocked".to_string()
+                }
+            },
         }
     }
 
     /// Builds one failure-state popup payload from an execution error.
-    pub(crate) fn failed(message: String) -> Self {
+    pub(crate) fn failed(publish_branch_action: PublishBranchAction, message: String) -> Self {
         Self {
             message,
-            title: "Branch push failed".to_string(),
+            title: match publish_branch_action {
+                PublishBranchAction::Push => "Branch push failed".to_string(),
+                PublishBranchAction::PublishPullRequest => {
+                    "GitHub pull request publish failed".to_string()
+                }
+            },
         }
     }
 }
@@ -88,6 +102,15 @@ pub(crate) enum BranchPublishTaskSuccess {
         /// Persisted upstream ref recorded after the successful push.
         upstream_reference: String,
     },
+    /// Carries the pushed branch name, linked pull request, and upstream ref.
+    PullRequestPublished {
+        /// Remote branch name that was pushed successfully.
+        branch_name: String,
+        /// Persisted review-request summary refreshed or created by the action.
+        review_request: ReviewRequest,
+        /// Persisted upstream ref recorded after the successful push.
+        upstream_reference: String,
+    },
 }
 
 /// Reducer-friendly result for a completed branch-publish background action.
@@ -98,6 +121,7 @@ pub(crate) type BranchPublishTaskResult =
 pub(crate) fn branch_publish_loading_title(publish_branch_action: PublishBranchAction) -> String {
     match publish_branch_action {
         PublishBranchAction::Push => "Pushing branch".to_string(),
+        PublishBranchAction::PublishPullRequest => "Publishing GitHub pull request".to_string(),
     }
 }
 
@@ -113,6 +137,14 @@ pub(crate) fn branch_publish_loading_message(
         (PublishBranchAction::Push, None) => {
             "Publishing the session branch to the configured Git remote.".to_string()
         }
+        (PublishBranchAction::PublishPullRequest, Some(remote_branch_name)) => format!(
+            "Pushing the session branch to `{remote_branch_name}` and creating or refreshing the \
+             GitHub pull request."
+        ),
+        (PublishBranchAction::PublishPullRequest, None) => {
+            "Pushing the session branch and creating or refreshing the GitHub pull request."
+                .to_string()
+        }
     }
 }
 
@@ -120,6 +152,7 @@ pub(crate) fn branch_publish_loading_message(
 pub(crate) fn branch_publish_loading_label(publish_branch_action: PublishBranchAction) -> String {
     match publish_branch_action {
         PublishBranchAction::Push => "Pushing branch...".to_string(),
+        PublishBranchAction::PublishPullRequest => "Publishing pull request...".to_string(),
     }
 }
 
@@ -127,11 +160,12 @@ pub(crate) fn branch_publish_loading_label(publish_branch_action: PublishBranchA
 pub(crate) fn branch_publish_success_title(publish_branch_action: PublishBranchAction) -> String {
     match publish_branch_action {
         PublishBranchAction::Push => "Branch pushed".to_string(),
+        PublishBranchAction::PublishPullRequest => "GitHub pull request published".to_string(),
     }
 }
 
 /// Returns the success popup body for one completed branch push.
-pub(crate) fn branch_publish_success_message(
+pub(crate) fn branch_push_success_message(
     branch_name: &str,
     review_request_creation_url: Option<&str>,
 ) -> String {
@@ -147,20 +181,45 @@ pub(crate) fn branch_publish_success_message(
     }
 }
 
+/// Returns the success popup body for one completed pull-request publish.
+pub(crate) fn pull_request_publish_success_message(
+    branch_name: &str,
+    review_request: &ReviewRequest,
+) -> String {
+    format!(
+        "Published session branch `{branch_name}`.\n\nGitHub pull request {} is ready:\n{}",
+        review_request.summary.display_id, review_request.summary.web_url
+    )
+}
+
 /// Executes one background branch-publish action for a session snapshot.
 pub(crate) async fn run_branch_publish_action(
     publish_branch_action: PublishBranchAction,
     branch_publish_session: BranchPublishTaskSession,
     db: db::Database,
+    clock: Arc<dyn Clock>,
     git_client: Arc<dyn GitClient>,
+    review_request_client: Arc<dyn forge::ReviewRequestClient>,
     remote_branch_name: Option<String>,
 ) -> BranchPublishTaskResult {
     match publish_branch_action {
         PublishBranchAction::Push => {
             push_session_branch(
+                publish_branch_action,
                 &branch_publish_session,
                 db,
                 git_client,
+                remote_branch_name.as_deref(),
+            )
+            .await
+        }
+        PublishBranchAction::PublishPullRequest => {
+            publish_pull_request(
+                &branch_publish_session,
+                db,
+                clock,
+                git_client,
+                review_request_client,
                 remote_branch_name.as_deref(),
             )
             .await
@@ -227,6 +286,7 @@ pub(crate) fn git_push_authentication_message(
 
 /// Pushes one session branch to the configured Git remote.
 pub(crate) async fn push_session_branch(
+    publish_branch_action: PublishBranchAction,
     branch_publish_session: &BranchPublishTaskSession,
     db: db::Database,
     git_client: Arc<dyn GitClient>,
@@ -234,15 +294,96 @@ pub(crate) async fn push_session_branch(
 ) -> BranchPublishTaskResult {
     if !branch_publish_session.status.allows_review_actions() {
         return Err(BranchPublishTaskFailure::failed(
+            publish_branch_action,
             "Session must be in review to push the branch.".to_string(),
         ));
     }
 
-    let folder = branch_publish_session.folder.clone();
     let branch_name = remote_branch_name.map_or_else(
         || session::session_branch(&branch_publish_session.id),
         str::to_string,
     );
+    let upstream_reference = push_session_branch_to_remote(
+        branch_publish_session,
+        publish_branch_action,
+        &db,
+        git_client.clone(),
+        remote_branch_name,
+    )
+    .await?;
+    let review_request_creation_url =
+        branch_review_request_creation_url(branch_publish_session, git_client, &branch_name).await;
+
+    Ok(BranchPublishTaskSuccess::Pushed {
+        branch_name,
+        review_request_creation_url,
+        upstream_reference,
+    })
+}
+
+/// Pushes one session branch, then creates or refreshes its GitHub pull
+/// request.
+async fn publish_pull_request(
+    branch_publish_session: &BranchPublishTaskSession,
+    db: db::Database,
+    clock: Arc<dyn Clock>,
+    git_client: Arc<dyn GitClient>,
+    review_request_client: Arc<dyn forge::ReviewRequestClient>,
+    remote_branch_name: Option<&str>,
+) -> BranchPublishTaskResult {
+    if !branch_publish_session.status.allows_review_actions() {
+        return Err(BranchPublishTaskFailure::failed(
+            PublishBranchAction::PublishPullRequest,
+            "Session must be in review to publish the pull request.".to_string(),
+        ));
+    }
+
+    let branch_name = remote_branch_name.map_or_else(
+        || session::session_branch(&branch_publish_session.id),
+        str::to_string,
+    );
+    let upstream_reference = push_session_branch_to_remote(
+        branch_publish_session,
+        PublishBranchAction::PublishPullRequest,
+        &db,
+        git_client.clone(),
+        remote_branch_name,
+    )
+    .await?;
+    let remote = review_request_remote(
+        branch_publish_session,
+        git_client.clone(),
+        review_request_client.as_ref(),
+    )
+    .await?;
+    let review_request = create_or_refresh_review_request(
+        branch_publish_session,
+        &clock,
+        &db,
+        git_client.clone(),
+        review_request_client,
+        remote,
+        branch_name.clone(),
+    )
+    .await?;
+
+    Ok(BranchPublishTaskSuccess::PullRequestPublished {
+        branch_name,
+        review_request,
+        upstream_reference,
+    })
+}
+
+/// Pushes the session branch to the configured remote and persists the
+/// resulting upstream reference.
+async fn push_session_branch_to_remote(
+    branch_publish_session: &BranchPublishTaskSession,
+    publish_branch_action: PublishBranchAction,
+    db: &db::Database,
+    git_client: Arc<dyn GitClient>,
+    remote_branch_name: Option<&str>,
+) -> Result<String, BranchPublishTaskFailure> {
+    let folder = branch_publish_session.folder.clone();
     let upstream_reference = match remote_branch_name {
         Some(remote_branch_name) => {
             git_client
@@ -251,23 +392,162 @@ pub(crate) async fn push_session_branch(
         }
         None => git_client.push_current_branch(folder).await,
     }
-    .map_err(|error| branch_push_failure(&error.to_string()))?;
+    .map_err(|error| branch_push_failure(publish_branch_action, &error.to_string()))?;
 
     db.update_session_published_upstream_ref(&branch_publish_session.id, Some(&upstream_reference))
         .await
         .map_err(|error| {
-            BranchPublishTaskFailure::failed(format!(
-                "Branch push succeeded, but Agentty could not persist the upstream reference: \
-                 {error}"
-            ))
+            BranchPublishTaskFailure::failed(
+                publish_branch_action,
+                format!(
+                    "Branch push succeeded, but Agentty could not persist the upstream reference: \
+                     {error}"
+                ),
+            )
         })?;
-    let review_request_creation_url =
-        branch_review_request_creation_url(branch_publish_session, git_client, &branch_name).await;
 
-    Ok(BranchPublishTaskSuccess::Pushed {
-        branch_name,
-        review_request_creation_url,
-        upstream_reference,
+    Ok(upstream_reference)
+}
+
+/// Resolves one forge remote for pull-request publishing.
+async fn review_request_remote(
+    branch_publish_session: &BranchPublishTaskSession,
+    git_client: Arc<dyn GitClient>,
+    review_request_client: &dyn forge::ReviewRequestClient,
+) -> Result<forge::ForgeRemote, BranchPublishTaskFailure> {
+    let repo_url = git_client
+        .repo_url(branch_publish_session.folder.clone())
+        .await
+        .map_err(|error| {
+            BranchPublishTaskFailure::failed(
+                PublishBranchAction::PublishPullRequest,
+                format!("Failed to resolve repository remote for pull request: {error}"),
+            )
+        })?;
+
+    review_request_client
+        .detect_remote(repo_url)
+        .map_err(|error| {
+            BranchPublishTaskFailure::failed(
+                PublishBranchAction::PublishPullRequest,
+                error.detail_message(),
+            )
+        })
+}
+
+/// Creates or refreshes one pull request for the published session branch and
+/// persists the normalized summary.
+async fn create_or_refresh_review_request(
+    branch_publish_session: &BranchPublishTaskSession,
+    clock: &Arc<dyn Clock>,
+    db: &db::Database,
+    git_client: Arc<dyn GitClient>,
+    review_request_client: Arc<dyn forge::ReviewRequestClient>,
+    remote: forge::ForgeRemote,
+    source_branch: String,
+) -> Result<ReviewRequest, BranchPublishTaskFailure> {
+    let review_request_summary =
+        if let Some(review_request) = &branch_publish_session.review_request {
+            review_request_client
+                .refresh_review_request(remote, review_request.summary.display_id.clone())
+                .await
+                .map_err(|error| {
+                    BranchPublishTaskFailure::failed(
+                        PublishBranchAction::PublishPullRequest,
+                        error.detail_message(),
+                    )
+                })?
+        } else if let Some(existing_review_request) = review_request_client
+            .find_by_source_branch(remote.clone(), source_branch.clone())
+            .await
+            .map_err(|error| {
+                BranchPublishTaskFailure::failed(
+                    PublishBranchAction::PublishPullRequest,
+                    error.detail_message(),
+                )
+            })?
+        {
+            review_request_client
+                .refresh_review_request(remote, existing_review_request.display_id)
+                .await
+                .map_err(|error| {
+                    BranchPublishTaskFailure::failed(
+                        PublishBranchAction::PublishPullRequest,
+                        error.detail_message(),
+                    )
+                })?
+        } else {
+            let create_input =
+                load_review_request_create_input(branch_publish_session, git_client, source_branch)
+                    .await?;
+
+            review_request_client
+                .create_review_request(remote, create_input)
+                .await
+                .map_err(|error| {
+                    BranchPublishTaskFailure::failed(
+                        PublishBranchAction::PublishPullRequest,
+                        error.detail_message(),
+                    )
+                })?
+        };
+    let review_request = ReviewRequest {
+        last_refreshed_at: unix_timestamp_from_system_time(clock.now_system_time()),
+        summary: review_request_summary,
+    };
+
+    db.update_session_review_request(&branch_publish_session.id, Some(&review_request))
+        .await
+        .map_err(|error| {
+            BranchPublishTaskFailure::failed(
+                PublishBranchAction::PublishPullRequest,
+                format!(
+                    "Pull request publish succeeded, but Agentty could not persist the linked \
+                     pull request: {error}"
+                ),
+            )
+        })?;
+
+    Ok(review_request)
+}
+
+/// Builds one normalized create-request payload from branch-publish session
+/// commit message.
+async fn load_review_request_create_input(
+    branch_publish_session: &BranchPublishTaskSession,
+    git_client: Arc<dyn GitClient>,
+    source_branch: String,
+) -> Result<forge::CreateReviewRequestInput, BranchPublishTaskFailure> {
+    let commit_message = git_client
+        .head_commit_message(branch_publish_session.folder.clone())
+        .await
+        .map_err(|error| {
+            BranchPublishTaskFailure::failed(
+                PublishBranchAction::PublishPullRequest,
+                format!("Failed to load session branch commit message: {error}"),
+            )
+        })?
+        .ok_or_else(|| {
+            BranchPublishTaskFailure::failed(
+                PublishBranchAction::PublishPullRequest,
+                "Session branch has no commit message for pull request publishing.".to_string(),
+            )
+        })?;
+    let review_request_commit_message =
+        review_request::parse_review_request_commit_message(&commit_message).ok_or_else(|| {
+            BranchPublishTaskFailure::failed(
+                PublishBranchAction::PublishPullRequest,
+                "Session branch commit message must have a non-empty title for pull request \
+                 publishing."
+                    .to_string(),
+            )
+        })?;
+
+    Ok(forge::CreateReviewRequestInput {
+        body: review_request_commit_message.body,
+        source_branch,
+        target_branch: branch_publish_session.base_branch.clone(),
+        title: review_request_commit_message.title,
     })
 }
 
@@ -289,17 +569,27 @@ async fn branch_review_request_creation_url(
 }
 
 /// Maps one branch-publish failure into blocked or failed popup copy.
-pub(crate) fn branch_push_failure(error: &str) -> BranchPublishTaskFailure {
+pub(crate) fn branch_push_failure(
+    publish_branch_action: PublishBranchAction,
+    error: &str,
+) -> BranchPublishTaskFailure {
     if !is_git_push_authentication_error(error) {
-        return BranchPublishTaskFailure::failed(format!(
-            "Failed to publish session branch: {error}"
-        ));
+        return BranchPublishTaskFailure::failed(
+            publish_branch_action,
+            format!("Failed to publish session branch: {error}"),
+        );
     }
 
-    BranchPublishTaskFailure::blocked(git_push_authentication_message(
-        detected_forge_kind_from_git_push_error(error),
-        "push the branch again",
-    ))
+    BranchPublishTaskFailure::blocked(
+        publish_branch_action,
+        git_push_authentication_message(
+            detected_forge_kind_from_git_push_error(error),
+            match publish_branch_action {
+                PublishBranchAction::Push => "push the branch again",
+                PublishBranchAction::PublishPullRequest => "publish the pull request again",
+            },
+        ),
+    )
 }
 
 /// Returns one forge family from the remote host shown in a credential error.
@@ -378,7 +668,7 @@ mod tests {
              terminal prompts disabled";
 
         // Act
-        let failure = branch_push_failure(error);
+        let failure = branch_push_failure(PublishBranchAction::Push, error);
 
         // Assert
         assert_eq!(failure.title, "Branch push blocked");
@@ -416,7 +706,7 @@ mod tests {
 
         // Act
         for case in cases {
-            let failure = branch_push_failure(case.error);
+            let failure = branch_push_failure(PublishBranchAction::Push, case.error);
 
             // Assert
             assert_eq!(failure.title, "Branch push blocked", "case: {}", case.name);

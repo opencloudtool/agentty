@@ -11,6 +11,7 @@ mod merge_queue;
 mod project;
 mod reducer;
 mod review;
+mod review_request;
 mod service;
 pub(crate) mod session;
 pub mod session_state;

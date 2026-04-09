@@ -127,7 +127,7 @@ Reducer behaviors that matter for data flow:
 
 - `RefreshSessions` sets `should_force_reload`, which triggers `refresh_sessions_now()` and `reload_projects()`.
 - `reload_projects()` now reloads only persisted project rows; the expensive home-directory repository discovery pass runs only during `App::new()`.
-- `BranchPublishActionCompleted` swaps the session-view popup from loading to success or blocked/failure copy after a manual branch push finishes.
+- `BranchPublishActionCompleted` swaps the session-view popup from loading to success or blocked/failure copy after either the manual `p` branch push flow or the `Shift+P` GitHub pull-request publish flow finishes.
 - `SessionUpdated` marks touched sessions so reducer can call `sync_session_from_handle()` selectively.
 - `SessionProgressUpdated` refreshes transient loader text used by the session view.
 - `AgentResponseReceived` routes question-mode transitions for active view sessions and applies the worker's reducer-ready turn projection (summary, follow-up tasks, questions, token deltas) to the currently loaded session.

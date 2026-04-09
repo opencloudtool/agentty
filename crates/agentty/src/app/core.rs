@@ -17,10 +17,12 @@ use app::branch_publish::{
     BranchPublishTaskSuccess, branch_publish_loading_label as branch_publish_loading_label_text,
     branch_publish_loading_message as branch_publish_loading_message_text,
     branch_publish_loading_title as branch_publish_loading_title_text,
-    branch_publish_success_message as branch_publish_success_message_text,
     branch_publish_success_title as branch_publish_success_title_text,
+    branch_push_success_message as branch_push_success_message_text,
     detected_forge_kind_from_git_push_error, git_push_authentication_message,
-    is_git_push_authentication_error, run_branch_publish_action,
+    is_git_push_authentication_error,
+    pull_request_publish_success_message as pull_request_publish_success_message_text,
+    run_branch_publish_action,
 };
 #[cfg(test)]
 use app::branch_publish::{BranchPublishTaskFailure, branch_push_failure, push_session_branch};
@@ -1360,9 +1362,11 @@ impl App {
             remote_branch_name.as_deref(),
         );
         let loading_label = Self::branch_publish_loading_label(publish_branch_action);
+        let clock = self.services.clock();
         let db = self.services.db().clone();
         let event_sender = self.services.event_sender();
         let git_client = self.services.git_client();
+        let review_request_client = self.services.review_request_client();
         let background_restore_view = restore_view.clone();
         let event_session_id = branch_publish_session.id.clone();
 
@@ -1379,7 +1383,9 @@ impl App {
                 publish_branch_action,
                 branch_publish_session,
                 db,
+                clock,
                 git_client,
+                review_request_client,
                 remote_branch_name,
             )
             .await;
@@ -2042,6 +2048,24 @@ impl App {
                     restore_view,
                 )
             }
+            Ok(BranchPublishTaskSuccess::PullRequestPublished {
+                branch_name,
+                review_request,
+                upstream_reference,
+            }) => {
+                self.sessions
+                    .apply_published_upstream_ref(&session_id, upstream_reference);
+                self.sessions
+                    .apply_review_request(&session_id, review_request.clone());
+
+                Self::view_info_popup_mode(
+                    Self::branch_publish_success_title(PublishBranchAction::PublishPullRequest),
+                    Self::pull_request_publish_success_message(&branch_name, &review_request),
+                    false,
+                    String::new(),
+                    restore_view,
+                )
+            }
             Err(failure) => Self::view_info_popup_mode(
                 failure.title,
                 failure.message,
@@ -2437,7 +2461,15 @@ impl App {
         branch_name: &str,
         review_request_creation_url: Option<&str>,
     ) -> String {
-        branch_publish_success_message_text(branch_name, review_request_creation_url)
+        branch_push_success_message_text(branch_name, review_request_creation_url)
+    }
+
+    /// Returns the success popup body for one completed pull-request publish.
+    fn pull_request_publish_success_message(
+        branch_name: &str,
+        review_request: &crate::domain::session::ReviewRequest,
+    ) -> String {
+        pull_request_publish_success_message_text(branch_name, review_request)
     }
 
     /// Builds final sync popup mode from background sync completion result.
@@ -3425,6 +3457,14 @@ mod tests {
         );
         let fallback_success_message =
             App::branch_publish_success_message("agentty/session-1", None);
+        let pull_request_loading_title =
+            App::branch_publish_loading_title(PublishBranchAction::PublishPullRequest);
+        let pull_request_loading_message =
+            App::branch_publish_loading_message(PublishBranchAction::PublishPullRequest, None);
+        let pull_request_loading_label =
+            App::branch_publish_loading_label(PublishBranchAction::PublishPullRequest);
+        let pull_request_success_title =
+            App::branch_publish_success_title(PublishBranchAction::PublishPullRequest);
         let popup_mode = App::view_info_popup_mode(
             "Working".to_string(),
             "Publishing branch".to_string(),
@@ -3453,6 +3493,13 @@ mod tests {
             )
         );
         assert!(fallback_success_message.contains("Create the pull request manually"));
+        assert_eq!(pull_request_loading_title, "Publishing GitHub pull request");
+        assert_eq!(
+            pull_request_loading_message,
+            "Pushing the session branch and creating or refreshing the GitHub pull request."
+        );
+        assert_eq!(pull_request_loading_label, "Publishing pull request...");
+        assert_eq!(pull_request_success_title, "GitHub pull request published");
         assert!(matches!(
             popup_mode,
             AppMode::ViewInfoPopup {
@@ -3479,8 +3526,8 @@ mod tests {
         let failed_error = "remote rejected";
 
         // Act
-        let blocked = branch_push_failure(auth_error);
-        let failed = branch_push_failure(failed_error);
+        let blocked = branch_push_failure(PublishBranchAction::Push, auth_error);
+        let failed = branch_push_failure(PublishBranchAction::Push, failed_error);
 
         // Assert
         assert_eq!(blocked.title, "Branch push blocked");
@@ -3521,7 +3568,14 @@ mod tests {
             .expect("failed to open in-memory db");
 
         // Act
-        let result = push_session_branch(&branch_session, database, git_client, None).await;
+        let result = push_session_branch(
+            PublishBranchAction::Push,
+            &branch_session,
+            database,
+            git_client,
+            None,
+        )
+        .await;
 
         // Assert
         assert!(matches!(
@@ -3548,11 +3602,14 @@ mod tests {
             PublishBranchAction::Push,
             done_snapshot.clone(),
             app.services.db().clone(),
+            app.services.clock(),
             app.services.git_client(),
+            app.services.review_request_client(),
             None,
         )
         .await;
         let helper_result = push_session_branch(
+            PublishBranchAction::Push,
             &done_snapshot,
             app.services.db().clone(),
             app.services.git_client(),
@@ -3564,12 +3621,14 @@ mod tests {
         assert_eq!(
             push_result,
             Err(BranchPublishTaskFailure::failed(
+                PublishBranchAction::Push,
                 "Session must be in review to push the branch.".to_string(),
             ))
         );
         assert_eq!(
             helper_result,
             Err(BranchPublishTaskFailure::failed(
+                PublishBranchAction::Push,
                 "Session must be in review to push the branch.".to_string(),
             ))
         );
@@ -3604,6 +3663,7 @@ mod tests {
 
         // Act
         let result = push_session_branch(
+            PublishBranchAction::Push,
             &branch_session,
             database.clone(),
             git_client,
@@ -3649,7 +3709,14 @@ mod tests {
             .expect("failed to open in-memory db");
 
         // Act
-        let result = push_session_branch(&branch_session, database, git_client, None).await;
+        let result = push_session_branch(
+            PublishBranchAction::Push,
+            &branch_session,
+            database,
+            git_client,
+            None,
+        )
+        .await;
 
         // Assert
         assert_eq!(
@@ -3715,6 +3782,67 @@ mod tests {
                 .first()
                 .and_then(|session| session.published_upstream_ref.as_deref()),
             Some("origin/agentty/session-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_branch_publish_action_update_sets_pull_request_success_popup() {
+        // Arrange
+        let session_folder = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_selected_session(
+            session_folder.path().to_path_buf(),
+            "",
+            Arc::new(MockTmuxClient::new()),
+        )
+        .await;
+        let expected_restore_view = ConfirmationViewMode {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            scroll_offset: Some(1),
+            session_id: "session-1".to_string(),
+        };
+        let review_request = crate::domain::session::ReviewRequest {
+            last_refreshed_at: 55,
+            summary: crate::domain::session::ReviewRequestSummary {
+                web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
+                ..test_review_request_summary("#42", ReviewRequestState::Open)
+            },
+        };
+
+        // Act
+        app.apply_branch_publish_action_update(BranchPublishActionUpdate {
+            restore_view: expected_restore_view.clone(),
+            result: Ok(BranchPublishTaskSuccess::PullRequestPublished {
+                branch_name: "agentty/session-1".to_string(),
+                review_request: review_request.clone(),
+                upstream_reference: "origin/agentty/session-1".to_string(),
+            }),
+            session_id: "session-1".to_string(),
+        });
+
+        // Assert
+        assert!(matches!(
+            app.mode,
+            AppMode::ViewInfoPopup {
+                is_loading: false,
+                ref message,
+                ref restore_view,
+                ref title,
+                ..
+            } if title == "GitHub pull request published"
+                && message.contains("Published session branch `agentty/session-1`.")
+                && message.contains("GitHub pull request #42 is ready")
+                && message.contains("https://github.com/agentty-xyz/agentty/pull/42")
+                && restore_view == &expected_restore_view
+        ));
+        assert_eq!(
+            app.sessions
+                .state()
+                .sessions
+                .first()
+                .and_then(|session| session.review_request.clone()),
+            Some(review_request)
         );
     }
 

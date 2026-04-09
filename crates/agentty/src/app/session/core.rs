@@ -18,7 +18,7 @@ use crate::app::session_state::SessionGitStatus;
 use crate::app::{AppServices, SessionState, setting};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{
-    DailyActivity, FollowUpTaskAction, Session, SessionFollowUpTask, SessionStats,
+    DailyActivity, FollowUpTaskAction, ReviewRequest, Session, SessionFollowUpTask, SessionStats,
 };
 use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::git;
@@ -313,6 +313,19 @@ impl SessionManager {
             .find(|session| session.id == session_id)
         {
             session.published_upstream_ref = Some(published_upstream_ref);
+        }
+    }
+
+    /// Applies one persisted review-request snapshot to the matching in-memory
+    /// session row.
+    pub(crate) fn apply_review_request(&mut self, session_id: &str, review_request: ReviewRequest) {
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.review_request = Some(review_request);
         }
     }
 

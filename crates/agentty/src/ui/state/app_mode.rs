@@ -286,6 +286,7 @@ pub enum HelpContext {
         review_status_message: Option<String>,
         review_text: Option<String>,
         publish_branch_action: Option<PublishBranchAction>,
+        publish_pull_request_action: Option<PublishBranchAction>,
         session_id: String,
         session_state: ViewSessionState,
         scroll_offset: Option<u16>,
@@ -310,6 +311,7 @@ impl HelpContext {
                 follow_up_task_action,
                 has_multiple_follow_up_tasks,
                 publish_branch_action,
+                publish_pull_request_action,
                 session_state,
                 ..
             } => help_action::view_actions(ViewHelpState {
@@ -317,6 +319,7 @@ impl HelpContext {
                 follow_up_task_action: *follow_up_task_action,
                 has_multiple_follow_up_tasks: *has_multiple_follow_up_tasks,
                 publish_branch_action: *publish_branch_action,
+                publish_pull_request_action: *publish_pull_request_action,
                 session_state: *session_state,
             }),
             HelpContext::List { keybindings } => keybindings.clone(),
@@ -335,6 +338,7 @@ impl HelpContext {
                 review_status_message,
                 review_text,
                 publish_branch_action: _,
+                publish_pull_request_action: _,
                 session_id,
                 scroll_offset,
                 ..
@@ -433,6 +437,7 @@ mod tests {
             review_status_message: None,
             review_text: None,
             publish_branch_action: None,
+            publish_pull_request_action: None,
             session_id: "session-id".to_string(),
             session_state: ViewSessionState::InProgress,
             scroll_offset: Some(2),
@@ -464,6 +469,7 @@ mod tests {
             review_status_message: Some("Preparing review...".to_string()),
             review_text: Some("Ready".to_string()),
             publish_branch_action: Some(PublishBranchAction::Push),
+            publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_id: "session-id".to_string(),
             session_state: ViewSessionState::InProgress,
             scroll_offset: Some(4),
@@ -498,6 +504,7 @@ mod tests {
             review_status_message: None,
             review_text: None,
             publish_branch_action: Some(PublishBranchAction::Push),
+            publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_id: "session-id".to_string(),
             session_state: ViewSessionState::Interactive,
             scroll_offset: None,
@@ -508,6 +515,7 @@ mod tests {
 
         // Assert
         assert!(bindings.iter().any(|binding| binding.key == "p"));
+        assert!(bindings.iter().any(|binding| binding.key == "Shift+P"));
     }
 
     #[test]

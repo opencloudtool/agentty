@@ -81,7 +81,7 @@ impl SessionManager {
             SessionError::Workflow("Session has no linked review request".to_string())
         })?;
         let remote = self
-            .review_request_remote(services, session, &linked_review_request)
+            .review_request_remote(services, session, Some(&linked_review_request))
             .await?;
         let refreshed_summary = services
             .review_request_client()
@@ -152,27 +152,23 @@ impl SessionManager {
     /// Active sessions prefer the live worktree remote. Terminal sessions can
     /// fall back to the stored review-request URL after worktree cleanup has
     /// removed the local checkout.
-    async fn review_request_remote(
+    pub(super) async fn review_request_remote(
         &self,
         services: &AppServices,
         session: &crate::domain::session::Session,
-        review_request: &ReviewRequest,
+        review_request: Option<&ReviewRequest>,
     ) -> Result<forge::ForgeRemote, SessionError> {
-        let repo_url = if services.fs_client().is_dir(session.folder.clone()) {
-            services
-                .git_client()
-                .repo_url(session.folder.clone())
-                .await
-                .ok()
-        } else {
-            None
-        }
-        .or_else(|| Self::review_request_repo_url(review_request))
-        .ok_or_else(|| {
-            SessionError::Workflow(
-                "Failed to resolve repository remote for linked review request".to_string(),
-            )
-        })?;
+        let repo_url = services
+            .git_client()
+            .repo_url(session.folder.clone())
+            .await
+            .ok()
+            .or_else(|| review_request.and_then(Self::review_request_repo_url))
+            .ok_or_else(|| {
+                SessionError::Workflow(
+                    "Failed to resolve repository remote for linked review request".to_string(),
+                )
+            })?;
 
         services
             .review_request_client()
@@ -470,7 +466,11 @@ mod tests {
             last_refreshed_at: 12,
             summary: review_request_summary("#42", ReviewRequestState::Open),
         };
-        let session = test_session(missing_folder, Some(linked_review_request), Status::Done);
+        let session = test_session(
+            missing_folder.clone(),
+            Some(linked_review_request),
+            Status::Done,
+        );
         let database = database_with_session(&session).await;
         let now = Instant::now();
         let fake_clock = Arc::new(FakeClock::new(
@@ -498,7 +498,21 @@ mod tests {
             web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
         };
         let mut mock_git_client = git::MockGitClient::new();
-        mock_git_client.expect_repo_url().times(0);
+        mock_git_client
+            .expect_repo_url()
+            .times(1)
+            .withf({
+                let missing_folder = missing_folder.clone();
+                move |candidate_folder| candidate_folder == &missing_folder
+            })
+            .returning(|_| {
+                Box::pin(async {
+                    Err(crate::infra::git::GitError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "missing worktree",
+                    )))
+                })
+            });
         let mut mock_review_request_client = forge::MockReviewRequestClient::new();
         mock_review_request_client
             .expect_detect_remote()

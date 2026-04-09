@@ -568,6 +568,7 @@ mod tests {
             review_status_message: None,
             review_text: None,
             publish_branch_action: None,
+            publish_pull_request_action: None,
             session_id: "missing-session".to_string(),
             session_state: crate::ui::state::help_action::ViewSessionState::Done,
             scroll_offset: Some(0),

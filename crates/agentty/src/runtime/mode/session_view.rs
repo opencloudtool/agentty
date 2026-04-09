@@ -75,6 +75,7 @@ struct ViewSessionSnapshot {
     has_multiple_follow_up_tasks: bool,
     is_action_allowed: bool,
     publish_branch_action: Option<PublishBranchAction>,
+    publish_pull_request_action: Option<PublishBranchAction>,
     session_state: ViewSessionState,
     session_status: Status,
 }
@@ -233,13 +234,27 @@ async fn handle_view_key(
             let _ = show_diff_for_view_session(app, view_context).await;
         }
         KeyCode::Char('p')
-            if !key.modifiers.contains(event::KeyModifiers::CONTROL)
+            if key.modifiers == event::KeyModifiers::NONE
                 && view_session_snapshot.publish_branch_action.is_some() =>
         {
             let Some(publish_branch_action) = view_session_snapshot.publish_branch_action else {
                 return true;
             };
             open_publish_branch_input(app, view_context, publish_branch_action);
+
+            return false;
+        }
+        KeyCode::Char(character)
+            if character.eq_ignore_ascii_case(&'p')
+                && key.modifiers == event::KeyModifiers::SHIFT
+                && view_session_snapshot.publish_pull_request_action.is_some() =>
+        {
+            let Some(publish_pull_request_action) =
+                view_session_snapshot.publish_pull_request_action
+            else {
+                return true;
+            };
+            open_publish_branch_input(app, view_context, publish_pull_request_action);
 
             return false;
         }
@@ -277,6 +292,7 @@ async fn handle_view_key(
                 view_session_snapshot.follow_up_task_action,
                 view_session_snapshot.has_multiple_follow_up_tasks,
                 view_session_snapshot.publish_branch_action,
+                view_session_snapshot.publish_pull_request_action,
                 view_session_snapshot.session_state,
             );
             return false;
@@ -396,6 +412,7 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
         has_multiple_follow_up_tasks: app.has_multiple_follow_up_tasks(&view_context.session_id),
         is_action_allowed: is_view_action_allowed(session_status),
         publish_branch_action: session.publish_branch_action(),
+        publish_pull_request_action: session.publish_pull_request_action(),
         session_state: help_action::session_view_state(session),
         session_status,
     })
@@ -587,6 +604,7 @@ fn open_view_help_overlay(
     follow_up_task_action: Option<FollowUpTaskAction>,
     has_multiple_follow_up_tasks: bool,
     publish_branch_action: Option<PublishBranchAction>,
+    publish_pull_request_action: Option<PublishBranchAction>,
     session_state: ViewSessionState,
 ) {
     app.mode = AppMode::Help {
@@ -598,6 +616,7 @@ fn open_view_help_overlay(
             review_status_message: view_context.review_status_message.clone(),
             review_text: view_context.review_text.clone(),
             publish_branch_action,
+            publish_pull_request_action,
             session_id: view_context.session_id.clone(),
             session_state,
             scroll_offset: view_context.scroll_offset,
@@ -2104,6 +2123,7 @@ mod tests {
             None,
             false,
             Some(PublishBranchAction::Push),
+            Some(PublishBranchAction::PublishPullRequest),
             ViewSessionState::Review,
         );
 
@@ -2119,6 +2139,7 @@ mod tests {
                     review_status_message: Some(ref status_message),
                     review_text: Some(ref review_text),
                     publish_branch_action: Some(PublishBranchAction::Push),
+                    publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
                     session_id: ref session_id_in_mode,
                     session_state: ViewSessionState::Review,
                     scroll_offset: Some(3),
@@ -2490,6 +2511,7 @@ mod tests {
             has_multiple_follow_up_tasks: false,
             is_action_allowed: false,
             publish_branch_action: None,
+            publish_pull_request_action: None,
             session_state: ViewSessionState::Done,
             session_status: Status::Done,
         };
@@ -2603,6 +2625,7 @@ mod tests {
             has_multiple_follow_up_tasks: false,
             is_action_allowed: true,
             publish_branch_action: None,
+            publish_pull_request_action: None,
             session_state: ViewSessionState::Review,
             session_status: Status::Review,
         };
@@ -2643,6 +2666,61 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn test_handle_view_key_shift_p_opens_pull_request_publish_input() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Summary,
+            review_status_message: None,
+            review_text: None,
+            session_id: session_id.clone(),
+            scroll_offset: Some(2),
+        };
+        let view_context = view_context(&mut app).expect("expected view context");
+        let mut pending_update = ViewPendingUpdate::from_context(&view_context);
+        let view_session_snapshot = ViewSessionSnapshot {
+            can_start_staged_session: false,
+            can_sync_review_request: false,
+            can_open_worktree: true,
+            follow_up_task_action: None,
+            has_multiple_follow_up_tasks: false,
+            is_action_allowed: true,
+            publish_branch_action: Some(PublishBranchAction::Push),
+            publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
+            session_state: ViewSessionState::Review,
+            session_status: Status::Review,
+        };
+        let view_key_context = ViewKeyContext {
+            context: &view_context,
+            metrics: ViewMetrics {
+                total_lines: 10,
+                view_height: 5,
+            },
+            session_snapshot: &view_session_snapshot,
+        };
+
+        // Act
+        let should_apply = handle_view_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT),
+            view_key_context,
+            &mut pending_update,
+        )
+        .await;
+
+        // Assert
+        assert!(!should_apply);
+        assert!(matches!(
+            app.mode,
+            AppMode::PublishBranchInput {
+                publish_branch_action: PublishBranchAction::PublishPullRequest,
+                ref restore_view,
+                ..
+            } if restore_view.session_id == session_id
+        ));
+    }
+
     /// Verifies session-view action keys are ignored when the current session
     /// status does not allow those actions.
     #[tokio::test]
@@ -2671,6 +2749,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT),
         ] {
             let mut pending_update = ViewPendingUpdate::from_context(&view_context);
             let view_session_snapshot = ViewSessionSnapshot {
@@ -2681,6 +2760,7 @@ mod tests {
                 has_multiple_follow_up_tasks: false,
                 is_action_allowed: false,
                 publish_branch_action: None,
+                publish_pull_request_action: None,
                 session_state: ViewSessionState::Done,
                 session_status: Status::Done,
             };

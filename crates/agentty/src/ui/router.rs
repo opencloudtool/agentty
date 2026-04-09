@@ -8,7 +8,7 @@ use crate::app::{SettingsManager, Tab};
 use crate::domain::agent::ReasoningLevel;
 use crate::domain::input::InputState;
 use crate::domain::project::ProjectListItem;
-use crate::domain::session::{DailyActivity, Session};
+use crate::domain::session::{DailyActivity, PublishBranchAction, Session};
 use crate::ui::overlay::{SyncBlockedPopupRenderContext, ViewInfoPopupRenderContext};
 use crate::ui::state::app_mode::{AppMode, ConfirmationIntent, ConfirmationViewMode};
 use crate::ui::{Component, Page, RenderContext, component, overlay, page};
@@ -92,6 +92,7 @@ struct PublishBranchOverlayContext<'a> {
     follow_up_task_positions: &'a HashMap<String, usize>,
     input: &'a InputState,
     locked_upstream_ref: Option<&'a str>,
+    publish_branch_action: PublishBranchAction,
     restore_view: &'a ConfirmationViewMode,
     session_progress_messages: &'a HashMap<String, String>,
     sessions: &'a [Session],
@@ -419,6 +420,7 @@ fn render_session_or_diff_mode(
             default_branch_name,
             input,
             locked_upstream_ref,
+            publish_branch_action,
             restore_view,
             ..
         } => render_publish_branch_overlay(
@@ -431,6 +433,7 @@ fn render_session_or_diff_mode(
                 follow_up_task_positions: aux.follow_up_task_positions,
                 input,
                 locked_upstream_ref: locked_upstream_ref.as_deref(),
+                publish_branch_action: *publish_branch_action,
                 restore_view,
                 session_progress_messages: aux.session_progress_messages,
                 sessions,
@@ -491,6 +494,7 @@ fn render_publish_branch_overlay(
         follow_up_task_positions,
         input,
         locked_upstream_ref,
+        publish_branch_action,
         restore_view,
         session_progress_messages,
         sessions,
@@ -513,6 +517,7 @@ fn render_publish_branch_overlay(
         input,
         default_branch_name,
         locked_upstream_ref,
+        publish_branch_action,
     )
     .render(f, area);
 }

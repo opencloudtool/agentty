@@ -105,6 +105,7 @@ mod tests {
                 review_status_message: None,
                 review_text: None,
                 publish_branch_action: None,
+                publish_pull_request_action: None,
                 session_id: "s1".to_string(),
                 session_state: ViewSessionState::Interactive,
                 scroll_offset: Some(5),

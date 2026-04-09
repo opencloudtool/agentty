@@ -89,6 +89,7 @@ state:
 | `s` | Start a staged draft session; or sync review request status when a branch is published |
 | `o` | Open worktree in tmux |
 | `p` | Publish session branch |
+| `Shift+P` | Create or refresh GitHub pull request |
 | `d` | Show diff |
 | `f` | Append focused review output (regenerate if already present) |
 | `l` | Launch or open the selected follow-up task |
@@ -114,9 +115,13 @@ Additional notes:
   If one `Open Commands` entry is configured for the active project, it runs immediately.
   If multiple entries are configured (one command per line), Agentty opens a selector popup.
 - **Branch publish**: `p` is available in **Review** and **AgentReview** and opens a publish popup. Press `Enter` with an empty field to keep the default session branch target, or type a custom remote branch name first.
+- **GitHub pull-request publish**: `Shift+P` is available in **Review** and
+  **AgentReview**. It opens the publish popup, accepts the same optional
+  custom branch name as `p`, then creates or refreshes the linked GitHub pull
+  request after the branch push succeeds.
 - **Focused review persistence**: when a focused review has already been generated, it stays visible after opening `d` diff mode and returning to the session view.
 - **Branch publish lock**: once a session branch already tracks a remote branch, Agentty locks the popup field and re-publishes to that same remote branch only.
-- **Branch publish auth**: `p` uses regular Git authentication only. HTTPS remotes need a credential helper or PAT, and SSH remotes need a working SSH key.
+- **Branch publish auth**: `p` and `Shift+P` use regular Git authentication only. HTTPS remotes need a credential helper or PAT, and SSH remotes need a working SSH key. `Shift+P` also needs authenticated `gh` access for GitHub repositories.
 - **Follow-up tasks**: `l` launches the selected follow-up task into a sibling session the first time, then reopens that linked sibling on later presses. Use `[` and `]` to move between follow-up tasks when a session has more than one.
 - **Question**: opening the session enters Question Input mode until all prompts are answered and submitted, or the clarification turn is ended with `Esc`.
 - **Done**: `t` toggles between summary and full output.
@@ -124,7 +129,7 @@ Additional notes:
   and non-editing verification commands, but it should not edit files or
   mutate git/workspace state.
 
-## Publish Branch Popup
+## Publish Popup
 
 | Key | Action |
 |-----|--------|

@@ -47,6 +47,8 @@ also writes a machine-readable workspace summary to
   for app-event draining and batch coalescing during one runtime tick.
 - `crates/agentty/src/app/review.rs`: Focused review cache updates plus
   background review-assist orchestration helpers.
+- `crates/agentty/src/app/review_request.rs`: Shared review-request commit
+  message parsing used by branch-publish and session lifecycle workflows.
 - `crates/agentty/src/app/branch_publish.rs`: Branch-publish task payloads,
   git-push auth guidance, and branch publish background helpers.
 - `crates/agentty/src/app/assist.rs`: Shared assistance helpers for commit and

@@ -168,6 +168,10 @@ impl<'a> SessionChatPage<'a> {
             AppMode::View {
                 review_status_message,
                 ..
+            }
+            | AppMode::Prompt {
+                review_status_message,
+                ..
             } => review_status_message.as_deref(),
             AppMode::OpenCommandSelector { restore_view, .. }
             | AppMode::PublishBranchInput { restore_view, .. }
@@ -180,10 +184,6 @@ impl<'a> SessionChatPage<'a> {
             | AppMode::Question { .. }
             | AppMode::Diff { .. }
             | AppMode::Help { .. } => None,
-            AppMode::Prompt {
-                review_status_message,
-                ..
-            } => review_status_message.as_deref(),
         }
     }
 
@@ -193,12 +193,12 @@ impl<'a> SessionChatPage<'a> {
     /// is submitted so reopening the composer does not hide the review block.
     fn review_text(&self) -> Option<&str> {
         match self.mode {
-            AppMode::OpenCommandSelector { restore_view, .. }
-            | AppMode::PublishBranchInput { restore_view, .. }
-            | AppMode::ViewInfoPopup { restore_view, .. } => restore_view.review_text.as_deref(),
             AppMode::View { review_text, .. } | AppMode::Prompt { review_text, .. } => {
                 review_text.as_deref()
             }
+            AppMode::OpenCommandSelector { restore_view, .. }
+            | AppMode::PublishBranchInput { restore_view, .. }
+            | AppMode::ViewInfoPopup { restore_view, .. } => restore_view.review_text.as_deref(),
             AppMode::List
             | AppMode::Confirmation { .. }
             | AppMode::SyncBlockedPopup { .. }
@@ -582,6 +582,7 @@ impl<'a> SessionChatPage<'a> {
             follow_up_task_action: selected_follow_up_task_action,
             has_multiple_follow_up_tasks: session.follow_up_tasks.len() > 1,
             publish_branch_action: session.publish_branch_action(),
+            publish_pull_request_action: session.publish_pull_request_action(),
             session_state,
         });
 
@@ -1546,6 +1547,7 @@ mod tests {
 
         // Assert
         assert!(help_text.contains("p: publish branch"));
+        assert!(help_text.contains("Shift+P: publish PR"));
     }
 
     #[test]
@@ -1562,6 +1564,7 @@ mod tests {
         assert!(help_text.contains("Enter: reply"));
         assert!(help_text.contains("m: add to merge queue"));
         assert!(help_text.contains("p: publish branch"));
+        assert!(help_text.contains("Shift+P: publish PR"));
         assert!(!help_text.contains("r: rebase"));
     }
 

@@ -13,7 +13,9 @@ use super::{
     SessionTaskService, draft, session_branch, session_folder, unix_timestamp_from_system_time,
 };
 use crate::app::session::SessionError;
-use crate::app::{AppEvent, AppServices, ProjectManager, SessionManager, agentty_home, setting};
+use crate::app::{
+    AppEvent, AppServices, ProjectManager, SessionManager, agentty_home, review_request, setting,
+};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{ReviewRequest, SESSION_DATA_DIR, Session, Status};
 use crate::domain::setting::SettingName;
@@ -706,19 +708,19 @@ impl SessionManager {
             .position(|session| session.id == session_id)
     }
 
-    /// Publishes a review-ready session branch and links one forge review
-    /// request.
+    /// Publishes a review-ready session branch and creates or refreshes the
+    /// linked forge review request.
     ///
-    /// Stored links are reused without pushing or creating duplicates. `Done`
-    /// and `Canceled` sessions keep that stored link for later open and
-    /// refresh flows, but creating a first link is limited to `Review`
-    /// sessions because terminal sessions may no longer have a live worktree
-    /// branch.
+    /// Existing links are refreshed after the branch push so repeated publish
+    /// requests update the same remote review request instead of returning a
+    /// stale stored summary. When no link is stored yet, the workflow reuses
+    /// an existing remote review request for the session branch before
+    /// creating a new one.
     ///
     /// # Errors
-    /// Returns an error if the session is missing, not eligible for first-time
-    /// publication, git push fails, forge detection fails, or persistence
-    /// fails.
+    /// Returns an error if the session is missing, cannot be published, git
+    /// push fails, forge detection fails, the review-request operation fails,
+    /// or persistence fails.
     pub async fn publish_review_request(
         &mut self,
         services: &AppServices,
@@ -729,10 +731,6 @@ impl SessionManager {
             return Err(SessionError::NotFound);
         };
 
-        if let Some(review_request) = session.review_request.clone() {
-            return Ok(review_request);
-        }
-
         if !session.status.allows_review_actions() {
             return Err(SessionError::Workflow(
                 "Session must be in review to create a review request".to_string(),
@@ -741,7 +739,7 @@ impl SessionManager {
 
         let folder = session.folder.clone();
         let source_branch = session_branch(session_id);
-        let create_input = Self::review_request_create_input(session, source_branch.clone());
+        let linked_review_request = session.review_request.clone();
         let git_client = services.git_client();
         let published_upstream_ref = git_client
             .push_current_branch(folder.clone())
@@ -752,25 +750,43 @@ impl SessionManager {
         self.store_published_upstream_ref(services, session_id, published_upstream_ref)
             .await?;
 
-        let repo_url = git_client.repo_url(folder).await.map_err(|error| {
-            SessionError::Workflow(format!(
-                "Failed to resolve repository remote for review request: {error}"
-            ))
-        })?;
+        let session = self
+            .state
+            .sessions
+            .get(session_index)
+            .ok_or(SessionError::NotFound)?;
         let review_request_client = services.review_request_client();
-        let remote = review_request_client
-            .detect_remote(repo_url)
-            .map_err(|error| SessionError::Workflow(error.detail_message()))?;
-        let review_request_summary = match review_request_client
-            .find_by_source_branch(remote.clone(), source_branch)
-            .await
-            .map_err(|error| SessionError::Workflow(error.detail_message()))?
-        {
-            Some(existing_review_request) => existing_review_request,
-            None => review_request_client
-                .create_review_request(remote, create_input)
+        let remote = self
+            .review_request_remote(services, session, linked_review_request.as_ref())
+            .await?;
+        let review_request_summary = if let Some(review_request) = linked_review_request {
+            review_request_client
+                .refresh_review_request(remote, review_request.summary.display_id)
                 .await
-                .map_err(|error| SessionError::Workflow(error.detail_message()))?,
+                .map_err(|error| SessionError::Workflow(error.detail_message()))?
+        } else {
+            match review_request_client
+                .find_by_source_branch(remote.clone(), source_branch.clone())
+                .await
+                .map_err(|error| SessionError::Workflow(error.detail_message()))?
+            {
+                Some(existing_review_request) => review_request_client
+                    .refresh_review_request(remote, existing_review_request.display_id)
+                    .await
+                    .map_err(|error| SessionError::Workflow(error.detail_message()))?,
+                None => review_request_client
+                    .create_review_request(
+                        remote,
+                        Self::load_review_request_create_input(
+                            git_client.as_ref(),
+                            session,
+                            source_branch.clone(),
+                        )
+                        .await?,
+                    )
+                    .await
+                    .map_err(|error| SessionError::Workflow(error.detail_message()))?,
+            }
         };
         self.store_review_request_summary(services, session_id, review_request_summary)
             .await
@@ -903,43 +919,43 @@ impl SessionManager {
         Self::cleanup_session_temp_directory(fs_client, &cleanup.session_id).await;
     }
 
-    /// Builds one normalized create-request payload from session metadata.
-    fn review_request_create_input(
+    /// Builds one normalized create-request payload from the session branch
+    /// commit message.
+    async fn load_review_request_create_input(
+        git_client: &dyn git::GitClient,
         session: &Session,
         source_branch: String,
-    ) -> forge::CreateReviewRequestInput {
-        forge::CreateReviewRequestInput {
-            body: Self::review_request_body(session),
+    ) -> Result<forge::CreateReviewRequestInput, SessionError> {
+        let commit_message = git_client
+            .head_commit_message(session.folder.clone())
+            .await
+            .map_err(|error| {
+                SessionError::Workflow(format!(
+                    "Failed to load session branch commit message: {error}"
+                ))
+            })?
+            .ok_or_else(|| {
+                SessionError::Workflow(
+                    "Session branch has no commit message for pull request publishing.".to_string(),
+                )
+            })?;
+        let review_request_commit_message = review_request::parse_review_request_commit_message(
+            &commit_message,
+        )
+        .ok_or_else(|| {
+            SessionError::Workflow(
+                "Session branch commit message must have a non-empty title for pull request \
+                 publishing."
+                    .to_string(),
+            )
+        })?;
+
+        Ok(forge::CreateReviewRequestInput {
+            body: review_request_commit_message.body,
             source_branch,
             target_branch: session.base_branch.clone(),
-            title: Self::review_request_title(session),
-        }
-    }
-
-    /// Returns the title used for a newly created review request.
-    fn review_request_title(session: &Session) -> String {
-        session
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                let prompt = session.prompt.trim();
-
-                (!prompt.is_empty()).then(|| prompt.to_string())
-            })
-            .unwrap_or_else(|| "Agentty review request".to_string())
-    }
-
-    /// Returns optional body copy for one created review request.
-    fn review_request_body(session: &Session) -> Option<String> {
-        session
-            .summary
-            .as_deref()
-            .map(str::trim)
-            .filter(|summary| !summary.is_empty())
-            .map(str::to_string)
+            title: review_request_commit_message.title,
+        })
     }
 
     /// Converts one refreshed summary into persisted review-request metadata.
@@ -2160,13 +2176,12 @@ mod tests {
     /// Returns the expected create payload for one session review request.
     fn expected_create_input() -> forge::CreateReviewRequestInput {
         forge::CreateReviewRequestInput {
-            body: None,
+            body: Some("- Keep title in sync".to_string()),
             source_branch: session_branch("session-id"),
             target_branch: "main".to_string(),
-            title: "Add forge review support".to_string(),
+            title: "Refine session commit message".to_string(),
         }
     }
-
     /// Configures git expectations for review-request publication.
     fn expect_published_session_branch(mock_git_client: &mut git::MockGitClient) {
         mock_git_client
@@ -2245,6 +2260,16 @@ mod tests {
         let created_summary = review_request_summary("#42");
         let mut mock_git_client = git::MockGitClient::new();
         expect_published_session_branch(&mut mock_git_client);
+        mock_git_client
+            .expect_head_commit_message()
+            .times(1)
+            .returning(|_| {
+                Box::pin(async {
+                    Ok(Some(
+                        "Refine session commit message\n\n- Keep title in sync".to_string(),
+                    ))
+                })
+            });
         let mut mock_review_request_client = forge::MockReviewRequestClient::new();
         mock_review_request_client
             .expect_detect_remote()
@@ -2427,6 +2452,16 @@ mod tests {
                 Box::pin(async move { Ok(Some(existing_summary)) })
             });
         mock_review_request_client
+            .expect_refresh_review_request()
+            .times(1)
+            .withf({
+                let remote = remote.clone();
+                move |candidate_remote, display_id| {
+                    candidate_remote == &remote && display_id == "#24"
+                }
+            })
+            .returning(|_, _| Box::pin(async { Ok(review_request_summary("#24")) }));
+        mock_review_request_client
             .expect_create_review_request()
             .times(0);
         let services = test_services(
@@ -2453,11 +2488,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_review_request_reuses_stored_link_without_git_or_forge_calls() {
+    async fn test_publish_review_request_refreshes_stored_link_after_push() {
         // Arrange
         let mut session = test_session(
             "Implement forge review support",
-            Status::Done,
+            Status::Review,
             Some("Add forge review support"),
             "",
         );
@@ -2465,16 +2500,36 @@ mod tests {
             last_refreshed_at: 42,
             summary: review_request_summary("#11"),
         });
-        let expected_review_request = session
-            .review_request
-            .clone()
-            .expect("fixture should include a review request");
         let database = database_with_session(&session).await;
         let mut session_manager = session_manager_with_one_session(session);
-        let mock_git_client = git::MockGitClient::new();
-        let mock_review_request_client = forge::MockReviewRequestClient::new();
+        let remote = github_remote();
+        let refreshed_summary = review_request_summary("#11");
+        let mut mock_git_client = git::MockGitClient::new();
+        expect_published_session_branch(&mut mock_git_client);
+        let mut mock_review_request_client = forge::MockReviewRequestClient::new();
+        mock_review_request_client
+            .expect_detect_remote()
+            .times(1)
+            .returning({
+                let remote = remote.clone();
+                move |_| Ok(remote.clone())
+            });
+        mock_review_request_client
+            .expect_refresh_review_request()
+            .times(1)
+            .withf({
+                let remote = remote.clone();
+                move |candidate_remote, display_id| {
+                    candidate_remote == &remote && display_id == "#11"
+                }
+            })
+            .returning(move |_, _| {
+                let refreshed_summary = refreshed_summary.clone();
+
+                Box::pin(async move { Ok(refreshed_summary) })
+            });
         let services = test_services(
-            database,
+            database.clone(),
             Arc::new(mock_git_client),
             Arc::new(mock_review_request_client),
         );
@@ -2483,10 +2538,25 @@ mod tests {
         let review_request = session_manager
             .publish_review_request(&services, "session-id")
             .await
-            .expect("stored review request should be reused");
+            .expect("stored review request should be refreshed");
+        let persisted_row = load_persisted_session_row(&database).await;
 
         // Assert
-        assert_eq!(review_request, expected_review_request);
+        assert_eq!(review_request.summary.display_id, "#11");
+        assert!(review_request.last_refreshed_at >= 42);
+        assert_eq!(
+            session_manager.state.sessions[0]
+                .published_upstream_ref
+                .as_deref(),
+            Some("origin/agentty/session-id")
+        );
+        assert_eq!(
+            persisted_row
+                .review_request
+                .as_ref()
+                .map(|row| row.display_id.as_str()),
+            Some("#11")
+        );
     }
 
     #[tokio::test]

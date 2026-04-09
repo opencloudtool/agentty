@@ -5,12 +5,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
 use crate::domain::input::InputState;
+use crate::domain::session::PublishBranchAction;
 use crate::ui::component::chat_input::ChatInput;
 use crate::ui::style::palette;
 use crate::ui::{Component, overlay};
 
-const EDITABLE_HELP_TEXT: &str = "Enter: publish | Esc: cancel";
-const LOCKED_HELP_TEXT: &str = "Enter: publish again | Esc: cancel";
+const PUSH_EDITABLE_HELP_TEXT: &str = "Enter: publish branch | Esc: cancel";
+const PUSH_LOCKED_HELP_TEXT: &str = "Enter: publish branch again | Esc: cancel";
+const PULL_REQUEST_EDITABLE_HELP_TEXT: &str = "Enter: publish pull request | Esc: cancel";
+const PULL_REQUEST_LOCKED_HELP_TEXT: &str = "Enter: publish pull request again | Esc: cancel";
 const INPUT_TITLE: &str = "Remote Branch";
 const MIN_OVERLAY_HEIGHT: u16 = 11;
 const MIN_OVERLAY_WIDTH: u16 = 58;
@@ -23,6 +26,7 @@ pub struct PublishBranchOverlay<'a> {
     default_branch_name: &'a str,
     input: &'a InputState,
     locked_upstream_ref: Option<&'a str>,
+    publish_branch_action: PublishBranchAction,
 }
 
 impl<'a> PublishBranchOverlay<'a> {
@@ -31,11 +35,13 @@ impl<'a> PublishBranchOverlay<'a> {
         input: &'a InputState,
         default_branch_name: &'a str,
         locked_upstream_ref: Option<&'a str>,
+        publish_branch_action: PublishBranchAction,
     ) -> Self {
         Self {
             default_branch_name,
             input,
             locked_upstream_ref,
+            publish_branch_action,
         }
     }
 
@@ -57,21 +63,37 @@ impl<'a> PublishBranchOverlay<'a> {
 
     /// Returns the explanatory message shown above the branch field.
     fn message_text(&self) -> String {
-        match self.locked_upstream_ref {
-            Some(upstream_ref) => format!(
+        match (self.publish_branch_action, self.locked_upstream_ref) {
+            (PublishBranchAction::Push, Some(upstream_ref)) => format!(
                 "Already published to `{upstream_ref}`. This session stays locked to that remote \
-                 branch."
+                 branch. Use `Shift+P` to create or refresh the GitHub pull request."
             ),
-            None => "Optional remote branch name for this publish.".to_string(),
+            (PublishBranchAction::Push, None) => "Optional remote branch name for this branch \
+                                                  publish. Use `Shift+P` to create or refresh the \
+                                                  GitHub pull request."
+                .to_string(),
+            (PublishBranchAction::PublishPullRequest, Some(upstream_ref)) => format!(
+                "Already published to `{upstream_ref}`. Publish the GitHub pull request from this \
+                 locked branch."
+            ),
+            (PublishBranchAction::PublishPullRequest, None) => {
+                "Optional remote branch name for this publish before creating or refreshing the \
+                 GitHub pull request."
+                    .to_string()
+            }
         }
     }
 
     /// Returns the footer help line for the current overlay state.
     fn help_text(&self) -> &'static str {
-        if self.locked_upstream_ref.is_some() {
-            LOCKED_HELP_TEXT
-        } else {
-            EDITABLE_HELP_TEXT
+        match (
+            self.publish_branch_action,
+            self.locked_upstream_ref.is_some(),
+        ) {
+            (PublishBranchAction::Push, true) => PUSH_LOCKED_HELP_TEXT,
+            (PublishBranchAction::Push, false) => PUSH_EDITABLE_HELP_TEXT,
+            (PublishBranchAction::PublishPullRequest, true) => PULL_REQUEST_LOCKED_HELP_TEXT,
+            (PublishBranchAction::PublishPullRequest, false) => PULL_REQUEST_EDITABLE_HELP_TEXT,
         }
     }
 
@@ -103,7 +125,11 @@ impl<'a> PublishBranchOverlay<'a> {
 impl Component for PublishBranchOverlay<'_> {
     fn render(&self, f: &mut Frame, area: Rect) {
         let popup_area = Self::popup_area(area);
-        let block = overlay::overlay_block("Publish Branch", palette::ACCENT);
+        let title = match self.publish_branch_action {
+            PublishBranchAction::Push => "Publish Branch",
+            PublishBranchAction::PublishPullRequest => "Publish GitHub Pull Request",
+        };
+        let block = overlay::overlay_block(title, palette::ACCENT);
         let inner_area = block.inner(popup_area);
         let sections = Layout::vertical([
             Constraint::Min(2),
@@ -165,7 +191,8 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let input = InputState::default();
-        let overlay = PublishBranchOverlay::new(&input, "agentty/ff45463f", None);
+        let overlay =
+            PublishBranchOverlay::new(&input, "agentty/ff45463f", None, PublishBranchAction::Push);
 
         // Act
         terminal
@@ -184,7 +211,8 @@ mod tests {
             .collect();
         assert!(text.contains("Publish Branch"));
         assert!(text.contains("Leave blank to push as `agentty/ff45463f`"));
-        assert!(text.contains(EDITABLE_HELP_TEXT));
+        assert!(text.contains("Shift+P"));
+        assert!(text.contains(PUSH_EDITABLE_HELP_TEXT));
     }
 
     #[test]
@@ -193,8 +221,12 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let input = InputState::with_text("review/custom".to_string());
-        let overlay =
-            PublishBranchOverlay::new(&input, "agentty/ff45463f", Some("origin/review/custom"));
+        let overlay = PublishBranchOverlay::new(
+            &input,
+            "agentty/ff45463f",
+            Some("origin/review/custom"),
+            PublishBranchAction::Push,
+        );
 
         // Act
         terminal
@@ -213,6 +245,40 @@ mod tests {
             .collect();
         assert!(text.contains("origin/review/custom"));
         assert!(text.contains("review/custom"));
-        assert!(text.contains(LOCKED_HELP_TEXT));
+        assert!(text.contains("Shift+P"));
+        assert!(text.contains(PUSH_LOCKED_HELP_TEXT));
+    }
+
+    #[test]
+    fn test_publish_pull_request_overlay_render_shows_pull_request_copy() {
+        // Arrange
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+        let input = InputState::with_text("review/custom".to_string());
+        let overlay = PublishBranchOverlay::new(
+            &input,
+            "agentty/ff45463f",
+            None,
+            PublishBranchAction::PublishPullRequest,
+        );
+
+        // Act
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                overlay.render(frame, area);
+            })
+            .expect("failed to draw");
+
+        // Assert
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(text.contains("Publish GitHub Pull Request"));
+        assert!(text.contains("GitHub pull request"));
+        assert!(text.contains(PULL_REQUEST_EDITABLE_HELP_TEXT));
     }
 }
