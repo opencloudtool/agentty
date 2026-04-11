@@ -1547,7 +1547,7 @@ mod tests {
 
         // Assert
         assert!(help_text.contains("p: publish branch"));
-        assert!(help_text.contains("Shift+P: publish PR"));
+        assert!(help_text.contains("Shift+P"));
     }
 
     #[test]
@@ -1564,7 +1564,7 @@ mod tests {
         assert!(help_text.contains("Enter: reply"));
         assert!(help_text.contains("m: add to merge queue"));
         assert!(help_text.contains("p: publish branch"));
-        assert!(help_text.contains("Shift+P: publish PR"));
+        assert!(help_text.contains("Shift+P"));
         assert!(!help_text.contains("r: rebase"));
     }
 

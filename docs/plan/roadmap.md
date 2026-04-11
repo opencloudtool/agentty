@@ -21,7 +21,7 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 
 - `Agents`: machine-scoped model availability for settings and slash-model selection.
 - `Quality`: E2E expansion for settings/stats/resize, feature-test skill for agent-driven E2E creation, feature test backlog for shipped features, and convention hygiene follow-up.
-- `Delivery`: project-level landing strategy for review-ready sessions, including direct-merge vs. pull-request expectations.
+- `Delivery`: project-level landing strategy plus forge-aware review-request publishing for review-ready sessions, including direct-merge vs. review-request expectations.
 - `Protocol`: provider-managed session bootstrap instructions and compact context replay without repo-side agent files.
 
 ## Planning Model
@@ -121,6 +121,33 @@ Each Agentty project can declare its expected landing path, and review-ready ses
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/getting-started/overview.md` to explain the new per-project delivery strategy setting and how it affects review-ready session actions.
 
+### [044ea311-f8d5-4fe5-945f-a08df8ef5f57] Delivery: Support GitLab merge-request publish on `Shift+P`
+
+#### Assignee
+
+`@minev-dev`
+
+#### Why now
+
+The current `Shift+P` flow already concentrates its GitHub-only assumptions in the forge model, publish workflow, and a small set of session-view copy surfaces. That makes GitLab merge-request support an atomic delivery slice that can land now without waiting on separate roadmap work.
+
+#### Usable outcome
+
+GitLab-hosted projects can use `Shift+P` to create or refresh merge requests with forge-native titles, messages, and helper copy, while GitHub pull-request behavior remains unchanged.
+
+#### Substeps
+
+- [ ] **Add GitLab review-request support to the forge and publish workflow.** Extend `crates/ag-forge/src/model.rs` and the review-request client plumbing it drives so Agentty can recognize GitLab remotes, build merge-request creation URLs, and expose GitLab display metadata needed by `crates/agentty/src/app/branch_publish.rs`.
+- [ ] **Make `Shift+P` status and overlay copy forge-aware.** Update the GitLab-sensitive publish titles, success and failure messages, and review-request URL handling in `crates/agentty/src/app/branch_publish.rs`, `crates/agentty/src/app/session/workflow/refresh.rs`, `crates/agentty/src/ui/component/publish_branch_overlay.rs`, and `crates/agentty/src/ui/state/help_action.rs` so session chat and publish overlays describe pull requests versus merge requests correctly for the active forge.
+
+#### Tests
+
+- [ ] Add or extend regression coverage in `crates/ag-forge/src/model.rs`, `crates/agentty/src/app/branch_publish.rs`, `crates/agentty/src/app/session/workflow/refresh.rs`, `crates/agentty/src/ui/component/publish_branch_overlay.rs`, and `crates/agentty/src/ui/state/help_action.rs` for GitLab remote detection, merge-request URL generation, forge-aware publish messaging, and `Shift+P` help text.
+
+#### Docs
+
+- [ ] Update `docs/site/content/docs/usage/workflow.md` and `docs/site/content/docs/usage/keybindings.md` to explain that `Shift+P` publishes the active forge review request, including GitHub pull requests and GitLab merge requests.
+
 ## Ready Now Execution Order
 
 ```mermaid
@@ -128,6 +155,7 @@ flowchart TD
     R1["[5a84d7a9] Quality: settings, stats, and resize E2E"]
     R2["[c3f5a7d9] Quality: feature-test skill"]
     R3["[17a9e2ba] Delivery: project commit strategy"]
+    R4["[044ea311] Delivery: GitLab merge-request publish"]
 ```
 
 ## Queued Next
@@ -268,6 +296,7 @@ Promote when maintainers want Agentty to list, claim, reorder, or transition roa
 - The parked local session harness slice should come back only when the active quality slices stop churning the same session lifecycle seams.
 - The typed-error migration and module-test backfill are both complete. Convention cleanup remains open in the parked sweep card.
 - `Delivery: Add project commit strategy selection` should define the landing policy at the Agentty project level so merge and publish actions can present the right default path for each managed repository.
+- `Delivery: Support GitLab merge-request publish on Shift+P` should generalize the current GitHub-only review-request wording in session chat and related publish overlays, rather than adding a second forge-specific shortcut path.
 - Testty proof pipeline is fully landed in `crates/testty/`. Future enhancements (e.g., additional proof backends, CI integration, or new recipe types) should be queued as new parked cards referencing that crate.
 - VHS feature GIF generation is fully landed with `VhsTapeSettings::feature_demo()` in testty, `BuilderEnv` + `save_feature_gif()` in E2E common helpers, and content-hash caching via `.hash` sidecar files. The showcase tests in `crates/agentty/tests/showcase.rs` remain separate for polished marketing demos with seeded databases.
 - Zola auto-discovery for feature GIFs is fully landed with `get_section()` in `features.html`, individual `.md` pages in `content/features/` with `weight` ordering and `extra.gif` frontmatter, a `feature-page.html` template for standalone pages, and the pattern documented in `managing-docs-with-zola.md`. The homepage feature card in `index.html` remains hardcoded and curated separately.
