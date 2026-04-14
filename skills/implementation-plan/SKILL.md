@@ -1,6 +1,6 @@
 ---
 name: implementation-plan
-description: Create and maintain the single actionable roadmap in `docs/plan/roadmap.md`. Use when asked to draft or revise the roadmap, convert work into an iterative execution queue, split the backlog into `Ready Now`, `Queued Next`, and `Parked`, and keep only the active execution window fully expanded while preserving buffered sub-500-line implementation slices.
+description: Create and maintain the single actionable roadmap in `docs/plan/roadmap.md`. Use when asked to draft or revise the roadmap, convert user-facing backlog work into an iterative execution queue, split it into `Ready Now`, `Queued Next`, and `Parked`, and keep only the active execution window fully expanded while preserving buffered sub-500-line implementation slices.
 ---
 
 # Implementation Plan Workflow
@@ -37,9 +37,11 @@ This skill is the source of truth for roadmap structure and execution-planning r
 1. **Draft or revise the consolidated roadmap**
 
    - Keep all active planning in `docs/plan/roadmap.md`. Do not create a new per-feature plan file unless the user explicitly asks for a temporary migration artifact.
+   - Keep roadmap items focused on user-facing outcomes. Do not add standalone cards whose only outcome is tests, docs, cleanup, refactors, or other internal-only work.
    - Keep `## Ready Now`, `## Queued Next`, and `## Parked` as the three planning horizons for the whole roadmap.
    - Keep one shared execution diagram for `## Ready Now`; queued and parked items do not need a second diagram.
    - Keep already-landed behavior in `## Current State Snapshot`; do not retain implemented steps in `## Ready Now`.
+   - Keep `## Current State Snapshot`, `## Active Streams`, and `## Context Notes` focused on user-facing behavior and the minimal planning context needed to deliver it.
    - Keep snapshot rows scannable: one short current-state sentence plus a status, without long file lists in the table cells.
    - Use the exact heading format `[UUID] Stream: Title` for all `Ready Now`, `Queued Next`, and `Parked` items so every outcome keeps a stable identifier.
    - Keep `Ready Now` detailed. Render `Assignee`, `Why now`, `Usable outcome`, `Substeps`, `Tests`, and `Docs` as their own subtopics on separate lines instead of inline bold labels.
@@ -69,8 +71,8 @@ This skill is the source of truth for roadmap structure and execution-planning r
      | `XL` | `201..=350` |
      | `XXL` | `351+` |
    - Write each checklist item under `#### Substeps` as a short human-readable title followed by the detailed implementation guidance for that item, preserving the concrete file and constraint details instead of collapsing them into the title alone.
-   - Structure `Ready Now` steps as evolving usable slices. Each ready step must include the implementation work plus the tests and documentation needed for that slice before it can be considered complete.
-   - Keep implementation checklist items under `#### Substeps`, then extract validation work into `#### Tests` and documentation work into `#### Docs` immediately after `#### Substeps`.
+   - Structure `Ready Now` steps as evolving usable slices. Each ready step must include all validation and documentation work needed for that slice before it can be considered complete.
+   - Keep implementation checklist items under `#### Substeps`, then keep validation work in `#### Tests` and documentation work in `#### Docs` for the same roadmap item. Do not split tests or docs into standalone roadmap cards.
    - Mention every required file directly in the checklist text for the relevant `Ready Now` substep instead of adding a trailing `Primary files` block.
    - Apply these split heuristics before accepting a large step:
      - If one step introduces a new boundary and then adopts it in two separate callers, keep the boundary plus first caller in `Ready Now` and queue the second caller.
@@ -82,7 +84,7 @@ This skill is the source of truth for roadmap structure and execution-planning r
 
    - Make `Ready Now` the smallest credible execution window for the next planning cycle, not a dump of every open outcome.
    - Make the first `Ready Now` step in each stream the smallest usable iteration instead of standalone groundwork.
-   - Ensure later promotions extend that working baseline and keep tests/docs in the same ready step as the behavior change.
+   - Ensure later promotions extend that working baseline and keep validation/docs tied to the same ready step as the behavior change.
    - When a `Ready Now` step is completed and `Queued Next` is not empty, promote the highest-priority queued card into `Ready Now` instead of leaving the execution window short.
    - Do not reserve testing or documentation for a final catch-all step; if a ready step changes behavior, it owns the validation and docs updates for that change.
    - Keep the single roadmap diagram aligned with `Ready Now` and use it to show which active streams can run in parallel.
@@ -100,12 +102,13 @@ This skill is the source of truth for roadmap structure and execution-planning r
    - Verify every `Ready Now` step starts with explicit `#### Assignee` before `#### Why now`.
    - Verify every `#### Assignee` value uses `@username`.
    - Verify every `Ready Now` step has a concrete `@username` assignee and that any assignee defaulted during promotion was derived from `gh api user --jq .login`.
-   - Verify every `Ready Now` step has explicit `#### Tests` and `#### Docs` sections.
+   - Verify every `Ready Now` step has explicit `#### Tests` and `#### Docs` sections tied to the same user-facing slice.
+   - Verify no roadmap item is a standalone test-only, docs-only, cleanup-only, or other internal-only card.
    - Verify every `Queued Next` or `Parked` card uses only `#### Outcome`, `#### Promote when`, and `#### Depends on`.
    - Verify every `#### Substeps` checklist item starts with a human-readable title while keeping the detailed implementation guidance in the same item.
    - Reject ready steps that bundle multiple acceptance stories behind one title, one `#### Usable outcome`, or one combined validation block.
    - Reject ready steps whose estimated size assumes best-case edits across several module families without contingency for test churn, router wiring, or docs updates.
-   - Reject plans that save most tests/docs for the last step instead of keeping them attached to the relevant behavior changes.
+   - Reject plans that defer most validation or docs to a separate roadmap slice instead of keeping them attached to the same behavior change.
    - Verify the roadmap uses one shared diagram for `Ready Now`.
    - Verify no implemented step remains in `Ready Now`; completed work belongs in snapshot context or should disappear entirely.
    - Verify that completing a `Ready Now` step would trigger promotion of another queued card whenever `Queued Next` still has work.
@@ -127,7 +130,7 @@ Use this skeleton when adding or revising `docs/plan/roadmap.md`:
 ````markdown
 # Agentty Roadmap
 
-<One-sentence summary of how this file tracks the active project roadmap.>
+<One-sentence summary of how this file tracks the active user-facing project roadmap.>
 
 ## Current State Snapshot
 
@@ -219,6 +222,7 @@ flowchart TD
 - Keep no more than `5` items in `## Ready Now`.
 - Keep only `Ready Now` items fully expanded.
 - Keep `## Queued Next` and `## Parked` intentionally compact.
+- Keep roadmap items centered on user-facing outcomes; fold tests, docs, cleanup, and similar internal follow-through into the supporting step instead of tracking them as standalone cards.
 - Assign ownership when promoting work into `## Ready Now`; keep `## Queued Next` and `## Parked` unassigned.
 - After implementing a `Ready Now` step, remove it from the roadmap, refresh the snapshot rows that changed, and promote the next queued card into `## Ready Now` when one is available.
 - If more work remains after a completed step, add or update a queued or parked card instead of preserving completed detail.

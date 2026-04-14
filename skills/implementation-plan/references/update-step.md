@@ -20,5 +20,6 @@ Revise one existing roadmap item while preserving the canonical heading-title fo
 
 - Split the work into a new item instead of overloading one existing step or card with multiple sibling outcomes.
 - Re-split the step if the revision pushes the estimated scope above `350` changed lines or requires more than `3` implementation bullets under `#### Substeps`.
+- Do not revise an item into standalone test-only, docs-only, cleanup-only, or other internal-only work; fold that follow-through into the user-facing slice it supports or remove the item.
 - Preserve the UUID unless the old item is being removed and replaced by a genuinely new acceptance story.
 - If the revision changes queues, sequencing, or dependencies, manually reconcile `## Active Streams`, `## Ready Now Execution Order`, and `## Context Notes` after updating the item block.

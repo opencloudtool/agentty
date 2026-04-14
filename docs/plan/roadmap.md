@@ -1,6 +1,6 @@
 # Agentty Roadmap
 
-Single-file roadmap for the active project backlog. Humans keep priorities and guardrails here, while only `Ready Now` work carries full execution detail and everything else stays intentionally lighter.
+Single-file roadmap for the active user-facing project backlog. Humans keep priorities and guardrails here, while only `Ready Now` work carries full execution detail and everything else stays intentionally lighter.
 
 ## Current State Snapshot
 
@@ -11,18 +11,13 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 | Model availability scoping | Agentty now requires at least one locally runnable backend CLI at startup, `/model` and Settings filter model choices to runnable backends, and unavailable stored defaults fall back to the first available backend default. | Landed |
 | Draft session workflow | `Shift+A` now creates explicit draft sessions that persist ordered staged draft messages, while `a` keeps the immediate-start first-prompt flow. | Landed |
 | Session activity timing | `session` persists cumulative `InProgress` timing fields, and both chat and the grouped session list now show the same cumulative active-work timer. | Landed |
-| Deterministic scenario coverage | E2E tests live in `crates/agentty/tests/e2e/` with shared `Journey` builders, `BuilderEnv` isolation, high-quality VHS feature GIF generation, and the `feature-test` skill guiding `FeatureTest` builder usage for new features; tests cover tab cycling, help overlay, quit confirmation, session lifecycle (creation, open, `j`/`k` navigation, deletion), prompt input (typing, multiline, cancel), and project page. | Landed |
-| Typed errors and hygiene | `DbError`, `GitError`, `AppServerTransportError`, `AppServerError`, `AgentError`, `SessionError`, and `AppError` enums propagate typed errors through all infra and app-layer boundaries; module-level regression tests cover session access, review replay, agent backend, CLI error formatting, and stdin write helpers; convention cleanup remains open. | Partial |
-| Agent instruction delivery | Codex and Gemini app-server turns now persist instruction-bootstrap state and reuse a compact reminder after the first full bootstrap for a provider context; Claude still resends the full wrapper until explicit session identity lands. | Partial |
-| Testty proof pipeline | PTY-driven sessions, VT100 frame parsing, VHS tape compilation, snapshot baselines, overlay renderer, recipe layer, proof reports (labeled captures, four backends: frame-text, PNG strip, GIF, HTML), native bitmap renderer, frame diffing, journey composition, and scale tooling are all landed. | Landed |
 | Project delivery strategy | Review-ready sessions can already merge into the base branch or publish a session branch, but projects configured in Agentty still cannot declare whether their normal landing path should be direct merge to `main` or a pull-request flow. | Missing |
+| Session resume efficiency | Codex and Gemini app-server turns already reuse a compact reminder after the first bootstrap, but Claude sessions still resend the full wrapper because session identity is not yet explicit. | Partial |
 
 ## Active Streams
 
-- `Agents`: machine-scoped model availability for settings and slash-model selection.
-- `Quality`: E2E expansion for settings/stats/resize, legacy E2E migration to `FeatureTest` builder, feature test backlog for shipped features, and convention hygiene follow-up.
 - `Delivery`: project-level landing strategy plus forge-aware review-request publishing for review-ready sessions, including direct-merge vs. review-request expectations.
-- `Protocol`: provider-managed session bootstrap instructions and compact context replay without repo-side agent files.
+- `Protocol`: provider session continuity and compact context replay so resumed chats stay responsive without losing guidance.
 
 ## Planning Model
 
@@ -34,37 +29,10 @@ Single-file roadmap for the active project backlog. Humans keep priorities and g
 - When a `Ready Now` step lands and queued work remains, promote the next queued card into `Ready Now` instead of leaving the execution window short.
 - Until lease automation exists, only `Ready Now` items can carry an assignee, and every promoted `Ready Now` step must set that assignee in the promotion edit.
 - When promoting queued or parked work into `Ready Now`, either name an explicit `@username` or default to the current promoter resolved with `gh api user --jq .login`; do not use a separate claim-only edit.
-- Keep tests and documentation attached to the same `Ready Now` step that changes behavior.
+- Keep roadmap items focused on user-facing outcomes; validation and documentation stay in the same roadmap item through its `#### Tests` and `#### Docs` sections instead of becoming standalone cards.
 - Keep `Ready Now` implementation scopes to `1..=3` bullets under `#### Substeps`; when a step needs broader adoption, copy polish, or a second peer surface, queue the follow-up instead of widening the current slice.
 
 ## Ready Now
-
-### [5a84d7a9-3346-4e01-90be-ce5d3783b32f] Quality: Add settings, stats, and resize E2E tests
-
-#### Assignee
-
-`@minev-dev`
-
-#### Why now
-
-The session-lifecycle E2E slice is already active in `Ready Now`, and the next deterministic coverage gap is still confined to the same PTY-driven test harness. Promoting this follow-up now keeps the quality stream moving without reopening workflow or protocol planning.
-
-#### Usable outcome
-
-E2E coverage validates settings navigation and edit overlays, stats-page empty-state rendering, project selection tab switching, and both cramped and wide terminal layout behavior through full UI flows.
-
-#### Substeps
-
-- [ ] **Cover settings, stats, and project navigation flows.** Extend `crates/agentty/tests/e2e/navigation.rs`, `crates/agentty/tests/e2e/project.rs`, and shared helpers in `crates/agentty/tests/e2e/common.rs` so the E2E suite covers opening the settings overlay with `Enter`, cancelling it with `Esc`, rendering the stats page empty state, and switching from project selection back to the sessions tab.
-- [ ] **Add terminal-size layout coverage.** Add or extend scenarios in `crates/agentty/tests/e2e/navigation.rs` and `crates/agentty/tests/e2e/common.rs` so the PTY suite exercises a cramped `40x12` terminal and a wide `200x50` terminal without regressing layout stability.
-
-#### Tests
-
-- [ ] Run `cargo test -p agentty --test e2e` after adding the new scenarios so the full PTY-driven suite validates the shared helpers and terminal-size coverage together.
-
-#### Docs
-
-- [ ] No user-facing behavior changes — no doc updates needed.
 
 ### [17a9e2ba-0b7d-407d-9cd4-72807ef7bc1f] Delivery: Add project commit strategy selection
 
@@ -82,9 +50,9 @@ Each Agentty project can declare its expected landing path, and review-ready ses
 
 #### Substeps
 
-- [ ] **Persist the per-project landing strategy setting.** Update the project and settings domain models plus the backing persistence in `crates/agentty/src/domain/project.rs`, `crates/agentty/src/domain/setting.rs`, `crates/agentty/src/infra/db.rs`, and `crates/agentty/src/app/setting.rs` so each project stores a canonical delivery strategy such as direct merge versus pull request.
-- [ ] **Expose the landing strategy in project settings UI.** Update the settings runtime and UI flow in `crates/agentty/src/runtime/mode/list.rs`, `crates/agentty/src/ui/page/setting.rs`, and related settings state/helpers so users can view and change the active project's landing strategy without leaving Agentty.
-- [ ] **Apply the landing strategy in review-ready session actions.** Update `crates/agentty/src/app/core.rs`, `crates/agentty/src/runtime/mode/session_view.rs`, `crates/agentty/src/ui/state/help_action.rs`, and related delivery workflow code so session-chat defaults and copy respect whether the active project expects direct merge or pull-request publishing.
+- [ ] **Persist the per-project landing strategy setting.** Update the project and settings domain models plus the backing persistence in `crates/agentty/src/domain/project.rs`, `crates/agentty/src/domain/setting.rs`, `crates/agentty/src/infra/db.rs`, and `crates/agentty/src/app/setting.rs` so each project stores a canonical delivery strategy such as direct merge versus pull request, with coverage for persisted strategy round-trips.
+- [ ] **Expose the landing strategy in project settings UI.** Update the settings runtime and UI flow in `crates/agentty/src/runtime/mode/list.rs`, `crates/agentty/src/ui/page/setting.rs`, and related settings state/helpers so users can view and change the active project's landing strategy without leaving Agentty, and cover the editing flow in the touched runtime and UI tests.
+- [ ] **Apply the landing strategy in review-ready session actions.** Update `crates/agentty/src/app/core.rs`, `crates/agentty/src/runtime/mode/session_view.rs`, `crates/agentty/src/ui/state/help_action.rs`, and `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/getting-started/overview.md` so session-chat defaults, help copy, and end-user docs all reflect whether the active project expects direct merge or pull-request publishing.
 
 #### Tests
 
@@ -94,68 +62,11 @@ Each Agentty project can declare its expected landing path, and review-ready ses
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/getting-started/overview.md` to explain the new per-project delivery strategy setting and how it affects review-ready session actions.
 
-### [a7e41b3c-9d28-4f56-8c1a-6b5e2d4f8a91] Quality: Add draft session and prompt input feature tests
-
-#### Assignee
-
-`@minev-dev`
-
-#### Why now
-
-The `feature-test` skill has landed, so the next quality slice should immediately apply that pattern to already-landed visible behavior. Draft sessions and prompt input stay within the existing PTY feature-test harness and avoid the agent-dependent blockers tracked elsewhere.
-
-#### Usable outcome
-
-`FeatureTest`-based E2E coverage validates draft session creation via `Shift+A`, draft staging persistence, and prompt-input affordances such as slash-command entry and file `@` mention lookup.
-
-#### Substeps
-
-- [ ] **Cover draft session creation with the `FeatureTest` builder.** Extend `crates/agentty/tests/e2e/session.rs` and shared helpers in `crates/agentty/tests/e2e/common.rs` so a feature test exercises `Shift+A`, verifies draft-mode session state, and confirms staged draft content persists through the visible session flow.
-- [ ] **Cover prompt input affordances with the same harness.** Add or extend `FeatureTest` scenarios in `crates/agentty/tests/e2e/session.rs` and `crates/agentty/tests/e2e/common.rs` so the PTY suite validates slash-command input and file `@` mention lookup behavior without reverting to the legacy `save_feature_gif` pattern.
-
-#### Tests
-
-- [ ] Run `cargo test -p agentty --test e2e` after adding the new scenarios so the full PTY-driven feature-test suite validates the draft and prompt flows together.
-
-#### Docs
-
-- [ ] No user-facing docs needed unless the feature tests add new docs-side assets or feature pages beyond the standard `FeatureTest` flow.
-
-### [b2f83d5e-1a64-47c9-9e3b-8c7d6f2a4e10] Quality: Migrate legacy E2E tests to `FeatureTest` builder
-
-#### Assignee
-
-`@andagaev`
-
-#### Why now
-
-The `feature-test` skill has landed, codifying the `FeatureTest` builder pattern. Migrating the remaining legacy tests now standardizes the entire E2E suite before new feature tests accumulate more pattern divergence.
-
-#### Usable outcome
-
-All E2E tests in `crates/agentty/tests/e2e/` use the declarative `FeatureTest` builder for lifecycle management, GIF generation, and Zola page creation, eliminating the legacy `save_feature_gif` and direct `Scenario` patterns.
-
-#### Substeps
-
-- [ ] **Migrate navigation and confirmation E2E tests to `FeatureTest` builder.** Update tests in `crates/agentty/tests/e2e/navigation.rs` and `crates/agentty/tests/e2e/confirmation.rs` to use the `FeatureTest` builder from `crates/agentty/tests/e2e/common.rs` instead of manual `Scenario` + `save_feature_gif` calls.
-- [ ] **Migrate session and project E2E tests to `FeatureTest` builder.** Update tests in `crates/agentty/tests/e2e/session.rs` and `crates/agentty/tests/e2e/project.rs` to use the `FeatureTest` builder, and remove the legacy `save_feature_gif` helper from `crates/agentty/tests/e2e/common.rs` once no tests reference it.
-
-#### Tests
-
-- [ ] Run `cargo test -p agentty --test e2e` after migration to verify all scenarios still pass and GIF generation still works.
-
-#### Docs
-
-- [ ] No user-facing doc changes needed — this is an internal test infrastructure migration.
-
 ## Ready Now Execution Order
 
 ```mermaid
 flowchart TD
-    R1["[5a84d7a9] Quality: settings, stats, and resize E2E"]
-    R3["[17a9e2ba] Delivery: project commit strategy"]
-    R4["[a7e41b3c] Quality: draft and prompt feature tests"]
-    R4 --> R5["[b2f83d5e] Quality: migrate legacy E2E to FeatureTest"]
+    R1["[17a9e2ba] Delivery: project commit strategy"]
 ```
 
 ## Queued Next
@@ -190,91 +101,13 @@ Promote when the compact app-server follow-up path proves stable enough that res
 
 ## Parked
 
-### [282012e4-d4c0-4a83-8d24-a5d137f40111] Quality: Refresh discard-path documentation
-
-#### Outcome
-
-Bring discard-path documentation and comments back in sync after the typed-error and workflow changes settle.
-
-#### Promote when
-
-Promote when the active quality slices stop changing the discard behavior and wording.
-
-#### Depends on
-
-`[ed9de74b] Quality: Propagate typed errors through the app layer` (landed)
-
-### [d2e6ee6c-e784-4d54-aad6-559c2c580101] Quality: Sweep convention cleanup follow-up
-
-#### Outcome
-
-Finish the remaining convention cleanup after active behavior work is no longer changing the same files.
-
-#### Promote when
-
-Promote when the active quality slices stop rewriting the same modules.
-
-#### Depends on
-
-`[832c9729] Quality: Fill the missing module-level regression tests` (landed)
-
-### [1c7b7080-deaf-4e2c-8e3c-df24e01d9251] Quality: Ship one deterministic local session workflow slice
-
-#### Outcome
-
-Add one deterministic local-session scenario plus the minimal reusable harness so the default in-process workflow path can be validated without live credentials.
-
-#### Promote when
-
-Promote when a `Ready Now` slot opens and the active quality slices stop competing for the same session lifecycle boundaries.
-
-#### Depends on
-
-`None`
-
-### [c4d92f8a-3e71-4b05-a8f6-9d1e5c7b2a63] Quality: Add agent-dependent feature tests
-
-#### Outcome
-
-Ship `FeatureTest`-based E2E coverage for features that require active session state: diff view (`d` key from `Review`), question mode (agent-generated questions with predefined answers), follow-up task navigation (sibling session launch), review request publish flow (`p` and `Shift+P` from `Review`), session activity timer display, and active model display in session header.
-
-#### Promote when
-
-Promote when `[1c7b7080] Quality: Ship one deterministic local session workflow slice` lands, providing in-process mock agent channels that can drive sessions to `Review`, `Question`, and other agent-dependent states within the PTY binary.
-
-#### Depends on
-
-`[1c7b7080] Quality: Ship one deterministic local session workflow slice` (parked)
-
-### [6bb0cae7-c07c-4fab-ae6b-e74444d3f0f0] Planning: Move roadmap tasks to a single canonical TOML plan
-
-#### Outcome
-
-Let Agentty and `skills/implementation-plan` manage roadmap tasks through one canonical `docs/plan/roadmap.toml` file instead of Markdown-first task editing.
-
-#### Promote when
-
-Promote when maintainers want Agentty to list, claim, reorder, or transition roadmap tasks directly without maintaining both a rendered roadmap document and a separate structured source.
-
-#### Depends on
-
-`None`
+No parked user-facing cards right now.
 
 ## Context Notes
 
-- `Agents: Scope model lists to locally available backends` should reuse one shared availability snapshot across Settings and `/model` instead of probing CLIs separately in render paths.
-- `Protocol: Bootstrap direct agent instructions once per app-server session` should keep the canonical instruction contract inside Agentty-managed prompt construction and persistence, not in user-maintained provider instruction files.
-- The parked `[6bb0cae7] Planning: Move roadmap tasks to a single canonical TOML plan` should make `docs/plan/roadmap.toml` the only roadmap source of truth for Agentty and `skills/implementation-plan`.
-- The parked local session harness slice should come back only when the active quality slices stop churning the same session lifecycle seams.
-- The typed-error migration and module-test backfill are both complete. Convention cleanup remains open in the parked sweep card.
 - `Delivery: Add project commit strategy selection` should define the landing policy at the Agentty project level so merge and publish actions can present the right default path for each managed repository.
-- Testty proof pipeline is fully landed in `crates/testty/`. Future enhancements (e.g., additional proof backends, CI integration, or new recipe types) should be queued as new parked cards referencing that crate.
-- VHS feature GIF generation is fully landed with `VhsTapeSettings::feature_demo()` in testty, `BuilderEnv` + `save_feature_gif()` in E2E common helpers, and content-hash caching via `.hash` sidecar files. The showcase tests in `crates/agentty/tests/showcase.rs` remain separate for polished marketing demos with seeded databases.
-- Zola auto-discovery for feature GIFs is fully landed with `get_section()` in `features.html`, individual `.md` pages in `content/features/` with `weight` ordering and `extra.gif` frontmatter, a `feature-page.html` template for standalone pages, and the pattern documented in `managing-docs-with-zola.md`. The homepage feature card in `index.html` remains hardcoded and curated separately.
-- `Quality: Add feature-test skill` has landed in `skills/feature-test/SKILL.md`, codifying the E2E → VHS GIF → feature `.md` → auto-discovered features page workflow with the `FeatureTest` builder pattern from `crates/agentty/tests/e2e/common.rs` and the Zola content page conventions from `docs/site/content/features/`.
-- The Feature Test Gate rule in `AGENTS.md` requires every user-visible feature to ship with a `FeatureTest`-based E2E test. The backlog of feature tests for already-shipped features is tracked across Ready Now and parked cards: `[a7e41b3c]` covers draft sessions and prompt input, `[b2f83d5e]` covers migrating legacy tests to the `FeatureTest` builder, and `[c4d92f8a]` covers agent-dependent features blocked on the local session harness `[1c7b7080]`.
-- E2E tests use the testty framework and drive the full UI flow (no pre-seeded database). Tests that require agent-dependent states (diff view from `Review`, question mode, follow-up task navigation) are deferred until an in-process mock agent channel can be wired into the PTY binary or the parked local session workflow harness lands.
-- The parked `[1c7b7080] Quality: Ship one deterministic local session workflow slice` covers in-process session testing with mock agent channels. The E2E test stream covers PTY-driven TUI testing. These are complementary, not overlapping.
+- `Protocol: Track explicit Claude session identity for one-time bootstrap reuse` should land before the broader compact-resume follow-up so Claude sessions stop paying the full bootstrap cost on every turn.
+- Roadmap entries stay user-facing; implementation validation and documentation belong in each step's `#### Tests` and `#### Docs` sections instead of as standalone backlog cards.
 - Run `cargo run -q -p ag-xtask -- roadmap context-digest` before promoting queued or parked work to `Ready Now`.
 
 ## Status Maintenance Rule
@@ -284,5 +117,6 @@ Promote when maintainers want Agentty to list, claim, reorder, or transition roa
 - Keep `## Queued Next` and `## Parked` as compact promotion cards with `#### Outcome`, `#### Promote when`, and `#### Depends on`.
 - Promote queued or parked work into `## Ready Now` by assigning that step in the same roadmap edit, either to an explicit `@username` or to the current promoter resolved through `gh api user --jq .login`.
 - Keep each `Ready Now` step estimated at `350` changed lines or less so implementation remains below the `500`-line hard ceiling, and split any wider follow-up into `## Queued Next`.
+- Keep the roadmap focused on user-facing outcomes; do not add standalone test-only, docs-only, cleanup-only, or other internal-only cards.
 - After a `Ready Now` step lands, remove it from `## Ready Now`, refresh any changed snapshot rows, and promote the next queued card whenever `## Queued Next` still has work.
 - If follow-up work remains after a step lands, add or update a compact queued or parked card instead of preserving the completed step.
