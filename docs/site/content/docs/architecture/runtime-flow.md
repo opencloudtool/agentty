@@ -131,6 +131,7 @@ Reducer behaviors that matter for data flow:
 - `SessionUpdated` marks touched sessions so reducer can call `sync_session_from_handle()` selectively.
 - `SessionProgressUpdated` refreshes transient loader text used by the session view.
 - `AgentResponseReceived` routes question-mode transitions for active view sessions and applies the worker's reducer-ready turn projection (summary, follow-up tasks, questions, token deltas) to the currently loaded session.
+- `PublishedBranchSyncUpdated` tracks detached post-turn auto-push state for already-published session branches so stale background completions do not overwrite newer sync attempts in the active session view.
 - After touched-session sync, terminal statuses (`Done`, `Canceled`) drop per-session worker senders so workers can shut down runtimes.
 
 ## Session Chat Rendering Flow
@@ -240,7 +241,8 @@ flowchart TD
   tasks --> footer["Append trailing commit footer"]
   footer --> active_prompt["Append active-turn prompt block"]
   active_prompt --> review["Append focused review markdown<br/>(review_text)"]
-  review --> final_row["Append final status row<br/>or t toggle hint"]
+  review --> branch_sync["Append published-branch sync row<br/>(auto-push in progress or failed)"]
+  branch_sync --> final_row["Append final status row<br/>or t toggle hint"]
 ```
 
 This means `session.output` stays the durable transcript, while summary,
@@ -269,9 +271,10 @@ The exact session-chat render path is:
    completed-turn markdown, appends the synthetic summary block from
    `session.summary` when the current status/mode allows it, appends
    follow-up tasks, reattaches the trailing commit footer, appends the active
-   prompt block, appends focused review markdown from `review_text`, and
-   finally adds the loader row or `t` toggle hint when the current status
-   requires it.
+   prompt block, appends focused review markdown from `review_text`, appends
+   the published-branch sync row when a detached auto-push is still running or
+   the latest background push failed, and finally adds the loader row or `t`
+   toggle hint when the current status requires it.
 1. `SessionOutput::render()` writes the final `Line` list into a `ratatui`
    `Paragraph`, which is the exact widget printed in the session chat output
    area.

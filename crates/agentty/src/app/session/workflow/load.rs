@@ -183,6 +183,8 @@ impl SessionManager {
                 prompt: row.prompt,
                 reasoning_level_override,
                 published_upstream_ref: row.published_upstream_ref,
+                published_branch_sync_status:
+                    crate::domain::session::PublishedBranchSyncStatus::Idle,
                 questions,
                 review_request,
                 size: persisted_size,

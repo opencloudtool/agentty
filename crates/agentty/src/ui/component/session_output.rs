@@ -5,7 +5,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use serde_json;
 
-use crate::domain::session::{FollowUpTaskAction, Session, SessionFollowUpTask, Status};
+use crate::domain::session::{
+    FollowUpTaskAction, PublishedBranchSyncStatus, Session, SessionFollowUpTask, Status,
+};
 use crate::icon::Icon;
 use crate::infra::agent::protocol::AgentResponseSummary;
 use crate::ui::markdown::render_markdown;
@@ -193,6 +195,7 @@ impl<'a> SessionOutput<'a> {
         Self::append_transcript_footer_lines(&mut lines, trailing_footer_text, inner_width);
         Self::append_active_turn_lines(&mut lines, active_turn_text.as_deref(), inner_width);
         Self::append_review_lines(&mut lines, review_text, inner_width);
+        Self::append_published_branch_sync_lines(&mut lines, session);
 
         if matches!(
             status,
@@ -224,6 +227,30 @@ impl<'a> SessionOutput<'a> {
         }
 
         lines
+    }
+
+    /// Appends one published-branch sync status row when the session is
+    /// auto-pushing a previously published upstream branch or the latest
+    /// auto-push failed.
+    fn append_published_branch_sync_lines(lines: &mut Vec<Line<'static>>, session: &Session) {
+        let Some(sync_message) = session.published_branch_sync_message() else {
+            return;
+        };
+
+        while lines.last().is_some_and(|line| line.width() == 0) {
+            lines.pop();
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "{} {sync_message}",
+                Self::published_branch_sync_icon(session.published_branch_sync_status)
+            ),
+            Style::default().fg(Self::published_branch_sync_color(
+                session.published_branch_sync_status,
+            )),
+        )]));
     }
 
     /// Splits the transcript at the exact active-turn prompt block captured
@@ -726,6 +753,27 @@ impl<'a> SessionOutput<'a> {
         }
     }
 
+    /// Returns the icon used for published-branch sync status rows.
+    fn published_branch_sync_icon(sync_status: PublishedBranchSyncStatus) -> Icon {
+        match sync_status {
+            PublishedBranchSyncStatus::Idle => Icon::Pending,
+            PublishedBranchSyncStatus::InProgress => Icon::current_spinner(),
+            PublishedBranchSyncStatus::Failed => Icon::Warn,
+        }
+    }
+
+    /// Returns the color used for published-branch sync status rows.
+    fn published_branch_sync_color(
+        sync_status: PublishedBranchSyncStatus,
+    ) -> ratatui::style::Color {
+        match sync_status {
+            PublishedBranchSyncStatus::Idle => style::palette::TEXT_MUTED,
+            PublishedBranchSyncStatus::InProgress | PublishedBranchSyncStatus::Failed => {
+                style::palette::WARNING
+            }
+        }
+    }
+
     fn final_scroll_offset(&self, output_area: Rect, line_count: usize) -> u16 {
         if let Some(scroll_offset) = self.scroll_offset {
             return scroll_offset;
@@ -829,6 +877,7 @@ mod tests {
             prompt: String::new(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
@@ -864,6 +913,30 @@ mod tests {
 
         // Assert
         assert!(rendered_line_count > raw_line_count);
+    }
+
+    #[test]
+    fn test_output_lines_show_published_branch_sync_message() {
+        // Arrange
+        let mut session = session_fixture();
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_branch_sync_status = PublishedBranchSyncStatus::InProgress;
+        session.status = Status::Review;
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 5),
+            line_context(DoneSessionOutputMode::Summary, None, None, None, None),
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("Syncing published branch..."));
     }
 
     #[test]

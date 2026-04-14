@@ -18,7 +18,8 @@ use crate::app::session_state::SessionGitStatus;
 use crate::app::{AppServices, SessionState, setting};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{
-    DailyActivity, FollowUpTaskAction, ReviewRequest, Session, SessionFollowUpTask, SessionStats,
+    DailyActivity, FollowUpTaskAction, PublishedBranchSyncStatus, ReviewRequest, Session,
+    SessionFollowUpTask, SessionStats,
 };
 use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::git;
@@ -104,6 +105,7 @@ pub struct SessionManager {
     pub(super) git_client: Arc<dyn git::GitClient>,
     pub(super) merge_service: SessionMergeService,
     pub(super) pending_history_replay: HashSet<String>,
+    pub(super) published_branch_sync_operations: HashMap<String, String>,
     pub(super) state: SessionState,
     pub(super) stats_activity: Vec<DailyActivity>,
     pub(super) title_generation_tasks: HashMap<String, TitleGenerationTask>,
@@ -136,6 +138,7 @@ impl SessionManager {
             git_client,
             merge_service: SessionMergeService,
             pending_history_replay,
+            published_branch_sync_operations: HashMap::new(),
             state,
             stats_activity,
             title_generation_tasks: HashMap::new(),
@@ -326,6 +329,54 @@ impl SessionManager {
             .find(|session| session.id == session_id)
         {
             session.review_request = Some(review_request);
+        }
+    }
+
+    /// Marks one session branch as currently auto-syncing to its published
+    /// upstream reference.
+    pub(crate) fn start_published_branch_sync(
+        &mut self,
+        session_id: &str,
+        sync_operation_id: String,
+    ) {
+        self.published_branch_sync_operations
+            .insert(session_id.to_string(), sync_operation_id);
+
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.published_branch_sync_status = PublishedBranchSyncStatus::InProgress;
+        }
+    }
+
+    /// Applies one terminal auto-push state when it matches the latest tracked
+    /// sync operation for the session.
+    pub(crate) fn finish_published_branch_sync(
+        &mut self,
+        session_id: &str,
+        sync_operation_id: &str,
+        sync_status: PublishedBranchSyncStatus,
+    ) {
+        let Some(current_operation_id) = self.published_branch_sync_operations.get(session_id)
+        else {
+            return;
+        };
+        if current_operation_id != sync_operation_id {
+            return;
+        }
+
+        self.published_branch_sync_operations.remove(session_id);
+
+        if let Some(session) = self
+            .state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.published_branch_sync_status = sync_status;
         }
     }
 
@@ -1000,6 +1051,7 @@ mod tests {
             prompt: prompt.to_string(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
@@ -1044,6 +1096,8 @@ mod tests {
                 prompt: String::new(),
                 reasoning_level_override,
                 published_upstream_ref: None,
+                published_branch_sync_status:
+                    crate::domain::session::PublishedBranchSyncStatus::Idle,
                 questions: Vec::new(),
                 review_request: None,
                 size: SessionSize::Xs,

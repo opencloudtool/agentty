@@ -51,7 +51,8 @@ use crate::domain::input::InputState;
 use crate::domain::permission::PermissionMode;
 use crate::domain::project::{Project, ProjectListItem};
 use crate::domain::session::{
-    FollowUpTaskAction, PublishBranchAction, Session, SessionSize, Status,
+    FollowUpTaskAction, PublishBranchAction, PublishedBranchSyncStatus, Session, SessionSize,
+    Status,
 };
 use crate::infra::channel::TurnPrompt;
 use crate::infra::db::Database;
@@ -202,6 +203,13 @@ pub(crate) enum AppEvent {
         session_id: String,
         turn_applied_state: TurnAppliedState,
     },
+    /// Indicates that one published session branch started or finished a
+    /// background auto-push after a completed turn.
+    PublishedBranchSyncUpdated {
+        session_id: String,
+        sync_operation_id: String,
+        sync_status: PublishedBranchSyncStatus,
+    },
     /// Indicates completion of a session-view review request sync action.
     SyncReviewRequestCompleted {
         restore_view: ConfirmationViewMode,
@@ -215,6 +223,7 @@ pub(crate) enum AppEvent {
 struct AppEventBatch {
     applied_turns: HashMap<String, TurnAppliedState>,
     at_mention_entries_updates: HashMap<String, Vec<FileEntry>>,
+    published_branch_sync_updates: HashMap<String, PublishedBranchSyncUpdate>,
     review_updates: HashMap<String, ReviewUpdate>,
     git_status_update: Option<(u32, u32)>,
     has_git_status_update: bool,
@@ -233,6 +242,12 @@ struct AppEventBatch {
     sync_review_request_update: Option<SyncReviewRequestUpdate>,
     sync_main_result: Option<Result<SyncMainOutcome, SyncSessionStartError>>,
     update_status: Option<UpdateStatus>,
+}
+
+/// Latest published-branch sync update queued for one session.
+struct PublishedBranchSyncUpdate {
+    sync_operation_id: String,
+    sync_status: PublishedBranchSyncStatus,
 }
 
 impl AppEventBatch {
@@ -361,6 +376,22 @@ impl AppEventBatch {
                 session_id,
                 turn_applied_state,
             } => self.collect_agent_response_received(session_id, turn_applied_state),
+            AppEvent::PublishedBranchSyncUpdated {
+                session_id,
+                sync_operation_id,
+                sync_status,
+            } => {
+                if sync_status == PublishedBranchSyncStatus::Idle {
+                    self.should_refresh_git_status = true;
+                }
+                self.published_branch_sync_updates.insert(
+                    session_id,
+                    PublishedBranchSyncUpdate {
+                        sync_operation_id,
+                        sync_status,
+                    },
+                );
+            }
             AppEvent::SyncReviewRequestCompleted {
                 restore_view,
                 result,
@@ -1722,6 +1753,9 @@ impl App {
         for (session_id, turn_applied_state) in event_batch.applied_turns {
             self.apply_agent_response_received(&session_id, &turn_applied_state);
         }
+        for (session_id, sync_update) in event_batch.published_branch_sync_updates {
+            self.apply_published_branch_sync_update(&session_id, sync_update);
+        }
 
         for session_id in &event_batch.session_ids {
             self.sessions.sync_session_from_handle(session_id);
@@ -1839,6 +1873,33 @@ impl App {
                 input: InputState::default(),
                 scroll_offset: None,
             };
+        }
+    }
+
+    /// Routes one published-branch auto-push update to the matching in-memory
+    /// session snapshot.
+    fn apply_published_branch_sync_update(
+        &mut self,
+        session_id: &str,
+        sync_update: PublishedBranchSyncUpdate,
+    ) {
+        let PublishedBranchSyncUpdate {
+            sync_operation_id,
+            sync_status,
+        } = sync_update;
+
+        match sync_status {
+            PublishedBranchSyncStatus::InProgress => {
+                self.sessions
+                    .start_published_branch_sync(session_id, sync_operation_id);
+            }
+            PublishedBranchSyncStatus::Idle | PublishedBranchSyncStatus::Failed => {
+                self.sessions.finish_published_branch_sync(
+                    session_id,
+                    &sync_operation_id,
+                    sync_status,
+                );
+            }
         }
     }
 
@@ -2831,8 +2892,9 @@ mod tests {
     use crate::app::{diff_content_hash, review_loading_message};
     use crate::domain::agent::AgentModel;
     use crate::domain::session::{
-        ForgeKind, ReviewRequestState, ReviewRequestSummary, SESSION_DATA_DIR, Session,
-        SessionFollowUpTask, SessionHandles, SessionSize, SessionStats, Status,
+        ForgeKind, PublishedBranchSyncStatus, ReviewRequestState, ReviewRequestSummary,
+        SESSION_DATA_DIR, Session, SessionFollowUpTask, SessionHandles, SessionSize, SessionStats,
+        Status,
     };
     use crate::domain::setting::SettingName;
     use crate::infra::agent::protocol::{AgentResponseSummary, QuestionItem};
@@ -2882,6 +2944,7 @@ mod tests {
             prompt: "test prompt".to_string(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
@@ -4827,6 +4890,43 @@ mod tests {
                 "Document the new shortcut.".to_string(),
                 "Add a focused regression test.".to_string()
             ]
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies stale published-branch sync completions do not overwrite the
+    /// latest in-progress auto-push state.
+    async fn apply_app_events_ignores_stale_published_branch_sync_updates() {
+        // Arrange
+        let mut app = new_test_app().await;
+        app.sessions
+            .sessions
+            .push(test_session(PathBuf::from("/tmp/session-branch-sync-view")));
+
+        // Act
+        app.apply_app_events(AppEvent::PublishedBranchSyncUpdated {
+            session_id: "session-1".to_string(),
+            sync_operation_id: "sync-1".to_string(),
+            sync_status: PublishedBranchSyncStatus::InProgress,
+        })
+        .await;
+        app.apply_app_events(AppEvent::PublishedBranchSyncUpdated {
+            session_id: "session-1".to_string(),
+            sync_operation_id: "sync-2".to_string(),
+            sync_status: PublishedBranchSyncStatus::InProgress,
+        })
+        .await;
+        app.apply_app_events(AppEvent::PublishedBranchSyncUpdated {
+            session_id: "session-1".to_string(),
+            sync_operation_id: "sync-1".to_string(),
+            sync_status: PublishedBranchSyncStatus::Failed,
+        })
+        .await;
+
+        // Assert
+        assert_eq!(
+            app.sessions.sessions[0].published_branch_sync_status,
+            PublishedBranchSyncStatus::InProgress
         );
     }
 

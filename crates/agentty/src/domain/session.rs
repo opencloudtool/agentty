@@ -257,6 +257,19 @@ pub enum FollowUpTaskAction {
     Open,
 }
 
+/// Auto-push state for one already-published session branch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PublishedBranchSyncStatus {
+    /// No background sync push is currently active and the last push did not
+    /// fail.
+    #[default]
+    Idle,
+    /// A completed turn is currently pushing the published branch upstream.
+    InProgress,
+    /// The latest automatic push attempt failed and left the branch stale.
+    Failed,
+}
+
 /// Per-session usage and diff statistics.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SessionStats {
@@ -367,6 +380,8 @@ pub struct Session {
     /// Upstream reference recorded after the latest successful branch publish,
     /// for example `origin/agentty/session-id`.
     pub published_upstream_ref: Option<String>,
+    /// Background auto-push state for the already-published upstream branch.
+    pub published_branch_sync_status: PublishedBranchSyncStatus,
     /// Model clarification questions emitted by the agent.
     pub questions: Vec<QuestionItem>,
     /// Persisted forge review-request link for this session, when available.
@@ -478,6 +493,18 @@ impl Session {
         has_forge_context && matches!(self.status, Status::Review | Status::AgentReview)
     }
 
+    /// Returns one UI message describing the current published-branch sync
+    /// state when the session tracks an upstream branch.
+    pub fn published_branch_sync_message(&self) -> Option<&'static str> {
+        self.published_upstream_ref.as_ref()?;
+
+        match self.published_branch_sync_status {
+            PublishedBranchSyncStatus::Idle => None,
+            PublishedBranchSyncStatus::InProgress => Some("Syncing published branch..."),
+            PublishedBranchSyncStatus::Failed => Some("Published branch sync failed."),
+        }
+    }
+
     /// Returns the review-request publish action currently available in session
     /// view.
     pub fn publish_pull_request_action(&self) -> Option<PublishBranchAction> {
@@ -552,6 +579,7 @@ mod tests {
             prompt: String::new(),
             reasoning_level_override,
             published_upstream_ref: None,
+            published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
@@ -808,6 +836,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             prompt: String::new(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
@@ -844,6 +873,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             prompt: String::new(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
@@ -880,6 +910,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             prompt: String::new(),
             reasoning_level_override: None,
             published_upstream_ref: Some("origin/agentty/session-id".to_string()),
+            published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
@@ -916,6 +947,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             prompt: String::new(),
             reasoning_level_override: None,
             published_upstream_ref: Some("origin/agentty/session-id".to_string()),
+            published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
@@ -951,6 +983,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             prompt: String::new(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             follow_up_tasks: Vec::new(),
             review_request: None,
@@ -987,6 +1020,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             prompt: String::new(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             follow_up_tasks: Vec::new(),
             review_request: None,
@@ -1210,6 +1244,34 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
 
         // Act / Assert
         assert!(!session.can_sync_review_request());
+    }
+
+    #[test]
+    fn test_published_branch_sync_message_returns_in_progress_copy() {
+        // Arrange
+        let mut session = test_session(None);
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_branch_sync_status = PublishedBranchSyncStatus::InProgress;
+
+        // Act
+        let sync_message = session.published_branch_sync_message();
+
+        // Assert
+        assert_eq!(sync_message, Some("Syncing published branch..."));
+    }
+
+    #[test]
+    fn test_published_branch_sync_message_returns_failed_copy() {
+        // Arrange
+        let mut session = test_session(None);
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_branch_sync_status = PublishedBranchSyncStatus::Failed;
+
+        // Act
+        let sync_message = session.published_branch_sync_message();
+
+        // Assert
+        assert_eq!(sync_message, Some("Published branch sync failed."));
     }
 
     // -- status transition: Review/AgentReview/Question → Done ---------------

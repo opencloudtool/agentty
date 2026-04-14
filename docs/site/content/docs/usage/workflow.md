@@ -30,8 +30,11 @@ In session chat view, the status-colored session title renders in a dedicated
 header row above the output panel. A second metadata row shows the persisted
 size bucket, current `+added` / `-deleted` line totals, the cumulative
 active-work timer, the current model, the effective reasoning level, and
-token usage. The timer keeps ticking only while the session is actively
-working and freezes between turns.
+token usage. When a session already tracks a published upstream branch, the
+output panel also shows a short branch-sync status row while Agentty is
+auto-pushing the latest completed turn or when the most recent automatic push
+failed. The timer keeps ticking only while the session is actively working and
+freezes between turns.
 
 The grouped **Sessions** tab also shows that same cumulative active-work timer
 in its own `Timer` column, so in-progress rows keep ticking live there while
@@ -139,6 +142,8 @@ Session view exposes one publish shortcut:
 - After the push succeeds, Agentty creates or refreshes the linked review request and shows the resulting pull request or merge request URL.
 - GitHub projects publish pull requests, while GitLab projects publish merge requests.
 - When the session already tracks a review request, Agentty refreshes that same review request instead of creating a duplicate.
+- After a session branch has been published once, later completed turns automatically push that same remote branch in the background so linked review requests stay current without reopening the publish popup.
+- Automatic pushes reuse the locked upstream branch name from the first publish. If a background push fails, Agentty keeps the stored upstream reference, adds the failure details to the session output, and leaves the manual `p` publish flow available for retry.
 
 Review-request publishing stays inside session view by using a publish input
 popup on `p`, followed by informational popups for loading, success, and

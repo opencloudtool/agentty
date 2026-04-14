@@ -21,6 +21,7 @@ When you start a session, Agentty does the operational heavy lifting for workflo
 - Spawns a clean worktree branch for every session.
 - Runs agent-driven edits in isolation from your base branch.
 - Keeps terminal output, diffs, and generated changes in one reviewable stream.
+- Keeps already-published session branches synced after later completed turns.
 
 ## Typical Flow
 

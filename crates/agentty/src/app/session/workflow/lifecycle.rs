@@ -32,6 +32,7 @@ const USER_PROMPT_CONTINUATION_PREFIX: &str = "   ";
 /// Input bag for constructing a queued session command.
 struct BuildSessionCommandInput {
     is_first_message: bool,
+    published_upstream_ref: Option<String>,
     prompt: TurnPrompt,
     session_model: AgentModel,
     session_output: Option<String>,
@@ -527,6 +528,7 @@ impl SessionManager {
         let operation_id = Uuid::new_v4().to_string();
         let command = SessionCommand::Run {
             operation_id,
+            published_upstream_ref: None,
             request_kind: AgentRequestKind::SessionStart,
             prompt: prompt.clone(),
             session_model,
@@ -1113,9 +1115,14 @@ impl SessionManager {
             &effective_prompt,
         )
         .await;
+        let published_upstream_ref = self
+            .session_or_err(&persisted_session_id)
+            .ok()
+            .and_then(|session| session.published_upstream_ref.clone());
 
         let command = Self::build_session_command(BuildSessionCommandInput {
             is_first_message,
+            published_upstream_ref,
             prompt: effective_prompt.clone(),
             session_model,
             session_output,
@@ -1312,6 +1319,7 @@ impl SessionManager {
     fn build_session_command(input: BuildSessionCommandInput) -> SessionCommand {
         let BuildSessionCommandInput {
             is_first_message,
+            published_upstream_ref,
             prompt,
             session_model,
             session_output,
@@ -1325,6 +1333,7 @@ impl SessionManager {
 
         SessionCommand::Run {
             operation_id,
+            published_upstream_ref,
             request_kind,
             prompt,
             session_model,
@@ -1983,6 +1992,7 @@ mod tests {
             prompt: prompt.to_string(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,

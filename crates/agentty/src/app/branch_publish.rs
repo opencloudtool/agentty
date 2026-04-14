@@ -355,13 +355,14 @@ pub(crate) async fn push_session_branch(
         str::to_string,
     );
     let upstream_reference = push_session_branch_to_remote(
-        branch_publish_session,
-        publish_branch_action,
         &db,
+        branch_publish_session.folder.clone(),
         git_client.clone(),
+        &branch_publish_session.id,
         remote_branch_name,
     )
-    .await?;
+    .await
+    .map_err(|failure| branch_push_failure(publish_branch_action, &failure.message))?;
     let review_request_creation =
         branch_review_request_creation_info(branch_publish_session, git_client, &branch_name).await;
 
@@ -394,13 +395,16 @@ async fn publish_pull_request(
         str::to_string,
     );
     let upstream_reference = push_session_branch_to_remote(
-        branch_publish_session,
-        PublishBranchAction::PublishPullRequest,
         &db,
+        branch_publish_session.folder.clone(),
         git_client.clone(),
+        &branch_publish_session.id,
         remote_branch_name,
     )
-    .await?;
+    .await
+    .map_err(|failure| {
+        branch_push_failure(PublishBranchAction::PublishPullRequest, &failure.message)
+    })?;
     let remote = review_request_remote(
         branch_publish_session,
         git_client.clone(),
@@ -427,14 +431,13 @@ async fn publish_pull_request(
 
 /// Pushes the session branch to the configured remote and persists the
 /// resulting upstream reference.
-async fn push_session_branch_to_remote(
-    branch_publish_session: &BranchPublishTaskSession,
-    publish_branch_action: PublishBranchAction,
+pub(crate) async fn push_session_branch_to_remote(
     db: &db::Database,
+    folder: PathBuf,
     git_client: Arc<dyn GitClient>,
+    session_id: &str,
     remote_branch_name: Option<&str>,
 ) -> Result<String, BranchPublishTaskFailure> {
-    let folder = branch_publish_session.folder.clone();
     let upstream_reference = match remote_branch_name {
         Some(remote_branch_name) => {
             git_client
@@ -443,13 +446,18 @@ async fn push_session_branch_to_remote(
         }
         None => git_client.push_current_branch(folder).await,
     }
-    .map_err(|error| branch_push_failure(publish_branch_action, &error.to_string()))?;
+    .map_err(|error| {
+        BranchPublishTaskFailure::failed(
+            PublishBranchAction::Push,
+            format!("Failed to publish session branch: {error}"),
+        )
+    })?;
 
-    db.update_session_published_upstream_ref(&branch_publish_session.id, Some(&upstream_reference))
+    db.update_session_published_upstream_ref(session_id, Some(&upstream_reference))
         .await
         .map_err(|error| {
             BranchPublishTaskFailure::failed(
-                publish_branch_action,
+                PublishBranchAction::Push,
                 format!(
                     "Branch push succeeded, but Agentty could not persist the upstream reference: \
                      {error}"
@@ -747,6 +755,7 @@ fn strip_port(host: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::db::Database;
     use crate::infra::git;
 
     #[tokio::test]
@@ -800,6 +809,57 @@ mod tests {
         // Assert
         assert_eq!(remote.command_working_directory, Some(session_folder));
         assert_eq!(remote.forge_kind, forge::ForgeKind::GitLab);
+    }
+
+    #[tokio::test]
+    async fn push_session_branch_to_remote_persists_upstream_reference() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open database");
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to insert project");
+        database
+            .insert_session("session-id", "gpt-5.4", "main", "Review", project_id)
+            .await
+            .expect("failed to insert session");
+        let session_folder = PathBuf::from("/tmp/session-worktree");
+        let expected_session_folder = session_folder.clone();
+        let mut mock_git_client = git::MockGitClient::new();
+        mock_git_client
+            .expect_push_current_branch_to_remote_branch()
+            .once()
+            .withf(move |folder, remote_branch_name| {
+                folder == &expected_session_folder && remote_branch_name == "agentty/session-id"
+            })
+            .returning(|_, _| Box::pin(async { Ok("origin/agentty/session-id".to_string()) }));
+
+        // Act
+        let upstream_reference = push_session_branch_to_remote(
+            &database,
+            session_folder,
+            Arc::new(mock_git_client),
+            "session-id",
+            Some("agentty/session-id"),
+        )
+        .await
+        .expect("branch push should succeed");
+        let persisted_session = database
+            .load_sessions()
+            .await
+            .expect("failed to load sessions")
+            .into_iter()
+            .find(|session| session.id == "session-id")
+            .expect("missing session row");
+
+        // Assert
+        assert_eq!(upstream_reference, "origin/agentty/session-id");
+        assert_eq!(
+            persisted_session.published_upstream_ref.as_deref(),
+            Some("origin/agentty/session-id")
+        );
     }
 
     /// Describes one auth-guidance parsing scenario for `branch_push_failure`.

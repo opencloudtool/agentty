@@ -9,13 +9,19 @@ use std::time::Duration;
 use serde_json;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use super::SessionTaskService;
 use crate::app::assist::AssistContext;
-use crate::app::session::{Clock, SessionError, TurnAppliedState, unix_timestamp_from_system_time};
-use crate::app::{AppEvent, AppServices, SessionManager};
+use crate::app::session::{
+    Clock, SessionError, TurnAppliedState, remote_branch_name_from_upstream_ref,
+    unix_timestamp_from_system_time,
+};
+use crate::app::{AppEvent, AppServices, SessionManager, branch_publish};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
-use crate::domain::session::{SessionFollowUpTask, SessionStats, Status};
+use crate::domain::session::{
+    PublishedBranchSyncStatus, SessionFollowUpTask, SessionStats, Status,
+};
 use crate::domain::setting::SettingName;
 use crate::infra::channel::{
     AgentChannel, AgentError, AgentRequestKind, TurnEvent, TurnPrompt, TurnRequest, TurnResult,
@@ -39,6 +45,9 @@ pub(super) enum SessionCommand {
     Run {
         /// Persisted operation identifier.
         operation_id: String,
+        /// Persisted published-upstream reference captured when the turn was
+        /// queued, if this session already tracks a remote review branch.
+        published_upstream_ref: Option<String>,
         /// Whether this is a first-message start or a follow-up resume.
         request_kind: AgentRequestKind,
         /// Structured user prompt payload.
@@ -309,13 +318,21 @@ impl SessionWorkerService {
         command: SessionCommand,
     ) -> Result<(), SessionError> {
         let SessionCommand::Run {
+            published_upstream_ref,
             request_kind,
             prompt,
             session_model,
             ..
         } = command;
 
-        Self::run_channel_turn(context, request_kind, prompt, session_model).await
+        Self::run_channel_turn(
+            context,
+            published_upstream_ref,
+            request_kind,
+            prompt,
+            session_model,
+        )
+        .await
     }
 
     /// Executes one agent turn through the session channel and applies all
@@ -336,6 +353,7 @@ impl SessionWorkerService {
     /// in [`run_turn_with_cancellation`].
     async fn run_channel_turn(
         context: &SessionWorkerContext,
+        published_upstream_ref: Option<String>,
         request_kind: AgentRequestKind,
         prompt: TurnPrompt,
         session_model: AgentModel,
@@ -427,7 +445,8 @@ impl SessionWorkerService {
 
         let _ = consumer.await;
 
-        let result = apply_turn_result(context, session_model, turn_result).await;
+        let result =
+            apply_turn_result(context, published_upstream_ref, session_model, turn_result).await;
 
         if let Some((session_size, added_lines, deleted_lines)) =
             SessionTaskService::refresh_persisted_session_diff_stats(
@@ -755,11 +774,15 @@ fn terminate_child_process(context: &SessionWorkerContext) {
 /// `RefreshSessions`, and skips reducer projection emission.
 async fn apply_turn_result(
     context: &SessionWorkerContext,
+    published_upstream_ref: Option<String>,
     session_model: AgentModel,
     turn_result: Result<TurnResult, AgentError>,
 ) -> Result<Status, SessionError> {
     match turn_result {
-        Ok(result) => apply_successful_turn_result(context, session_model, result).await,
+        Ok(result) => {
+            apply_successful_turn_result(context, published_upstream_ref, session_model, result)
+                .await
+        }
         Err(error) => {
             let error_text = error.to_string();
             let message = format!("\n{}\n", error_text.trim());
@@ -782,6 +805,7 @@ async fn apply_turn_result(
 /// returning the next session status.
 async fn apply_successful_turn_result(
     context: &SessionWorkerContext,
+    published_upstream_ref: Option<String>,
     session_model: AgentModel,
     result: TurnResult,
 ) -> Result<Status, SessionError> {
@@ -850,8 +874,102 @@ async fn apply_successful_turn_result(
         session_model: auto_commit_model,
     })
     .await;
+    start_published_branch_auto_push(context, published_upstream_ref);
 
     Ok(target_status)
+}
+
+/// Starts one detached auto-push task for a session that already tracks a
+/// published upstream branch.
+fn start_published_branch_auto_push(
+    context: &SessionWorkerContext,
+    published_upstream_ref: Option<String>,
+) {
+    let Some(published_upstream_ref) = published_upstream_ref else {
+        return;
+    };
+
+    let sync_operation_id = Uuid::new_v4().to_string();
+    let session_id = context.session_id.clone();
+    let app_event_tx = context.app_event_tx.clone();
+    let db = context.db.clone();
+    let folder = context.folder.clone();
+    let git_client = Arc::clone(&context.git_client);
+    let output = Arc::clone(&context.output);
+
+    let _ = app_event_tx.send(AppEvent::PublishedBranchSyncUpdated {
+        session_id: session_id.clone(),
+        sync_operation_id: sync_operation_id.clone(),
+        sync_status: PublishedBranchSyncStatus::InProgress,
+    });
+
+    tokio::spawn(async move {
+        run_published_branch_auto_push(
+            app_event_tx,
+            db,
+            folder,
+            git_client,
+            output,
+            session_id,
+            sync_operation_id,
+            published_upstream_ref,
+        )
+        .await;
+    });
+}
+
+/// Runs one detached auto-push for a previously published session branch and
+/// reports its state through the app event pipeline.
+async fn run_published_branch_auto_push(
+    app_event_tx: mpsc::UnboundedSender<AppEvent>,
+    db: Database,
+    folder: PathBuf,
+    git_client: Arc<dyn GitClient>,
+    output: Arc<Mutex<String>>,
+    session_id: String,
+    sync_operation_id: String,
+    published_upstream_ref: String,
+) {
+    let remote_branch_name = remote_branch_name_from_upstream_ref(&published_upstream_ref);
+    let push_result = branch_publish::push_session_branch_to_remote(
+        &db,
+        folder,
+        git_client,
+        &session_id,
+        Some(remote_branch_name.as_str()),
+    )
+    .await;
+
+    match push_result {
+        Ok(_) => {
+            let _ = app_event_tx.send(AppEvent::PublishedBranchSyncUpdated {
+                session_id,
+                sync_operation_id,
+                sync_status: PublishedBranchSyncStatus::Idle,
+            });
+        }
+        Err(failure) => {
+            let failure = branch_publish::branch_push_failure(
+                crate::domain::session::PublishBranchAction::Push,
+                &failure.message,
+            );
+            let message = format!("\n[Branch Push Error] {}\n", failure.message);
+            SessionTaskService::append_session_output(
+                &output,
+                &db,
+                &app_event_tx,
+                &session_id,
+                &message,
+            )
+            .await;
+
+            let _ = app_event_tx.send(AppEvent::PublishedBranchSyncUpdated {
+                session_id,
+                sync_operation_id,
+                sync_status: PublishedBranchSyncStatus::Failed,
+            });
+        }
+    }
 }
 
 /// Reconciles a failed turn-metadata write by surfacing the error and forcing
@@ -1079,12 +1197,14 @@ mod tests {
         // Arrange
         let start_command = SessionCommand::Run {
             operation_id: "op-start".to_string(),
+            published_upstream_ref: None,
             request_kind: AgentRequestKind::SessionStart,
             prompt: "prompt".into(),
             session_model: AgentModel::ClaudeSonnet46,
         };
         let resume_command = SessionCommand::Run {
             operation_id: "op-resume".to_string(),
+            published_upstream_ref: None,
             request_kind: AgentRequestKind::SessionResume {
                 session_output: None,
             },
@@ -1337,6 +1457,7 @@ mod tests {
         // Act
         let result = SessionWorkerService::run_channel_turn(
             &context,
+            None,
             AgentRequestKind::SessionStart,
             "test prompt".into(),
             AgentModel::Gemini3FlashPreview,
@@ -1431,6 +1552,7 @@ mod tests {
         // `run_channel_turn` swaps in a fresh token.
         let result = SessionWorkerService::run_channel_turn(
             &context,
+            None,
             AgentRequestKind::SessionStart,
             "test prompt".into(),
             AgentModel::Gemini3FlashPreview,
@@ -1746,9 +1868,10 @@ mod tests {
         });
 
         // Act
-        let status = apply_turn_result(&context, AgentModel::Gemini3FlashPreview, turn_result)
-            .await
-            .expect("turn result should succeed");
+        let status =
+            apply_turn_result(&context, None, AgentModel::Gemini3FlashPreview, turn_result)
+                .await
+                .expect("turn result should succeed");
         let sessions = db.load_sessions().await.expect("failed to load sessions");
 
         // Assert
@@ -1784,6 +1907,207 @@ mod tests {
         assert!(output.contains("[Commit] No changes to commit."));
         assert!(!output.contains("## Change Summary"));
         assert!(!output.contains("Document the worker summary flow."));
+    }
+
+    #[tokio::test]
+    /// Verifies completed turns auto-push already-published session branches
+    /// in the background and report sync progress through app events.
+    async fn test_apply_turn_result_starts_background_push_for_published_branch() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "sess1",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let mut mock_git_client = MockGitClient::new();
+        mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(true) }));
+        mock_git_client
+            .expect_push_current_branch_to_remote_branch()
+            .once()
+            .withf(|folder, remote_branch_name| {
+                folder.ends_with("sess1") && remote_branch_name == "agentty/session-id"
+            })
+            .returning(|_, _| Box::pin(async { Ok("origin/agentty/session-id".to_string()) }));
+        let context = SessionWorkerContext {
+            app_event_tx,
+            cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
+            channel: Arc::new(MockAgentChannel::new()),
+            child_pid: Arc::new(Mutex::new(None)),
+            clock: Arc::new(crate::app::session::RealClock),
+            db: db.clone(),
+            folder: base_dir.path().join("sess1"),
+            fs_client: Arc::new(fs::MockFsClient::new()),
+            git_client: Arc::new(mock_git_client),
+            output: Arc::new(Mutex::new(String::new())),
+            session_id: "sess1".to_string(),
+            status: Arc::new(Mutex::new(Status::InProgress)),
+        };
+        let turn_result = Ok(TurnResult {
+            assistant_message: AgentResponse {
+                answer: "Implemented the change.".to_string(),
+                questions: Vec::new(),
+                follow_up_tasks: Vec::new(),
+                summary: None,
+            },
+            context_reset: false,
+            input_tokens: 0,
+            output_tokens: 0,
+            provider_conversation_id: None,
+        });
+
+        // Act
+        let status = apply_turn_result(
+            &context,
+            Some("origin/agentty/session-id".to_string()),
+            AgentModel::Gemini3FlashPreview,
+            turn_result,
+        )
+        .await
+        .expect("turn result should succeed");
+        let sync_events = tokio::time::timeout(Duration::from_secs(1), async {
+            let mut sync_events = Vec::new();
+            while sync_events.len() < 2 {
+                let event = app_event_rx.recv().await.expect("missing app event");
+                if let AppEvent::PublishedBranchSyncUpdated {
+                    session_id,
+                    sync_operation_id,
+                    sync_status,
+                } = event
+                {
+                    sync_events.push((session_id, sync_operation_id, sync_status));
+                }
+            }
+
+            sync_events
+        })
+        .await
+        .expect("timed out waiting for sync events");
+
+        // Assert
+        assert_eq!(status, Status::Review);
+        assert_eq!(sync_events[0].2, PublishedBranchSyncStatus::InProgress);
+        assert_eq!(sync_events[1].2, PublishedBranchSyncStatus::Idle);
+        assert_eq!(sync_events[0].0, "sess1");
+        assert_eq!(sync_events[1].0, "sess1");
+        assert_eq!(sync_events[0].1, sync_events[1].1);
+    }
+
+    #[tokio::test]
+    /// Verifies failed background auto-push attempts append a visible error
+    /// and keep the session marked as failed for the latest sync attempt.
+    async fn test_apply_turn_result_reports_background_push_failures() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let db = Database::open_in_memory().await.expect("failed to open db");
+        let project_id = db
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        db.insert_session(
+            "sess1",
+            "gemini-3-flash-preview",
+            "main",
+            "InProgress",
+            project_id,
+        )
+        .await
+        .expect("failed to insert session");
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let mut mock_git_client = MockGitClient::new();
+        mock_git_client
+            .expect_is_worktree_clean()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(true) }));
+        mock_git_client
+            .expect_push_current_branch_to_remote_branch()
+            .once()
+            .returning(|_, _| {
+                Box::pin(async {
+                    Err(crate::infra::git::GitError::CommandFailed {
+                        command: "git push origin agentty/session-id".to_string(),
+                        stderr:
+                            "fatal: could not read username for 'https://github.com/openai/agentty': terminal prompts disabled"
+                                .to_string(),
+                    })
+                })
+            });
+        let output = Arc::new(Mutex::new(String::new()));
+        let context = SessionWorkerContext {
+            app_event_tx,
+            cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
+            channel: Arc::new(MockAgentChannel::new()),
+            child_pid: Arc::new(Mutex::new(None)),
+            clock: Arc::new(crate::app::session::RealClock),
+            db,
+            folder: base_dir.path().join("sess1"),
+            fs_client: Arc::new(fs::MockFsClient::new()),
+            git_client: Arc::new(mock_git_client),
+            output: Arc::clone(&output),
+            session_id: "sess1".to_string(),
+            status: Arc::new(Mutex::new(Status::InProgress)),
+        };
+        let turn_result = Ok(TurnResult {
+            assistant_message: AgentResponse {
+                answer: "Implemented the change.".to_string(),
+                questions: Vec::new(),
+                follow_up_tasks: Vec::new(),
+                summary: None,
+            },
+            context_reset: false,
+            input_tokens: 0,
+            output_tokens: 0,
+            provider_conversation_id: None,
+        });
+
+        // Act
+        let status = apply_turn_result(
+            &context,
+            Some("origin/agentty/session-id".to_string()),
+            AgentModel::Gemini3FlashPreview,
+            turn_result,
+        )
+        .await
+        .expect("turn result should succeed");
+        let sync_events = tokio::time::timeout(Duration::from_secs(1), async {
+            let mut sync_events = Vec::new();
+            while sync_events.len() < 2 {
+                let event = app_event_rx.recv().await.expect("missing app event");
+                if let AppEvent::PublishedBranchSyncUpdated { sync_status, .. } = event {
+                    sync_events.push(sync_status);
+                }
+            }
+
+            sync_events
+        })
+        .await
+        .expect("timed out waiting for sync events");
+        let output = output.lock().expect("output lock poisoned");
+
+        // Assert
+        assert_eq!(status, Status::Review);
+        assert_eq!(
+            sync_events,
+            vec![
+                PublishedBranchSyncStatus::InProgress,
+                PublishedBranchSyncStatus::Failed,
+            ]
+        );
+        assert!(output.contains("[Branch Push Error]"));
+        assert!(output.contains("gh auth login"));
     }
 
     #[tokio::test]
@@ -1841,7 +2165,7 @@ mod tests {
         });
 
         // Act
-        let error = apply_turn_result(&context, AgentModel::Gemini3FlashPreview, turn_result)
+        let error = apply_turn_result(&context, None, AgentModel::Gemini3FlashPreview, turn_result)
             .await
             .expect_err("turn result should fail when metadata persistence fails");
         let events = std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
@@ -1927,9 +2251,10 @@ mod tests {
         });
 
         // Act
-        let status = apply_turn_result(&context, AgentModel::Gemini3FlashPreview, turn_result)
-            .await
-            .expect("turn result should succeed");
+        let status =
+            apply_turn_result(&context, None, AgentModel::Gemini3FlashPreview, turn_result)
+                .await
+                .expect("turn result should succeed");
         let output = output.lock().expect("output lock poisoned");
 
         // Assert
@@ -1989,7 +2314,7 @@ mod tests {
         });
 
         // Act
-        let status = apply_turn_result(&context, AgentModel::Gpt54, turn_result)
+        let status = apply_turn_result(&context, None, AgentModel::Gpt54, turn_result)
             .await
             .expect("turn result should succeed");
         let instruction_conversation_id = db

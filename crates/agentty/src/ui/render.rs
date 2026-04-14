@@ -271,6 +271,7 @@ mod tests {
             prompt: "prompt".to_string(),
             reasoning_level_override: None,
             published_upstream_ref: None,
+            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
