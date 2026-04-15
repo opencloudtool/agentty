@@ -17,7 +17,7 @@ impl AgentBackend for GeminiBackend {
         &'request self,
         request: BuildCommandRequest<'request>,
     ) -> Result<Command, AgentBackendError> {
-        build_app_server_command(request)
+        Ok(build_app_server_command(request))
     }
 }
 
@@ -25,9 +25,7 @@ impl AgentBackend for GeminiBackend {
 ///
 /// Prompt submission and resume behavior happen over ACP after the process is
 /// running, so startup only depends on the working directory and model.
-pub(crate) fn build_app_server_command(
-    request: BuildCommandRequest<'_>,
-) -> Result<Command, AgentBackendError> {
+fn build_app_server_command(request: BuildCommandRequest<'_>) -> Command {
     let BuildCommandRequest {
         attachments: _attachments,
         folder,
@@ -43,7 +41,7 @@ pub(crate) fn build_app_server_command(
         .arg(model)
         .current_dir(folder);
 
-    Ok(command)
+    command
 }
 
 /// Renders the full Gemini prompt text that Agentty streams through stdin.

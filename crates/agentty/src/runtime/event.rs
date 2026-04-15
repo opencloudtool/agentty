@@ -36,6 +36,16 @@ impl EventSource for CrosstermEventSource {
     }
 }
 
+/// Represents the next runtime wake-up source while awaiting input or redraw.
+enum LoopSignal {
+    /// One pending app-side event routed through the internal bus.
+    AppEvent(Box<Option<AppEvent>>),
+    /// One terminal input event from the foreground reader thread.
+    Event(Option<Event>),
+    /// One redraw tick with no immediate input payload.
+    Tick,
+}
+
 /// Spawns the terminal event reader thread with production dependencies.
 pub(crate) fn spawn_event_reader(
     event_tx: mpsc::UnboundedSender<Event>,
@@ -108,27 +118,23 @@ where
         Box<dyn Future<Output = io::Result<EventResult>> + 'handler>,
     >,
 {
-    enum LoopSignal {
-        AppEvent(Option<AppEvent>),
-        Event(Option<Event>),
-        Tick,
-    }
-
     // Wait for either a terminal event or the next tick (for redraws).
     // This yields to tokio so spawned tasks (agent output, git status) can
     // make progress on this worker thread.
     let signal = tokio::select! {
         biased;
         event = event_rx.recv() => LoopSignal::Event(event),
-        app_event = app.next_app_event() => LoopSignal::AppEvent(app_event),
+        app_event = app.next_app_event() => LoopSignal::AppEvent(Box::new(app_event)),
         _ = tick.tick() => LoopSignal::Tick,
     };
     let maybe_event = match signal {
-        LoopSignal::AppEvent(Some(event)) => {
-            app.apply_app_events(event).await;
+        LoopSignal::AppEvent(app_event) => {
+            if let Some(event) = *app_event {
+                app.apply_app_events(event).await;
+            }
+
             None
         }
-        LoopSignal::AppEvent(None) => None,
         LoopSignal::Event(event) => event,
         LoopSignal::Tick => {
             app.refresh_sessions_if_needed().await;
@@ -197,7 +203,6 @@ where
             Event::Key(key) if is_press_key_event(key) => {
                 return handle_key_event(app, terminal, key).await;
             }
-            Event::Key(_) => {}
             Event::Paste(pasted_text) => {
                 process_paste_event(app, &pasted_text);
             }

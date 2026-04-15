@@ -21,7 +21,7 @@ impl AgentBackend for CodexBackend {
         &'request self,
         request: BuildCommandRequest<'request>,
     ) -> Result<Command, AgentBackendError> {
-        build_app_server_command(request)
+        Ok(build_app_server_command(request))
     }
 }
 
@@ -29,9 +29,7 @@ impl AgentBackend for CodexBackend {
 ///
 /// The prompt payload is sent later over JSON-RPC, so prompt text, request
 /// kind, attachments, and reasoning level do not change the spawned process.
-pub(crate) fn build_app_server_command(
-    request: BuildCommandRequest<'_>,
-) -> Result<Command, AgentBackendError> {
+fn build_app_server_command(request: BuildCommandRequest<'_>) -> Command {
     let BuildCommandRequest {
         attachments: _attachments,
         folder,
@@ -49,7 +47,7 @@ pub(crate) fn build_app_server_command(
         .arg("stdio://")
         .current_dir(folder);
 
-    Ok(command)
+    command
 }
 
 #[cfg(test)]

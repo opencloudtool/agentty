@@ -32,7 +32,7 @@ pub(crate) struct AppServiceDeps {
 
 /// Shared app dependencies used by managers and background workflows.
 pub struct AppServices {
-    available_agent_kinds: Arc<Vec<AgentKind>>,
+    available_agent_kinds: Arc<[AgentKind]>,
     app_server_client_override: Option<Arc<dyn AppServerClient>>,
     base_path: PathBuf,
     clock: Arc<dyn Clock>,
@@ -62,7 +62,7 @@ impl AppServices {
         } = deps;
 
         Self {
-            available_agent_kinds: Arc::new(available_agent_kinds),
+            available_agent_kinds: Arc::<[AgentKind]>::from(available_agent_kinds),
             app_server_client_override,
             base_path,
             clock,
@@ -81,7 +81,7 @@ impl AppServices {
 
     /// Returns the cached locally runnable agent kinds.
     pub(crate) fn available_agent_kinds(&self) -> Vec<AgentKind> {
-        self.available_agent_kinds.as_ref().clone()
+        self.available_agent_kinds.as_ref().to_vec()
     }
 
     /// Returns the application database handle.
