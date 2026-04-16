@@ -223,7 +223,7 @@ pub(crate) enum AppEvent {
 struct AppEventBatch {
     applied_turns: HashMap<String, TurnAppliedState>,
     at_mention_entries_updates: HashMap<String, Vec<FileEntry>>,
-    published_branch_sync_updates: HashMap<String, PublishedBranchSyncUpdate>,
+    published_branch_sync_updates: Vec<(String, PublishedBranchSyncUpdate)>,
     review_updates: HashMap<String, ReviewUpdate>,
     git_status_update: Option<(u32, u32)>,
     has_git_status_update: bool,
@@ -244,9 +244,11 @@ struct AppEventBatch {
     update_status: Option<UpdateStatus>,
 }
 
-/// Latest published-branch sync update queued for one session.
+/// One ordered published-branch sync update queued for one session.
 struct PublishedBranchSyncUpdate {
+    /// Operation identifier used to ignore stale terminal auto-push updates.
     sync_operation_id: String,
+    /// Auto-push state carried by this update.
     sync_status: PublishedBranchSyncStatus,
 }
 
@@ -381,16 +383,19 @@ impl AppEventBatch {
                 sync_operation_id,
                 sync_status,
             } => {
-                if sync_status == PublishedBranchSyncStatus::Idle {
+                if matches!(
+                    sync_status,
+                    PublishedBranchSyncStatus::Idle | PublishedBranchSyncStatus::Succeeded
+                ) {
                     self.should_refresh_git_status = true;
                 }
-                self.published_branch_sync_updates.insert(
+                self.published_branch_sync_updates.push((
                     session_id,
                     PublishedBranchSyncUpdate {
                         sync_operation_id,
                         sync_status,
                     },
-                );
+                ));
             }
             AppEvent::SyncReviewRequestCompleted {
                 restore_view,
@@ -1911,7 +1916,9 @@ impl App {
                 self.sessions
                     .start_published_branch_sync(session_id, sync_operation_id);
             }
-            PublishedBranchSyncStatus::Idle | PublishedBranchSyncStatus::Failed => {
+            PublishedBranchSyncStatus::Idle
+            | PublishedBranchSyncStatus::Succeeded
+            | PublishedBranchSyncStatus::Failed => {
                 self.sessions.finish_published_branch_sync(
                     session_id,
                     &sync_operation_id,
@@ -4965,6 +4972,40 @@ mod tests {
         assert_eq!(
             app.sessions.sessions[0].published_branch_sync_status,
             PublishedBranchSyncStatus::InProgress
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies one reducer tick preserves a completed auto-push message even
+    /// when start and success updates are drained together.
+    async fn apply_app_events_preserves_completed_published_branch_sync_updates() {
+        // Arrange
+        let mut app = new_test_app().await;
+        let event_sender = app.services.event_sender();
+        app.sessions.sessions.push(test_session(PathBuf::from(
+            "/tmp/session-branch-sync-success",
+        )));
+
+        event_sender
+            .send(AppEvent::PublishedBranchSyncUpdated {
+                session_id: "session-1".to_string(),
+                sync_operation_id: "sync-1".to_string(),
+                sync_status: PublishedBranchSyncStatus::Succeeded,
+            })
+            .expect("queued event should send");
+
+        // Act
+        app.apply_app_events(AppEvent::PublishedBranchSyncUpdated {
+            session_id: "session-1".to_string(),
+            sync_operation_id: "sync-1".to_string(),
+            sync_status: PublishedBranchSyncStatus::InProgress,
+        })
+        .await;
+
+        // Assert
+        assert_eq!(
+            app.sessions.sessions[0].published_branch_sync_status,
+            PublishedBranchSyncStatus::Succeeded
         );
     }
 

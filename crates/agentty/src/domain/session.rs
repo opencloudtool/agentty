@@ -266,6 +266,8 @@ pub enum PublishedBranchSyncStatus {
     Idle,
     /// A completed turn is currently pushing the published branch upstream.
     InProgress,
+    /// The latest automatic push attempt updated the published branch.
+    Succeeded,
     /// The latest automatic push attempt failed and left the branch stale.
     Failed,
 }
@@ -500,7 +502,12 @@ impl Session {
 
         match self.published_branch_sync_status {
             PublishedBranchSyncStatus::Idle => None,
-            PublishedBranchSyncStatus::InProgress => Some("Syncing published branch..."),
+            PublishedBranchSyncStatus::InProgress => {
+                Some("Auto-pushing published branch after completed turn...")
+            }
+            PublishedBranchSyncStatus::Succeeded => {
+                Some("Auto-pushed published branch after completed turn.")
+            }
             PublishedBranchSyncStatus::Failed => Some("Published branch sync failed."),
         }
     }
@@ -1257,7 +1264,27 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         let sync_message = session.published_branch_sync_message();
 
         // Assert
-        assert_eq!(sync_message, Some("Syncing published branch..."));
+        assert_eq!(
+            sync_message,
+            Some("Auto-pushing published branch after completed turn...")
+        );
+    }
+
+    #[test]
+    fn test_published_branch_sync_message_returns_succeeded_copy() {
+        // Arrange
+        let mut session = test_session(None);
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_branch_sync_status = PublishedBranchSyncStatus::Succeeded;
+
+        // Act
+        let sync_message = session.published_branch_sync_message();
+
+        // Assert
+        assert_eq!(
+            sync_message,
+            Some("Auto-pushed published branch after completed turn.")
+        );
     }
 
     #[test]

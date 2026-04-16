@@ -142,7 +142,7 @@ Session view exposes one publish shortcut:
 - After the push succeeds, Agentty creates or refreshes the linked review request and shows the resulting pull request or merge request URL.
 - GitHub projects publish pull requests, while GitLab projects publish merge requests.
 - When the session already tracks a review request, Agentty refreshes that same review request instead of creating a duplicate.
-- After a session branch has been published once, later completed turns automatically push that same remote branch in the background so linked review requests stay current without reopening the publish popup.
+- After a session branch has been published once, later completed turns automatically push that same remote branch in the background so linked review requests stay current without reopening the publish popup. The session output shows when that post-turn auto-push starts and when it completes or fails.
 - Automatic pushes reuse the locked upstream branch name from the first publish. If a background push fails, Agentty keeps the stored upstream reference, adds the failure details to the session output, and leaves the manual `p` publish flow available for retry.
 
 Review-request publishing stays inside session view by using a publish input

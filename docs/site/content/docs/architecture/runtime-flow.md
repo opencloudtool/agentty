@@ -241,7 +241,7 @@ flowchart TD
   tasks --> footer["Append trailing commit footer"]
   footer --> active_prompt["Append active-turn prompt block"]
   active_prompt --> review["Append focused review markdown<br/>(review_text)"]
-  review --> branch_sync["Append published-branch sync row<br/>(auto-push in progress or failed)"]
+  review --> branch_sync["Append published-branch sync row<br/>(auto-push started, completed, or failed)"]
   branch_sync --> final_row["Append final status row<br/>or t toggle hint"]
 ```
 
@@ -272,9 +272,9 @@ The exact session-chat render path is:
    `session.summary` when the current status/mode allows it, appends
    follow-up tasks, reattaches the trailing commit footer, appends the active
    prompt block, appends focused review markdown from `review_text`, appends
-   the published-branch sync row when a detached auto-push is still running or
-   the latest background push failed, and finally adds the loader row or `t`
-   toggle hint when the current status requires it.
+   the published-branch sync row when a detached auto-push starts, completes,
+   or fails, and finally adds the loader row or `t` toggle hint when the
+   current status requires it.
 1. `SessionOutput::render()` writes the final `Line` list into a `ratatui`
    `Paragraph`, which is the exact widget printed in the session chat output
    area.

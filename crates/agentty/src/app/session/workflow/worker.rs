@@ -944,7 +944,7 @@ async fn run_published_branch_auto_push(
             let _ = app_event_tx.send(AppEvent::PublishedBranchSyncUpdated {
                 session_id,
                 sync_operation_id,
-                sync_status: PublishedBranchSyncStatus::Idle,
+                sync_status: PublishedBranchSyncStatus::Succeeded,
             });
         }
         Err(failure) => {
@@ -2009,7 +2009,7 @@ mod tests {
         // Assert
         assert_eq!(status, Status::Review);
         assert_eq!(sync_events[0].2, PublishedBranchSyncStatus::InProgress);
-        assert_eq!(sync_events[1].2, PublishedBranchSyncStatus::Idle);
+        assert_eq!(sync_events[1].2, PublishedBranchSyncStatus::Succeeded);
         assert_eq!(sync_events[0].0, "sess1");
         assert_eq!(sync_events[1].0, "sess1");
         assert_eq!(sync_events[0].1, sync_events[1].1);

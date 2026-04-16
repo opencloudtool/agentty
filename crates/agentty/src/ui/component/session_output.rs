@@ -229,9 +229,8 @@ impl<'a> SessionOutput<'a> {
         lines
     }
 
-    /// Appends one published-branch sync status row when the session is
-    /// auto-pushing a previously published upstream branch or the latest
-    /// auto-push failed.
+    /// Appends one automatic published-branch sync status row when the latest
+    /// completed turn started, finished, or failed an auto-push.
     fn append_published_branch_sync_lines(lines: &mut Vec<Line<'static>>, session: &Session) {
         let Some(sync_message) = session.published_branch_sync_message() else {
             return;
@@ -758,6 +757,7 @@ impl<'a> SessionOutput<'a> {
         match sync_status {
             PublishedBranchSyncStatus::Idle => Icon::Pending,
             PublishedBranchSyncStatus::InProgress => Icon::current_spinner(),
+            PublishedBranchSyncStatus::Succeeded => Icon::Check,
             PublishedBranchSyncStatus::Failed => Icon::Warn,
         }
     }
@@ -771,6 +771,7 @@ impl<'a> SessionOutput<'a> {
             PublishedBranchSyncStatus::InProgress | PublishedBranchSyncStatus::Failed => {
                 style::palette::WARNING
             }
+            PublishedBranchSyncStatus::Succeeded => style::palette::SUCCESS,
         }
     }
 
@@ -936,7 +937,31 @@ mod tests {
             .join("\n");
 
         // Assert
-        assert!(text.contains("Syncing published branch..."));
+        assert!(text.contains("Auto-pushing published branch after completed turn..."));
+    }
+
+    #[test]
+    fn test_output_lines_show_completed_published_branch_sync_message() {
+        // Arrange
+        let mut session = session_fixture();
+        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_branch_sync_status = PublishedBranchSyncStatus::Succeeded;
+        session.status = Status::Review;
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 5),
+            line_context(DoneSessionOutputMode::Summary, None, None, None, None),
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(text.contains("Auto-pushed published branch after completed turn."));
     }
 
     #[test]
