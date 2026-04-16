@@ -3271,8 +3271,9 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies that a successful rebase triggers an auto-push when the session
-    /// has a previously published upstream branch.
+    /// Verifies that a successful rebase triggers an auto-push and reports the
+    /// successful sync state when the session has a previously published
+    /// upstream branch.
     async fn test_finalize_rebase_task_triggers_auto_push_for_published_branch() {
         // Arrange
         let db = Database::open_in_memory().await.expect("failed to open db");
@@ -3347,7 +3348,7 @@ mod tests {
         assert_eq!(sync_events[0].0, "sess-rebase");
         assert_eq!(sync_events[0].2, PublishedBranchSyncStatus::InProgress);
         assert_eq!(sync_events[1].0, "sess-rebase");
-        assert_eq!(sync_events[1].2, PublishedBranchSyncStatus::Idle);
+        assert_eq!(sync_events[1].2, PublishedBranchSyncStatus::Succeeded);
         assert_eq!(sync_events[0].1, sync_events[1].1);
 
         let output_text = output.lock().expect("output lock poisoned").clone();
