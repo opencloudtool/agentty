@@ -14,3 +14,5 @@ mod confirmation;
 mod navigation;
 mod project;
 mod session;
+mod setting;
+mod stat;

@@ -1,11 +1,9 @@
 //! Shared helpers and agentty-specific `Journey` builders for E2E tests.
 //!
-//! Provides [`BuilderEnv`] for isolated test environments,
+//! Provides [`BuilderEnv`] for isolated test environments and
 //! [`FeatureTest`] for declarative feature demo tests with optional Zola
-//! page generation, and [`save_feature_gif`] as a legacy escape hatch for
-//! tests that manage their own scenario lifecycle.
+//! page generation.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,7 +15,6 @@ use testty::proof::report::{ProofCapture, ProofReport};
 use testty::scenario::Scenario;
 use testty::session::PtySessionBuilder;
 use testty::step::Step;
-use testty::vhs::{VhsTape, VhsTapeSettings, check_vhs_installed};
 
 /// Isolated test environment carrying `agentty_root` and `workdir` paths.
 ///
@@ -124,90 +121,6 @@ fn feature_output_dir() -> PathBuf {
     let _ = std::fs::create_dir_all(&output_dir);
 
     output_dir
-}
-
-/// Compute a content hash from all proof capture frame bytes.
-///
-/// Uses [`DefaultHasher`] to produce a deterministic u64 hash from the
-/// concatenated frame bytes of every capture in the report.
-fn compute_frame_hash(report: &ProofReport) -> u64 {
-    let mut hasher = DefaultHasher::new();
-
-    for capture in &report.captures {
-        capture.frame_bytes.hash(&mut hasher);
-    }
-
-    hasher.finish()
-}
-
-/// Generate a high-quality VHS feature GIF with frame-bytes content caching.
-///
-/// Checks VHS availability, computes a content hash from all
-/// [`ProofReport`] frame bytes, and skips VHS execution when the hash
-/// matches a `.{name}.hash` sidecar file. Uses
-/// [`VhsTapeSettings::feature_demo()`] for 3200×1600 `OneDark` recordings.
-///
-/// Gracefully skips when VHS is not installed.
-pub(crate) fn save_feature_gif(
-    scenario: &Scenario,
-    report: &ProofReport,
-    env: &BuilderEnv,
-    name: &str,
-) {
-    // Graceful skip when VHS is not installed.
-    if check_vhs_installed().is_err() {
-        return;
-    }
-
-    let output_dir = feature_output_dir();
-    let hash_path = output_dir.join(format!(".{name}.hash"));
-    let gif_path = output_dir.join(format!("{name}.gif"));
-
-    // Content hash from frame bytes.
-    let current_hash = compute_frame_hash(report);
-    let hash_string = current_hash.to_string();
-
-    // Check sidecar cache — skip VHS when the GIF already matches.
-    if gif_path.exists()
-        && let Ok(cached) = std::fs::read_to_string(&hash_path)
-        && cached.trim() == hash_string
-    {
-        return;
-    }
-
-    // Build VHS tape with feature demo settings.
-    let screenshot_path = output_dir.join(format!("{name}.png"));
-    let owned_pairs = env.as_vhs_env_pairs();
-    let env_pairs: Vec<(&str, &str)> = owned_pairs
-        .iter()
-        .map(|(key, value)| (key.as_str(), value.as_str()))
-        .collect();
-
-    let tape = VhsTape::from_scenario_with_settings(
-        scenario,
-        &cargo_bin("agentty"),
-        &screenshot_path,
-        &env_pairs,
-        &VhsTapeSettings::feature_demo(),
-    );
-
-    // Write and execute the tape.
-    let tape_path = output_dir.join(format!("{name}.tape"));
-    match tape.execute(&tape_path) {
-        Ok(_) => {
-            // Update the sidecar hash on success.
-            let _ = std::fs::write(&hash_path, &hash_string);
-
-            // Clean up the tape file and screenshot.
-            let _ = std::fs::remove_file(&tape_path);
-            let _ = std::fs::remove_file(&screenshot_path);
-        }
-        Err(error) => {
-            // Clean up on failure.
-            let _ = std::fs::remove_file(&tape_path);
-            let _ = error;
-        }
-    }
 }
 
 /// Reconstruct a [`TerminalFrame`] from a [`ProofCapture`] so full cell-level

@@ -2,20 +2,11 @@
 
 use testty::assertion;
 use testty::region::Region;
-use testty::scenario::Scenario;
 
 use crate::common;
-use crate::common::{BuilderEnv, FeatureTest};
+use crate::common::FeatureTest;
 
 type E2eResult = Result<(), Box<dyn std::error::Error>>;
-
-/// Builds a temporary E2E environment for navigation tests.
-fn navigation_env() -> Result<(tempfile::TempDir, BuilderEnv), Box<dyn std::error::Error>> {
-    let temp = tempfile::TempDir::new()?;
-    let env = BuilderEnv::new(temp.path())?;
-
-    Ok((temp, env))
-}
 
 /// Verify that agentty startup renders the Projects tab as selected.
 ///
@@ -34,7 +25,7 @@ fn startup_shows_projects_tab() -> E2eResult {
             |scenario| {
                 scenario
                     .compose(&common::wait_for_agentty_startup())
-                    .viewing_pause_ms(2000)
+                    .viewing_pause_ms(3000)
                     .capture_labeled("startup", "Initial render with Projects tab")
             },
             |frame, _report| {
@@ -53,25 +44,28 @@ fn startup_shows_projects_tab() -> E2eResult {
 /// becomes selected while Projects becomes unselected.
 #[test]
 fn tab_key_switches_tabs() -> E2eResult {
-    // Arrange
-    let (_temp, env) = navigation_env()?;
-
-    let scenario = Scenario::new("tab_switch")
-        .compose(&common::wait_for_agentty_startup())
-        .viewing_pause_ms(1500)
-        .capture_labeled("before", "Projects tab selected")
-        .compose(&common::switch_to_tab("Sessions"))
-        .viewing_pause_ms(1500)
-        .capture_labeled("after", "Sessions tab selected");
-
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    // Assert — after pressing Tab, "Sessions" should be selected.
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "No sessions", &full);
-
-    common::save_feature_gif(&scenario, &report, &env, "tab_switch");
+    // Arrange, Act, Assert
+    FeatureTest::new("tab_switch")
+        .zola(
+            "Tab switching",
+            "Jump between workspace tabs with a single keypress.",
+            60,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("before", "Projects tab selected")
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .viewing_pause_ms(2500)
+                    .capture_labeled("after", "Sessions tab selected")
+            },
+            |frame, _report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "No sessions", &full);
+            },
+        )?;
 
     Ok(())
 }
@@ -82,49 +76,47 @@ fn tab_key_switches_tabs() -> E2eResult {
 /// successive tab becomes selected: Sessions → Stats → Settings.
 #[test]
 fn tab_cycles_through_all_tabs() -> E2eResult {
-    // Arrange
-    let (_temp, env) = navigation_env()?;
+    // Arrange, Act, Assert
+    FeatureTest::new("tab_full_cycle")
+        .zola(
+            "Full tab cycle",
+            "Cycle through every workspace tab in order.",
+            70,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .viewing_pause_ms(2000)
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("sessions", "Sessions tab selected")
+                    .compose(&common::switch_to_tab("Stats"))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("stats", "Stats tab selected")
+                    .compose(&common::switch_to_tab("Settings"))
+                    .viewing_pause_ms(2500)
+                    .capture_labeled("settings", "Settings tab selected")
+            },
+            |frame, report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "Reasoning Level", &full);
 
-    let scenario = Scenario::new("tab_full_cycle")
-        .compose(&common::wait_for_agentty_startup())
-        .viewing_pause_ms(1500)
-        // Tab 1: Projects → Sessions
-        .compose(&common::switch_to_tab("Sessions"))
-        .viewing_pause_ms(1500)
-        .capture_labeled("sessions", "Sessions tab selected")
-        // Tab 2: Sessions → Stats
-        .compose(&common::switch_to_tab("Stats"))
-        .viewing_pause_ms(1500)
-        .capture_labeled("stats", "Stats tab selected")
-        // Tab 3: Stats → Settings
-        .compose(&common::switch_to_tab("Settings"))
-        .viewing_pause_ms(1500)
-        .capture_labeled("settings", "Settings tab selected");
+                assert_eq!(
+                    report.captures.len(),
+                    3,
+                    "Expected 3 captures (sessions, stats, settings)"
+                );
 
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
+                let sessions_frame = common::frame_from_capture(&report.captures[0]);
+                let sessions_full = Region::full(sessions_frame.cols(), sessions_frame.rows());
+                assertion::assert_text_in_region(&sessions_frame, "No sessions", &sessions_full);
 
-    // Assert — final frame should have Settings selected.
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "Reasoning Level", &full);
-
-    // Assert — all three intermediate captures are present.
-    assert_eq!(
-        report.captures.len(),
-        3,
-        "Expected 3 captures (sessions, stats, settings)"
-    );
-
-    // Assert — each intermediate capture has the correct tab highlighted.
-    let sessions_frame = common::frame_from_capture(&report.captures[0]);
-    let sessions_full = Region::full(sessions_frame.cols(), sessions_frame.rows());
-    assertion::assert_text_in_region(&sessions_frame, "No sessions", &sessions_full);
-
-    let stats_frame = common::frame_from_capture(&report.captures[1]);
-    let stats_full = Region::full(stats_frame.cols(), stats_frame.rows());
-    assertion::assert_text_in_region(&stats_frame, "TokenStats", &stats_full);
-
-    common::save_feature_gif(&scenario, &report, &env, "tab_full_cycle");
+                let stats_frame = common::frame_from_capture(&report.captures[1]);
+                let stats_full = Region::full(stats_frame.cols(), stats_frame.rows());
+                assertion::assert_text_in_region(&stats_frame, "TokenStats", &stats_full);
+            },
+        )?;
 
     Ok(())
 }
@@ -135,26 +127,29 @@ fn tab_cycles_through_all_tabs() -> E2eResult {
 /// "Quit agentty?" with selectable options.
 #[test]
 fn quit_shows_confirmation_dialog() -> E2eResult {
-    // Arrange
-    let (_temp, env) = navigation_env()?;
-
-    let scenario = Scenario::new("quit_confirmation")
-        .compose(&common::wait_for_agentty_startup())
-        .viewing_pause_ms(1500)
-        .capture_labeled("before", "App running before quit")
-        .compose(&common::open_quit_dialog())
-        .viewing_pause_ms(1500)
-        .capture_labeled("dialog", "Quit confirmation dialog");
-
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    // Assert
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "Confirm Quit", &full);
-    assertion::assert_text_in_region(&frame, "Quit agentty?", &full);
-
-    common::save_feature_gif(&scenario, &report, &env, "quit_confirmation");
+    // Arrange, Act, Assert
+    FeatureTest::new("quit_confirmation")
+        .zola(
+            "Quit confirmation",
+            "Confirm before quitting to prevent accidental exits.",
+            130,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("before", "App running before quit")
+                    .compose(&common::open_quit_dialog())
+                    .viewing_pause_ms(2500)
+                    .capture_labeled("dialog", "Quit confirmation dialog")
+            },
+            |frame, _report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "Confirm Quit", &full);
+                assertion::assert_text_in_region(frame, "Quit agentty?", &full);
+            },
+        )?;
 
     Ok(())
 }
@@ -162,26 +157,29 @@ fn quit_shows_confirmation_dialog() -> E2eResult {
 /// Verify that the footer shows keybinding hints on startup.
 #[test]
 fn startup_shows_footer_hints() -> E2eResult {
-    // Arrange
-    let (_temp, env) = navigation_env()?;
-
-    let scenario = Scenario::new("footer_hints")
-        .compose(&common::wait_for_agentty_startup())
-        .viewing_pause_ms(2000)
-        .capture_labeled("startup", "Footer with keybinding hints");
-
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    // Assert
-    let footer = Region::footer(frame.cols(), frame.rows());
-    let footer_text = frame.text_in_region(&footer);
-    assert!(
-        !footer_text.trim().is_empty(),
-        "Footer should contain keybinding hints"
-    );
-
-    common::save_feature_gif(&scenario, &report, &env, "footer_hints");
+    // Arrange, Act, Assert
+    FeatureTest::new("footer_hints")
+        .zola(
+            "Footer hints",
+            "Context-sensitive hints in the footer guide available actions.",
+            110,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .viewing_pause_ms(3000)
+                    .capture_labeled("startup", "Footer with keybinding hints")
+            },
+            |frame, _report| {
+                let footer = Region::footer(frame.cols(), frame.rows());
+                let footer_text = frame.text_in_region(&footer);
+                assert!(
+                    !footer_text.trim().is_empty(),
+                    "Footer should contain keybinding hints"
+                );
+            },
+        )?;
 
     Ok(())
 }
@@ -193,53 +191,49 @@ fn startup_shows_footer_hints() -> E2eResult {
 /// through Stats → Sessions → Projects.
 #[test]
 fn backtab_cycles_tabs_reverse() -> E2eResult {
-    // Arrange
-    let (_temp, env) = navigation_env()?;
+    // Arrange, Act, Assert
+    FeatureTest::new("backtab_reverse")
+        .zola(
+            "Reverse tab navigation",
+            "Navigate tabs in reverse with Shift+Tab.",
+            80,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .compose(&common::switch_to_tab("Stats"))
+                    .compose(&common::switch_to_tab("Settings"))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("at_settings", "Settings tab selected before reverse")
+                    .compose(&common::switch_to_tab_reverse("Stats"))
+                    .viewing_pause_ms(1500)
+                    .capture_labeled("back_to_stats", "Stats tab after first BackTab")
+                    .compose(&common::switch_to_tab_reverse("Sessions"))
+                    .viewing_pause_ms(1500)
+                    .capture_labeled("back_to_sessions", "Sessions tab after second BackTab")
+                    .compose(&common::switch_to_tab_reverse("Projects"))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("back_to_projects", "Projects tab after third BackTab")
+            },
+            |frame, report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "test-project", &full);
 
-    let scenario = Scenario::new("backtab_reverse")
-        .compose(&common::wait_for_agentty_startup())
-        // Navigate forward to Settings (Projects → Sessions → Stats → Settings).
-        .compose(&common::switch_to_tab("Sessions"))
-        .viewing_pause_ms(1000)
-        .compose(&common::switch_to_tab("Stats"))
-        .viewing_pause_ms(1000)
-        .compose(&common::switch_to_tab("Settings"))
-        .viewing_pause_ms(1000)
-        .capture_labeled("at_settings", "Settings tab selected before reverse")
-        // BackTab 1: Settings → Stats
-        .compose(&common::switch_to_tab_reverse("Stats"))
-        .viewing_pause_ms(1000)
-        .capture_labeled("back_to_stats", "Stats tab after first BackTab")
-        // BackTab 2: Stats → Sessions
-        .compose(&common::switch_to_tab_reverse("Sessions"))
-        .viewing_pause_ms(1000)
-        .capture_labeled("back_to_sessions", "Sessions tab after second BackTab")
-        // BackTab 3: Sessions → Projects
-        .compose(&common::switch_to_tab_reverse("Projects"))
-        .viewing_pause_ms(1000)
-        .capture_labeled("back_to_projects", "Projects tab after third BackTab");
+                let stats_frame = common::frame_from_capture(&report.captures[1]);
+                let stats_full = Region::full(stats_frame.cols(), stats_frame.rows());
+                assertion::assert_text_in_region(&stats_frame, "TokenStats", &stats_full);
 
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
+                let sessions_frame = common::frame_from_capture(&report.captures[2]);
+                let sessions_full = Region::full(sessions_frame.cols(), sessions_frame.rows());
+                assertion::assert_text_in_region(&sessions_frame, "No sessions", &sessions_full);
 
-    // Assert — final frame should have Projects selected.
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "test-project", &full);
-
-    // Assert — intermediate captures show correct reverse order.
-    let stats_frame = common::frame_from_capture(&report.captures[1]);
-    let stats_full = Region::full(stats_frame.cols(), stats_frame.rows());
-    assertion::assert_text_in_region(&stats_frame, "TokenStats", &stats_full);
-
-    let sessions_frame = common::frame_from_capture(&report.captures[2]);
-    let sessions_full = Region::full(sessions_frame.cols(), sessions_frame.rows());
-    assertion::assert_text_in_region(&sessions_frame, "No sessions", &sessions_full);
-
-    let projects_frame = common::frame_from_capture(&report.captures[3]);
-    let projects_full = Region::full(projects_frame.cols(), projects_frame.rows());
-    assertion::assert_text_in_region(&projects_frame, "test-project", &projects_full);
-
-    common::save_feature_gif(&scenario, &report, &env, "backtab_reverse");
+                let projects_frame = common::frame_from_capture(&report.captures[3]);
+                let projects_full = Region::full(projects_frame.cols(), projects_frame.rows());
+                assertion::assert_text_in_region(&projects_frame, "test-project", &projects_full);
+            },
+        )?;
 
     Ok(())
 }
@@ -248,44 +242,42 @@ fn backtab_cycles_tabs_reverse() -> E2eResult {
 /// `Esc` closes it and restores the previous view.
 #[test]
 fn help_overlay_toggle() -> E2eResult {
-    // Arrange
-    let (_temp, env) = navigation_env()?;
+    // Arrange, Act, Assert
+    FeatureTest::new("help_overlay")
+        .zola(
+            "Help overlay",
+            "Press ? to see available keybindings for the current view.",
+            100,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("before", "Normal view before help")
+                    .compose(&common::open_help_overlay())
+                    .viewing_pause_ms(2500)
+                    .capture_labeled("help_open", "Help overlay visible")
+                    .press_key("Escape")
+                    .wait_for_stable_frame(300, 3000)
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("help_closed", "Help overlay dismissed")
+            },
+            |frame, report| {
+                let help_frame = common::frame_from_capture(&report.captures[1]);
+                let full = Region::full(help_frame.cols(), help_frame.rows());
+                assertion::assert_text_in_region(&help_frame, "Keybindings", &full);
 
-    let scenario = Scenario::new("help_overlay")
-        .compose(&common::wait_for_agentty_startup())
-        .viewing_pause_ms(1500)
-        .capture_labeled("before", "Normal view before help")
-        // Open help overlay.
-        .compose(&common::open_help_overlay())
-        .viewing_pause_ms(1500)
-        .capture_labeled("help_open", "Help overlay visible")
-        // Close with Esc.
-        .press_key("Escape")
-        .wait_for_stable_frame(300, 3000)
-        .viewing_pause_ms(1500)
-        .capture_labeled("help_closed", "Help overlay dismissed");
+                let restored_full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "test-project", &restored_full);
 
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    // Assert — help overlay should show "Keybindings" title when open.
-    let help_frame = common::frame_from_capture(&report.captures[1]);
-    let full = Region::full(help_frame.cols(), help_frame.rows());
-    assertion::assert_text_in_region(&help_frame, "Keybindings", &full);
-
-    // Assert — after Esc, the normal view is restored with Projects tab.
-    let restored_full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "test-project", &restored_full);
-
-    // Assert — "Keybindings" title should no longer be visible.
-    let closed_full = Region::full(frame.cols(), frame.rows());
-    let closed_text = frame.text_in_region(&closed_full);
-    assert!(
-        !closed_text.contains("Keybindings"),
-        "Help overlay should be dismissed after Esc"
-    );
-
-    common::save_feature_gif(&scenario, &report, &env, "help_overlay");
+                let closed_text = frame.text_in_region(&restored_full);
+                assert!(
+                    !closed_text.contains("Keybindings"),
+                    "Help overlay should be dismissed after Esc"
+                );
+            },
+        )?;
 
     Ok(())
 }

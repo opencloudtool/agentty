@@ -8,25 +8,11 @@
 use agentty::db::{DB_DIR, DB_FILE, Database};
 use testty::assertion;
 use testty::region::Region;
-use testty::scenario::Scenario;
 
 use crate::common;
 use crate::common::{BuilderEnv, FeatureTest};
 
 type E2eResult = Result<(), Box<dyn std::error::Error>>;
-
-/// Builds a temporary E2E environment for session tests.
-fn session_env(
-    with_git: bool,
-) -> Result<(tempfile::TempDir, BuilderEnv), Box<dyn std::error::Error>> {
-    let temp = tempfile::TempDir::new()?;
-    let env = BuilderEnv::new(temp.path())?;
-    if with_git {
-        env.init_git()?;
-    }
-
-    Ok((temp, env))
-}
 
 /// Seeds one review-ready session and propagates setup errors to the caller.
 fn seed_review_ready_session(env: &BuilderEnv) -> Result<(), Box<dyn std::error::Error>> {
@@ -76,24 +62,27 @@ fn seed_review_ready_session(env: &BuilderEnv) -> Result<(), Box<dyn std::error:
 /// is visible.
 #[test]
 fn session_list_empty_state() -> E2eResult {
-    // Arrange
-    let (_temp, env) = session_env(false)?;
-
-    let scenario = Scenario::new("session_empty")
-        .compose(&common::wait_for_agentty_startup())
-        .viewing_pause_ms(1500)
-        // Navigate to Sessions tab.
-        .compose(&common::switch_to_tab("Sessions"))
-        .viewing_pause_ms(1500)
-        .capture_labeled("sessions_tab", "Sessions tab with no sessions");
-
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "No sessions", &full);
-
-    common::save_feature_gif(&scenario, &report, &env, "session_empty");
+    // Arrange, Act, Assert
+    FeatureTest::new("session_empty")
+        .zola(
+            "Empty session state",
+            "A clean slate when no sessions exist yet.",
+            40,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .viewing_pause_ms(2000)
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("sessions_tab", "Sessions tab with no sessions")
+            },
+            |frame, _report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "No sessions", &full);
+            },
+        )?;
 
     Ok(())
 }
@@ -135,28 +124,38 @@ fn session_creation_opens_prompt_mode() -> E2eResult {
 /// session deletes it and returns to the empty Sessions list.
 #[test]
 fn session_prompt_cancel_returns_to_empty_list() -> E2eResult {
-    // Arrange
-    let (_temp, env) = session_env(true)?;
+    // Arrange, Act, Assert
+    FeatureTest::new("prompt_cancel")
+        .with_git()
+        .zola(
+            "Prompt cancel",
+            "Cancel prompt input with Esc to return to the session view.",
+            120,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .viewing_pause_ms(2000)
+                    .press_key("a")
+                    .wait_for_stable_frame(300, 5000)
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("prompt_open", "Prompt mode opened")
+                    .press_key("Esc")
+                    .wait_for_stable_frame(300, 5000)
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("back_to_list", "Sessions list after cancel")
+            },
+            |frame, report| {
+                let prompt_frame = common::frame_from_capture(&report.captures[0]);
+                let prompt_full = Region::full(prompt_frame.cols(), prompt_frame.rows());
+                assertion::assert_text_in_region(&prompt_frame, "Esc: cancel", &prompt_full);
 
-    let scenario = Scenario::new("prompt_cancel")
-        .compose(&common::wait_for_agentty_startup())
-        .compose(&common::switch_to_tab("Sessions"))
-        .viewing_pause_ms(1500)
-        .press_key("a")
-        .wait_for_stable_frame(300, 5000)
-        .viewing_pause_ms(1500)
-        .press_key("Esc")
-        .wait_for_stable_frame(300, 5000)
-        .viewing_pause_ms(1500)
-        .capture_labeled("back_to_list", "Sessions list after cancel");
-
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "No sessions", &full);
-
-    common::save_feature_gif(&scenario, &report, &env, "prompt_cancel");
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "No sessions", &full);
+            },
+        )?;
 
     Ok(())
 }
@@ -165,36 +164,39 @@ fn session_prompt_cancel_returns_to_empty_list() -> E2eResult {
 /// pressing `q` returns to the session list.
 #[test]
 fn session_open_and_return_to_list() -> E2eResult {
-    // Arrange
-    let (_temp, env) = session_env(true)?;
+    // Arrange, Act, Assert
+    FeatureTest::new("session_open")
+        .with_git()
+        .zola(
+            "Session open and return",
+            "Open a session with Enter and return to the list with q.",
+            42,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .compose(&common::create_session_and_return_to_list())
+                    .viewing_pause_ms(1500)
+                    .press_key("Enter")
+                    .sleep(std::time::Duration::from_secs(2))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("session_view", "Session view after Enter")
+                    .press_key("q")
+                    .sleep(std::time::Duration::from_secs(1))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("back_to_list", "Sessions list after q")
+            },
+            |frame, report| {
+                let session_view_frame = common::frame_from_capture(&report.captures[0]);
+                let view_full = Region::full(session_view_frame.cols(), session_view_frame.rows());
+                assertion::assert_text_in_region(&session_view_frame, "q: back", &view_full);
 
-    let scenario = Scenario::new("open_and_return")
-        .compose(&common::wait_for_agentty_startup())
-        .compose(&common::switch_to_tab("Sessions"))
-        .compose(&common::create_session_and_return_to_list())
-        // Open the session with Enter.
-        .press_key("Enter")
-        // Use fixed sleep because the agent may produce continuous output.
-        .sleep(std::time::Duration::from_secs(2))
-        .capture_labeled("session_view", "Session view after Enter")
-        // Return to list with q.
-        .press_key("q")
-        .sleep(std::time::Duration::from_secs(1))
-        .capture_labeled("back_to_list", "Sessions list after q");
-
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    // Assert — intermediate capture shows session view with back action.
-    let session_view_frame = common::frame_from_capture(&report.captures[0]);
-    let view_full = Region::full(session_view_frame.cols(), session_view_frame.rows());
-    assertion::assert_text_in_region(&session_view_frame, "q: back", &view_full);
-
-    // Assert — final frame is back on the list with the session visible.
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "test", &full);
-
-    common::save_feature_gif(&scenario, &report, &env, "session_open");
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "test", &full);
+            },
+        )?;
 
     Ok(())
 }
@@ -237,113 +239,133 @@ fn review_request_publish_shortcut_opens_publish_popup() -> E2eResult {
     Ok(())
 }
 
-/// Verify that `j` and `k` navigate the session list when multiple
-/// sessions exist.
+/// Verify that `j` and `k` navigate the session list and that `Enter`
+/// opens the currently selected session.
+///
+/// Creates two sessions ("alpha" and "beta"), navigates down with `j`,
+/// opens the selection with `Enter`, returns with `q`, navigates back
+/// up with `k`, and opens again. Asserts that different sessions are
+/// opened from different cursor positions.
 #[test]
 fn session_list_jk_navigation() -> E2eResult {
-    // Arrange
-    let (_temp, env) = session_env(true)?;
+    // Arrange, Act, Assert
+    FeatureTest::new("session_navigation")
+        .with_git()
+        .zola(
+            "Session list navigation",
+            "Navigate sessions with j/k keys to select and open different entries.",
+            44,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .compose(&common::create_session_with_prompt_and_return_to_list(
+                        "alpha",
+                    ))
+                    .compose(&common::create_session_with_prompt_and_return_to_list(
+                        "beta",
+                    ))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("two_sessions", "Two sessions in list")
+                    // Navigate down with j, open the selection, and capture.
+                    .press_key("j")
+                    .wait_for_stable_frame(300, 3000)
+                    .press_key("Enter")
+                    .sleep(std::time::Duration::from_secs(2))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("opened_after_j", "Session opened after pressing j")
+                    .press_key("q")
+                    .sleep(std::time::Duration::from_secs(1))
+                    // Navigate back up with k, open the selection, and capture.
+                    .press_key("k")
+                    .wait_for_stable_frame(300, 3000)
+                    .press_key("Enter")
+                    .sleep(std::time::Duration::from_secs(2))
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("opened_after_k", "Session opened after pressing k")
+            },
+            |_frame, report| {
+                assert_eq!(
+                    report.captures.len(),
+                    3,
+                    "Expected 3 captures (list, opened_after_j, opened_after_k)"
+                );
 
-    let scenario = Scenario::new("jk_navigation")
-        .compose(&common::wait_for_agentty_startup())
-        .compose(&common::switch_to_tab("Sessions"))
-        .compose(&common::create_session_with_prompt_and_return_to_list(
-            "alpha",
-        ))
-        .compose(&common::create_session_with_prompt_and_return_to_list(
-            "beta",
-        ))
-        .capture_labeled("two_sessions", "Two sessions in list")
-        // Navigate down with j, open the selection, and capture the session.
-        .press_key("j")
-        .wait_for_stable_frame(300, 3000)
-        .press_key("Enter")
-        .sleep(std::time::Duration::from_secs(2))
-        .capture_labeled("opened_after_j", "Session opened after pressing j")
-        .press_key("q")
-        .sleep(std::time::Duration::from_secs(1))
-        // Navigate back up with k, open the selection, and capture it.
-        .press_key("k")
-        .wait_for_stable_frame(300, 3000)
-        .press_key("Enter")
-        .sleep(std::time::Duration::from_secs(2))
-        .capture_labeled("opened_after_k", "Session opened after pressing k");
+                // Both sessions visible in the initial list.
+                let initial_frame = common::frame_from_capture(&report.captures[0]);
+                let initial_full = Region::full(initial_frame.cols(), initial_frame.rows());
+                let initial_text = initial_frame.text_in_region(&initial_full);
+                assert!(
+                    initial_text.contains("alpha") && initial_text.contains("beta"),
+                    "Expected both session prompts visible in list"
+                );
 
-    // Act
-    let (_frame, report) = scenario.run_with_proof(env.builder())?;
+                // Extract text from the two opened-session captures.
+                let opened_after_j_frame = common::frame_from_capture(&report.captures[1]);
+                let opened_after_k_frame = common::frame_from_capture(&report.captures[2]);
 
-    // Assert — both sessions are visible in the list capture.
-    let initial_frame = common::frame_from_capture(&report.captures[0]);
-    let frame_after_down_open = common::frame_from_capture(&report.captures[1]);
-    let frame_after_up_open = common::frame_from_capture(&report.captures[2]);
+                let after_j_full =
+                    Region::full(opened_after_j_frame.cols(), opened_after_j_frame.rows());
+                let after_k_full =
+                    Region::full(opened_after_k_frame.cols(), opened_after_k_frame.rows());
 
-    let initial_matches = initial_frame.find_text("alpha");
-    let initial_beta_matches = initial_frame.find_text("beta");
-    let text_after_down_open = frame_after_down_open.text_in_region(&Region::full(
-        frame_after_down_open.cols(),
-        frame_after_down_open.rows(),
-    ));
-    let text_after_up_open = frame_after_up_open.text_in_region(&Region::full(
-        frame_after_up_open.cols(),
-        frame_after_up_open.rows(),
-    ));
+                let after_j_text = opened_after_j_frame.text_in_region(&after_j_full);
+                let after_k_text = opened_after_k_frame.text_in_region(&after_k_full);
 
-    assert!(
-        !initial_matches.is_empty(),
-        "Expected at least 1 'alpha' match in initial frame, found {}",
-        initial_matches.len()
-    );
-    assert!(
-        !initial_beta_matches.is_empty(),
-        "Expected at least 1 'beta' match in initial frame, found {}",
-        initial_beta_matches.len()
-    );
+                // Each opened view must contain one of the session prompts.
+                assert!(
+                    after_j_text.contains("alpha") || after_j_text.contains("beta"),
+                    "Session opened after j must contain alpha or beta"
+                );
+                assert!(
+                    after_k_text.contains("alpha") || after_k_text.contains("beta"),
+                    "Session opened after k must contain alpha or beta"
+                );
 
-    // Assert — `j` and `k` navigate to different sessions when opening them.
-    assert!(
-        text_after_down_open.contains("alpha") || text_after_down_open.contains("beta"),
-        "Expected the session opened after j to contain either alpha or beta"
-    );
-    assert!(
-        text_after_up_open.contains("alpha") || text_after_up_open.contains("beta"),
-        "Expected the session opened after k to contain either alpha or beta"
-    );
-    assert_ne!(
-        text_after_down_open.contains("alpha"),
-        text_after_up_open.contains("alpha"),
-        "Expected j and k to open different sessions"
-    );
-
-    common::save_feature_gif(&scenario, &report, &env, "session_navigation");
+                // j and k must open different sessions.
+                assert_ne!(
+                    after_j_text.contains("alpha"),
+                    after_k_text.contains("alpha"),
+                    "j and k must open different sessions"
+                );
+            },
+        )?;
 
     Ok(())
 }
 /// Verify that typed text appears in the prompt input.
 #[test]
 fn prompt_typing_shows_text() -> E2eResult {
-    // Arrange
-    let (_temp, env) = session_env(true)?;
-
-    let scenario = Scenario::new("prompt_typing")
-        .compose(&common::wait_for_agentty_startup())
-        .compose(&common::switch_to_tab("Sessions"))
-        .viewing_pause_ms(1500)
-        .press_key("a")
-        .wait_for_stable_frame(300, 5000)
-        .viewing_pause_ms(1000)
-        .write_text("hello world")
-        .wait_for_text("hello world", 3000)
-        .viewing_pause_ms(1500)
-        .capture_labeled("typed_text", "Prompt input with typed text");
-
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    // Assert — typed text is visible in the prompt.
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "hello world", &full);
-
-    common::save_feature_gif(&scenario, &report, &env, "prompt_typing");
+    // Arrange, Act, Assert
+    FeatureTest::new("prompt_typing")
+        .with_git()
+        .zola(
+            "Prompt typing",
+            "Type text into the prompt input and see it appear in real time.",
+            115,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .viewing_pause_ms(2000)
+                    .press_key("a")
+                    .wait_for_stable_frame(300, 5000)
+                    .viewing_pause_ms(1500)
+                    .capture_labeled("empty_prompt", "Empty prompt input")
+                    .write_text("hello world")
+                    .wait_for_text("hello world", 3000)
+                    .viewing_pause_ms(2500)
+                    .capture_labeled("typed_text", "Prompt input with typed text")
+            },
+            |frame, _report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "hello world", &full);
+            },
+        )?;
 
     Ok(())
 }
@@ -355,36 +377,41 @@ fn prompt_typing_shows_text() -> E2eResult {
 /// interprets as `KeyCode::Enter` with `KeyModifiers::ALT`.
 #[test]
 fn prompt_multiline_via_alt_enter() -> E2eResult {
-    // Arrange
-    let (_temp, env) = session_env(true)?;
-
-    let scenario = Scenario::new("prompt_multiline")
-        .compose(&common::wait_for_agentty_startup())
-        .compose(&common::switch_to_tab("Sessions"))
-        .viewing_pause_ms(1500)
-        .press_key("a")
-        .wait_for_stable_frame(300, 5000)
-        .viewing_pause_ms(1000)
-        .write_text("first line")
-        .wait_for_text("first line", 3000)
-        .viewing_pause_ms(1000)
-        // Alt+Enter: ESC (0x1b) followed by CR (0x0d).
-        .write_text("\x1b\r")
-        .wait_for_stable_frame(300, 3000)
-        .write_text("second line")
-        .wait_for_text("second line", 3000)
-        .viewing_pause_ms(1500)
-        .capture_labeled("multiline", "Prompt input with multiline text");
-
-    // Act
-    let (frame, report) = scenario.run_with_proof(env.builder())?;
-
-    // Assert — both lines are visible in the prompt.
-    let full = Region::full(frame.cols(), frame.rows());
-    assertion::assert_text_in_region(&frame, "first line", &full);
-    assertion::assert_text_in_region(&frame, "second line", &full);
-
-    common::save_feature_gif(&scenario, &report, &env, "prompt_multiline");
+    // Arrange, Act, Assert
+    FeatureTest::new("prompt_multiline")
+        .with_git()
+        .zola(
+            "Multiline prompt",
+            "Insert newlines with Alt+Enter to compose multiline prompts.",
+            125,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .viewing_pause_ms(2000)
+                    .press_key("a")
+                    .wait_for_stable_frame(300, 5000)
+                    .viewing_pause_ms(1500)
+                    .write_text("first line")
+                    .wait_for_text("first line", 3000)
+                    .viewing_pause_ms(2000)
+                    .capture_labeled("first_line", "First line typed")
+                    // Alt+Enter: ESC (0x1b) followed by CR (0x0d).
+                    .write_text("\x1b\r")
+                    .wait_for_stable_frame(300, 3000)
+                    .write_text("second line")
+                    .wait_for_text("second line", 3000)
+                    .viewing_pause_ms(2500)
+                    .capture_labeled("multiline", "Multiline prompt with both lines")
+            },
+            |frame, _report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "first line", &full);
+                assertion::assert_text_in_region(frame, "second line", &full);
+            },
+        )?;
 
     Ok(())
 }
