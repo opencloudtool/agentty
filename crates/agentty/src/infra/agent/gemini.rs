@@ -36,7 +36,7 @@ fn build_app_server_command(request: BuildCommandRequest<'_>) -> Command {
     } = request;
     let mut command = Command::new("gemini");
     command
-        .arg("--experimental-acp")
+        .arg("--acp")
         .arg("--model")
         .arg(model)
         .current_dir(folder);
@@ -151,10 +151,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         // Assert
-        assert_eq!(
-            args,
-            vec!["--experimental-acp", "--model", "gemini-3-flash-preview"]
-        );
+        assert_eq!(args, vec!["--acp", "--model", "gemini-3-flash-preview"]);
         assert_eq!(command.get_current_dir(), Some(temp_directory.path()));
     }
 }

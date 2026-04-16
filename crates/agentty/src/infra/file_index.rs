@@ -106,11 +106,12 @@ pub fn filter_entries<'a>(entries: &'a [FileEntry], query: &str) -> Vec<&'a File
         return entries.iter().collect();
     }
 
-    let query_chars: Vec<char> = query.to_lowercase().chars().collect();
+    let query_lower = query.to_lowercase();
+    let query_chars: Vec<char> = query_lower.chars().collect();
     let mut scored: Vec<ScoredEntry<'_>> = entries
         .iter()
         .filter_map(|entry| {
-            fuzzy_score_for_entry(entry, &query_chars).map(|score| ScoredEntry {
+            fuzzy_score_for_entry(entry, &query_chars, &query_lower).map(|score| ScoredEntry {
                 depth: path_depth(&entry.path),
                 entry,
                 path_len: entry.path.len(),
@@ -155,14 +156,18 @@ fn path_depth(path: &str) -> usize {
     path.bytes().filter(|&byte| byte == b'/').count()
 }
 
-fn fuzzy_score_for_entry(entry: &FileEntry, query_chars: &[char]) -> Option<i32> {
-    if entry.is_dir {
-        return fuzzy_score(&format!("{}/", entry.path), query_chars);
-    }
-
-    fuzzy_score(&entry.path, query_chars)
+/// Scores one [`FileEntry`] against the query while treating directories as if
+/// their visible path ended with `/`.
+fn fuzzy_score_for_entry(
+    entry: &FileEntry,
+    query_chars: &[char],
+    query_lower: &str,
+) -> Option<i32> {
+    fuzzy_score(&entry.path, query_chars, query_lower, entry.is_dir)
 }
 
+/// Reorders fuzzy-match results so trailing-slash queries keep directory
+/// entries ahead of files.
 fn prioritize_directories_for_trailing_slash(entries: &mut Vec<&FileEntry>, query: &str) {
     if !query.ends_with('/') {
         return;
@@ -174,47 +179,63 @@ fn prioritize_directories_for_trailing_slash(entries: &mut Vec<&FileEntry>, quer
 /// Scores a fuzzy match of `query_chars` against `path`.
 ///
 /// Returns `Some(score)` if all query characters appear in order,
-/// `None` if the path does not match.
-fn fuzzy_score(path: &str, query_chars: &[char]) -> Option<i32> {
-    let path_lower: Vec<char> = path.to_lowercase().chars().collect();
-    let path_chars: Vec<char> = path.chars().collect();
-    let query_lower: String = query_chars.iter().collect();
-
-    if query_chars.len() > path_lower.len() {
-        return None;
-    }
-
+/// `None` if the path does not match. When `append_trailing_slash` is `true`,
+/// scoring behaves as if `path` ended with `/` without allocating a new
+/// `String`.
+fn fuzzy_score(
+    path: &str,
+    query_chars: &[char],
+    query_lower: &str,
+    append_trailing_slash: bool,
+) -> Option<i32> {
     let mut score: i32 = 0;
     let mut query_index = 0;
     let mut prev_matched = false;
+    let mut prev_path_char = None;
 
-    for (path_index, &path_char) in path_lower.iter().enumerate() {
+    for path_char_orig in path.chars().chain(append_trailing_slash.then_some('/')) {
         if query_index >= query_chars.len() {
             break;
         }
 
-        if path_char == query_chars[query_index] {
-            score += 1;
-
-            // Bonus for consecutive matches.
-            if prev_matched {
-                score += 3;
+        let mut matched = false;
+        for path_char in path_char_orig.to_lowercase() {
+            if query_index >= query_chars.len() {
+                break;
             }
 
-            // Bonus for match at start of a path segment.
-            if path_index == 0 || matches!(path_chars[path_index - 1], '/' | '.' | '_' | '-') {
-                score += 5;
-            }
+            if path_char == query_chars[query_index] {
+                score += 1;
 
-            query_index += 1;
-            prev_matched = true;
-        } else {
+                // Bonus for consecutive matches.
+                if prev_matched {
+                    score += 3;
+                }
+
+                // Bonus for match at start of a path segment.
+                if prev_path_char.is_none_or(|previous_path_char| {
+                    matches!(previous_path_char, '/' | '.' | '_' | '-')
+                }) {
+                    score += 5;
+                }
+
+                query_index += 1;
+                matched = true;
+                prev_matched = true;
+            } else {
+                matched = false;
+                prev_matched = false;
+            }
+        }
+
+        if !matched {
             prev_matched = false;
         }
+        prev_path_char = Some(path_char_orig);
     }
 
     if query_index == query_chars.len() {
-        Some(score + basename_match_bonus(path, &query_lower))
+        Some(score + basename_match_bonus(path, query_lower))
     } else {
         None
     }
@@ -820,7 +841,7 @@ mod tests {
     #[test]
     fn test_fuzzy_score_returns_none_for_no_match() {
         // Arrange & Act
-        let result = fuzzy_score("hello.txt", &['x', 'y', 'z']);
+        let result = fuzzy_score("hello.txt", &['x', 'y', 'z'], "xyz", false);
 
         // Assert
         assert!(result.is_none());
@@ -829,7 +850,7 @@ mod tests {
     #[test]
     fn test_fuzzy_score_returns_some_for_match() {
         // Arrange & Act
-        let result = fuzzy_score("src/main.rs", &['m', 'a', 'i', 'n']);
+        let result = fuzzy_score("src/main.rs", &['m', 'a', 'i', 'n'], "main", false);
 
         // Assert
         assert!(result.is_some());
@@ -838,13 +859,27 @@ mod tests {
     #[test]
     fn test_fuzzy_score_consecutive_beats_scattered() {
         // Arrange & Act
-        let consecutive = fuzzy_score("main.rs", &['m', 'a', 'i', 'n']);
-        let scattered = fuzzy_score("my_archive_index_name.rs", &['m', 'a', 'i', 'n']);
+        let consecutive = fuzzy_score("main.rs", &['m', 'a', 'i', 'n'], "main", false);
+        let scattered = fuzzy_score(
+            "my_archive_index_name.rs",
+            &['m', 'a', 'i', 'n'],
+            "main",
+            false,
+        );
 
         // Assert
         assert!(
             consecutive.expect("test expectation should hold")
                 > scattered.expect("test expectation should hold")
         );
+    }
+
+    #[test]
+    fn test_fuzzy_score_directory_trailing_slash_matches_without_allocation() {
+        // Arrange & Act
+        let result = fuzzy_score("src", &['s', 'r', 'c', '/'], "src/", true);
+
+        // Assert
+        assert!(result.is_some());
     }
 }

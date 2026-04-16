@@ -66,12 +66,10 @@ pub(super) async fn start_runtime(
             reasoning_level: request.reasoning_level,
         })
         .map_err(|error| {
-            AppServerError::Provider(format!(
-                "Failed to build `gemini --experimental-acp` command: {error}"
-            ))
+            AppServerError::Provider(format!("Failed to build `gemini --acp` command: {error}"))
         })?;
     let (mut child, stdin, stdout) =
-        app_server_transport::spawn_runtime_command(command, "gemini --experimental-acp")?;
+        app_server_transport::spawn_runtime_command(command, "gemini --acp")?;
     let mut transport = GeminiStdioTransport::new(stdin, stdout);
     let mut state = GeminiRuntimeState::new(request.folder.clone(), request.model.clone());
 

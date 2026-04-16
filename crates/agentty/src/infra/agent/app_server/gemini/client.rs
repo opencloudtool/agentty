@@ -10,7 +10,7 @@ use crate::infra::app_server::{
 };
 use crate::infra::app_server_transport;
 
-/// Production [`AppServerClient`] backed by `gemini --experimental-acp`.
+/// Production [`AppServerClient`] backed by `gemini --acp`.
 pub(crate) struct RealGeminiAcpClient {
     sessions: AppServerSessionRegistry<GeminiSessionRuntime>,
 }
