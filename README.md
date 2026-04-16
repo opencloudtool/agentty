@@ -1,6 +1,6 @@
 # Agentty
 
-![NPM Version](https://img.shields.io/npm/v/agentty) [![codecov](https://codecov.io/gh/agentty-xyz/agentty/graph/badge.svg?token=YRGKGTM0HP)](https://codecov.io/gh/agentty-xyz/agentty) [![Postsubmit Coverage](https://github.com/agentty-xyz/agentty/actions/workflows/postsubmit.yml/badge.svg?branch=main)](https://github.com/agentty-xyz/agentty/actions/workflows/postsubmit.yml)
+![NPM Version](https://img.shields.io/npm/v/agentty) [![codecov](https://codecov.io/gh/agentty-xyz/agentty/graph/badge.svg?token=YRGKGTM0HP)](https://codecov.io/gh/agentty-xyz/agentty) [![Postsubmit](https://github.com/agentty-xyz/agentty/actions/workflows/postsubmit.yml/badge.svg?branch=main)](https://github.com/agentty-xyz/agentty/actions/workflows/postsubmit.yml)
 
 Agentty is an **ADE (Agentic Development Environment) for structured, controllable AI-assisted software development**. It is itself developed with Agentty, built with Rust and [Ratatui](https://ratatui.rs), and designed around a deeply integrated workflow.
 Published session branches stay in sync automatically after later completed turns, so linked pull requests or merge requests do not drift behind the active worktree.

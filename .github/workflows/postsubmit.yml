@@ -1,4 +1,4 @@
-name: Postsubmit Coverage
+name: Postsubmit
 
 on:
   push:
