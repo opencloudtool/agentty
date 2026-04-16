@@ -14,7 +14,8 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep the active postsubmit run alive when newer pushes arrive.
+  cancel-in-progress: false
 
 jobs:
   test:
