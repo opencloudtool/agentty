@@ -803,7 +803,8 @@ impl SessionManager {
     ///
     /// Successful merges request an immediate git-status refresh so footer
     /// branch stats reflect the new refs without waiting for the periodic
-    /// poller.
+    /// poller. The `Done` status transition also emits a full session refresh,
+    /// which refreshes active-project roadmap task data.
     async fn finalize_merge_task(
         merge_result: Result<String, SessionError>,
         clock: &dyn Clock,

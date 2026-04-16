@@ -959,6 +959,12 @@ impl App {
         self.task_roadmap_scroll_offset = 0;
     }
 
+    /// Refreshes cached roadmap state and re-normalizes top-level tabs.
+    async fn refresh_active_project_roadmap_and_tabs(&mut self) {
+        self.refresh_active_project_roadmap().await;
+        self.tabs.normalize(self.active_project_has_tasks_tab());
+    }
+
     /// Moves selection to the next session in the list.
     pub fn next(&mut self) {
         self.sessions.next();
@@ -1699,6 +1705,7 @@ impl App {
         if event_batch.should_force_reload {
             self.refresh_sessions_now().await;
             self.reload_projects().await;
+            self.refresh_active_project_roadmap_and_tabs().await;
         }
 
         if event_batch.should_refresh_git_status {
@@ -1798,9 +1805,13 @@ impl App {
         .await;
 
         if let Some(sync_main_result) = event_batch.sync_main_result {
+            let should_refresh_active_project_roadmap = sync_main_result.is_ok();
             let sync_popup_context = self.sync_popup_context();
 
             self.mode = Self::sync_main_popup_mode(sync_main_result, &sync_popup_context);
+            if should_refresh_active_project_roadmap {
+                self.refresh_active_project_roadmap_and_tabs().await;
+            }
         }
 
         self.handle_merge_queue_progress(&event_batch.session_ids, &previous_session_states)
@@ -2896,9 +2907,10 @@ fn sync_task_result_from_summary(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use mockall::predicate::eq;
@@ -5588,6 +5600,111 @@ mod tests {
         // Assert
         assert!(!has_tasks_tab);
         assert!(!cached_has_tasks_tab);
+    }
+
+    #[tokio::test]
+    async fn apply_app_events_refreshes_roadmap_after_successful_sync_main() {
+        // Arrange
+        let project_path = PathBuf::from("/home/test/src/agentty");
+        let roadmap_path = project_path.join(TASKS_ROADMAP_PATH);
+        let roadmap_path_for_file_check = roadmap_path.clone();
+        let roadmap_path_for_read = roadmap_path.clone();
+        let roadmap_snapshots = Arc::new(Mutex::new(VecDeque::from([
+            b"# roadmap before sync".to_vec(),
+            b"# roadmap after sync".to_vec(),
+        ])));
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client.expect_is_dir().returning(|_| true);
+        fs_client
+            .expect_is_file()
+            .times(2)
+            .withf(move |path| path == &roadmap_path_for_file_check)
+            .return_const(true);
+        fs_client
+            .expect_read_file()
+            .times(2)
+            .withf(move |path| path == &roadmap_path_for_read)
+            .returning(move |_| {
+                let roadmap_snapshots = Arc::clone(&roadmap_snapshots);
+                Box::pin(async move {
+                    let mut roadmap_snapshots = roadmap_snapshots
+                        .lock()
+                        .expect("roadmap snapshot lock should not be poisoned");
+                    Ok(roadmap_snapshots
+                        .pop_front()
+                        .expect("expected a queued roadmap snapshot"))
+                })
+            });
+        let mut app = app_with_fs_client(project_path, Arc::new(fs_client)).await;
+
+        // Act
+        app.apply_app_events(AppEvent::SyncMainCompleted {
+            result: Ok(SyncMainOutcome {
+                pulled_commit_titles: vec!["Refresh roadmap".to_string()],
+                pulled_commits: Some(1),
+                pushed_commit_titles: Vec::new(),
+                pushed_commits: Some(0),
+                resolved_conflict_files: Vec::new(),
+            }),
+        })
+        .await;
+
+        // Assert
+        assert_eq!(
+            app.active_project_roadmap,
+            Some(ActiveProjectRoadmap::Loaded(
+                "# roadmap after sync".to_string()
+            ))
+        );
+        assert!(app.active_project_has_tasks_tab());
+    }
+
+    #[tokio::test]
+    async fn apply_app_events_refreshes_roadmap_after_full_session_refresh() {
+        // Arrange
+        let project_path = PathBuf::from("/home/test/src/agentty");
+        let roadmap_path = project_path.join(TASKS_ROADMAP_PATH);
+        let roadmap_path_for_file_check = roadmap_path.clone();
+        let roadmap_path_for_read = roadmap_path.clone();
+        let roadmap_snapshots = Arc::new(Mutex::new(VecDeque::from([
+            b"# roadmap before merge".to_vec(),
+            b"# roadmap after merge".to_vec(),
+        ])));
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client.expect_is_dir().returning(|_| true);
+        fs_client
+            .expect_is_file()
+            .times(2)
+            .withf(move |path| path == &roadmap_path_for_file_check)
+            .return_const(true);
+        fs_client
+            .expect_read_file()
+            .times(2)
+            .withf(move |path| path == &roadmap_path_for_read)
+            .returning(move |_| {
+                let roadmap_snapshots = Arc::clone(&roadmap_snapshots);
+                Box::pin(async move {
+                    let mut roadmap_snapshots = roadmap_snapshots
+                        .lock()
+                        .expect("roadmap snapshot lock should not be poisoned");
+                    Ok(roadmap_snapshots
+                        .pop_front()
+                        .expect("expected a queued roadmap snapshot"))
+                })
+            });
+        let mut app = app_with_fs_client(project_path, Arc::new(fs_client)).await;
+
+        // Act
+        app.apply_app_events(AppEvent::RefreshSessions).await;
+
+        // Assert
+        assert_eq!(
+            app.active_project_roadmap,
+            Some(ActiveProjectRoadmap::Loaded(
+                "# roadmap after merge".to_string()
+            ))
+        );
+        assert!(app.active_project_has_tasks_tab());
     }
 
     #[test]
