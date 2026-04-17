@@ -1,10 +1,55 @@
 //! Settings page E2E tests: content rendering, navigation, and editing.
 
+use agentty::db::{DB_DIR, DB_FILE, Database};
 use testty::assertion;
 use testty::region::Region;
 
 use crate::common;
-use crate::common::FeatureTest;
+use crate::common::{BuilderEnv, FeatureTest};
+
+/// Seeds deterministic selector values for the settings navigation test.
+///
+/// Persists the three model selectors to `claude-opus-4-6` so the test can
+/// verify row navigation by observing stable, provider-agnostic value
+/// transitions even when only the stub Claude executable is available.
+fn seed_settings_navigation_models(env: &BuilderEnv) -> Result<(), Box<dyn std::error::Error>> {
+    let canonical_workdir = env.workdir.canonicalize()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        let db_path = env.agentty_root.join(DB_DIR).join(DB_FILE);
+        let database = Database::open(&db_path).await?;
+        let project_id = database
+            .upsert_project(&canonical_workdir.to_string_lossy(), None)
+            .await?;
+
+        for setting_name in [
+            "DefaultSmartModel",
+            "DefaultFastModel",
+            "DefaultReviewModel",
+        ] {
+            sqlx::query(
+                r"
+INSERT INTO project_setting (project_id, name, value)
+VALUES (?, ?, ?)
+ON CONFLICT(project_id, name) DO UPDATE
+SET value = excluded.value
+",
+            )
+            .bind(project_id)
+            .bind(setting_name)
+            .bind("claude-opus-4-6")
+            .execute(database.pool())
+            .await?;
+        }
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })?;
+
+    Ok(())
+}
 
 /// Verify that the Settings tab renders all setting rows with labels.
 ///
@@ -46,12 +91,13 @@ fn settings_tab_shows_content() {
 ///
 /// Opens the Settings tab and presses `j` multiple times to move the
 /// selection down, then `k` to move back up. The test confirms the
-/// selected row by pressing `Enter` after each navigation step and
-/// observing which model value changes in the table.
+/// selected row by seeding deterministic model values and observing which
+/// selector value changes after each `Enter` press.
 #[test]
 fn settings_jk_navigation() {
     // Arrange, Act, Assert
     FeatureTest::new("settings_navigation")
+        .setup(seed_settings_navigation_models)
         .zola(
             "Settings navigation",
             "Navigate settings rows with j/k keys.",
@@ -95,16 +141,16 @@ fn settings_jk_navigation() {
                 );
 
                 let initial_frame = common::frame_from_capture(&report.captures[0]);
-                assertion::assert_match_count(&initial_frame, "gemini-3-flash-preview", 0);
-                assertion::assert_match_count(&initial_frame, "gemini-3.1-pro-preview", 3);
+                assertion::assert_match_count(&initial_frame, "claude-opus-4-6", 3);
+                assertion::assert_match_count(&initial_frame, "claude-sonnet-4-6", 0);
 
                 let moved_down_frame = common::frame_from_capture(&report.captures[1]);
-                assertion::assert_match_count(&moved_down_frame, "gemini-3-flash-preview", 1);
-                assertion::assert_match_count(&moved_down_frame, "gemini-3.1-pro-preview", 2);
+                assertion::assert_match_count(&moved_down_frame, "claude-opus-4-6", 2);
+                assertion::assert_match_count(&moved_down_frame, "claude-sonnet-4-6", 1);
 
                 let moved_up_frame = common::frame_from_capture(&report.captures[2]);
-                assertion::assert_match_count(&moved_up_frame, "gemini-3-flash-preview", 2);
-                assertion::assert_match_count(&moved_up_frame, "gemini-3.1-pro-preview", 1);
+                assertion::assert_match_count(&moved_up_frame, "claude-opus-4-6", 1);
+                assertion::assert_match_count(&moved_up_frame, "claude-sonnet-4-6", 2);
             },
         )
         .expect("feature test failed");
