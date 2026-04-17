@@ -271,6 +271,12 @@ Update architecture docs whenever you change:
 - **Tagging:** Always use the `v` prefix for version tags (e.g., `v0.1.0`).
 - **Never bypass pre-commit hooks:** Do not use `--no-verify`, `--no-gpg-sign`, or any other flag that skips or disables pre-commit hooks. If a hook fails, investigate and fix the underlying issue instead of bypassing it.
 
+## Release Automation
+
+- Treat `.github/workflows/release.yml` as generated output from `dist`. Do not edit this workflow file manually.
+- To upgrade `cargo-dist`, update `cargo-dist-version` in `dist-workspace.toml`, then rerun `dist init` from the repository root so `dist` regenerates `.github/workflows/release.yml` and any related release automation changes.
+- When updating `cargo-dist`, review and commit the generated changes in `dist-workspace.toml` and `.github/workflows/release.yml` together.
+
 ## Git Worktree Integration
 
 Agentty automatically creates isolated git worktrees for sessions when launched from within a git repository:
