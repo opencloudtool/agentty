@@ -158,14 +158,13 @@ impl<'a> SessionOutput<'a> {
     /// summary and full output views. Active statuses append only the generic
     /// loader row so transcript text stays stable until the turn completes.
     /// Wrapping width follows the configured output panel borders so line
-    /// metrics stay in sync with rendered content. Trailing commit notices are
-    /// rendered after the synthetic summary and follow-up-task sections so
-    /// auto-commit updates do not jump above the assistant's structured
-    /// metadata. While a new turn is active, the latest prompt-led transcript
-    /// block renders after the previous turn's synthetic summary/footer block
-    /// so completed-turn metadata stays visually attached to the finished
-    /// turn. Focused-review output is appended after transcript content so it
-    /// reads like agent-produced session output instead of replacing the
+    /// metrics stay in sync with rendered content. Transcript-derived content
+    /// always renders in chronological order: completed-turn transcript,
+    /// trailing commit/footer lines, then the currently active prompt block.
+    /// Synthetic summary and follow-up-task sections render only after the
+    /// transcript so generated metadata never jumps above the latest visible
+    /// user input. Focused-review output is appended after transcript content
+    /// so it reads like agent-produced session output instead of replacing the
     /// transcript panel, but it is suppressed once the session reaches `Done`
     /// because merged sessions should only show final summary or transcript
     /// content.
@@ -202,6 +201,18 @@ impl<'a> SessionOutput<'a> {
             inner_width,
             markdown_render_cache,
         );
+        Self::append_transcript_footer_lines(
+            &mut lines,
+            trailing_footer_text,
+            inner_width,
+            markdown_render_cache,
+        );
+        Self::append_active_turn_lines(
+            &mut lines,
+            active_turn_text.as_deref(),
+            inner_width,
+            markdown_render_cache,
+        );
         if Self::shows_summary_block(session.status, done_session_output_mode) {
             Self::append_summary_lines(
                 &mut lines,
@@ -219,18 +230,6 @@ impl<'a> SessionOutput<'a> {
                 markdown_render_cache,
             );
         }
-        Self::append_transcript_footer_lines(
-            &mut lines,
-            trailing_footer_text,
-            inner_width,
-            markdown_render_cache,
-        );
-        Self::append_active_turn_lines(
-            &mut lines,
-            active_turn_text.as_deref(),
-            inner_width,
-            markdown_render_cache,
-        );
         if Self::shows_review_lines(session.status) {
             Self::append_review_lines(&mut lines, review_text, inner_width, markdown_render_cache);
         }
@@ -564,8 +563,8 @@ impl<'a> SessionOutput<'a> {
         }
     }
 
-    /// Appends one trailing transcript footer after synthetic follow-up-task
-    /// content when a known footer block is present.
+    /// Appends one trailing transcript footer immediately after completed-turn
+    /// transcript content when a known footer block is present.
     fn append_transcript_footer_lines(
         lines: &mut Vec<Line<'static>>,
         trailing_footer_text: Option<&str>,
@@ -584,8 +583,8 @@ impl<'a> SessionOutput<'a> {
         );
     }
 
-    /// Appends the currently active prompt-led transcript block after
-    /// completed-turn synthetic metadata so in-progress work stays separate.
+    /// Appends the currently active prompt-led transcript block after earlier
+    /// transcript content so the rendered transcript remains chronological.
     fn append_active_turn_lines(
         lines: &mut Vec<Line<'static>>,
         active_turn_text: Option<&str>,
@@ -1214,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn test_output_lines_renders_trailing_commit_footer_after_follow_up_tasks() {
+    fn test_output_lines_renders_trailing_commit_footer_before_follow_up_tasks() {
         // Arrange
         let mut session = session_fixture();
         session.output =
@@ -1238,17 +1237,17 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        let follow_up_index = text
-            .find(FOLLOW_UP_TASK_HEADER)
-            .expect("follow-up task header should be rendered");
         let commit_index = text
             .find("[Commit] committed with hash abc1234")
             .expect("commit footer should be rendered");
+        let follow_up_index = text
+            .find(FOLLOW_UP_TASK_HEADER)
+            .expect("follow-up task header should be rendered");
 
         // Assert
         assert!(text.contains("Implemented the change."));
         assert!(text.contains("Run a broader regression pass."));
-        assert!(follow_up_index < commit_index);
+        assert!(commit_index < follow_up_index);
     }
 
     #[test]
@@ -1306,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn test_output_lines_in_progress_session_keeps_summary_before_active_prompt() {
+    fn test_output_lines_in_progress_session_keeps_active_prompt_before_summary() {
         // Arrange
         let mut session = session_fixture();
         session.output =
@@ -1329,6 +1328,9 @@ mod tests {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
+        let commit_index = text
+            .find("[Commit] No changes to commit.")
+            .expect("commit footer should be rendered");
         let summary_index = text
             .find("Change Summary")
             .expect("structured summary should be rendered");
@@ -1337,8 +1339,8 @@ mod tests {
             .expect("active prompt should be rendered");
 
         // Assert
-        assert!(text.contains("[Commit] No changes to commit."));
-        assert!(summary_index < prompt_index);
+        assert!(commit_index < prompt_index);
+        assert!(prompt_index < summary_index);
     }
 
     #[test]
@@ -1377,6 +1379,45 @@ mod tests {
     }
 
     #[test]
+    fn test_output_lines_in_progress_session_keeps_follow_up_tasks_after_active_prompt() {
+        // Arrange
+        let mut session = session_fixture();
+        session.output = " › hi\n\nexisting answer\n\n › add hello world\n\n".to_string();
+        session.follow_up_tasks = vec![SessionFollowUpTask {
+            id: 1,
+            launched_session_id: None,
+            position: 0,
+            text: "Document the new behavior.".to_string(),
+        }];
+        session.status = Status::InProgress;
+
+        // Act
+        let lines = SessionOutput::output_lines(
+            &session,
+            Rect::new(0, 0, 80, 8),
+            SessionOutputLineContext {
+                active_prompt_output: Some("\n › add hello world\n\n"),
+                ..line_context(DoneSessionOutputMode::Summary, None, None, None, None)
+            },
+            None,
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt_index = text
+            .find(" › add hello world")
+            .expect("active prompt should be rendered");
+        let follow_up_index = text
+            .find(FOLLOW_UP_TASK_HEADER)
+            .expect("follow-up task header should be rendered");
+
+        // Assert
+        assert!(prompt_index < follow_up_index);
+    }
+
+    #[test]
     fn test_output_lines_in_progress_ignores_assistant_lines_that_look_like_prompts() {
         // Arrange
         let mut session = session_fixture();
@@ -1410,7 +1451,7 @@ mod tests {
 
         // Assert
         assert!(text.contains(" › quoted output"));
-        assert!(summary_index < prompt_index);
+        assert!(prompt_index < summary_index);
     }
 
     #[test]
