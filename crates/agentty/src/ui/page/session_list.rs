@@ -117,8 +117,12 @@ impl Page for SessionListPage<'_> {
 
 /// Builds footer help content for session list mode.
 fn session_list_help_line(selected_session: Option<&Session>) -> Line<'static> {
+    let can_cancel_selected_session = selected_session.is_some_and(Session::allows_cancel_action);
     let can_open_selected_session = selected_session.is_some();
-    let actions = help_action::session_list_footer_actions(can_open_selected_session);
+    let actions = help_action::session_list_footer_actions(
+        can_cancel_selected_session,
+        can_open_selected_session,
+    );
 
     help_action::footer_line(&actions)
 }
@@ -858,15 +862,28 @@ mod tests {
     }
 
     #[test]
-    fn test_session_list_help_line_hides_cancel_for_non_review_session() {
+    fn test_session_list_help_line_hides_cancel_for_regular_new_session() {
         // Arrange
-        let session = test_session("session-1", Status::Done);
+        let session = test_session("session-1", Status::New);
 
         // Act
         let help_text = session_list_help_line(Some(&session)).to_string();
 
         // Assert
         assert!(!help_text.contains("c: cancel"));
+    }
+
+    #[test]
+    fn test_session_list_help_line_includes_cancel_for_draft_session() {
+        // Arrange
+        let mut session = test_session("session-1", Status::New);
+        session.is_draft = true;
+
+        // Act
+        let help_text = session_list_help_line(Some(&session)).to_string();
+
+        // Assert
+        assert!(help_text.contains("c: cancel"));
     }
 
     #[test]

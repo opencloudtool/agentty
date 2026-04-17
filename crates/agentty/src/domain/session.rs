@@ -67,6 +67,10 @@ impl Status {
     }
 
     /// Returns whether a transition to `next` is valid.
+    ///
+    /// Draft-session-only guards still live on [`Session`] methods, so
+    /// callers must separately prevent regular `New` sessions from taking the
+    /// `Canceled` path.
     pub fn can_transition_to(self, next: Status) -> bool {
         if self == next {
             return true;
@@ -74,7 +78,7 @@ impl Status {
 
         matches!(
             (self, next),
-            (Status::New, Status::InProgress)
+            (Status::New, Status::InProgress | Status::Canceled)
                 | (Status::New | Status::InProgress, Status::Rebasing)
                 | (Status::Review, Status::AgentReview)
                 | (Status::AgentReview, Status::Review)
@@ -425,6 +429,15 @@ impl Session {
         self.is_draft_session() && self.status == Status::New && !self.prompt.is_empty()
     }
 
+    /// Returns whether the session can be canceled by the user.
+    ///
+    /// Review-oriented sessions remain cancelable, and unstarted draft
+    /// sessions can also be canceled before they materialize a worktree.
+    pub fn allows_cancel_action(&self) -> bool {
+        self.status.allows_review_actions()
+            || (self.status == Status::New && self.is_draft_session())
+    }
+
     /// Returns whether session chat should render the cumulative active-work
     /// timer for this session.
     pub fn has_in_progress_timer(&self) -> bool {
@@ -681,6 +694,18 @@ mod tests {
 
         // Assert
         assert!(allows_review_actions);
+    }
+
+    #[test]
+    fn test_status_transition_new_to_canceled() {
+        // Arrange
+        let current_status = Status::New;
+
+        // Act
+        let can_transition = current_status.can_transition_to(Status::Canceled);
+
+        // Assert
+        assert!(can_transition);
     }
 
     #[test]
@@ -1299,6 +1324,33 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
 
         // Assert
         assert_eq!(sync_message, Some("Published branch sync failed."));
+    }
+
+    #[test]
+    fn test_session_allows_cancel_action_for_unstarted_draft_session() {
+        // Arrange
+        let mut session = test_session(None);
+        session.status = Status::New;
+        session.is_draft = true;
+
+        // Act
+        let allows_cancel_action = session.allows_cancel_action();
+
+        // Assert
+        assert!(allows_cancel_action);
+    }
+
+    #[test]
+    fn test_session_allows_cancel_action_rejects_regular_new_session() {
+        // Arrange
+        let mut session = test_session(None);
+        session.status = Status::New;
+
+        // Act
+        let allows_cancel_action = session.allows_cancel_action();
+
+        // Assert
+        assert!(!allows_cancel_action);
     }
 
     // -- status transition: Review/AgentReview/Question → Done ---------------

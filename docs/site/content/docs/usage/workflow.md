@@ -191,6 +191,8 @@ branch is based on the latest local base-branch state instead of the moment
 the draft session was first created. Until that deferred worktree exists,
 prompt `@` lookup suggestions index the active project root so file search
 still works while you stage the draft bundle.
+If you decide not to start that staged bundle, return to the **Sessions** list
+and press `c` to cancel the still-unstarted draft session directly.
 
 ### Typical Transitions
 
@@ -229,6 +231,7 @@ flowchart TB
   new_regular -->|submit first prompt| in_progress
   new_draft -->|stage more drafts| new_draft
   new_draft -->|start staged bundle| in_progress
+  new_draft -->|cancel from session list| canceled
 
   in_progress -->|turn completes| review
   in_progress -->|needs clarification| question

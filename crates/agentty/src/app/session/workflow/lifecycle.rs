@@ -1874,27 +1874,30 @@ impl SessionManager {
         .await;
     }
 
-    /// Cancels a session that is currently in review and drops its worktree.
+    /// Cancels a review session or unstarted draft session.
     ///
     /// Persisted transcript metadata remains available after the worktree
-    /// checkout and session branch are removed.
+    /// checkout and session branch are removed. Draft sessions that never
+    /// created a worktree only update persisted state and skip worktree
+    /// cleanup.
     ///
     /// # Errors
-    /// Returns an error if the session is not found or not in review status.
+    /// Returns an error if the session is not found or is not cancelable.
     pub async fn cancel_session(
         &self,
         services: &AppServices,
         session_id: &str,
     ) -> Result<(), SessionError> {
         let session = self.session_or_err(session_id)?;
-        if !session.status.allows_review_actions() {
+        if !session.allows_cancel_action() {
             return Err(SessionError::Workflow(
-                "Session must be in review to be canceled".to_string(),
+                "Session must be in review or be an unstarted draft to be canceled".to_string(),
             ));
         }
 
         let branch_name = session_branch(&session.id);
         let folder = session.folder.clone();
+        let has_worktree = services.fs_client().is_dir(folder.clone());
         let handles = self.session_handles_or_err(session_id)?;
         let status = Arc::clone(&handles.status);
         let app_event_tx = services.event_sender();
@@ -1910,22 +1913,25 @@ impl SessionManager {
         .await;
 
         if status_updated {
-            let repo_root = services
-                .git_client()
-                .main_repo_root(folder.clone())
-                .await
-                .ok();
+            if has_worktree {
+                let repo_root = services
+                    .git_client()
+                    .main_repo_root(folder.clone())
+                    .await
+                    .ok();
 
-            let cleanup_errors = Self::cleanup_session_worktree_resources(
-                services.fs_client().clone(),
-                services.git_client(),
-                folder,
-                branch_name,
-                repo_root,
-                true,
-            )
-            .await;
-            Self::warn_cleanup_errors(session_id, &cleanup_errors);
+                let cleanup_errors = Self::cleanup_session_worktree_resources(
+                    services.fs_client().clone(),
+                    services.git_client(),
+                    folder,
+                    branch_name,
+                    repo_root,
+                    true,
+                )
+                .await;
+                Self::warn_cleanup_errors(session_id, &cleanup_errors);
+            }
+
             Self::cleanup_session_temp_directory(services.fs_client(), session_id).await;
         }
 

@@ -478,6 +478,7 @@ Turn execution is durable and restart-safe:
 Runtime status transitions enforced by `Status::can_transition_to()`:
 
 - `New -> InProgress` (first prompt)
+- `New draft -> Canceled` (list-mode cancel before first turn)
 - `Review/Question -> InProgress` (reply)
 - `Review -> Queued -> Merging -> Done` (merge queue path)
 - `Review -> Rebasing -> Review/Question` (rebase path)

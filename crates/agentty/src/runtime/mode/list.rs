@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, Tab};
 use crate::domain::input::InputState;
-use crate::domain::session::Status;
+use crate::domain::session::{Session, Status};
 use crate::runtime::EventResult;
 use crate::runtime::mode::confirmation::DEFAULT_OPTION_INDEX;
 use crate::runtime::mode::question;
@@ -23,8 +23,9 @@ use crate::ui::util::inline_text;
 /// Pressing `q` opens a confirmation overlay instead of quitting immediately,
 /// with `No` selected by default. Pressing `Enter` on the `Projects` tab
 /// selects the active project and then moves focus to `Tab::Sessions`.
-/// `d` and `c` open delete/cancel confirmation overlays for the selected
-/// session, and `Tab` cycles tabs forward while `Shift+Tab` cycles backward.
+/// `c` opens a cancel confirmation overlay for review sessions and unstarted
+/// draft sessions, and `Tab` cycles tabs forward while `Shift+Tab` cycles
+/// backward.
 pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResult> {
     if app.tabs.current() == Tab::Settings && app.settings.is_editing_text_input() {
         return handle_settings_text_input(app, key).await;
@@ -80,8 +81,7 @@ pub(crate) async fn handle(app: &mut App, key: KeyEvent) -> io::Result<EventResu
         KeyCode::Char('c') if app.tabs.current() == Tab::Sessions => {
             let selected_session = app.selected_session().and_then(|session| {
                 session
-                    .status
-                    .allows_review_actions()
+                    .allows_cancel_action()
                     .then(|| (session.id.clone(), inline_text(session.display_title())))
             });
             if let Some((session_id, session_title)) = selected_session {
@@ -279,8 +279,8 @@ fn list_keybindings(app: &App) -> Vec<HelpAction> {
 
     let is_sessions_tab = app.tabs.current() == Tab::Sessions;
     let selected_session = app.selected_session();
-    let can_cancel_selected_session = is_sessions_tab
-        && selected_session.is_some_and(|session| session.status.allows_review_actions());
+    let can_cancel_selected_session =
+        is_sessions_tab && selected_session.is_some_and(Session::allows_cancel_action);
     let can_open_selected_session = is_sessions_tab
         && app
             .sessions
@@ -1225,6 +1225,43 @@ mod tests {
             .await
             .expect("failed to create session");
         app.sessions.sessions[0].status = Status::Review;
+        let expected_session_title = app.sessions.sessions[0].display_title().to_string();
+        app.tabs.set(Tab::Sessions);
+        app.sessions.table_state.select(Some(0));
+
+        // Act
+        let event_result = handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("failed to handle key");
+
+        // Assert
+        assert!(matches!(event_result, EventResult::Continue));
+        assert!(matches!(
+            app.mode,
+            AppMode::Confirmation {
+                confirmation_intent: ConfirmationIntent::CancelSession,
+                ref confirmation_message,
+                ref confirmation_title,
+                restore_view: None,
+                session_id: Some(ref mode_session_id),
+                selected_confirmation_index: DEFAULT_OPTION_INDEX,
+            } if mode_session_id == &expected_session_id
+                && confirmation_title == "Confirm Cancel"
+                && confirmation_message == &format!("Cancel session \"{expected_session_title}\"?")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_cancel_key_opens_cancel_confirmation_for_draft_session() {
+        // Arrange
+        let (mut app, _base_dir) = new_test_app_with_git().await;
+        let expected_session_id = app
+            .create_draft_session()
+            .await
+            .expect("failed to create draft session");
         let expected_session_title = app.sessions.sessions[0].display_title().to_string();
         app.tabs.set(Tab::Sessions);
         app.sessions.table_state.select(Some(0));

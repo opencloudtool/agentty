@@ -155,7 +155,10 @@ pub(crate) fn project_list_footer_actions() -> Vec<HelpAction> {
 }
 
 /// Returns compact session list footer actions for the page-level hint line.
-pub(crate) fn session_list_footer_actions(can_open_selected_session: bool) -> Vec<HelpAction> {
+pub(crate) fn session_list_footer_actions(
+    can_cancel_selected_session: bool,
+    can_open_selected_session: bool,
+) -> Vec<HelpAction> {
     let mut actions = list_base_actions();
     actions.push(HelpAction::new(
         "start new session",
@@ -167,6 +170,10 @@ pub(crate) fn session_list_footer_actions(can_open_selected_session: bool) -> Ve
         "Shift+A",
         "Start draft session",
     ));
+
+    if can_cancel_selected_session {
+        actions.push(HelpAction::new("cancel", "c", "Cancel session"));
+    }
 
     if can_open_selected_session {
         actions.push(HelpAction::new("open session", "Enter", "Open session"));
@@ -652,13 +659,26 @@ mod tests {
         // Arrange
 
         // Act
-        let actions = session_list_footer_actions(true);
+        let actions = session_list_footer_actions(false, true);
 
         // Assert
         assert!(actions.iter().any(|action| action.key == "Enter"));
         assert!(actions.iter().any(|action| action.key == "Shift+A"));
         assert!(!actions.iter().any(|action| action.key == "d"));
         assert!(!actions.iter().any(|action| action.key == "c"));
+        assert!(!actions.iter().any(|action| action.key == "Tab"));
+    }
+
+    #[test]
+    fn test_session_list_footer_actions_includes_cancel_when_session_is_cancelable() {
+        // Arrange
+
+        // Act
+        let actions = session_list_footer_actions(true, true);
+
+        // Assert
+        assert!(actions.iter().any(|action| action.key == "c"));
+        assert!(actions.iter().any(|action| action.key == "Enter"));
         assert!(!actions.iter().any(|action| action.key == "Tab"));
     }
 

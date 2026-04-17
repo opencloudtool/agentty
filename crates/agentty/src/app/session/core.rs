@@ -4449,6 +4449,58 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Ensures canceling an unstarted draft session persists `Canceled`
+    /// status without requiring a materialized worktree.
+    async fn test_cancel_draft_session() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        let mut app = new_test_app_with_git(dir.path()).await;
+        let session_id = app
+            .create_draft_session()
+            .await
+            .expect("failed to create draft session");
+        let session_folder = app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing session")
+            .folder
+            .clone();
+
+        // Act
+        app.sessions
+            .cancel_session(&app.services, &session_id)
+            .await
+            .expect("failed to cancel draft session");
+
+        // Assert
+        app.sessions.sync_from_handles();
+        let session = app
+            .sessions
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing session");
+        assert_eq!(session.status, Status::Canceled);
+        let db_sessions = app
+            .services
+            .db()
+            .load_sessions()
+            .await
+            .expect("failed to load");
+        let db_session = db_sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .expect("missing persisted session");
+        assert_eq!(db_session.status, "Canceled");
+        assert!(
+            !session_folder.exists(),
+            "draft session should remain without a worktree after cancellation"
+        );
+    }
+
+    #[tokio::test]
     /// Ensures canceling a review session shuts down its app-server runtime.
     async fn test_cancel_session_triggers_app_server_shutdown() {
         // Arrange
