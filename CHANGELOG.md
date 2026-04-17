@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.7] - 2026-04-16
+
+### Added
+
+- Add `ClaudeOpus47` model variant and set it as the default Claude model.
+- Allow canceling unstarted draft sessions from the session list.
+- Add render hot-path documentation for shared markdown caches.
+
+### Changed
+
+- Reorder session output rendering by chronological state.
+- Update `setup-uv` GitHub Action to v8.1.0 in CI workflows.
+- Review commit workflow guidance and align CI with pre-commit validation.
+
+### Fixed
+
+- Load @-mention entries from project root for unmaterialized draft sessions.
+- Stabilize settings navigation E2E with seeded model settings.
+
+### Contributors
+
+- @andagaev
+- @minev-dev
+
 ## [v0.7.6] - 2026-04-16
 
 ### Changed
