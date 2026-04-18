@@ -44,6 +44,9 @@ impl SessionManager {
     /// preserved from live handles, while terminal persisted statuses (`Done`,
     /// `Canceled`) override stale in-memory status.
     ///
+    /// Retired persisted model ids are upgraded to their current replacement
+    /// models while rows are loaded.
+    ///
     /// New handles are inserted for sessions that don't have entries yet.
     ///
     /// Returns loaded sessions, local-day activity counts aggregated from
@@ -98,9 +101,7 @@ impl SessionManager {
                 continue;
             }
             session_worktree_availability.insert(row.id.clone(), has_session_folder);
-            let session_model = row
-                .model
-                .parse::<AgentModel>()
+            let session_model = AgentModel::parse_persisted(&row.model)
                 .unwrap_or_else(|_| AgentKind::Gemini.default_model());
 
             let (session_output, session_status) = if let Some(existing) = handles.get(&row.id) {

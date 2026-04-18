@@ -422,7 +422,7 @@ mod tests {
             session_fixture_with(
                 "session-3",
                 "Claude Session",
-                AgentModel::ClaudeOpus46,
+                AgentModel::ClaudeOpus47,
                 300,
                 200,
                 30,
@@ -446,7 +446,7 @@ mod tests {
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Token Stats"));
         assert!(text.contains("gpt-5.4"));
-        assert!(text.contains("claude-opus-4-6"));
+        assert!(text.contains("claude-opus-4-7"));
     }
 
     #[test]

@@ -811,6 +811,9 @@ fn resolve_available_model(
 }
 
 /// Loads a model setting and parses it into an [`AgentModel`].
+///
+/// Retired persisted model ids are upgraded to their current replacement
+/// models before the value is returned.
 async fn load_model_setting(
     services: &AppServices,
     project_id: Option<i64>,
@@ -823,7 +826,7 @@ async fn load_model_setting(
         .get_project_setting(project_id, setting_name)
         .await
         .unwrap_or(None)
-        .and_then(|setting_value| setting_value.parse().ok())
+        .and_then(|setting_value| AgentModel::parse_persisted(&setting_value).ok())
 }
 
 /// Loads the persisted reasoning-level setting.
@@ -1040,7 +1043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_default_fast_model_setting_falls_back_through_smart_model_resolution() {
+    async fn load_default_fast_model_setting_migrates_retired_claude_opus_46_setting() {
         // Arrange
         let (services, project_id) = test_services().await;
         services
@@ -1048,7 +1051,7 @@ mod tests {
             .upsert_project_setting(
                 project_id,
                 SettingName::DefaultSmartModel,
-                AgentModel::ClaudeOpus46.as_str(),
+                "claude-opus-4-6",
             )
             .await
             .expect("failed to persist smart model");
@@ -1062,7 +1065,7 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(fallback_fast_model, AgentModel::ClaudeOpus46);
+        assert_eq!(fallback_fast_model, AgentModel::ClaudeOpus47);
 
         // Arrange
         services
@@ -1114,7 +1117,7 @@ mod tests {
             .upsert_project_setting(
                 project_id,
                 SettingName::DefaultReviewModel,
-                AgentModel::ClaudeOpus46.as_str(),
+                "claude-opus-4-6",
             )
             .await
             .expect("failed to persist review model");
@@ -1145,7 +1148,7 @@ mod tests {
         // Assert
         assert_eq!(manager.default_smart_model, AgentModel::Gpt54);
         assert_eq!(manager.default_fast_model, AgentModel::Gpt53CodexSpark);
-        assert_eq!(manager.default_review_model, AgentModel::ClaudeOpus46);
+        assert_eq!(manager.default_review_model, AgentModel::ClaudeOpus47);
         assert_eq!(manager.open_command, "nvim .");
         assert_eq!(manager.reasoning_level, ReasoningLevel::Low);
         assert!(!manager.include_coauthored_by_agentty);
@@ -1379,13 +1382,13 @@ mod tests {
     fn settings_rows_show_default_review_model_value() {
         // Arrange
         let mut manager = new_settings_manager();
-        manager.default_review_model = AgentModel::ClaudeOpus46;
+        manager.default_review_model = AgentModel::ClaudeOpus47;
 
         // Act
         let rows = manager.settings_rows();
 
         // Assert
-        assert_eq!(rows[3].1, AgentModel::ClaudeOpus46.as_str());
+        assert_eq!(rows[3].1, AgentModel::ClaudeOpus47.as_str());
     }
 
     #[test]

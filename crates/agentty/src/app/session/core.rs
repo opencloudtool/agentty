@@ -1268,7 +1268,7 @@ mod tests {
                 &session_id,
                 prompt,
                 Arc::new(start_backend),
-                AgentModel::ClaudeOpus46,
+                AgentModel::ClaudeOpus47,
             )
             .await;
     }
@@ -2447,6 +2447,7 @@ mod tests {
         // Assert
         assert_eq!(app.sessions.sessions.len(), 1);
         assert_eq!(app.sessions.sessions[0].id, "12345678");
+        assert_eq!(app.sessions.sessions[0].model, AgentModel::ClaudeOpus47);
         assert_eq!(app.sessions.sessions[0].prompt, "Existing");
         let output = app.sessions.sessions[0].output.clone();
         assert_eq!(output, "Output");
@@ -2530,7 +2531,7 @@ mod tests {
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session("alpha000", "claude-opus-4-6", "main", "Done", project_id)
+        db.insert_session("alpha000", "claude-opus-4-7", "main", "Done", project_id)
             .await
             .expect("failed to insert alpha000");
         db.insert_session(
@@ -2586,13 +2587,13 @@ mod tests {
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session("alpha000", "claude-opus-4-6", "main", "Done", project_id)
+        db.insert_session("alpha000", "claude-opus-4-7", "main", "Done", project_id)
             .await
             .expect("failed to insert alpha000");
-        db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
+        db.insert_session("beta0000", "claude-opus-4-7", "main", "Done", project_id)
             .await
             .expect("failed to insert beta0000");
-        db.insert_session("gamma000", "claude-opus-4-6", "main", "Done", project_id)
+        db.insert_session("gamma000", "claude-opus-4-7", "main", "Done", project_id)
             .await
             .expect("failed to insert gamma000");
         let seconds_per_day = 86_400_i64;
@@ -2662,10 +2663,10 @@ mod tests {
             .upsert_project("/tmp/test", None)
             .await
             .expect("failed to upsert project");
-        db.insert_session("alpha000", "claude-opus-4-6", "main", "Done", project_id)
+        db.insert_session("alpha000", "claude-opus-4-7", "main", "Done", project_id)
             .await
             .expect("failed to insert alpha000");
-        db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
+        db.insert_session("beta0000", "claude-opus-4-7", "main", "Done", project_id)
             .await
             .expect("failed to insert beta0000");
         db.insert_session_creation_activity_at("alpha000", 10)
@@ -2721,7 +2722,7 @@ mod tests {
         )
         .await
         .expect("failed to insert alpha000");
-        db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
+        db.insert_session("beta0000", "claude-opus-4-7", "main", "Done", project_id)
             .await
             .expect("failed to insert beta0000");
         db.update_session_updated_at("alpha000", 1)
@@ -2782,7 +2783,7 @@ mod tests {
         )
         .await
         .expect("failed to insert alpha000");
-        db.insert_session("beta0000", "claude-opus-4-6", "main", "Done", project_id)
+        db.insert_session("beta0000", "claude-opus-4-7", "main", "Done", project_id)
             .await
             .expect("failed to insert beta0000");
         db.update_session_updated_at("alpha000", 1)
@@ -2998,7 +2999,7 @@ mod tests {
                 &session_id,
                 "compute size after turn",
                 Arc::new(backend),
-                AgentModel::ClaudeOpus46,
+                AgentModel::ClaudeOpus47,
             )
             .await;
         wait_for_status(&mut app, &session_id, Status::AgentReview).await;
@@ -3636,7 +3637,7 @@ mod tests {
                 &session_id,
                 "NoChanges",
                 Arc::new(mock),
-                AgentModel::ClaudeOpus46,
+                AgentModel::ClaudeOpus47,
             )
             .await;
 

@@ -25,8 +25,6 @@ pub enum AgentModel {
     Gpt53CodexSpark,
     /// Claude Opus model backed by `claude-opus-4-7`.
     ClaudeOpus47,
-    /// Claude Opus model backed by `claude-opus-4-6`.
-    ClaudeOpus46,
     /// Claude Sonnet model backed by `claude-sonnet-4-6`.
     ClaudeSonnet46,
     /// Claude Haiku model backed by `claude-haiku-4-5-20251001`.
@@ -66,9 +64,20 @@ impl AgentModel {
             Self::Gpt54 => "gpt-5.4",
             Self::Gpt53CodexSpark => "gpt-5.3-codex-spark",
             Self::ClaudeOpus47 => "claude-opus-4-7",
-            Self::ClaudeOpus46 => "claude-opus-4-6",
             Self::ClaudeSonnet46 => "claude-sonnet-4-6",
             Self::ClaudeHaiku4520251001 => "claude-haiku-4-5-20251001",
+        }
+    }
+
+    /// Parses one persisted model identifier and upgrades retired aliases.
+    ///
+    /// Stored `claude-opus-4-6` values are migrated forward to
+    /// `claude-opus-4-7` so existing projects and sessions continue loading
+    /// after `claude-opus-4-6` support is removed from the active model list.
+    pub(crate) fn parse_persisted(value: &str) -> Result<Self, String> {
+        match value {
+            "claude-opus-4-6" => Ok(Self::ClaudeOpus47),
+            _ => value.parse(),
         }
     }
 
@@ -77,10 +86,9 @@ impl AgentModel {
         match self {
             Self::Gemini3FlashPreview | Self::Gemini31ProPreview => AgentKind::Gemini,
             Self::Gpt54 | Self::Gpt53CodexSpark => AgentKind::Codex,
-            Self::ClaudeOpus47
-            | Self::ClaudeOpus46
-            | Self::ClaudeSonnet46
-            | Self::ClaudeHaiku4520251001 => AgentKind::Claude,
+            Self::ClaudeOpus47 | Self::ClaudeSonnet46 | Self::ClaudeHaiku4520251001 => {
+                AgentKind::Claude
+            }
         }
     }
 }
@@ -168,9 +176,9 @@ impl ReasoningLevel {
 
     /// Returns the Claude `--effort` value for this level.
     ///
-    /// Maps `XHigh` to `"max"`, which is only supported on Opus-tier models.
-    /// The Claude CLI enforces this restriction and will surface an error for
-    /// other models.
+    /// Maps `XHigh` to `"max"`, which is currently only supported on
+    /// `claude-opus-4-7`. The Claude CLI enforces this restriction and will
+    /// surface an error for other models.
     pub fn claude(self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -215,7 +223,6 @@ impl FromStr for AgentModel {
             "gpt-5.4" => Ok(Self::Gpt54),
             "gpt-5.3-codex-spark" => Ok(Self::Gpt53CodexSpark),
             "claude-opus-4-7" => Ok(Self::ClaudeOpus47),
-            "claude-opus-4-6" => Ok(Self::ClaudeOpus46),
             "claude-sonnet-4-6" => Ok(Self::ClaudeSonnet46),
             "claude-haiku-4-5-20251001" => Ok(Self::ClaudeHaiku4520251001),
             other => Err(format!("unknown model: {other}")),
@@ -235,7 +242,6 @@ impl AgentSelectionMetadata for AgentModel {
             Self::Gpt54 => "Latest Codex model for coding quality.",
             Self::Gpt53CodexSpark => "Codex spark model for quick coding iterations.",
             Self::ClaudeOpus47 => "Latest Claude Opus model for complex tasks.",
-            Self::ClaudeOpus46 => "Previous-generation Claude Opus model.",
             Self::ClaudeSonnet46 => "Balanced Claude model for quality and latency.",
             Self::ClaudeHaiku4520251001 => "Fast Claude model for lighter tasks.",
         }
@@ -272,7 +278,6 @@ impl AgentKind {
         ];
         const CLAUDE_MODELS: &[AgentModel] = &[
             AgentModel::ClaudeOpus47,
-            AgentModel::ClaudeOpus46,
             AgentModel::ClaudeSonnet46,
             AgentModel::ClaudeHaiku4520251001,
         ];
@@ -372,6 +377,32 @@ mod tests {
 
         // Assert
         assert_eq!(parsed_model, Some(AgentModel::Gpt54));
+    }
+
+    #[test]
+    /// Ensures retired Claude models no longer parse as selectable models.
+    fn test_parse_model_rejects_retired_claude_opus_46() {
+        // Arrange
+        let claude_kind = AgentKind::Claude;
+
+        // Act
+        let parsed_model = claude_kind.parse_model("claude-opus-4-6");
+
+        // Assert
+        assert_eq!(parsed_model, None);
+    }
+
+    #[test]
+    /// Ensures persisted retired Claude model ids migrate to the supported
+    /// replacement model.
+    fn test_parse_persisted_maps_retired_claude_opus_46_to_claude_opus_47() {
+        // Arrange
+
+        // Act
+        let parsed_model = AgentModel::parse_persisted("claude-opus-4-6");
+
+        // Assert
+        assert_eq!(parsed_model, Ok(AgentModel::ClaudeOpus47));
     }
 
     #[test]
@@ -478,7 +509,7 @@ mod tests {
     /// when possible.
     fn test_resolve_model_for_available_agent_kinds_prefers_available_fallback() {
         // Arrange
-        let unavailable_model = AgentModel::ClaudeOpus46;
+        let unavailable_model = AgentModel::ClaudeOpus47;
         let available_agent_kinds = [AgentKind::Codex, AgentKind::Gemini];
         let fallback_model = AgentModel::Gpt54;
 
@@ -498,7 +529,7 @@ mod tests {
     /// default when the preferred fallback is also unavailable.
     fn test_resolve_model_for_available_agent_kinds_uses_first_available_default() {
         // Arrange
-        let unavailable_model = AgentModel::ClaudeOpus46;
+        let unavailable_model = AgentModel::ClaudeOpus47;
         let available_agent_kinds = [AgentKind::Codex, AgentKind::Gemini];
         let unavailable_fallback_model = AgentModel::ClaudeSonnet46;
 

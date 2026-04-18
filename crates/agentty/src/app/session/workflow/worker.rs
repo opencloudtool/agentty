@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1077,6 +1076,9 @@ async fn load_session_reasoning_level(
 }
 
 /// Loads one project-scoped model setting and parses it into an [`AgentModel`].
+///
+/// Retired persisted model ids are upgraded to their current replacement
+/// models before the setting is returned.
 async fn load_project_model_setting(
     db: &Database,
     project_id: Option<i64>,
@@ -1088,7 +1090,7 @@ async fn load_project_model_setting(
         .await
         .ok()
         .flatten()
-        .and_then(|setting_value| AgentModel::from_str(&setting_value).ok())
+        .and_then(|setting_value| AgentModel::parse_persisted(&setting_value).ok())
 }
 
 /// Builds the persisted transcript chunk for one parsed assistant response.

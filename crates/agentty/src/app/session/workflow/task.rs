@@ -300,6 +300,9 @@ impl SessionTaskService {
 
     /// Loads one project-scoped model setting and parses it into an
     /// [`AgentModel`].
+    ///
+    /// Retired persisted model ids are upgraded to their current replacement
+    /// models before the setting is returned.
     async fn load_project_model_setting(
         db: &Database,
         project_id: Option<i64>,
@@ -311,7 +314,7 @@ impl SessionTaskService {
             .await
             .ok()
             .flatten()
-            .and_then(|setting_value| setting_value.parse::<AgentModel>().ok())
+            .and_then(|setting_value| AgentModel::parse_persisted(&setting_value).ok())
     }
 
     async fn append_commit_assist_header(
@@ -1484,7 +1487,7 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        insert_review_session(&database, AgentModel::ClaudeOpus46.as_str()).await;
+        insert_review_session(&database, AgentModel::ClaudeOpus47.as_str()).await;
         let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
         let output = Arc::new(Mutex::new(String::new()));
         let child_pid = Arc::new(Mutex::new(None));
@@ -1514,7 +1517,7 @@ mod tests {
                 id: "session-id".to_string(),
                 output: Arc::clone(&output),
                 prompt: "Resolve conflict".to_string(),
-                session_model: AgentModel::ClaudeOpus46,
+                session_model: AgentModel::ClaudeOpus47,
             },
             &backend,
         )
@@ -1546,7 +1549,7 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        insert_review_session(&database, AgentModel::ClaudeOpus46.as_str()).await;
+        insert_review_session(&database, AgentModel::ClaudeOpus47.as_str()).await;
         let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
         let output = Arc::new(Mutex::new(String::new()));
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -1577,7 +1580,7 @@ mod tests {
                 id: "session-id".to_string(),
                 output: Arc::clone(&output),
                 prompt: "Resolve conflict".to_string(),
-                session_model: AgentModel::ClaudeOpus46,
+                session_model: AgentModel::ClaudeOpus47,
             },
             &backend,
         )
@@ -1609,7 +1612,7 @@ mod tests {
         let database = Database::open_in_memory()
             .await
             .expect("failed to open in-memory db");
-        insert_review_session(&database, AgentModel::ClaudeOpus46.as_str()).await;
+        insert_review_session(&database, AgentModel::ClaudeOpus47.as_str()).await;
         let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let mut backend = MockAgentBackend::new();
@@ -1628,7 +1631,7 @@ mod tests {
                 id: "session-id".to_string(),
                 output: Arc::new(Mutex::new(String::new())),
                 prompt: "Resolve conflict".to_string(),
-                session_model: AgentModel::ClaudeOpus46,
+                session_model: AgentModel::ClaudeOpus47,
             },
             &backend,
         )

@@ -327,7 +327,9 @@ inserted:
 Agentty requires at least one supported backend CLI (`codex`, `claude`, or
 `gemini`) on `PATH` at startup. Once launched, `/model` only offers runnable
 backends, and stored default-model settings still fall back to the first
-available backend default when the saved backend is missing locally.
+available backend default when the saved backend is missing locally. Retired
+stored model ids such as `claude-opus-4-6` are upgraded to the current
+supported replacement when projects and sessions load.
 
 ## Auto-Update
 

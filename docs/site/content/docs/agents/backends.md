@@ -282,7 +282,7 @@ For Codex and Claude sessions, the **Settings** tab also exposes
 level is persisted per project and is sent with turns unless a session-specific
 override is active.
 For Claude, `xhigh` maps to `--effort max`, which is currently only supported
-by Opus-tier models (`claude-opus-4-7`, `claude-opus-4-6`).
+by `claude-opus-4-7`.
 
 ## Available Models
 
@@ -302,9 +302,11 @@ quality, and cost.
 | Model ID | Description | Default |
 |----------|-------------|---------|
 | `claude-opus-4-7` | Latest Claude Opus model for complex tasks. | Yes |
-| `claude-opus-4-6` | Previous-generation Claude Opus model. | |
 | `claude-sonnet-4-6` | Balanced Claude model for quality and latency. | |
 | `claude-haiku-4-5-20251001` | Fast Claude model for lighter tasks. | |
+
+Stored project defaults or session rows that still reference
+`claude-opus-4-6` are upgraded to `claude-opus-4-7` when Agentty loads them.
 
 ### Codex Models
 
