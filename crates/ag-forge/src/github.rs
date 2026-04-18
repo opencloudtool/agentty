@@ -5,9 +5,10 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use super::{
-    CreateReviewRequestInput, ForgeCommand, ForgeCommandError, ForgeCommandOutput,
-    ForgeCommandRunner, ForgeKind, ForgeRemote, ReviewRequestError, ReviewRequestState,
-    ReviewRequestSummary, command_output_detail, parse_remote_url, strip_port,
+    CreateReviewRequestInput, ForgeCommand, ForgeCommandOutput, ForgeCommandRunner, ForgeKind,
+    ForgeRemote, ReviewRequestError, ReviewRequestState, ReviewRequestSummary,
+    command_output_detail, looks_like_authentication_failure, looks_like_host_resolution_failure,
+    map_spawn_error, normalize_provider_label, parse_remote_url, status_summary_parts, strip_port,
 };
 
 /// GitHub pull-request adapter that normalizes `gh` command output.
@@ -188,7 +189,7 @@ impl GitHubReviewRequestAdapter {
             });
         }
 
-        if looks_like_authentication_failure(&detail) {
+        if looks_like_authentication_failure(&detail, ForgeKind::GitHub) {
             return Err(ReviewRequestError::AuthenticationRequired {
                 detail: Some(detail),
                 forge_kind: ForgeKind::GitHub,
@@ -292,28 +293,6 @@ fn view_command(remote: &ForgeRemote, pull_request_number: &str) -> ForgeCommand
     .with_environment("NO_COLOR", "1")
 }
 
-/// Maps one spawn-time failure into a normalized GitHub review-request error.
-fn map_spawn_error(remote: &ForgeRemote, error: ForgeCommandError) -> ReviewRequestError {
-    match error {
-        ForgeCommandError::ExecutableNotFound { .. } => ReviewRequestError::CliNotInstalled {
-            forge_kind: ForgeKind::GitHub,
-        },
-        ForgeCommandError::SpawnFailed { message, .. } => {
-            if looks_like_host_resolution_failure(&message) {
-                return ReviewRequestError::HostResolutionFailed {
-                    forge_kind: ForgeKind::GitHub,
-                    host: remote.host.clone(),
-                };
-            }
-
-            ReviewRequestError::OperationFailed {
-                forge_kind: ForgeKind::GitHub,
-                message: format!("failed to execute `gh`: {message}"),
-            }
-        }
-    }
-}
-
 /// Parses one optional display id from a GitHub pull-request lookup response.
 fn parse_lookup_display_id(stdout: &str) -> Result<Option<String>, String> {
     let pull_requests: Vec<GitHubLookupResponse> = serde_json::from_str(stdout)
@@ -357,37 +336,6 @@ fn parse_display_id(display_id: &str) -> Result<String, ReviewRequestError> {
     Ok(trimmed.to_string())
 }
 
-/// Returns whether `detail` looks like a `gh` authentication failure.
-fn looks_like_authentication_failure(detail: &str) -> bool {
-    let normalized_detail = detail.to_ascii_lowercase();
-
-    normalized_detail.contains("gh auth login")
-        || normalized_detail.contains("not logged into")
-        || normalized_detail.contains("authentication failed")
-        || normalized_detail.contains("authentication required")
-        || normalized_detail.contains("http 401")
-}
-
-/// Returns whether `detail` looks like a host-resolution failure.
-fn looks_like_host_resolution_failure(detail: &str) -> bool {
-    let normalized_detail = detail.to_ascii_lowercase();
-
-    normalized_detail.contains("no such host")
-        || normalized_detail.contains("name or service not known")
-        || normalized_detail.contains("temporary failure in name resolution")
-        || normalized_detail.contains("could not resolve host")
-        || normalized_detail.contains("lookup ")
-}
-
-/// Formats one optional provider-specific status summary.
-fn status_summary_parts(parts: &[String]) -> Option<String> {
-    if parts.is_empty() {
-        return None;
-    }
-
-    Some(parts.join(", "))
-}
-
 /// Formats one GitHub merge-state label for the UI.
 fn merge_state_summary(merge_state_status: Option<&str>) -> Option<String> {
     match merge_state_status {
@@ -410,20 +358,6 @@ fn review_decision_summary(review_decision: Option<&str>) -> Option<String> {
         Some(other) => Some(normalize_provider_label(other)),
         None => None,
     }
-}
-
-/// Formats one provider enum-like label into sentence case words.
-fn normalize_provider_label(label: &str) -> String {
-    let lowercase = label.replace('_', " ").to_ascii_lowercase();
-    let mut characters = lowercase.chars();
-    let Some(first_character) = characters.next() else {
-        return String::new();
-    };
-
-    let mut normalized = first_character.to_uppercase().collect::<String>();
-    normalized.push_str(characters.as_str());
-
-    normalized
 }
 
 /// Minimal GitHub API lookup payload used to find an existing pull request.

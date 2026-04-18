@@ -6,9 +6,11 @@ use serde::Deserialize;
 use url::Url;
 
 use super::{
-    CreateReviewRequestInput, ForgeCommand, ForgeCommandError, ForgeCommandOutput,
-    ForgeCommandRunner, ForgeKind, ForgeRemote, ReviewRequestError, ReviewRequestState,
-    ReviewRequestSummary, command_output_detail, is_gitlab_host, parse_remote_url, strip_port,
+    CreateReviewRequestInput, ForgeCommand, ForgeCommandOutput, ForgeCommandRunner, ForgeKind,
+    ForgeRemote, ReviewRequestError, ReviewRequestState, ReviewRequestSummary,
+    command_output_detail, is_gitlab_host, looks_like_authentication_failure,
+    looks_like_host_resolution_failure, map_spawn_error, normalize_provider_label,
+    parse_remote_url, status_summary_parts, strip_port,
 };
 
 /// GitLab merge-request adapter that normalizes `glab` command output.
@@ -192,7 +194,7 @@ impl GitLabReviewRequestAdapter {
             });
         }
 
-        if looks_like_authentication_failure(&detail) {
+        if looks_like_authentication_failure(&detail, ForgeKind::GitLab) {
             return Err(ReviewRequestError::AuthenticationRequired {
                 detail: Some(detail),
                 forge_kind: ForgeKind::GitLab,
@@ -304,28 +306,6 @@ fn gitlab_command(
         .with_optional_working_directory(remote.command_working_directory.clone())
 }
 
-/// Maps one spawn-time failure into a normalized GitLab review-request error.
-fn map_spawn_error(remote: &ForgeRemote, error: ForgeCommandError) -> ReviewRequestError {
-    match error {
-        ForgeCommandError::ExecutableNotFound { .. } => ReviewRequestError::CliNotInstalled {
-            forge_kind: ForgeKind::GitLab,
-        },
-        ForgeCommandError::SpawnFailed { message, .. } => {
-            if looks_like_host_resolution_failure(&message) {
-                return ReviewRequestError::HostResolutionFailed {
-                    forge_kind: ForgeKind::GitLab,
-                    host: remote.host.clone(),
-                };
-            }
-
-            ReviewRequestError::OperationFailed {
-                forge_kind: ForgeKind::GitLab,
-                message: format!("failed to execute `glab`: {message}"),
-            }
-        }
-    }
-}
-
 /// Parses one optional display id from a GitLab merge-request lookup response.
 fn parse_lookup_display_id(stdout: &str) -> Result<Option<String>, String> {
     let merge_requests: Vec<GitLabLookupResponse> = serde_json::from_str(stdout)
@@ -399,37 +379,6 @@ fn parse_display_id(display_id: &str) -> Result<String, ReviewRequestError> {
     Ok(trimmed.to_string())
 }
 
-/// Returns whether `detail` looks like a `glab` authentication failure.
-fn looks_like_authentication_failure(detail: &str) -> bool {
-    let normalized_detail = detail.to_ascii_lowercase();
-
-    normalized_detail.contains("glab auth login")
-        || normalized_detail.contains("not logged in")
-        || normalized_detail.contains("authentication failed")
-        || normalized_detail.contains("authentication required")
-        || normalized_detail.contains("http 401")
-}
-
-/// Returns whether `detail` looks like a host-resolution failure.
-fn looks_like_host_resolution_failure(detail: &str) -> bool {
-    let normalized_detail = detail.to_ascii_lowercase();
-
-    normalized_detail.contains("no such host")
-        || normalized_detail.contains("name or service not known")
-        || normalized_detail.contains("temporary failure in name resolution")
-        || normalized_detail.contains("could not resolve host")
-        || normalized_detail.contains("lookup ")
-}
-
-/// Formats one optional provider-specific status summary.
-fn status_summary_parts(parts: &[String]) -> Option<String> {
-    if parts.is_empty() {
-        return None;
-    }
-
-    Some(parts.join(", "))
-}
-
 /// Formats one GitLab merge-status label for the UI.
 fn merge_status_summary(
     merge_status: Option<&str>,
@@ -447,20 +396,6 @@ fn merge_status_summary(
         "draft_status" | "not_open" => None,
         other => Some(normalize_provider_label(other)),
     }
-}
-
-/// Formats one provider enum-like label into sentence case words.
-fn normalize_provider_label(label: &str) -> String {
-    let lowercase = label.replace('_', " ").to_ascii_lowercase();
-    let mut characters = lowercase.chars();
-    let Some(first_character) = characters.next() else {
-        return String::new();
-    };
-
-    let mut normalized = first_character.to_uppercase().collect::<String>();
-    normalized.push_str(characters.as_str());
-
-    normalized
 }
 
 /// Minimal GitLab list payload used to find an existing merge request.
