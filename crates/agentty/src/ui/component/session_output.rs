@@ -901,14 +901,10 @@ impl Component for SessionOutput<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use ratatui::style::Modifier;
     use serde_json;
 
     use super::*;
-    use crate::agent::AgentModel;
-    use crate::domain::session::{SessionSize, SessionStats};
     use crate::infra::agent::protocol::AgentResponseSummary;
 
     /// Builds one output-line context with defaults suitable for tests.
@@ -942,32 +938,9 @@ mod tests {
     }
 
     fn session_fixture() -> Session {
-        Session {
-            base_branch: "main".to_string(),
-            created_at: 0,
-            draft_attachments: Vec::new(),
-            folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
-            id: "session-id".to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft: false,
-            model: AgentModel::Gemini3FlashPreview,
-            output: String::new(),
-            project_name: "project".to_string(),
-            prompt: String::new(),
-            reasoning_level_override: None,
-            published_upstream_ref: None,
-            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Status::New,
-            summary: None,
-            title: None,
-            updated_at: 0,
-        }
+        crate::domain::session::tests::SessionFixtureBuilder::new()
+            .status(Status::New)
+            .build()
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

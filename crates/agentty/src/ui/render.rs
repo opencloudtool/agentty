@@ -269,38 +269,18 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::domain::agent::AgentModel;
-    use crate::domain::session::{SessionSize, SessionStats, Status};
+    use crate::domain::session::tests::SessionFixtureBuilder;
     use crate::ui::state::app_mode::DoneSessionOutputMode;
 
     /// Builds one deterministic session fixture for footer render tests.
     fn session_fixture(session_id: &str, folder: &str) -> Session {
-        Session {
-            base_branch: "main".to_string(),
-            created_at: 0,
-            draft_attachments: Vec::new(),
-            folder: PathBuf::from(folder),
-            follow_up_tasks: Vec::new(),
-            id: session_id.to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft: false,
-            model: AgentModel::Gemini3FlashPreview,
-            output: String::new(),
-            project_name: "project".to_string(),
-            prompt: "prompt".to_string(),
-            reasoning_level_override: None,
-            published_upstream_ref: None,
-            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Status::Review,
-            summary: Some("summary".to_string()),
-            title: Some("title".to_string()),
-            updated_at: 0,
-        }
+        SessionFixtureBuilder::new()
+            .id(session_id)
+            .folder(PathBuf::from(folder))
+            .prompt("prompt")
+            .summary(Some("summary".to_string()))
+            .title(Some("title".to_string()))
+            .build()
     }
 
     /// Flattens one test backend buffer into plain text for assertions.

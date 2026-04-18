@@ -242,11 +242,10 @@ impl StatsPage<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::agent::AgentModel;
-    use crate::domain::session::{SessionSize, SessionStats, Status};
+    use crate::domain::session::SessionStats;
+    use crate::domain::session::tests::SessionFixtureBuilder;
 
     #[test]
     fn test_token_stats_table_column_spacing_is_wider_for_readability() {
@@ -281,37 +280,19 @@ mod tests {
         created_at: i64,
         updated_at: i64,
     ) -> Session {
-        Session {
-            base_branch: "main".to_string(),
-            created_at,
-            draft_attachments: Vec::new(),
-            folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
-            id: session_id.to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft: false,
-            model,
-            output: String::new(),
-            project_name: "project".to_string(),
-            prompt: String::new(),
-            reasoning_level_override: None,
-            published_upstream_ref: None,
-            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: SessionSize::Xs,
-            stats: SessionStats {
+        SessionFixtureBuilder::new()
+            .id(session_id)
+            .title(Some(title.to_string()))
+            .model(model)
+            .stats(SessionStats {
                 added_lines: 0,
                 deleted_lines: 0,
                 input_tokens,
                 output_tokens,
-            },
-            status: Status::Review,
-            summary: None,
-            title: Some(title.to_string()),
-            updated_at,
-        }
+            })
+            .created_at(created_at)
+            .updated_at(updated_at)
+            .build()
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

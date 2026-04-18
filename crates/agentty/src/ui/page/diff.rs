@@ -266,11 +266,8 @@ impl Page for DiffPage<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
-    use crate::agent::AgentModel;
-    use crate::domain::session::{SessionSize, SessionStats, Status};
+    use crate::domain::session::tests::SessionFixtureBuilder;
     use crate::ui::util::parse_diff_lines;
 
     const SAMPLE_DIFF: &str = concat!(
@@ -281,32 +278,9 @@ mod tests {
     );
 
     fn session_fixture() -> Session {
-        Session {
-            base_branch: "main".to_string(),
-            created_at: 0,
-            draft_attachments: Vec::new(),
-            folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
-            id: "session-id".to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft: false,
-            model: AgentModel::Gemini3FlashPreview,
-            output: String::new(),
-            project_name: "project".to_string(),
-            prompt: String::new(),
-            reasoning_level_override: None,
-            published_upstream_ref: None,
-            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Status::Review,
-            summary: None,
-            title: Some("Diff Session".to_string()),
-            updated_at: 0,
-        }
+        SessionFixtureBuilder::new()
+            .title(Some("Diff Session".to_string()))
+            .build()
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

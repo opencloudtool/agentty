@@ -1134,32 +1134,12 @@ mod tests {
 
     /// Builds one minimal session snapshot for pure view-state tests.
     fn session_fixture(status: Status, is_draft: bool) -> crate::domain::session::Session {
-        crate::domain::session::Session {
-            base_branch: "main".to_string(),
-            created_at: 0,
-            draft_attachments: Vec::new(),
-            folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
-            id: "session-id".to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft,
-            model: crate::domain::agent::AgentModel::Gemini3FlashPreview,
-            output: String::new(),
-            project_name: String::new(),
-            prompt: String::new(),
-            reasoning_level_override: None,
-            published_upstream_ref: None,
-            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: crate::domain::session::SessionSize::Xs,
-            stats: crate::domain::session::SessionStats::default(),
-            status,
-            summary: None,
-            title: None,
-            updated_at: 0,
-        }
+        crate::domain::session::tests::SessionFixtureBuilder::new()
+            .status(status)
+            .draft(is_draft)
+            .folder(std::env::temp_dir())
+            .project_name("")
+            .build()
     }
 
     #[test]

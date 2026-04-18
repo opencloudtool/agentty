@@ -578,37 +578,163 @@ impl SessionHandles {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Chainable builder that produces deterministic `Session` values for unit
+    /// tests. Consolidates the session struct-literal previously duplicated
+    /// across test modules into one shared place so new fields only need to be
+    /// wired in once.
+    pub(crate) struct SessionFixtureBuilder {
+        session: Session,
+    }
+
+    impl SessionFixtureBuilder {
+        /// Creates a builder seeded with minimal deterministic defaults that
+        /// match the common case used across UI and runtime unit tests.
+        pub(crate) fn new() -> Self {
+            Self {
+                session: Session {
+                    base_branch: "main".to_string(),
+                    created_at: 0,
+                    draft_attachments: Vec::new(),
+                    folder: PathBuf::new(),
+                    follow_up_tasks: Vec::new(),
+                    id: "session-id".to_string(),
+                    in_progress_started_at: None,
+                    in_progress_total_seconds: 0,
+                    is_draft: false,
+                    model: AgentModel::Gemini3FlashPreview,
+                    output: String::new(),
+                    project_name: "project".to_string(),
+                    prompt: String::new(),
+                    reasoning_level_override: None,
+                    published_upstream_ref: None,
+                    published_branch_sync_status: PublishedBranchSyncStatus::Idle,
+                    questions: Vec::new(),
+                    review_request: None,
+                    size: SessionSize::Xs,
+                    stats: SessionStats::default(),
+                    status: Status::Review,
+                    summary: None,
+                    title: None,
+                    updated_at: 0,
+                },
+            }
+        }
+
+        /// Overrides the stable session identifier.
+        pub(crate) fn id(mut self, id: impl Into<String>) -> Self {
+            self.session.id = id.into();
+
+            self
+        }
+
+        /// Overrides the lifecycle status.
+        pub(crate) fn status(mut self, status: Status) -> Self {
+            self.session.status = status;
+
+            self
+        }
+
+        /// Overrides the draft flag.
+        pub(crate) fn draft(mut self, is_draft: bool) -> Self {
+            self.session.is_draft = is_draft;
+
+            self
+        }
+
+        /// Overrides the worktree folder.
+        pub(crate) fn folder(mut self, folder: PathBuf) -> Self {
+            self.session.folder = folder;
+
+            self
+        }
+
+        /// Overrides the project name.
+        pub(crate) fn project_name(mut self, project_name: impl Into<String>) -> Self {
+            self.session.project_name = project_name.into();
+
+            self
+        }
+
+        /// Overrides the agent model.
+        pub(crate) fn model(mut self, model: AgentModel) -> Self {
+            self.session.model = model;
+
+            self
+        }
+
+        /// Overrides the captured output transcript.
+        pub(crate) fn output(mut self, output: impl Into<String>) -> Self {
+            self.session.output = output.into();
+
+            self
+        }
+
+        /// Overrides the user prompt text.
+        pub(crate) fn prompt(mut self, prompt: impl Into<String>) -> Self {
+            self.session.prompt = prompt.into();
+
+            self
+        }
+
+        /// Overrides the optional explicit session title.
+        pub(crate) fn title(mut self, title: Option<String>) -> Self {
+            self.session.title = title;
+
+            self
+        }
+
+        /// Overrides the optional persisted session summary text.
+        pub(crate) fn summary(mut self, summary: Option<String>) -> Self {
+            self.session.summary = summary;
+
+            self
+        }
+
+        /// Overrides the token/diff statistics block.
+        pub(crate) fn stats(mut self, stats: SessionStats) -> Self {
+            self.session.stats = stats;
+
+            self
+        }
+
+        /// Overrides the session-scoped reasoning level override.
+        pub(crate) fn reasoning_level_override(
+            mut self,
+            reasoning_level_override: Option<ReasoningLevel>,
+        ) -> Self {
+            self.session.reasoning_level_override = reasoning_level_override;
+
+            self
+        }
+
+        /// Overrides the creation timestamp (Unix seconds).
+        pub(crate) fn created_at(mut self, created_at: i64) -> Self {
+            self.session.created_at = created_at;
+
+            self
+        }
+
+        /// Overrides the last-update timestamp (Unix seconds).
+        pub(crate) fn updated_at(mut self, updated_at: i64) -> Self {
+            self.session.updated_at = updated_at;
+
+            self
+        }
+
+        /// Consumes the builder and returns the fully populated fixture.
+        pub(crate) fn build(self) -> Session {
+            self.session
+        }
+    }
 
     /// Builds a minimal session fixture for reasoning-level tests.
     fn test_session(reasoning_level_override: Option<ReasoningLevel>) -> Session {
-        Session {
-            base_branch: "main".to_string(),
-            created_at: 0,
-            draft_attachments: Vec::new(),
-            folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
-            id: "session-id".to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft: false,
-            model: AgentModel::Gemini3FlashPreview,
-            output: String::new(),
-            project_name: "project".to_string(),
-            prompt: String::new(),
-            reasoning_level_override,
-            published_upstream_ref: None,
-            published_branch_sync_status: PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Status::Review,
-            summary: None,
-            title: None,
-            updated_at: 0,
-        }
+        SessionFixtureBuilder::new()
+            .reasoning_level_override(reasoning_level_override)
+            .build()
     }
 
     #[test]

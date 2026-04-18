@@ -1004,39 +1004,16 @@ mod tests {
     use crate::agent::AgentModel;
     use crate::domain::agent::{AgentKind, ReasoningLevel};
     use crate::domain::input::InputState;
-    use crate::domain::session::{SessionSize, SessionStats};
     use crate::infra::agent::protocol::QuestionItem;
     use crate::infra::file_index::FileEntry;
     use crate::ui::state::app_mode::QuestionFocus;
     use crate::ui::state::prompt::{PromptAttachmentState, PromptHistoryState, PromptSlashState};
 
     fn session_fixture() -> Session {
-        Session {
-            base_branch: "main".to_string(),
-            created_at: 0,
-            draft_attachments: Vec::new(),
-            folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
-            id: "session-id".to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft: false,
-            model: AgentModel::Gemini3FlashPreview,
-            output: String::new(),
-            project_name: "project".to_string(),
-            prompt: String::new(),
-            reasoning_level_override: None,
-            published_upstream_ref: None,
-            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Status::New,
-            summary: None,
-            title: None,
-            updated_at: 0,
-        }
+        crate::domain::session::tests::SessionFixtureBuilder::new()
+            .folder(std::env::temp_dir())
+            .status(Status::New)
+            .build()
     }
 
     /// Builds a default test page for one session and mode.
