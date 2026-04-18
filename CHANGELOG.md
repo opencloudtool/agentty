@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.7.8] - 2026-04-17
+
+### Changed
+
+- Migrate retired `claude-opus-4-6` model IDs to `claude-opus-4-7`.
+- Disable Agentty coauthor trailer by default for new projects.
+- Replace `pre-commit` references with `prek` across CI and documentation.
+- Unify review publish input handling in session view.
+- Update `README.md` project overview and installation guidance.
+
+### Removed
+
+- Remove selectable `claude-opus-4-6` model (migrated to `claude-opus-4-7`).
+
+### Contributors
+
+- @minev-dev
+
 ## [v0.7.7] - 2026-04-16
 
 ### Added
