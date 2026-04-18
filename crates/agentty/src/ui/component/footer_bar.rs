@@ -315,11 +315,11 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 3);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let footer = FooterBar::new("/tmp/project".to_string())
-            .git_branch(Some("agentty/session".to_string()))
+            .git_branch(Some("wt/session".to_string()))
             .git_base_ref(Some("main".to_string()))
             .git_base_status(Some((1, 2)))
             .git_status(Some((3, 4)))
-            .git_upstream_ref(Some("origin/agentty/session".to_string()));
+            .git_upstream_ref(Some("origin/wt/session".to_string()));
 
         // Act
         terminal
@@ -334,7 +334,7 @@ mod tests {
         let content = buffer.content();
         let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(text.contains("↓2 ↑1 main"));
-        assert!(text.contains("| ↓4 ↑3 agentty/session -> origin/agentty/session"));
+        assert!(text.contains("| ↓4 ↑3 wt/session -> origin/wt/session"));
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 3);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let footer = FooterBar::new("/tmp/project".to_string())
-            .git_branch(Some("agentty/session".to_string()))
+            .git_branch(Some("wt/session".to_string()))
             .git_base_ref(Some("main".to_string()))
             .git_base_status(Some((1, 2)));
 
@@ -360,7 +360,7 @@ mod tests {
         let content = buffer.content();
         let text: String = content.iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(text.contains("↓2 ↑1 main"));
-        assert!(text.contains("| ✓ agentty/session"));
+        assert!(text.contains("| ✓ wt/session"));
     }
 
     #[test]

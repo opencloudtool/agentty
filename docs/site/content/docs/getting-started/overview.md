@@ -38,7 +38,7 @@ When you start a session, Agentty does the operational heavy lifting for workflo
 Every session runs in its own [git worktree](https://git-scm.com/docs/git-worktree),
 created automatically when the live session starts:
 
-- The worktree branch is named `agentty/<hash>`, where `<hash>` is derived from
+- The worktree branch is named `wt/<hash>`, where `<hash>` is derived from
   the session ID.
 - The branch is based on whichever branch was active when you launched `agentty`.
 - Regular sessions create the worktree as soon as you start the first prompt.

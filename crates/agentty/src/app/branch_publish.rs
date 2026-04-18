@@ -931,9 +931,9 @@ mod tests {
             .expect_push_current_branch_to_remote_branch()
             .once()
             .withf(move |folder, remote_branch_name| {
-                folder == &expected_session_folder && remote_branch_name == "agentty/session-id"
+                folder == &expected_session_folder && remote_branch_name == "wt/session-id"
             })
-            .returning(|_, _| Box::pin(async { Ok("origin/agentty/session-id".to_string()) }));
+            .returning(|_, _| Box::pin(async { Ok("origin/wt/session-id".to_string()) }));
 
         // Act
         let upstream_reference = push_session_branch_to_remote(
@@ -942,7 +942,7 @@ mod tests {
             Arc::new(mock_git_client),
             PublishBranchAction::Push,
             "session-id",
-            Some("agentty/session-id"),
+            Some("wt/session-id"),
             None,
         )
         .await
@@ -956,10 +956,10 @@ mod tests {
             .expect("missing session row");
 
         // Assert
-        assert_eq!(upstream_reference, "origin/agentty/session-id");
+        assert_eq!(upstream_reference, "origin/wt/session-id");
         assert_eq!(
             persisted_session.published_upstream_ref.as_deref(),
-            Some("origin/agentty/session-id")
+            Some("origin/wt/session-id")
         );
     }
 
@@ -1074,8 +1074,7 @@ mod tests {
         };
 
         // Act
-        let message =
-            branch_push_success_message("agentty/session-1", Some(&review_request_creation));
+        let message = branch_push_success_message("wt/session-1", Some(&review_request_creation));
 
         // Assert
         assert!(message.contains("create the merge request"));
@@ -1090,7 +1089,7 @@ mod tests {
             summary: forge::ReviewRequestSummary {
                 display_id: "!24".to_string(),
                 forge_kind: forge::ForgeKind::GitLab,
-                source_branch: "agentty/session-1".to_string(),
+                source_branch: "wt/session-1".to_string(),
                 state: forge::ReviewRequestState::Open,
                 status_summary: Some("Draft".to_string()),
                 target_branch: "main".to_string(),
@@ -1101,7 +1100,7 @@ mod tests {
 
         // Act
         let title = review_request_publish_success_title(&review_request);
-        let message = pull_request_publish_success_message("agentty/session-1", &review_request);
+        let message = pull_request_publish_success_message("wt/session-1", &review_request);
 
         // Assert
         assert_eq!(title, "GitLab merge request published");
@@ -1206,7 +1205,7 @@ mod tests {
         mock_git_client
             .expect_push_current_branch()
             .once()
-            .returning(|_| Box::pin(async { Ok("origin/agentty/session-id".to_string()) }));
+            .returning(|_| Box::pin(async { Ok("origin/wt/session-id".to_string()) }));
 
         // Act
         let result = push_session_branch_to_remote(
@@ -1222,7 +1221,7 @@ mod tests {
 
         // Assert
         let upstream = result.expect("push should succeed");
-        assert_eq!(upstream, "origin/agentty/session-id");
+        assert_eq!(upstream, "origin/wt/session-id");
     }
 
     #[tokio::test]

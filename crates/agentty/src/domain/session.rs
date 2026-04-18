@@ -384,7 +384,7 @@ pub struct Session {
     /// commands.
     pub reasoning_level_override: Option<ReasoningLevel>,
     /// Upstream reference recorded after the latest successful branch publish,
-    /// for example `origin/agentty/session-id`.
+    /// for example `origin/wt/session-id`.
     pub published_upstream_ref: Option<String>,
     /// Background auto-push state for the already-published upstream branch.
     pub published_branch_sync_status: PublishedBranchSyncStatus,
@@ -941,7 +941,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             project_name: "project".to_string(),
             prompt: String::new(),
             reasoning_level_override: None,
-            published_upstream_ref: Some("origin/agentty/session-id".to_string()),
+            published_upstream_ref: Some("origin/wt/session-id".to_string()),
             published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
@@ -978,7 +978,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             project_name: "project".to_string(),
             prompt: String::new(),
             reasoning_level_override: None,
-            published_upstream_ref: Some("origin/agentty/session-id".to_string()),
+            published_upstream_ref: Some("origin/wt/session-id".to_string()),
             published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
             review_request: None,
@@ -1082,7 +1082,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             summary: ReviewRequestSummary {
                 display_id: "#42".to_string(),
                 forge_kind: ForgeKind::GitHub,
-                source_branch: "agentty/session-id".to_string(),
+                source_branch: "wt/session-id".to_string(),
                 state: ReviewRequestState::Open,
                 status_summary: None,
                 target_branch: "main".to_string(),
@@ -1107,7 +1107,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             summary: ReviewRequestSummary {
                 display_id: "#99".to_string(),
                 forge_kind: ForgeKind::GitHub,
-                source_branch: "agentty/session-id".to_string(),
+                source_branch: "wt/session-id".to_string(),
                 state: ReviewRequestState::Merged,
                 status_summary: None,
                 target_branch: "main".to_string(),
@@ -1132,7 +1132,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             summary: ReviewRequestSummary {
                 display_id: "#7".to_string(),
                 forge_kind: ForgeKind::GitHub,
-                source_branch: "agentty/session-id".to_string(),
+                source_branch: "wt/session-id".to_string(),
                 state: ReviewRequestState::Closed,
                 status_summary: None,
                 target_branch: "main".to_string(),
@@ -1152,7 +1152,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
     fn test_forge_indicator_returns_arrow_for_published_branch_without_review_request() {
         // Arrange
         let mut session = test_session(None);
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
 
         // Act
         let indicator = session.forge_indicator();
@@ -1177,13 +1177,13 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
     fn test_forge_indicator_prefers_review_request_over_published_ref() {
         // Arrange
         let mut session = test_session(None);
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
         session.review_request = Some(ReviewRequest {
             last_refreshed_at: 0,
             summary: ReviewRequestSummary {
                 display_id: "#10".to_string(),
                 forge_kind: ForgeKind::GitHub,
-                source_branch: "agentty/session-id".to_string(),
+                source_branch: "wt/session-id".to_string(),
                 state: ReviewRequestState::Open,
                 status_summary: None,
                 target_branch: "main".to_string(),
@@ -1206,7 +1206,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         // Arrange
         let mut session = test_session(None);
         session.status = Status::Review;
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
 
         // Act / Assert
         assert!(session.can_sync_review_request());
@@ -1222,7 +1222,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             summary: ReviewRequestSummary {
                 display_id: "#1".to_string(),
                 forge_kind: ForgeKind::GitHub,
-                source_branch: "agentty/session-id".to_string(),
+                source_branch: "wt/session-id".to_string(),
                 state: ReviewRequestState::Open,
                 status_summary: None,
                 target_branch: "main".to_string(),
@@ -1240,7 +1240,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         // Arrange
         let mut session = test_session(None);
         session.status = Status::Question;
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
 
         // Act / Assert
         assert!(!session.can_sync_review_request());
@@ -1251,7 +1251,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         // Arrange
         let mut session = test_session(None);
         session.status = Status::InProgress;
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
 
         // Act / Assert
         assert!(!session.can_sync_review_request());
@@ -1262,7 +1262,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
         // Arrange
         let mut session = test_session(None);
         session.status = Status::Done;
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
 
         // Act / Assert
         assert!(!session.can_sync_review_request());
@@ -1282,7 +1282,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
     fn test_published_branch_sync_message_returns_in_progress_copy() {
         // Arrange
         let mut session = test_session(None);
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
         session.published_branch_sync_status = PublishedBranchSyncStatus::InProgress;
 
         // Act
@@ -1299,7 +1299,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
     fn test_published_branch_sync_message_returns_succeeded_copy() {
         // Arrange
         let mut session = test_session(None);
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
         session.published_branch_sync_status = PublishedBranchSyncStatus::Succeeded;
 
         // Act
@@ -1316,7 +1316,7 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
     fn test_published_branch_sync_message_returns_failed_copy() {
         // Arrange
         let mut session = test_session(None);
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
         session.published_branch_sync_status = PublishedBranchSyncStatus::Failed;
 
         // Act

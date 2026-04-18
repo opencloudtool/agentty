@@ -539,8 +539,7 @@ fn validate_ready_assignee(item: &RoadmapItem) -> Result<(), String> {
     }
 
     Err(format!(
-        "`{}` has invalid assignee `{assignee}`; expected `No assignee`, `@handle`, or \
-         `agentty/<hash>`",
+        "`{}` has invalid assignee `{assignee}`; expected `No assignee`, `@handle`, or `wt/<hash>`",
         item.heading()
     ))
 }
@@ -712,7 +711,7 @@ fn is_github_handle(value: &str) -> bool {
 
 /// Returns whether a string is an agent session identifier.
 fn is_agent_session(value: &str) -> bool {
-    let Some(suffix) = value.strip_prefix("agentty/") else {
+    let Some(suffix) = value.strip_prefix("wt/") else {
         return false;
     };
 
@@ -986,7 +985,7 @@ One usable outcome.
         runner
             .expect_run()
             .withf(|args| args == &git_args(["rev-parse", "--abbrev-ref", "HEAD"]))
-            .return_once(|_| Ok("agentty/test-branch\n".to_string()));
+            .return_once(|_| Ok("wt/test-branch\n".to_string()));
         runner
             .expect_run()
             .withf(|args| args == &git_args(["log", "--oneline", "--max-count=5"]))
@@ -1003,7 +1002,7 @@ One usable outcome.
         let digest = render_context_digest(&roadmap, &snapshot);
 
         // Assert
-        assert!(digest.contains("agentty/test-branch"), "{digest}");
+        assert!(digest.contains("wt/test-branch"), "{digest}");
         assert!(digest.contains("Ready Now: 1"), "{digest}");
         assert!(digest.contains("Queued Next: 1"), "{digest}");
         assert!(digest.contains("Parked: 1"), "{digest}");

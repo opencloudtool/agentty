@@ -31,7 +31,7 @@ pub(crate) struct SessionGitStatusTarget {
     /// `main`.
     pub(crate) base_branch: String,
     /// Local branch name tracked for the session, for example
-    /// `agentty/1234abcd`.
+    /// `wt/1234abcd`.
     pub(crate) branch_name: String,
     /// Stable session identifier used as the reducer map key.
     pub(crate) session_id: String,
@@ -538,18 +538,18 @@ mod tests {
         // Arrange
         let repo_root = Path::new("/tmp/task-service-session-statuses");
         let branch_tracking_statuses = HashMap::from([
-            ("agentty/session-a".to_string(), Some((7, 0))),
-            ("agentty/session-b".to_string(), Some((0, 4))),
+            ("wt/session-a".to_string(), Some((7, 0))),
+            ("wt/session-b".to_string(), Some((0, 4))),
         ]);
         let session_git_status_targets = vec![
             SessionGitStatusTarget {
                 base_branch: "main".to_string(),
-                branch_name: "agentty/session-a".to_string(),
+                branch_name: "wt/session-a".to_string(),
                 session_id: "session-a".to_string(),
             },
             SessionGitStatusTarget {
                 base_branch: "develop".to_string(),
-                branch_name: "agentty/session-b".to_string(),
+                branch_name: "wt/session-b".to_string(),
                 session_id: "session-b".to_string(),
             },
         ];
@@ -560,8 +560,8 @@ mod tests {
             .returning(|_, left_ref, right_ref| {
                 Box::pin(async move {
                     match (left_ref.as_str(), right_ref.as_str()) {
-                        ("agentty/session-a", "main") => Ok((2, 1)),
-                        ("agentty/session-b", "develop") => Ok((0, 0)),
+                        ("wt/session-a", "main") => Ok((2, 1)),
+                        ("wt/session-b", "develop") => Ok((0, 0)),
                         _ => Err(GitError::OutputParse("unexpected ref pair".to_string())),
                     }
                 })
@@ -602,7 +602,7 @@ mod tests {
         let branch_tracking_statuses = HashMap::new();
         let session_git_status_targets = vec![SessionGitStatusTarget {
             base_branch: "main".to_string(),
-            branch_name: "agentty/session-a".to_string(),
+            branch_name: "wt/session-a".to_string(),
             session_id: "session-a".to_string(),
         }];
         let mut mock_git_client = MockGitClient::new();

@@ -457,7 +457,7 @@ mod tests {
         ReviewRequestSummary {
             display_id: display_id.to_string(),
             forge_kind: ForgeKind::GitHub,
-            source_branch: "agentty/session-".to_string(),
+            source_branch: "wt/session-".to_string(),
             state,
             status_summary: Some("Checks pending".to_string()),
             target_branch: "main".to_string(),
@@ -531,7 +531,7 @@ mod tests {
             summary: ReviewRequestSummary {
                 display_id: "!42".to_string(),
                 forge_kind: ForgeKind::GitLab,
-                source_branch: "agentty/session-".to_string(),
+                source_branch: "wt/session-".to_string(),
                 state: ReviewRequestState::Open,
                 status_summary: Some("Draft".to_string()),
                 target_branch: "main".to_string(),
@@ -636,7 +636,7 @@ mod tests {
         let refreshed_summary = ReviewRequestSummary {
             display_id: "#42".to_string(),
             forge_kind: ForgeKind::GitHub,
-            source_branch: "agentty/session-".to_string(),
+            source_branch: "wt/session-".to_string(),
             state: ReviewRequestState::Merged,
             status_summary: Some("Approved and merged".to_string()),
             target_branch: "main".to_string(),

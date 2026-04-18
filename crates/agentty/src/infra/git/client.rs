@@ -990,7 +990,7 @@ mod tests {
         create_worktree(
             dir.path().to_path_buf(),
             linked_worktree.clone(),
-            "agentty/main-repo-root-test".to_string(),
+            "wt/main-repo-root-test".to_string(),
             "main".to_string(),
         )
         .await

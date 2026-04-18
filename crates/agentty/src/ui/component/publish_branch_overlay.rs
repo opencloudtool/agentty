@@ -169,7 +169,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let input = InputState::default();
-        let overlay = PublishBranchOverlay::new(&input, "agentty/ff45463f", None);
+        let overlay = PublishBranchOverlay::new(&input, "wt/ff45463f", None);
 
         // Act
         terminal
@@ -188,7 +188,7 @@ mod tests {
             .collect();
         assert!(text.contains(REVIEW_REQUEST_TITLE));
         assert!(text.contains("Enter: publish review request"));
-        assert!(text.contains("Leave blank to push as `agentty/ff45463f`"));
+        assert!(text.contains("Leave blank to push as `wt/ff45463f`"));
         assert!(text.contains("create or refresh"));
         assert!(text.contains("review request"));
     }
@@ -200,7 +200,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let input = InputState::with_text("review/custom".to_string());
         let overlay =
-            PublishBranchOverlay::new(&input, "agentty/ff45463f", Some("origin/review/custom"));
+            PublishBranchOverlay::new(&input, "wt/ff45463f", Some("origin/review/custom"));
 
         // Act
         terminal
@@ -229,7 +229,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 40);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let input = InputState::with_text("review/custom".to_string());
-        let overlay = PublishBranchOverlay::new(&input, "agentty/ff45463f", None);
+        let overlay = PublishBranchOverlay::new(&input, "wt/ff45463f", None);
 
         // Act
         terminal

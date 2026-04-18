@@ -1000,7 +1000,7 @@ mod tests {
     fn test_output_lines_show_published_branch_sync_message() {
         // Arrange
         let mut session = session_fixture();
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
         session.published_branch_sync_status = PublishedBranchSyncStatus::InProgress;
         session.status = Status::Review;
 
@@ -1025,7 +1025,7 @@ mod tests {
     fn test_output_lines_show_completed_published_branch_sync_message() {
         // Arrange
         let mut session = session_fixture();
-        session.published_upstream_ref = Some("origin/agentty/session-id".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-id".to_string());
         session.published_branch_sync_status = PublishedBranchSyncStatus::Succeeded;
         session.status = Status::Review;
 

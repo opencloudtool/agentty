@@ -1142,7 +1142,7 @@ mod tests {
     fn parse_branch_tracking_statuses_reads_repo_wide_branch_snapshot() {
         // Arrange
         let output = "\
-main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3, behind \
+main\torigin/main\tbehind 2\nwt/1234abcd\torigin/wt/1234abcd\tahead 3, behind \
                       1\nfeature/local\t\t\nfeature/gone\torigin/feature/gone\tgone\n";
 
         // Act
@@ -1151,7 +1151,7 @@ main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3,
         // Assert
         assert_eq!(branch_tracking_statuses.get("main"), Some(&Some((0, 2))));
         assert_eq!(
-            branch_tracking_statuses.get("agentty/1234abcd"),
+            branch_tracking_statuses.get("wt/1234abcd"),
             Some(&Some((3, 1)))
         );
         assert_eq!(branch_tracking_statuses.get("feature/local"), Some(&None));
@@ -1358,7 +1358,7 @@ main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3,
         // Arrange
         let temp_dir = tempdir().expect("failed to create temp dir");
         setup_test_git_repo(temp_dir.path());
-        run_git_command(temp_dir.path(), &["checkout", "-b", "agentty/1234abcd"]);
+        run_git_command(temp_dir.path(), &["checkout", "-b", "wt/1234abcd"]);
         fs::write(temp_dir.path().join("session.txt"), "session change\n")
             .expect("failed to write session file");
         run_git_command(temp_dir.path(), &["add", "session.txt"]);
@@ -1372,7 +1372,7 @@ main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3,
         // Act
         let status = get_ref_ahead_behind(
             temp_dir.path().to_path_buf(),
-            "agentty/1234abcd".to_string(),
+            "wt/1234abcd".to_string(),
             "main".to_string(),
         )
         .await
@@ -1416,15 +1416,12 @@ main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3,
         run_git_command(&contributor_clone_path, &["add", "remote.txt"]);
         run_git_command(&contributor_clone_path, &["commit", "-m", "Remote change"]);
         run_git_command(&contributor_clone_path, &["push", "origin", "main"]);
-        run_git_command(temp_dir.path(), &["checkout", "-b", "agentty/1234abcd"]);
+        run_git_command(temp_dir.path(), &["checkout", "-b", "wt/1234abcd"]);
         fs::write(temp_dir.path().join("session.txt"), "session change\n")
             .expect("failed to write session file");
         run_git_command(temp_dir.path(), &["add", "session.txt"]);
         run_git_command(temp_dir.path(), &["commit", "-m", "Session change"]);
-        run_git_command(
-            temp_dir.path(),
-            &["push", "-u", "origin", "agentty/1234abcd"],
-        );
+        run_git_command(temp_dir.path(), &["push", "-u", "origin", "wt/1234abcd"]);
         fs::write(
             temp_dir.path().join("session.txt"),
             "session change\nmore local\n",
@@ -1442,7 +1439,7 @@ main\torigin/main\tbehind 2\nagentty/1234abcd\torigin/agentty/1234abcd\tahead 3,
         // Assert
         assert_eq!(branch_tracking_statuses.get("main"), Some(&Some((0, 1))));
         assert_eq!(
-            branch_tracking_statuses.get("agentty/1234abcd"),
+            branch_tracking_statuses.get("wt/1234abcd"),
             Some(&Some((1, 0)))
         );
     }

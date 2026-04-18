@@ -1473,8 +1473,7 @@ mod tests {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         app.sessions.sessions[0].status = Status::Review;
-        app.sessions.sessions[0].published_upstream_ref =
-            Some("origin/agentty/session-id".to_string());
+        app.sessions.sessions[0].published_upstream_ref = Some("origin/wt/session-id".to_string());
         app.mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: None,
@@ -1496,8 +1495,7 @@ mod tests {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
         app.sessions.sessions[0].status = Status::InProgress;
-        app.sessions.sessions[0].published_upstream_ref =
-            Some("origin/agentty/session-id".to_string());
+        app.sessions.sessions[0].published_upstream_ref = Some("origin/wt/session-id".to_string());
         app.mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: None,

@@ -1984,9 +1984,9 @@ mod tests {
             .expect_push_current_branch_to_remote_branch()
             .once()
             .withf(|folder, remote_branch_name| {
-                folder.ends_with("sess1") && remote_branch_name == "agentty/session-id"
+                folder.ends_with("sess1") && remote_branch_name == "wt/session-id"
             })
-            .returning(|_, _| Box::pin(async { Ok("origin/agentty/session-id".to_string()) }));
+            .returning(|_, _| Box::pin(async { Ok("origin/wt/session-id".to_string()) }));
         let context = SessionWorkerContext {
             app_event_tx,
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
@@ -2016,7 +2016,7 @@ mod tests {
 
         // Act
         let turn_metadata = TurnMetadata {
-            published_upstream_ref: Some("origin/agentty/session-id".to_string()),
+            published_upstream_ref: Some("origin/wt/session-id".to_string()),
             session_model: AgentModel::Gemini3FlashPreview,
         };
         let status = apply_turn_result(&context, turn_metadata, turn_result)
@@ -2082,7 +2082,7 @@ mod tests {
             .returning(|_, _| {
                 Box::pin(async {
                     Err(crate::infra::git::GitError::CommandFailed {
-                        command: "git push origin agentty/session-id".to_string(),
+                        command: "git push origin wt/session-id".to_string(),
                         stderr:
                             "fatal: could not read username for 'https://github.com/openai/agentty': terminal prompts disabled"
                                 .to_string(),
@@ -2119,7 +2119,7 @@ mod tests {
 
         // Act
         let turn_metadata = TurnMetadata {
-            published_upstream_ref: Some("origin/agentty/session-id".to_string()),
+            published_upstream_ref: Some("origin/wt/session-id".to_string()),
             session_model: AgentModel::Gemini3FlashPreview,
         };
         let status = apply_turn_result(&context, turn_metadata, turn_result)

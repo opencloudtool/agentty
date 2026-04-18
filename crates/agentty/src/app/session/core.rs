@@ -558,21 +558,24 @@ impl DerefMut for SessionManager {
     }
 }
 
+/// Prefix used for default session worktree branches.
+const SESSION_BRANCH_PREFIX: &str = "wt/";
+
 /// Returns the folder path for a session under the given base directory.
 pub(crate) fn session_folder(base: &Path, session_id: &str) -> PathBuf {
     let len = session_id.len().min(8);
     base.join(&session_id[..len])
 }
 
-/// Returns the worktree branch name for a session.
+/// Returns the default worktree branch name for a session.
 pub(crate) fn session_branch(session_id: &str) -> String {
     let len = session_id.len().min(8);
-    format!("agentty/{}", &session_id[..len])
+    format!("{SESSION_BRANCH_PREFIX}{}", &session_id[..len])
 }
 
 /// Extracts the remote branch portion from one upstream reference.
 ///
-/// For example, `origin/agentty/abc12345` returns `agentty/abc12345`. When the
+/// For example, `origin/wt/abc12345` returns `wt/abc12345`. When the
 /// reference contains no `/` separator, the full input is returned as-is.
 pub(crate) fn remote_branch_name_from_upstream_ref(upstream_ref: &str) -> String {
     upstream_ref.split_once('/').map_or_else(
@@ -4720,7 +4723,7 @@ mod tests {
         // Arrange
         let dir = tempdir().expect("failed to create temp dir");
         let worktree_folder = dir.path().join("merged-worktree");
-        let branch_name = "agentty/cleanup123";
+        let branch_name = "wt/cleanup123";
         std::fs::create_dir_all(&worktree_folder).expect("failed to create worktree folder");
         assert!(
             worktree_folder.exists(),
@@ -4749,7 +4752,7 @@ mod tests {
         mock_git_client
             .expect_delete_branch()
             .times(1)
-            .withf(|_, branch| branch == "agentty/cleanup123")
+            .withf(|_, branch| branch == "wt/cleanup123")
             .returning(|_, _| Box::pin(async { Ok(()) }));
 
         // Act
@@ -4858,7 +4861,7 @@ mod tests {
         let branch = session_branch(session_id);
 
         // Assert
-        assert_eq!(branch, "agentty/a1b2c3d4");
+        assert_eq!(branch, "wt/a1b2c3d4");
     }
 
     // -- remote_branch_name_from_upstream_ref tests --------------------------
@@ -4866,10 +4869,10 @@ mod tests {
     #[test]
     fn test_remote_branch_name_strips_remote_prefix() {
         // Act
-        let branch = remote_branch_name_from_upstream_ref("origin/agentty/abc12345");
+        let branch = remote_branch_name_from_upstream_ref("origin/wt/abc12345");
 
         // Assert
-        assert_eq!(branch, "agentty/abc12345");
+        assert_eq!(branch, "wt/abc12345");
     }
 
     #[test]

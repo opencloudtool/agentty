@@ -869,7 +869,7 @@ mod tests {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::PublishBranchInput {
-            default_branch_name: "agentty/session".to_string(),
+            default_branch_name: "wt/session".to_string(),
             input: crate::domain::input::InputState::with_text("review/custom".to_string()),
             locked_upstream_ref: None,
             publish_branch_action: crate::domain::session::PublishBranchAction::Push,
@@ -918,7 +918,7 @@ mod tests {
             crate::domain::session::Status::Review,
         );
         app.mode = AppMode::PublishBranchInput {
-            default_branch_name: "agentty/session".to_string(),
+            default_branch_name: "wt/session".to_string(),
             input: crate::domain::input::InputState::with_text("review/custom".to_string()),
             locked_upstream_ref: None,
             publish_branch_action: crate::domain::session::PublishBranchAction::PublishPullRequest,
@@ -956,7 +956,7 @@ mod tests {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::PublishBranchInput {
-            default_branch_name: "agentty/session".to_string(),
+            default_branch_name: "wt/session".to_string(),
             input: crate::domain::input::InputState::default(),
             locked_upstream_ref: None,
             publish_branch_action: crate::domain::session::PublishBranchAction::Push,
@@ -998,7 +998,7 @@ mod tests {
         for character in typed_shortcut_characters {
             let (mut app, _base_dir) = new_test_app().await;
             app.mode = AppMode::PublishBranchInput {
-                default_branch_name: "agentty/session".to_string(),
+                default_branch_name: "wt/session".to_string(),
                 input: crate::domain::input::InputState::default(),
                 locked_upstream_ref: None,
                 publish_branch_action: crate::domain::session::PublishBranchAction::Push,
@@ -1039,7 +1039,7 @@ mod tests {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::PublishBranchInput {
-            default_branch_name: "agentty/session".to_string(),
+            default_branch_name: "wt/session".to_string(),
             input: crate::domain::input::InputState::with_text("review/custom".to_string()),
             locked_upstream_ref: None,
             publish_branch_action: crate::domain::session::PublishBranchAction::Push,
@@ -1072,7 +1072,7 @@ mod tests {
         // Arrange
         let (mut app, _base_dir) = new_test_app().await;
         app.mode = AppMode::PublishBranchInput {
-            default_branch_name: "agentty/session".to_string(),
+            default_branch_name: "wt/session".to_string(),
             input: crate::domain::input::InputState::with_text("review/custom".to_string()),
             locked_upstream_ref: Some("origin/review/custom".to_string()),
             publish_branch_action: crate::domain::session::PublishBranchAction::Push,

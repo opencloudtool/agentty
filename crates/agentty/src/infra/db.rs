@@ -2315,7 +2315,7 @@ WHERE id = ?
         assert_eq!(session_row.title.as_deref(), Some("Feature work"));
         assert_eq!(
             session_row.published_upstream_ref.as_deref(),
-            Some("origin/agentty/session-a")
+            Some("origin/wt/session-a")
         );
         assert_review_request_row(&session_row);
 
@@ -2398,7 +2398,7 @@ WHERE id = ?
             .await
             .expect("failed to update session model");
         database
-            .update_session_published_upstream_ref("session-a", Some("origin/agentty/session-a"))
+            .update_session_published_upstream_ref("session-a", Some("origin/wt/session-a"))
             .await
             .expect("failed to update published upstream ref");
         database
@@ -3390,7 +3390,7 @@ WHERE model = ?
 
         // Act
         database
-            .update_session_published_upstream_ref("session-a", Some("origin/agentty/session-a"))
+            .update_session_published_upstream_ref("session-a", Some("origin/wt/session-a"))
             .await
             .expect("failed to persist session published upstream ref");
         let persisted_row = database
@@ -3415,7 +3415,7 @@ WHERE model = ?
         // Assert
         assert_eq!(
             persisted_row.published_upstream_ref.as_deref(),
-            Some("origin/agentty/session-a")
+            Some("origin/wt/session-a")
         );
         assert_eq!(cleared_row.published_upstream_ref, None);
     }
@@ -3435,10 +3435,7 @@ WHERE model = ?
             .await
             .expect("failed to insert session");
         database
-            .update_session_published_upstream_ref(
-                "session-load",
-                Some("origin/agentty/session-load"),
-            )
+            .update_session_published_upstream_ref("session-load", Some("origin/wt/session-load"))
             .await
             .expect("failed to set published upstream ref");
 
@@ -3449,7 +3446,7 @@ WHERE model = ?
             .expect("failed to load published upstream ref");
 
         // Assert
-        assert_eq!(loaded_ref.as_deref(), Some("origin/agentty/session-load"));
+        assert_eq!(loaded_ref.as_deref(), Some("origin/wt/session-load"));
     }
 
     #[tokio::test]

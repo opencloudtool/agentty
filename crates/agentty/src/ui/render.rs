@@ -362,7 +362,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let session_id = "upstream";
         let mut session = session_fixture(session_id, "/tmp/session-view-folder");
-        session.published_upstream_ref = Some("origin/agentty/upstream".to_string());
+        session.published_upstream_ref = Some("origin/wt/upstream".to_string());
         let mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: None,
@@ -397,7 +397,7 @@ mod tests {
 
         // Assert
         let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("agentty/upstream -> origin/agentty/upstream"));
+        assert!(text.contains("wt/upstream -> origin/wt/upstream"));
     }
 
     #[test]
@@ -407,7 +407,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let session_id = "popup";
         let mut session = session_fixture(session_id, "/tmp/session-popup-folder");
-        session.published_upstream_ref = Some("origin/agentty/popup".to_string());
+        session.published_upstream_ref = Some("origin/wt/popup".to_string());
         let mode = AppMode::ViewInfoPopup {
             is_loading: false,
             loading_label: "Publishing branch".to_string(),
@@ -448,7 +448,7 @@ mod tests {
 
         // Assert
         let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("agentty/popup -> origin/agentty/popup"));
+        assert!(text.contains("wt/popup -> origin/wt/popup"));
         assert!(!text.contains("main -> origin/main"));
     }
 
@@ -499,7 +499,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
         let session_id = "session-status";
         let mut session = session_fixture(session_id, "/tmp/session-status-folder");
-        session.published_upstream_ref = Some("origin/agentty/session-status".to_string());
+        session.published_upstream_ref = Some("origin/wt/session-status".to_string());
         let mode = AppMode::View {
             done_session_output_mode: DoneSessionOutputMode::Summary,
             review_status_message: None,
@@ -542,7 +542,7 @@ mod tests {
         // Assert
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("↓2 ↑3 main"));
-        assert!(text.contains("↓4 ↑1 agentty/session- -> origin/agentty/session-status"));
+        assert!(text.contains("↓4 ↑1 wt/session- -> origin/wt/session-status"));
         assert!(!text.contains("↓0"));
     }
 
@@ -595,8 +595,8 @@ mod tests {
         // Assert
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("↓1 ↑5 main"));
-        assert!(text.contains("| ✓ agentty/session-"));
-        assert!(!text.contains("origin/agentty/session-unpublished-status"));
+        assert!(text.contains("| ✓ wt/session-"));
+        assert!(!text.contains("origin/wt/session-unpublished-status"));
     }
 
     #[test]

@@ -2409,7 +2409,7 @@ mod tests {
         mock_git_client
             .expect_push_current_branch()
             .times(1)
-            .returning(|_| Box::pin(async { Ok("origin/agentty/session-id".to_string()) }));
+            .returning(|_| Box::pin(async { Ok("origin/wt/session-id".to_string()) }));
         mock_git_client.expect_repo_url().times(1).returning(|_| {
             Box::pin(async { Ok("https://github.com/agentty-xyz/agentty.git".to_string()) })
         });
@@ -2561,13 +2561,13 @@ mod tests {
         );
         assert_eq!(
             persisted_row.published_upstream_ref.as_deref(),
-            Some("origin/agentty/session-id")
+            Some("origin/wt/session-id")
         );
         assert_eq!(
             session_manager.state.sessions[0]
                 .published_upstream_ref
                 .as_deref(),
-            Some("origin/agentty/session-id")
+            Some("origin/wt/session-id")
         );
     }
 
@@ -2738,7 +2738,7 @@ mod tests {
             Arc::new(mock_fs_client),
             Arc::new(mock_git_client),
             PathBuf::from("/tmp/session"),
-            "agentty/session-id".to_string(),
+            "wt/session-id".to_string(),
             Some(PathBuf::from("/tmp/repo")),
             true,
         )
@@ -2899,7 +2899,7 @@ mod tests {
             session_manager.state.sessions[0]
                 .published_upstream_ref
                 .as_deref(),
-            Some("origin/agentty/session-id")
+            Some("origin/wt/session-id")
         );
         assert_eq!(
             persisted_row

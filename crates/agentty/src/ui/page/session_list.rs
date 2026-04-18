@@ -794,7 +794,7 @@ mod tests {
             summary: ReviewRequestSummary {
                 display_id: "#42".to_string(),
                 forge_kind: ForgeKind::GitHub,
-                source_branch: "agentty/session-id".to_string(),
+                source_branch: "wt/session-id".to_string(),
                 state: ReviewRequestState::Open,
                 status_summary: None,
                 target_branch: "main".to_string(),

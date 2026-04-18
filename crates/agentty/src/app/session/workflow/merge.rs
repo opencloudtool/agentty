@@ -2007,7 +2007,7 @@ mod tests {
                 output: Arc::new(Mutex::new(String::new())),
                 repo_root,
                 session_model: AgentModel::Gemini3FlashPreview,
-                source_branch: "agentty/session-123".to_string(),
+                source_branch: "wt/session-123".to_string(),
                 status: Arc::new(Mutex::new(Status::Merging)),
             },
         )
@@ -2364,7 +2364,7 @@ mod tests {
 
         // Assert
         let message = result.expect("merge workflow should succeed");
-        assert_eq!(message, "Successfully merged agentty/session-123 into main");
+        assert_eq!(message, "Successfully merged wt/session-123 into main");
     }
 
     #[tokio::test]
@@ -2413,7 +2413,7 @@ mod tests {
         let message = result.expect("merge workflow should succeed for empty diff");
         assert_eq!(
             message,
-            "Session changes from agentty/session-123 are already present in main"
+            "Session changes from wt/session-123 are already present in main"
         );
     }
 
@@ -2742,7 +2742,7 @@ mod tests {
         let temp_dir = tempdir().expect("failed to create temporary test directory");
         let folder = temp_dir.path().join("session-worktree");
         let repo_root = temp_dir.path().join("repo-root");
-        let source_branch = "agentty/session-123".to_string();
+        let source_branch = "wt/session-123".to_string();
         let mut mock_git_client = git::MockGitClient::new();
         let mut mock_fs_client = fs::MockFsClient::new();
         mock_git_client
@@ -3284,7 +3284,7 @@ mod tests {
         )
         .await
         .expect("failed to insert session");
-        db.update_session_published_upstream_ref("sess-rebase", Some("origin/agentty/sess-rebase"))
+        db.update_session_published_upstream_ref("sess-rebase", Some("origin/wt/sess-rebase"))
             .await
             .expect("failed to set published upstream ref");
 
@@ -3299,10 +3299,9 @@ mod tests {
             .expect_push_current_branch_to_remote_branch()
             .once()
             .withf(|session_folder, remote_branch_name| {
-                session_folder.ends_with("sess-rebase")
-                    && remote_branch_name == "agentty/sess-rebase"
+                session_folder.ends_with("sess-rebase") && remote_branch_name == "wt/sess-rebase"
             })
-            .returning(|_, _| Box::pin(async { Ok("origin/agentty/sess-rebase".to_string()) }));
+            .returning(|_, _| Box::pin(async { Ok("origin/wt/sess-rebase".to_string()) }));
         let git_client: Arc<dyn GitClient> = Arc::new(mock_git_client);
 
         // Act
@@ -3314,7 +3313,7 @@ mod tests {
             git_client: &git_client,
             id: "sess-rebase",
             output: &output,
-            rebase_result: Ok("Successfully rebased agentty/sess-rebase onto main".to_string()),
+            rebase_result: Ok("Successfully rebased wt/sess-rebase onto main".to_string()),
             status: &status,
         })
         .await;
@@ -3385,7 +3384,7 @@ mod tests {
             git_client: &git_client,
             id: "sess-no-push",
             output: &output,
-            rebase_result: Ok("Successfully rebased agentty/sess-no-push onto main".to_string()),
+            rebase_result: Ok("Successfully rebased wt/sess-no-push onto main".to_string()),
             status: &status,
         })
         .await;

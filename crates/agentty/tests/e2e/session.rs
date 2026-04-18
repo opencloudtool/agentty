@@ -283,6 +283,11 @@ fn review_request_publish_shortcut_opens_publish_popup() -> E2eResult {
                 let full = Region::full(frame.cols(), frame.rows());
                 assertion::assert_text_in_region(frame, "Publish Review Request", &full);
                 assertion::assert_text_in_region(frame, "Enter: publish review request", &full);
+                assertion::assert_text_in_region(
+                    frame,
+                    "Leave blank to push as `wt/review-s`",
+                    &full,
+                );
             },
         )?;
 

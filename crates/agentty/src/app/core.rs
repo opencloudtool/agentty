@@ -3214,7 +3214,7 @@ mod tests {
             targets,
             vec![task::SessionGitStatusTarget {
                 base_branch: "main".to_string(),
-                branch_name: "agentty/session-".to_string(),
+                branch_name: "wt/session-".to_string(),
                 session_id: "session-1".to_string(),
             }]
         );
@@ -3658,17 +3658,16 @@ mod tests {
         let loading_label = App::branch_publish_loading_label(PublishBranchAction::Push);
         let success_title = App::branch_publish_success_title(PublishBranchAction::Push);
         let success_message = App::branch_publish_success_message(
-            "agentty/session-1",
+            "wt/session-1",
             Some(&crate::app::branch_publish::ReviewRequestCreationInfo {
                 forge_kind: forge::ForgeKind::GitHub,
                 web_url: Some(
-                    "https://github.com/org/repo/compare/main...agentty%2Fsession-1?expand=1"
+                    "https://github.com/org/repo/compare/main...wt%2Fsession-1?expand=1"
                         .to_string(),
                 ),
             }),
         );
-        let fallback_success_message =
-            App::branch_publish_success_message("agentty/session-1", None);
+        let fallback_success_message = App::branch_publish_success_message("wt/session-1", None);
         let pull_request_loading_title =
             App::branch_publish_loading_title(PublishBranchAction::PublishPullRequest);
         let pull_request_loading_message =
@@ -3697,12 +3696,11 @@ mod tests {
         );
         assert_eq!(loading_label, "Pushing branch...");
         assert_eq!(success_title, "Branch pushed");
-        assert!(success_message.contains("Pushed session branch `agentty/session-1`."));
+        assert!(success_message.contains("Pushed session branch `wt/session-1`."));
         assert!(success_message.contains("Open this link to create the pull request"));
         assert!(
-            success_message.contains(
-                "https://github.com/org/repo/compare/main...agentty%2Fsession-1?expand=1"
-            )
+            success_message
+                .contains("https://github.com/org/repo/compare/main...wt%2Fsession-1?expand=1")
         );
         assert!(fallback_success_message.contains("Create the review request manually"));
         assert_eq!(pull_request_loading_title, "Publishing review request");
@@ -3990,7 +3988,7 @@ mod tests {
         mock_git_client
             .expect_push_current_branch()
             .once()
-            .returning(|_| Box::pin(async { Ok("origin/agentty/session-1".to_string()) }));
+            .returning(|_| Box::pin(async { Ok("origin/wt/session-1".to_string()) }));
         mock_git_client
             .expect_repo_url()
             .with(mockall::predicate::eq(PathBuf::from("/tmp/review-session")))
@@ -4019,7 +4017,7 @@ mod tests {
             Ok(BranchPublishTaskSuccess::Pushed {
                 branch_name: session::session_branch("session-1"),
                 review_request_creation: None,
-                upstream_reference: "origin/agentty/session-1".to_string(),
+                upstream_reference: "origin/wt/session-1".to_string(),
             })
         );
     }
@@ -4046,15 +4044,15 @@ mod tests {
         app.apply_branch_publish_action_update(BranchPublishActionUpdate {
             restore_view: expected_restore_view.clone(),
             result: Ok(BranchPublishTaskSuccess::Pushed {
-                branch_name: "agentty/session-1".to_string(),
+                branch_name: "wt/session-1".to_string(),
                 review_request_creation: Some(crate::app::branch_publish::ReviewRequestCreationInfo {
                     forge_kind: forge::ForgeKind::GitHub,
                     web_url: Some(
-                        "https://github.com/agentty-xyz/agentty/compare/main...agentty%2Fsession-1?expand=1"
+                        "https://github.com/agentty-xyz/agentty/compare/main...wt%2Fsession-1?expand=1"
                             .to_string()
                     ),
                 }),
-                upstream_reference: "origin/agentty/session-1".to_string(),
+                upstream_reference: "origin/wt/session-1".to_string(),
             }),
             session_id: "session-1".to_string(),
         });
@@ -4069,8 +4067,8 @@ mod tests {
                 ref title,
                 ..
             } if title == "Branch pushed"
-                && message.contains("Pushed session branch `agentty/session-1`.")
-                && message.contains("https://github.com/agentty-xyz/agentty/compare/main...agentty%2Fsession-1?expand=1")
+                && message.contains("Pushed session branch `wt/session-1`.")
+                && message.contains("https://github.com/agentty-xyz/agentty/compare/main...wt%2Fsession-1?expand=1")
                 && restore_view == &expected_restore_view
         ));
         assert_eq!(
@@ -4079,7 +4077,7 @@ mod tests {
                 .sessions
                 .first()
                 .and_then(|session| session.published_upstream_ref.as_deref()),
-            Some("origin/agentty/session-1")
+            Some("origin/wt/session-1")
         );
     }
 
@@ -4112,9 +4110,9 @@ mod tests {
         app.apply_branch_publish_action_update(BranchPublishActionUpdate {
             restore_view: expected_restore_view.clone(),
             result: Ok(BranchPublishTaskSuccess::PullRequestPublished {
-                branch_name: "agentty/session-1".to_string(),
+                branch_name: "wt/session-1".to_string(),
                 review_request: review_request.clone(),
-                upstream_reference: "origin/agentty/session-1".to_string(),
+                upstream_reference: "origin/wt/session-1".to_string(),
             }),
             session_id: "session-1".to_string(),
         });
@@ -4129,7 +4127,7 @@ mod tests {
                 ref title,
                 ..
             } if title == "GitHub pull request published"
-                && message.contains("Published session branch `agentty/session-1`.")
+                && message.contains("Published session branch `wt/session-1`.")
                 && message.contains("GitHub pull request #42 is ready")
                 && message.contains("https://github.com/agentty-xyz/agentty/pull/42")
                 && restore_view == &expected_restore_view
@@ -4166,7 +4164,7 @@ mod tests {
             summary: crate::domain::session::ReviewRequestSummary {
                 display_id: "!24".to_string(),
                 forge_kind: ForgeKind::GitLab,
-                source_branch: "agentty/session-1".to_string(),
+                source_branch: "wt/session-1".to_string(),
                 state: ReviewRequestState::Open,
                 status_summary: Some("Draft".to_string()),
                 target_branch: "main".to_string(),
@@ -4179,9 +4177,9 @@ mod tests {
         app.apply_branch_publish_action_update(BranchPublishActionUpdate {
             restore_view: expected_restore_view.clone(),
             result: Ok(BranchPublishTaskSuccess::PullRequestPublished {
-                branch_name: "agentty/session-1".to_string(),
+                branch_name: "wt/session-1".to_string(),
                 review_request,
-                upstream_reference: "origin/agentty/session-1".to_string(),
+                upstream_reference: "origin/wt/session-1".to_string(),
             }),
             session_id: "session-1".to_string(),
         });
@@ -4196,7 +4194,7 @@ mod tests {
                 ref title,
                 ..
             } if title == "GitLab merge request published"
-                && message.contains("Published session branch `agentty/session-1`.")
+                && message.contains("Published session branch `wt/session-1`.")
                 && message.contains("GitLab merge request !24 is ready")
                 && message.contains("https://gitlab.com/agentty-xyz/agentty/-/merge_requests/24")
                 && restore_view == &expected_restore_view
@@ -6426,7 +6424,7 @@ mod tests {
         ReviewRequestSummary {
             display_id: display_id.to_string(),
             forge_kind: ForgeKind::GitHub,
-            source_branch: "agentty/session-id".to_string(),
+            source_branch: "wt/session-id".to_string(),
             state,
             status_summary: None,
             target_branch: "main".to_string(),
@@ -6583,7 +6581,7 @@ mod tests {
         let session_folder = PathBuf::from("/tmp/session-sync");
         let mut sync_session = test_session(session_folder);
         sync_session.status = Status::Review;
-        sync_session.published_upstream_ref = Some("origin/agentty/session-1".to_string());
+        sync_session.published_upstream_ref = Some("origin/wt/session-1".to_string());
         app.sessions.push_session(sync_session);
 
         let restore_view = ConfirmationViewMode {

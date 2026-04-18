@@ -61,8 +61,7 @@ pub async fn squash_merge_diff(
 ///
 /// # Arguments
 /// * `repo_path` - Path to the git repository root, already on `target_branch`
-/// * `source_branch` - Name of the branch to merge from (e.g.,
-///   `agentty/abc123`)
+/// * `source_branch` - Name of the branch to merge from (e.g., `wt/abc123`)
 /// * `target_branch` - Name of the branch to merge into (e.g., `main`)
 /// * `commit_message` - Message for the squash commit
 ///
