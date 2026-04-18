@@ -429,3 +429,520 @@ pub(super) fn prompt_image_mime_type(local_image_path: &Path) -> &'static str {
         _ => "image/png",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use mockall::Sequence;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::infra::agent::app_server::gemini::MockGeminiRuntimeTransport;
+    use crate::infra::app_server_transport::AppServerTransportError;
+    use crate::infra::channel::TurnPromptAttachment;
+
+    /// Captures the dynamic JSON-RPC `id` from a written payload through the
+    /// supplied mutex so the response side of a mock can echo it back.
+    fn remember_request_id(id_store: &Arc<Mutex<Option<String>>>, payload: &Value) {
+        let id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        if let Ok(mut guard) = id_store.lock() {
+            *guard = id;
+        }
+    }
+
+    #[test]
+    fn gemini_runtime_state_new_initializes_empty_session_id_and_no_restored_context() {
+        // Arrange
+        let folder = PathBuf::from("/tmp/agentty-gemini-state");
+        let model = "gemini-3-flash-preview".to_string();
+
+        // Act
+        let state = GeminiRuntimeState::new(folder.clone(), model.clone());
+
+        // Assert
+        assert_eq!(state.folder, folder);
+        assert_eq!(state.model, model);
+        assert!(state.session_id.is_empty());
+        assert!(!state.restored_context);
+    }
+
+    #[test]
+    fn build_initialize_request_payload_carries_jsonrpc_method_and_client_capabilities_object() {
+        // Arrange / Act
+        let payload =
+            build_initialize_request_payload("init-1").expect("initialize payload should build");
+
+        // Assert
+        assert_eq!(payload.get("jsonrpc").and_then(Value::as_str), Some("2.0"));
+        assert_eq!(payload.get("id").and_then(Value::as_str), Some("init-1"));
+        assert_eq!(
+            payload.get("method").and_then(Value::as_str),
+            Some(AGENT_METHOD_NAMES.initialize)
+        );
+        let params = payload.get("params").expect("initialize params present");
+        let client_capabilities = params
+            .get("clientCapabilities")
+            .expect("initialize payload should include clientCapabilities");
+        assert!(client_capabilities.is_object());
+    }
+
+    #[test]
+    fn build_json_rpc_request_payload_serializes_typed_params_and_metadata() {
+        // Arrange
+        #[derive(serde::Serialize)]
+        struct TestParams {
+            value: i32,
+        }
+
+        // Act
+        let payload =
+            build_json_rpc_request_payload("req-7", "custom/method", TestParams { value: 42 })
+                .expect("json-rpc payload should build");
+
+        // Assert
+        assert_eq!(payload.get("jsonrpc").and_then(Value::as_str), Some("2.0"));
+        assert_eq!(payload.get("id").and_then(Value::as_str), Some("req-7"));
+        assert_eq!(
+            payload.get("method").and_then(Value::as_str),
+            Some("custom/method")
+        );
+        assert_eq!(
+            payload
+                .get("params")
+                .and_then(|params| params.get("value"))
+                .and_then(Value::as_i64),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn parse_json_rpc_result_returns_provider_error_when_result_field_is_missing() {
+        // Arrange
+        let response = serde_json::json!({"jsonrpc": "2.0", "id": "x"});
+
+        // Act
+        let result = parse_json_rpc_result::<serde_json::Map<String, Value>>(&response, "`x`");
+
+        // Assert
+        let error = result.expect_err("parse should fail when result missing");
+        assert!(
+            matches!(error, AppServerError::Provider(ref message) if message.contains("missing `result`"))
+        );
+    }
+
+    #[test]
+    fn parse_session_new_response_returns_provider_error_when_response_carries_error_field() {
+        // Arrange
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "session-new-1",
+            "error": {"code": -32603, "message": "session/new failed"}
+        });
+
+        // Act
+        let result = parse_session_new_response(&response);
+
+        // Assert
+        let error = result.expect_err("session/new error should propagate");
+        assert!(
+            matches!(error, AppServerError::Provider(ref message) if message.contains("session/new failed"))
+        );
+    }
+
+    #[test]
+    fn parse_session_new_response_returns_helpful_error_when_session_id_is_missing() {
+        // Arrange
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "session-new-1",
+            "result": {}
+        });
+
+        // Act
+        let result = parse_session_new_response(&response);
+
+        // Assert
+        let error = result.expect_err("missing sessionId should be reported");
+        assert!(
+            matches!(error, AppServerError::Provider(ref message) if message.contains("missing `sessionId`"))
+        );
+    }
+
+    #[test]
+    fn parse_session_new_response_returns_session_id_for_well_formed_response() {
+        // Arrange
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "session-new-1",
+            "result": {"sessionId": "session-abc"}
+        });
+
+        // Act
+        let session_id =
+            parse_session_new_response(&response).expect("session id should be parsed");
+
+        // Assert
+        assert_eq!(session_id, "session-abc");
+    }
+
+    #[test]
+    fn push_text_content_block_skips_empty_text_and_appends_non_empty_text() {
+        // Arrange
+        let mut blocks = Vec::new();
+
+        // Act
+        push_text_content_block(&mut blocks, "");
+        push_text_content_block(&mut blocks, "hello");
+
+        // Assert
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text_content) => assert_eq!(text_content.text, "hello"),
+            other => unreachable!("expected text content block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_image_mime_type_maps_known_extensions_and_falls_back_to_png() {
+        // Arrange
+        let cases = [
+            ("/tmp/a.gif", "image/gif"),
+            ("/tmp/a.GIF", "image/gif"),
+            ("/tmp/a.jpg", "image/jpeg"),
+            ("/tmp/a.JPEG", "image/jpeg"),
+            ("/tmp/a.webp", "image/webp"),
+            ("/tmp/a.png", "image/png"),
+            ("/tmp/a.bmp", "image/png"),
+            ("/tmp/no_extension", "image/png"),
+        ];
+
+        // Act / Assert
+        for (path, expected_mime) in cases {
+            let actual_mime = prompt_image_mime_type(Path::new(path));
+            assert_eq!(actual_mime, expected_mime, "mime mismatch for {path}");
+        }
+    }
+
+    #[test]
+    fn build_prompt_content_blocks_blocking_returns_single_text_block_when_no_attachments_present()
+    {
+        // Arrange
+        let prompt = TurnPrompt::from_text("Hi there".to_string());
+
+        // Act
+        let blocks = build_prompt_content_blocks_blocking(&prompt).expect("blocks should build");
+
+        // Assert
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text_content) => assert_eq!(text_content.text, "Hi there"),
+            other => unreachable!("expected text content block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_prompt_content_blocks_blocking_interleaves_text_and_image_blocks_in_placeholder_order()
+    {
+        // Arrange
+        let temp_dir = tempdir().expect("temp directory should be created");
+        let attachment_path = temp_dir.path().join("sample.gif");
+        std::fs::write(&attachment_path, b"fake-gif-bytes")
+            .expect("attachment file should be written");
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: attachment_path,
+            }],
+            text: "Look at [Image #1] now".to_string(),
+        };
+
+        // Act
+        let blocks = build_prompt_content_blocks_blocking(&prompt)
+            .expect("blocks should build with attachments");
+
+        // Assert
+        assert_eq!(blocks.len(), 3);
+        match &blocks[0] {
+            ContentBlock::Text(text_content) => assert_eq!(text_content.text, "Look at "),
+            other => unreachable!("expected text content block at 0, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Image(image_content) => {
+                assert_eq!(image_content.mime_type, "image/gif");
+                assert!(!image_content.data.is_empty());
+            }
+            other => unreachable!("expected image content block at 1, got {other:?}"),
+        }
+        match &blocks[2] {
+            ContentBlock::Text(text_content) => assert_eq!(text_content.text, " now"),
+            other => unreachable!("expected text content block at 2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_image_content_block_returns_provider_error_when_local_path_does_not_exist() {
+        // Arrange
+        let attachment = TurnPromptAttachment {
+            placeholder: "[Image #1]".to_string(),
+            local_image_path: PathBuf::from(
+                "/nonexistent/agentty-gemini-test-image-which-does-not-exist.png",
+            ),
+        };
+
+        // Act
+        let result = build_image_content_block(&attachment);
+
+        // Assert
+        let error = result.expect_err("missing image should produce error");
+        assert!(
+            matches!(error, AppServerError::Provider(ref message) if message.contains("Failed to read Gemini prompt image"))
+        );
+    }
+
+    #[test]
+    fn stream_assistant_chunk_skips_empty_chunk_and_emits_assistant_message_for_non_empty_chunk() {
+        // Arrange
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+
+        // Act
+        stream_assistant_chunk(&sender, String::new());
+        stream_assistant_chunk(&sender, "delta payload".to_string());
+        drop(sender);
+
+        // Assert
+        let event = receiver
+            .blocking_recv()
+            .expect("non-empty chunk should produce one event");
+        match event {
+            AppServerStreamEvent::AssistantMessage {
+                is_delta,
+                message,
+                phase,
+            } => {
+                assert!(is_delta);
+                assert_eq!(message, "delta payload");
+                assert!(phase.is_none());
+            }
+            other @ AppServerStreamEvent::ProgressUpdate(_) => {
+                unreachable!("expected AssistantMessage event, got {other:?}")
+            }
+        }
+        assert!(
+            receiver.blocking_recv().is_none(),
+            "empty chunk should not have been sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_runtime_writes_initialize_then_initialized_notification() {
+        // Arrange
+        let request_id = Arc::new(Mutex::new(None));
+        let mut transport = MockGeminiRuntimeTransport::new();
+        let mut sequence = Sequence::new();
+
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|payload| {
+                payload.get("method").and_then(Value::as_str) == Some(AGENT_METHOD_NAMES.initialize)
+            })
+            .returning({
+                let request_id = Arc::clone(&request_id);
+
+                move |payload| {
+                    remember_request_id(&request_id, &payload);
+
+                    Box::pin(async { Ok(()) })
+                }
+            });
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let request_id = Arc::clone(&request_id);
+
+                move |_| {
+                    let response_id = request_id
+                        .lock()
+                        .expect("initialize id mutex should lock")
+                        .clone()
+                        .expect("initialize id should be recorded");
+
+                    Box::pin(async move {
+                        Ok(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": response_id,
+                            "result": {
+                                "protocolVersion": ProtocolVersion::LATEST,
+                                "agentCapabilities": {}
+                            }
+                        })
+                        .to_string())
+                    })
+                }
+            });
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|payload| payload.get("method").and_then(Value::as_str) == Some("initialized"))
+            .returning(|_| Box::pin(async { Ok(()) }));
+
+        // Act
+        let result = initialize_runtime(&mut transport).await;
+
+        // Assert
+        assert!(
+            result.is_ok(),
+            "initialize_runtime should succeed: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_runtime_returns_provider_error_when_response_carries_error_field() {
+        // Arrange
+        let request_id = Arc::new(Mutex::new(None));
+        let mut transport = MockGeminiRuntimeTransport::new();
+
+        transport.expect_write_json_line().times(1).returning({
+            let request_id = Arc::clone(&request_id);
+
+            move |payload| {
+                remember_request_id(&request_id, &payload);
+
+                Box::pin(async { Ok(()) })
+            }
+        });
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .returning({
+                let request_id = Arc::clone(&request_id);
+
+                move |_| {
+                    let response_id = request_id
+                        .lock()
+                        .expect("initialize id mutex should lock")
+                        .clone()
+                        .expect("initialize id should be recorded");
+
+                    Box::pin(async move {
+                        Ok(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": response_id,
+                            "error": {"code": -32603, "message": "initialize failed"}
+                        })
+                        .to_string())
+                    })
+                }
+            });
+
+        // Act
+        let result = initialize_runtime(&mut transport).await;
+
+        // Assert
+        let error = result.expect_err("initialize_runtime should surface provider error");
+        assert!(
+            matches!(error, AppServerError::Provider(ref message) if message.contains("initialize failed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn start_session_returns_session_id_from_well_formed_session_new_response() {
+        // Arrange
+        let folder = tempdir().expect("temp folder should be created");
+        let request_id = Arc::new(Mutex::new(None));
+        let mut transport = MockGeminiRuntimeTransport::new();
+        let mut sequence = Sequence::new();
+
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf({
+                let folder_path = folder.path().to_path_buf();
+
+                move |payload| {
+                    payload.get("method").and_then(Value::as_str)
+                        == Some(AGENT_METHOD_NAMES.session_new)
+                        && payload
+                            .get("params")
+                            .and_then(|params| params.get("cwd"))
+                            .and_then(Value::as_str)
+                            == Some(folder_path.to_string_lossy().as_ref())
+                }
+            })
+            .returning({
+                let request_id = Arc::clone(&request_id);
+
+                move |payload| {
+                    remember_request_id(&request_id, &payload);
+
+                    Box::pin(async { Ok(()) })
+                }
+            });
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let request_id = Arc::clone(&request_id);
+
+                move |_| {
+                    let response_id = request_id
+                        .lock()
+                        .expect("session-new id mutex should lock")
+                        .clone()
+                        .expect("session-new id should be recorded");
+
+                    Box::pin(async move {
+                        Ok(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": response_id,
+                            "result": {"sessionId": "session-xyz"}
+                        })
+                        .to_string())
+                    })
+                }
+            });
+
+        // Act
+        let session_id = start_session(&mut transport, folder.path()).await;
+
+        // Assert
+        assert_eq!(
+            session_id.expect("session_id should be returned"),
+            "session-xyz"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_session_propagates_transport_termination_error() {
+        // Arrange
+        let folder = tempdir().expect("temp folder should be created");
+        let mut transport = MockGeminiRuntimeTransport::new();
+
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .returning(|_| Box::pin(async { Err(AppServerTransportError::ProcessTerminated) }));
+
+        // Act
+        let result = start_session(&mut transport, folder.path()).await;
+
+        // Assert
+        let error = result.expect_err("start_session should propagate transport error");
+        assert!(matches!(error, AppServerError::Transport(_)));
+    }
+}

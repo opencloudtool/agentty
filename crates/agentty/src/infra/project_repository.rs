@@ -220,3 +220,263 @@ WHERE id = ?
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opens an isolated in-memory database for each repository test so the
+    /// tests do not share project rows or settings state.
+    async fn open_test_db() -> Database {
+        Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db")
+    }
+
+    #[tokio::test]
+    async fn upsert_project_inserts_new_path_and_returns_id() {
+        // Arrange
+        let database = open_test_db().await;
+
+        // Act
+        let project_id = database
+            .upsert_project("/tmp/project-a", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        let project = database
+            .get_project(project_id)
+            .await
+            .expect("failed to load project")
+            .expect("expected project to exist");
+
+        // Assert
+        assert_eq!(project.id, project_id);
+        assert_eq!(project.path, "/tmp/project-a");
+        assert_eq!(project.git_branch.as_deref(), Some("main"));
+        assert!(!project.is_favorite);
+        assert!(project.last_opened_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn upsert_project_updates_git_branch_for_existing_path() {
+        // Arrange
+        let database = open_test_db().await;
+        let original_id = database
+            .upsert_project("/tmp/project-a", Some("main"))
+            .await
+            .expect("failed to insert original project");
+
+        // Act
+        let updated_id = database
+            .upsert_project("/tmp/project-a", Some("develop"))
+            .await
+            .expect("failed to update existing project");
+        let project = database
+            .get_project(updated_id)
+            .await
+            .expect("failed to load project")
+            .expect("expected project to exist");
+
+        // Assert
+        assert_eq!(updated_id, original_id);
+        assert_eq!(project.git_branch.as_deref(), Some("develop"));
+    }
+
+    #[tokio::test]
+    async fn upsert_project_clears_git_branch_when_none() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = database
+            .upsert_project("/tmp/project-a", Some("main"))
+            .await
+            .expect("failed to insert project");
+
+        // Act
+        database
+            .upsert_project("/tmp/project-a", None)
+            .await
+            .expect("failed to clear git branch");
+        let project = database
+            .get_project(project_id)
+            .await
+            .expect("failed to load project")
+            .expect("expected project to exist");
+
+        // Assert
+        assert!(project.git_branch.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_project_returns_none_for_missing_id() {
+        // Arrange
+        let database = open_test_db().await;
+
+        // Act
+        let project = database
+            .get_project(999)
+            .await
+            .expect("failed to look up project");
+
+        // Assert
+        assert!(project.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_projects_with_stats_returns_zero_aggregates_when_no_sessions_present() {
+        // Arrange
+        let database = open_test_db().await;
+        database
+            .upsert_project("/tmp/project-a", Some("main"))
+            .await
+            .expect("failed to upsert project");
+
+        // Act
+        let projects = database
+            .load_projects_with_stats()
+            .await
+            .expect("failed to load projects with stats");
+
+        // Assert
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].session_count, 0);
+        assert_eq!(projects[0].active_session_count, 0);
+        assert!(projects[0].last_session_updated_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_projects_with_stats_excludes_terminal_states_from_active_count() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project");
+        database
+            .insert_session(
+                "session-active",
+                "gpt-5.4",
+                "main",
+                "InProgress",
+                project_id,
+            )
+            .await
+            .expect("failed to insert active session");
+        database
+            .insert_session("session-done", "gpt-5.4", "main", "Done", project_id)
+            .await
+            .expect("failed to insert completed session");
+        database
+            .insert_session("session-queued", "gpt-5.4", "main", "Queued", project_id)
+            .await
+            .expect("failed to insert queued session");
+
+        // Act
+        let projects = database
+            .load_projects_with_stats()
+            .await
+            .expect("failed to load projects with stats");
+
+        // Assert
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].session_count, 3);
+        assert_eq!(projects[0].active_session_count, 1);
+        assert!(projects[0].last_session_updated_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn load_projects_with_stats_orders_favorites_before_others() {
+        // Arrange
+        let database = open_test_db().await;
+        let plain_id = database
+            .upsert_project("/tmp/plain", Some("main"))
+            .await
+            .expect("failed to insert plain project");
+        let favorite_id = database
+            .upsert_project("/tmp/favorite", Some("main"))
+            .await
+            .expect("failed to insert favorite project");
+        database
+            .set_project_favorite(favorite_id, true)
+            .await
+            .expect("failed to mark favorite");
+
+        // Act
+        let projects = database
+            .load_projects_with_stats()
+            .await
+            .expect("failed to load projects with stats");
+
+        // Assert
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].id, favorite_id);
+        assert!(projects[0].is_favorite);
+        assert_eq!(projects[1].id, plain_id);
+        assert!(!projects[1].is_favorite);
+    }
+
+    #[tokio::test]
+    async fn touch_project_last_opened_sets_timestamp() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to insert project");
+        let before_touch = database
+            .get_project(project_id)
+            .await
+            .expect("failed to load project")
+            .expect("expected project to exist");
+        assert!(before_touch.last_opened_at.is_none());
+
+        // Act
+        database
+            .touch_project_last_opened(project_id)
+            .await
+            .expect("failed to touch project");
+        let after_touch = database
+            .get_project(project_id)
+            .await
+            .expect("failed to reload project")
+            .expect("expected project to exist");
+
+        // Assert
+        assert!(after_touch.last_opened_at.is_some());
+        assert!(after_touch.updated_at >= before_touch.updated_at);
+    }
+
+    #[tokio::test]
+    async fn set_project_favorite_can_toggle_state_in_both_directions() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to insert project");
+
+        // Act
+        database
+            .set_project_favorite(project_id, true)
+            .await
+            .expect("failed to mark favorite");
+        let after_set = database
+            .get_project(project_id)
+            .await
+            .expect("failed to load project")
+            .expect("expected project to exist");
+
+        database
+            .set_project_favorite(project_id, false)
+            .await
+            .expect("failed to clear favorite");
+        let after_clear = database
+            .get_project(project_id)
+            .await
+            .expect("failed to reload project")
+            .expect("expected project to exist");
+
+        // Assert
+        assert!(after_set.is_favorite);
+        assert!(!after_clear.is_favorite);
+    }
+}

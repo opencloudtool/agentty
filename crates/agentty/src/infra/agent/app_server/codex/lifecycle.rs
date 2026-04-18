@@ -800,3 +800,308 @@ async fn read_required_stdout_line<'scope, Transport: CodexRuntimeTransport>(
         .map_err(AppServerError::from)?
         .ok_or_else(|| AppServerError::Provider(format!("Codex app-server terminated{context}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use mockall::Sequence;
+
+    use super::*;
+    use crate::domain::agent::{AgentModel, ReasoningLevel};
+    use crate::infra::agent::app_server::codex::MockCodexRuntimeTransport;
+    use crate::infra::channel::TurnPromptAttachment;
+
+    /// Captures the dynamic JSON-RPC `id` from a written payload through the
+    /// supplied mutex so the response side of a mock can echo it back.
+    fn remember_request_id(id_store: &Arc<Mutex<Option<String>>>, payload: &Value) {
+        let id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        if let Ok(mut guard) = id_store.lock() {
+            *guard = id;
+        }
+    }
+
+    #[test]
+    fn codex_runtime_state_new_initializes_zero_tokens_and_empty_thread_id() {
+        // Arrange
+        let folder = PathBuf::from("/tmp/agentty-codex-state");
+        let model = AgentModel::Gpt54.as_str().to_string();
+
+        // Act
+        let state = CodexRuntimeState::new(folder.clone(), model.clone());
+
+        // Assert
+        assert_eq!(state.folder, folder);
+        assert_eq!(state.model, model);
+        assert_eq!(state.latest_input_tokens, 0);
+        assert!(!state.restored_context);
+        assert!(state.thread_id.is_empty());
+    }
+
+    #[test]
+    fn build_thread_start_payload_carries_method_id_cwd_and_model() {
+        // Arrange
+        let folder = PathBuf::from("/tmp/agentty-codex-thread-start");
+        let model = AgentModel::Gpt54.as_str();
+
+        // Act
+        let payload =
+            build_thread_start_payload(&folder, model, ReasoningLevel::High, "thread-start-1");
+
+        // Assert
+        assert_eq!(
+            payload.get("method").and_then(Value::as_str),
+            Some("thread/start")
+        );
+        assert_eq!(
+            payload.get("id").and_then(Value::as_str),
+            Some("thread-start-1")
+        );
+        let params = payload
+            .get("params")
+            .expect("thread/start params should be present");
+        assert_eq!(params.get("model").and_then(Value::as_str), Some(model));
+        assert_eq!(
+            params.get("cwd").and_then(Value::as_str),
+            Some(folder.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            params.get("experimentalRawEvents").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            params
+                .get("persistExtendedHistory")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(params.get("config").is_some());
+    }
+
+    #[test]
+    fn build_thread_resume_payload_uses_thread_id_for_resume() {
+        // Arrange
+        let model = AgentModel::Gpt54.as_str();
+
+        // Act
+        let payload = build_thread_resume_payload(
+            "thread-resume-1",
+            "existing-thread",
+            model,
+            ReasoningLevel::Medium,
+        );
+
+        // Assert
+        assert_eq!(
+            payload.get("method").and_then(Value::as_str),
+            Some("thread/resume")
+        );
+        assert_eq!(
+            payload.get("id").and_then(Value::as_str),
+            Some("thread-resume-1")
+        );
+        let params = payload.get("params").expect("resume params present");
+        assert_eq!(
+            params.get("threadId").and_then(Value::as_str),
+            Some("existing-thread")
+        );
+        assert_eq!(params.get("model").and_then(Value::as_str), Some(model));
+    }
+
+    #[test]
+    fn build_turn_input_items_emits_single_text_item_when_no_attachments_present() {
+        // Arrange
+        let prompt = TurnPrompt::from_text("Hello, agent.".to_string());
+
+        // Act
+        let items = build_turn_input_items(&prompt);
+
+        // Assert
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].get("type").and_then(Value::as_str), Some("text"));
+        assert_eq!(
+            items[0].get("text").and_then(Value::as_str),
+            Some("Hello, agent.")
+        );
+        assert!(
+            items[0]
+                .get("text_elements")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        );
+    }
+
+    #[test]
+    fn build_turn_input_items_interleaves_text_and_local_image_items_in_placeholder_order() {
+        // Arrange
+        let attachment_path = PathBuf::from("/tmp/agentty-codex-test/sample.png");
+        let prompt = TurnPrompt {
+            attachments: vec![TurnPromptAttachment {
+                placeholder: "[Image #1]".to_string(),
+                local_image_path: attachment_path.clone(),
+            }],
+            text: "Describe [Image #1] please".to_string(),
+        };
+
+        // Act
+        let items = build_turn_input_items(&prompt);
+
+        // Assert
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].get("type").and_then(Value::as_str), Some("text"));
+        assert_eq!(
+            items[0].get("text").and_then(Value::as_str),
+            Some("Describe ")
+        );
+        assert_eq!(
+            items[1].get("type").and_then(Value::as_str),
+            Some("localImage")
+        );
+        assert_eq!(
+            items[1].get("path").and_then(Value::as_str),
+            Some(attachment_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(items[2].get("type").and_then(Value::as_str), Some("text"));
+        assert_eq!(
+            items[2].get("text").and_then(Value::as_str),
+            Some(" please")
+        );
+    }
+
+    #[test]
+    fn build_local_image_input_item_serializes_local_image_type_and_path() {
+        // Arrange
+        let path = PathBuf::from("/tmp/agentty-codex-test/picture.png");
+
+        // Act
+        let item = build_local_image_input_item(&path);
+
+        // Assert
+        assert_eq!(item.get("type").and_then(Value::as_str), Some("localImage"));
+        assert_eq!(
+            item.get("path").and_then(Value::as_str),
+            Some(path.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn turn_completed_timeout_error_message_includes_seconds_and_method() {
+        // Arrange
+        let timeout = Duration::from_secs(123);
+
+        // Act
+        let error = turn_completed_timeout_error(timeout);
+
+        // Assert
+        let message = error.to_string();
+        assert!(message.contains("123"));
+        assert!(message.contains("turn/completed"));
+    }
+
+    #[test]
+    fn compaction_timeout_error_message_includes_seconds_and_compaction_label() {
+        // Arrange
+        let timeout = Duration::from_secs(456);
+
+        // Act
+        let error = compaction_timeout_error(timeout);
+
+        // Assert
+        let message = error.to_string();
+        assert!(message.contains("456"));
+        assert!(message.contains("compaction"));
+    }
+
+    #[tokio::test]
+    async fn initialize_runtime_writes_initialize_payload_then_initialized_notification() {
+        // Arrange
+        let request_id = Arc::new(Mutex::new(None));
+        let mut transport = MockCodexRuntimeTransport::new();
+        let mut sequence = Sequence::new();
+
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|payload| {
+                payload.get("method").and_then(Value::as_str) == Some("initialize")
+                    && payload.get("id").and_then(Value::as_str).is_some()
+            })
+            .returning({
+                let request_id = Arc::clone(&request_id);
+
+                move |payload| {
+                    remember_request_id(&request_id, &payload);
+
+                    Box::pin(async { Ok(()) })
+                }
+            });
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning({
+                let request_id = Arc::clone(&request_id);
+
+                move |_| {
+                    let response_id = request_id
+                        .lock()
+                        .expect("initialize id mutex should lock")
+                        .clone()
+                        .expect("initialize id should be recorded");
+
+                    Box::pin(async move {
+                        Ok(serde_json::json!({"id": response_id, "result": {}}).to_string())
+                    })
+                }
+            });
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|payload| {
+                payload.get("method").and_then(Value::as_str) == Some("initialized")
+                    && payload.get("id").is_none()
+            })
+            .returning(|_| Box::pin(async { Ok(()) }));
+
+        // Act
+        let result = initialize_runtime(&mut transport).await;
+
+        // Assert
+        assert!(
+            result.is_ok(),
+            "initialize_runtime should succeed: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_runtime_propagates_transport_termination_error() {
+        // Arrange
+        let mut transport = MockCodexRuntimeTransport::new();
+
+        transport
+            .expect_write_json_line()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        transport
+            .expect_wait_for_response_line()
+            .times(1)
+            .returning(|_| {
+                Box::pin(async {
+                    Err(crate::infra::app_server_transport::AppServerTransportError::ProcessTerminated)
+                })
+            });
+
+        // Act
+        let result = initialize_runtime(&mut transport).await;
+
+        // Assert
+        let error = result.expect_err("initialize_runtime should propagate transport error");
+        assert!(matches!(error, AppServerError::Transport(_)));
+    }
+}

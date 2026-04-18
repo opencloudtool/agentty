@@ -197,3 +197,275 @@ WHERE project_id = ?
         Ok(setting_value.and_then(|value| value.parse::<i64>().ok()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opens an isolated in-memory database for each setting-repository test
+    /// so the tests do not share project rows or settings state.
+    async fn open_test_db() -> Database {
+        Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db")
+    }
+
+    /// Inserts a stable project row used by project-scoped setting tests.
+    async fn insert_project(database: &Database) -> i64 {
+        database
+            .upsert_project("/tmp/project", Some("main"))
+            .await
+            .expect("failed to upsert project")
+    }
+
+    #[tokio::test]
+    async fn upsert_setting_inserts_new_row_then_replaces_value_on_conflict() {
+        // Arrange
+        let database = open_test_db().await;
+
+        // Act
+        database
+            .upsert_setting(SettingName::OpenCommand, "npm run dev")
+            .await
+            .expect("failed to insert setting");
+        let initial_value = database
+            .get_setting(SettingName::OpenCommand)
+            .await
+            .expect("failed to load setting");
+        database
+            .upsert_setting(SettingName::OpenCommand, "cargo test")
+            .await
+            .expect("failed to update setting");
+        let updated_value = database
+            .get_setting(SettingName::OpenCommand)
+            .await
+            .expect("failed to reload setting");
+
+        // Assert
+        assert_eq!(initial_value, Some("npm run dev".to_string()));
+        assert_eq!(updated_value, Some("cargo test".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_setting_returns_none_when_not_set() {
+        // Arrange
+        let database = open_test_db().await;
+
+        // Act
+        let value = database
+            .get_setting(SettingName::OpenCommand)
+            .await
+            .expect("failed to look up missing setting");
+
+        // Assert
+        assert!(value.is_none());
+    }
+
+    #[tokio::test]
+    async fn upsert_project_setting_isolates_values_between_projects() {
+        // Arrange
+        let database = open_test_db().await;
+        let first_project_id = database
+            .upsert_project("/tmp/project-a", Some("main"))
+            .await
+            .expect("failed to insert first project");
+        let second_project_id = database
+            .upsert_project("/tmp/project-b", Some("main"))
+            .await
+            .expect("failed to insert second project");
+
+        // Act
+        database
+            .upsert_project_setting(first_project_id, SettingName::OpenCommand, "npm run dev")
+            .await
+            .expect("failed to persist first project setting");
+        database
+            .upsert_project_setting(second_project_id, SettingName::OpenCommand, "cargo test")
+            .await
+            .expect("failed to persist second project setting");
+        let first_value = database
+            .get_project_setting(first_project_id, SettingName::OpenCommand)
+            .await
+            .expect("failed to load first project setting");
+        let second_value = database
+            .get_project_setting(second_project_id, SettingName::OpenCommand)
+            .await
+            .expect("failed to load second project setting");
+
+        // Assert
+        assert_eq!(first_value, Some("npm run dev".to_string()));
+        assert_eq!(second_value, Some("cargo test".to_string()));
+    }
+
+    #[tokio::test]
+    async fn upsert_project_setting_overwrites_value_on_conflict() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = insert_project(&database).await;
+        database
+            .upsert_project_setting(project_id, SettingName::OpenCommand, "old value")
+            .await
+            .expect("failed to persist initial project setting");
+
+        // Act
+        database
+            .upsert_project_setting(project_id, SettingName::OpenCommand, "new value")
+            .await
+            .expect("failed to overwrite project setting");
+        let value = database
+            .get_project_setting(project_id, SettingName::OpenCommand)
+            .await
+            .expect("failed to load project setting");
+
+        // Assert
+        assert_eq!(value, Some("new value".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_project_setting_returns_none_when_not_set() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = insert_project(&database).await;
+
+        // Act
+        let value = database
+            .get_project_setting(project_id, SettingName::OpenCommand)
+            .await
+            .expect("failed to look up missing project setting");
+
+        // Assert
+        assert!(value.is_none());
+    }
+
+    #[tokio::test]
+    async fn project_reasoning_level_round_trips_through_typed_helpers() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = insert_project(&database).await;
+
+        // Act
+        database
+            .set_project_reasoning_level(project_id, ReasoningLevel::Low)
+            .await
+            .expect("failed to persist project reasoning level");
+        let reasoning_level = database
+            .load_project_reasoning_level(project_id)
+            .await
+            .expect("failed to load project reasoning level");
+
+        // Assert
+        assert_eq!(reasoning_level, ReasoningLevel::Low);
+    }
+
+    #[tokio::test]
+    async fn load_project_reasoning_level_falls_back_to_default_when_missing_or_invalid() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = insert_project(&database).await;
+
+        // Act
+        let missing = database
+            .load_project_reasoning_level(project_id)
+            .await
+            .expect("failed to load default project reasoning level");
+        database
+            .upsert_project_setting(project_id, SettingName::ReasoningLevel, "garbage")
+            .await
+            .expect("failed to insert invalid reasoning level value");
+        let invalid = database
+            .load_project_reasoning_level(project_id)
+            .await
+            .expect("failed to load fallback project reasoning level");
+
+        // Assert
+        assert_eq!(missing, ReasoningLevel::default());
+        assert_eq!(invalid, ReasoningLevel::default());
+    }
+
+    #[tokio::test]
+    async fn reasoning_level_round_trips_through_typed_helpers() {
+        // Arrange
+        let database = open_test_db().await;
+
+        // Act
+        database
+            .set_reasoning_level(ReasoningLevel::Medium)
+            .await
+            .expect("failed to persist reasoning level");
+        let reasoning_level = database
+            .load_reasoning_level()
+            .await
+            .expect("failed to load reasoning level");
+
+        // Assert
+        assert_eq!(reasoning_level, ReasoningLevel::Medium);
+    }
+
+    #[tokio::test]
+    async fn load_reasoning_level_falls_back_to_default_when_missing_or_invalid() {
+        // Arrange
+        let database = open_test_db().await;
+
+        // Act
+        let missing = database
+            .load_reasoning_level()
+            .await
+            .expect("failed to load default reasoning level");
+        database
+            .upsert_setting(SettingName::ReasoningLevel, "garbage")
+            .await
+            .expect("failed to insert invalid reasoning level value");
+        let invalid = database
+            .load_reasoning_level()
+            .await
+            .expect("failed to load fallback reasoning level");
+
+        // Assert
+        assert_eq!(missing, ReasoningLevel::default());
+        assert_eq!(invalid, ReasoningLevel::default());
+    }
+
+    #[tokio::test]
+    async fn active_project_id_round_trips_through_typed_helpers() {
+        // Arrange
+        let database = open_test_db().await;
+        let project_id = insert_project(&database).await;
+
+        // Act
+        database
+            .set_active_project_id(project_id)
+            .await
+            .expect("failed to persist active project id");
+        let active_project_id = database
+            .load_active_project_id()
+            .await
+            .expect("failed to load active project id");
+
+        // Assert
+        assert_eq!(active_project_id, Some(project_id));
+    }
+
+    #[tokio::test]
+    async fn load_active_project_id_returns_none_when_unset_or_unparsable() {
+        // Arrange
+        let database = open_test_db().await;
+
+        // Act
+        let unset = database
+            .load_active_project_id()
+            .await
+            .expect("failed to load unset active project id");
+        database
+            .upsert_setting(SettingName::ActiveProjectId, "not-a-number")
+            .await
+            .expect("failed to insert invalid active project id value");
+        let invalid = database
+            .load_active_project_id()
+            .await
+            .expect("failed to load fallback active project id");
+
+        // Assert
+        assert!(unset.is_none());
+        assert!(invalid.is_none());
+    }
+}

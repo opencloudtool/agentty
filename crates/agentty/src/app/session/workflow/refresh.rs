@@ -748,6 +748,113 @@ mod tests {
         )
     }
 
+    /// Builds an empty project manager rooted at a temporary working directory.
+    fn empty_project_manager(working_dir: PathBuf) -> ProjectManager {
+        ProjectManager::new(
+            1,
+            "project".to_string(),
+            Some("main".to_string()),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
+            Vec::new(),
+            working_dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn refresh_sessions_if_needed_skips_db_call_before_deadline_and_preserves_deadline() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let now = Instant::now();
+        let fake_clock = Arc::new(FakeClock::new(now, SystemTime::UNIX_EPOCH));
+        let clock: Arc<dyn Clock> = fake_clock;
+        let mut session_manager = session_manager_fixture(clock);
+        let original_deadline = session_manager.state.refresh_deadline;
+        let services = test_services(
+            database,
+            Arc::new(git::MockGitClient::new()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let projects = empty_project_manager(temp_dir.path().to_path_buf());
+        let mut mode = AppMode::List;
+
+        // Act
+        session_manager
+            .refresh_sessions_if_needed(&mut mode, &projects, &services)
+            .await;
+
+        // Assert
+        assert_eq!(session_manager.state.refresh_deadline, original_deadline);
+        assert_eq!(session_manager.state.row_count, 0);
+        assert_eq!(session_manager.state.updated_at_max, 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_sessions_if_needed_advances_deadline_and_skips_reload_when_metadata_unchanged()
+    {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("failed to open in-memory db");
+        let now = Instant::now();
+        let fake_clock = Arc::new(FakeClock::new(now, SystemTime::UNIX_EPOCH));
+        let clock: Arc<dyn Clock> = fake_clock.clone();
+        let mut session_manager = session_manager_fixture(clock);
+        let services = test_services(
+            database,
+            Arc::new(git::MockGitClient::new()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let projects = empty_project_manager(temp_dir.path().to_path_buf());
+        let mut mode = AppMode::List;
+        let original_deadline = session_manager.state.refresh_deadline;
+        fake_clock.set_now_instant(now + SESSION_REFRESH_INTERVAL);
+
+        // Act
+        session_manager
+            .refresh_sessions_if_needed(&mut mode, &projects, &services)
+            .await;
+
+        // Assert
+        assert!(session_manager.state.refresh_deadline > original_deadline);
+        assert_eq!(session_manager.state.row_count, 0);
+        assert_eq!(session_manager.state.updated_at_max, 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_sessions_if_needed_reloads_sessions_when_metadata_row_count_changed() {
+        // Arrange
+        let session = test_session(PathBuf::from("/tmp/session"), None, Status::Done);
+        let database = database_with_session(&session).await;
+        let now = Instant::now();
+        let fake_clock = Arc::new(FakeClock::new(now, SystemTime::UNIX_EPOCH));
+        let clock: Arc<dyn Clock> = fake_clock.clone();
+        let mut session_manager = session_manager_fixture(clock);
+        let services = test_services(
+            database,
+            Arc::new(git::MockGitClient::new()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let projects = empty_project_manager(temp_dir.path().to_path_buf());
+        let mut mode = AppMode::List;
+        fake_clock.set_now_instant(now + SESSION_REFRESH_INTERVAL);
+
+        // Act
+        session_manager
+            .refresh_sessions_if_needed(&mut mode, &projects, &services)
+            .await;
+
+        // Assert
+        assert_eq!(session_manager.state.row_count, 1);
+        assert_eq!(session_manager.state.sessions.len(), 1);
+        assert_eq!(session_manager.state.sessions[0].id, "session-id");
+    }
+
     /// Test clock implementation with mutable `Instant` and `SystemTime`.
     struct FakeClock {
         instant: Mutex<Instant>,

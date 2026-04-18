@@ -3249,4 +3249,355 @@ mod tests {
             Some("Polish merge queue behavior".to_string())
         );
     }
+
+    /// Builds a session manager containing the supplied sessions with no
+    /// pre-selected row.
+    fn session_manager_with_sessions(sessions: Vec<Session>) -> SessionManager {
+        let mut handles = HashMap::new();
+        for session in &sessions {
+            handles.insert(
+                session.id.clone(),
+                SessionHandles::new(session.output.clone(), session.status),
+            );
+        }
+        let row_count = i64::try_from(sessions.len()).unwrap_or(0);
+        let state = SessionState::new(
+            handles,
+            sessions,
+            TableState::default(),
+            Arc::new(RealClock),
+            row_count,
+            0,
+        );
+
+        SessionManager::new(
+            SessionDefaults {
+                model: AgentModel::Gpt54,
+            },
+            Arc::new(git::MockGitClient::new()),
+            state,
+            Vec::new(),
+        )
+    }
+
+    /// Returns one session with a custom identifier and status for navigation
+    /// tests.
+    fn session_with_id(id: &str, status: Status) -> Session {
+        let mut session = test_session("prompt", status, None, "");
+        session.id = id.to_string();
+
+        session
+    }
+
+    #[test]
+    fn next_starts_at_first_selectable_row_when_no_prior_selection() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-active", Status::InProgress),
+            session_with_id("session-archive", Status::Done),
+        ]);
+
+        // Act
+        session_manager.next();
+
+        // Assert
+        assert_eq!(session_manager.state.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn next_advances_selection_to_next_grouped_row() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-active-1", Status::InProgress),
+            session_with_id("session-active-2", Status::Review),
+        ]);
+        session_manager.state.table_state.select(Some(0));
+
+        // Act
+        session_manager.next();
+
+        // Assert
+        assert_eq!(session_manager.state.table_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn next_wraps_to_first_selectable_row_after_last_row() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-active", Status::InProgress),
+            session_with_id("session-archive", Status::Done),
+        ]);
+        session_manager.state.table_state.select(Some(1));
+
+        // Act
+        session_manager.next();
+
+        // Assert
+        assert_eq!(session_manager.state.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn next_is_no_op_when_no_sessions_present() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(Vec::new());
+
+        // Act
+        session_manager.next();
+
+        // Assert
+        assert_eq!(session_manager.state.table_state.selected(), None);
+    }
+
+    #[test]
+    fn previous_starts_at_first_selectable_row_when_no_prior_selection() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-active", Status::InProgress),
+            session_with_id("session-archive", Status::Done),
+        ]);
+
+        // Act
+        session_manager.previous();
+
+        // Assert
+        assert_eq!(session_manager.state.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn previous_moves_selection_back_one_grouped_row() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-active-1", Status::InProgress),
+            session_with_id("session-active-2", Status::Review),
+        ]);
+        session_manager.state.table_state.select(Some(1));
+
+        // Act
+        session_manager.previous();
+
+        // Assert
+        assert_eq!(session_manager.state.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn previous_wraps_to_last_selectable_row_when_at_first_row() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-active", Status::InProgress),
+            session_with_id("session-archive", Status::Done),
+        ]);
+        session_manager.state.table_state.select(Some(0));
+
+        // Act
+        session_manager.previous();
+
+        // Assert
+        assert_eq!(session_manager.state.table_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn previous_is_no_op_when_no_sessions_present() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(Vec::new());
+
+        // Act
+        session_manager.previous();
+
+        // Assert
+        assert_eq!(session_manager.state.table_state.selected(), None);
+    }
+
+    #[test]
+    fn selected_session_returns_currently_selected_session_or_none() {
+        // Arrange
+        let mut session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-a", Status::InProgress),
+            session_with_id("session-b", Status::Review),
+        ]);
+
+        // Act / Assert
+        assert!(session_manager.selected_session().is_none());
+
+        session_manager.state.table_state.select(Some(1));
+        assert_eq!(
+            session_manager
+                .selected_session()
+                .map(|session| session.id.clone()),
+            Some("session-b".to_string())
+        );
+    }
+
+    #[test]
+    fn session_at_returns_session_by_index_or_none_for_out_of_range() {
+        // Arrange
+        let session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-a", Status::InProgress),
+            session_with_id("session-b", Status::Review),
+        ]);
+
+        // Act / Assert
+        assert_eq!(
+            session_manager
+                .session_at(0)
+                .map(|session| session.id.as_str()),
+            Some("session-a")
+        );
+        assert_eq!(
+            session_manager
+                .session_at(1)
+                .map(|session| session.id.as_str()),
+            Some("session-b")
+        );
+        assert!(session_manager.session_at(99).is_none());
+    }
+
+    #[test]
+    fn session_id_for_index_returns_owned_id_or_none_for_out_of_range() {
+        // Arrange
+        let session_manager =
+            session_manager_with_sessions(vec![session_with_id("session-a", Status::InProgress)]);
+
+        // Act / Assert
+        assert_eq!(
+            session_manager.session_id_for_index(0),
+            Some("session-a".to_string())
+        );
+        assert!(session_manager.session_id_for_index(1).is_none());
+    }
+
+    #[tokio::test]
+    async fn set_session_model_persists_new_model_and_clears_conversation_state() {
+        // Arrange
+        let mut session = test_session("Prompt", Status::Review, Some("Title"), "");
+        session.model = AgentModel::ClaudeSonnet46;
+        let database = database_with_session(&session).await;
+        database
+            .update_session_provider_conversation_id("session-id", Some("provider-conv"))
+            .await
+            .expect("seed provider conversation id");
+        database
+            .update_session_instruction_conversation_id("session-id", Some("instruction-conv"))
+            .await
+            .expect("seed instruction conversation id");
+        let mut session_manager = session_manager_with_one_session(session);
+        let (services, mut event_rx) = test_services_with_event_receiver(
+            database.clone(),
+            Arc::new(git::MockGitClient::new()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+
+        // Act
+        session_manager
+            .set_session_model(&services, "session-id", AgentModel::Gpt54)
+            .await
+            .expect("set session model should succeed");
+        let persisted_model = database
+            .load_sessions()
+            .await
+            .expect("load sessions should succeed")
+            .into_iter()
+            .find(|row| row.id == "session-id")
+            .expect("session row should exist")
+            .model;
+        let cleared_provider = database
+            .get_session_provider_conversation_id("session-id")
+            .await
+            .expect("provider id load should succeed");
+        let cleared_instruction = database
+            .get_session_instruction_conversation_id("session-id")
+            .await
+            .expect("instruction id load should succeed");
+        let emitted_event = event_rx.try_recv().expect("model event expected");
+
+        // Assert
+        assert_eq!(persisted_model, AgentModel::Gpt54.as_str());
+        assert!(cleared_provider.is_none());
+        assert!(cleared_instruction.is_none());
+        assert_eq!(
+            emitted_event,
+            AppEvent::SessionModelUpdated {
+                session_id: "session-id".to_string(),
+                session_model: AgentModel::Gpt54,
+            }
+        );
+        assert!(session_manager.should_replay_history("session-id"));
+    }
+
+    #[tokio::test]
+    async fn set_session_model_keeps_conversation_state_when_model_does_not_change() {
+        // Arrange
+        let mut session = test_session("Prompt", Status::InProgress, Some("Title"), "");
+        session.model = AgentModel::ClaudeSonnet46;
+        let database = database_with_session(&session).await;
+        database
+            .update_session_provider_conversation_id("session-id", Some("provider-conv"))
+            .await
+            .expect("seed provider conversation id");
+        let mut session_manager = session_manager_with_one_session(session);
+        let (services, mut event_rx) = test_services_with_event_receiver(
+            database.clone(),
+            Arc::new(git::MockGitClient::new()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+
+        // Act
+        session_manager
+            .set_session_model(&services, "session-id", AgentModel::ClaudeSonnet46)
+            .await
+            .expect("set session model should succeed");
+        let preserved_provider = database
+            .get_session_provider_conversation_id("session-id")
+            .await
+            .expect("provider id load should succeed");
+        let emitted_event = event_rx.try_recv().expect("model event expected");
+
+        // Assert
+        assert_eq!(preserved_provider.as_deref(), Some("provider-conv"));
+        assert_eq!(
+            emitted_event,
+            AppEvent::SessionModelUpdated {
+                session_id: "session-id".to_string(),
+                session_model: AgentModel::ClaudeSonnet46,
+            }
+        );
+        assert!(!session_manager.should_replay_history("session-id"));
+    }
+
+    #[tokio::test]
+    async fn set_session_model_returns_error_for_missing_session() {
+        // Arrange
+        let session = test_session("Prompt", Status::Review, Some("Title"), "");
+        let database = database_with_session(&session).await;
+        let mut session_manager = session_manager_with_one_session(session);
+        let services = test_services(
+            database,
+            Arc::new(git::MockGitClient::new()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+
+        // Act
+        let result = session_manager
+            .set_session_model(&services, "missing", AgentModel::Gpt54)
+            .await;
+
+        // Assert
+        assert!(
+            result.is_err(),
+            "missing session should return SessionError"
+        );
+    }
+
+    #[test]
+    fn session_index_for_id_returns_index_or_none_for_unknown_session() {
+        // Arrange
+        let session_manager = session_manager_with_sessions(vec![
+            session_with_id("session-a", Status::InProgress),
+            session_with_id("session-b", Status::Review),
+        ]);
+
+        // Act / Assert
+        assert_eq!(session_manager.session_index_for_id("session-a"), Some(0));
+        assert_eq!(session_manager.session_index_for_id("session-b"), Some(1));
+        assert!(session_manager.session_index_for_id("missing").is_none());
+    }
 }
