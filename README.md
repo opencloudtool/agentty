@@ -4,6 +4,10 @@
 
 Agentty is an **ADE (Agentic Development Environment) for structured, controllable AI-assisted software development**. Built with Rust and [Ratatui](https://ratatui.rs), and refined through its own day-to-day use, it brings agents, review, and iteration into one focused terminal workflow.
 
+<p align="center">
+  <img src="docs/site/static/demo/demo.gif" alt="Agentty demo" width="900" />
+</p>
+
 ## Installation
 
 ### npm (recommended, supports auto-update)
