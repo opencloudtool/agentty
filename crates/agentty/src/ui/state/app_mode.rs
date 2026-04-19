@@ -278,7 +278,6 @@ pub enum HelpContext {
     List { keybindings: Vec<HelpAction> },
     View {
         can_open_worktree: bool,
-        can_sync_review_request: bool,
         done_session_output_mode: DoneSessionOutputMode,
         follow_up_task_action: Option<FollowUpTaskAction>,
         has_multiple_follow_up_tasks: bool,
@@ -306,7 +305,6 @@ impl HelpContext {
         match self {
             HelpContext::View {
                 can_open_worktree,
-                can_sync_review_request,
                 follow_up_task_action,
                 has_multiple_follow_up_tasks,
                 publish_pull_request_action,
@@ -314,7 +312,6 @@ impl HelpContext {
                 ..
             } => help_action::view_actions(ViewHelpState {
                 can_open_worktree: *can_open_worktree,
-                can_sync_review_request: *can_sync_review_request,
                 follow_up_task_action: *follow_up_task_action,
                 has_multiple_follow_up_tasks: *has_multiple_follow_up_tasks,
                 publish_pull_request_action: *publish_pull_request_action,
@@ -428,7 +425,6 @@ mod tests {
         // Arrange
         let context = HelpContext::View {
             can_open_worktree: true,
-            can_sync_review_request: false,
             done_session_output_mode: DoneSessionOutputMode::Summary,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
@@ -456,11 +452,10 @@ mod tests {
     }
 
     #[test]
-    fn test_help_context_restore_mode_ignores_view_help_flags() {
+    fn test_help_context_restore_mode_ignores_help_only_view_fields() {
         // Arrange
         let context = HelpContext::View {
             can_open_worktree: true,
-            can_sync_review_request: false,
             done_session_output_mode: DoneSessionOutputMode::Summary,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
@@ -495,7 +490,6 @@ mod tests {
         // Arrange
         let context = HelpContext::View {
             can_open_worktree: true,
-            can_sync_review_request: false,
             done_session_output_mode: DoneSessionOutputMode::Summary,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,

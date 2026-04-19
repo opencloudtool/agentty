@@ -129,6 +129,7 @@ Reducer behaviors that matter for data flow:
 - `RefreshSessions` sets `should_force_reload`, which triggers `refresh_sessions_now()` and `reload_projects()`.
 - `reload_projects()` now reloads only persisted project rows; the expensive home-directory repository discovery pass runs only during `App::new()`.
 - `BranchPublishActionCompleted` swaps the session-view popup from loading to success or blocked/failure copy after the session-view `p` review-request publish flow finishes.
+- `ReviewRequestStatusUpdated` persists refreshed forge summaries for review-ready sessions and silently transitions externally merged sessions to `Done` or externally closed sessions to `Canceled`.
 - `SessionUpdated` marks touched sessions so reducer can call `sync_session_from_handle()` selectively.
 - `SessionProgressUpdated` refreshes transient loader text used by the session view.
 - `AgentResponseReceived` routes question-mode transitions for active view sessions and applies the worker's reducer-ready turn projection (summary, follow-up tasks, questions, token deltas) to the currently loaded session.
@@ -802,6 +803,7 @@ Project and session git workflows use shared boundaries (`GitClient`, `FsClient`
 - session merge: queue-aware workflow, assisted rebase first, reuse the single evolving session-branch `HEAD` commit message for the squash commit into the base branch, then clean up the worktree and set status `Done`.
 - session rebase: assisted rebase of session branch onto base branch, returns to `Review` after completion/failure reporting.
 - session review-request publish: review-ready sessions push the session branch through `GitClient` with `--force-with-lease`, then create or refresh the forge review request through `ReviewRequestClient`.
+- background review-request sync: review-ready sessions with a published branch or linked review request are polled through `ReviewRequestClient`; merged requests move the session to `Done`, and closed requests move it to `Canceled`.
 
 ## Persistence and Recovery Boundaries
 

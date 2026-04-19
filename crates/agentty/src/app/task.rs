@@ -9,12 +9,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use ag_forge::ReviewRequestClient;
 use askama::Template;
 use tokio::sync::mpsc;
 
+use super::core::SyncReviewRequestTaskResult;
 use crate::app::error::AppError;
 use crate::app::session_state::SessionGitStatus;
-use crate::app::{AppEvent, UpdateStatus};
+use crate::app::{AppEvent, UpdateStatus, session};
 use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::infra::agent;
 use crate::infra::git::GitClient;
@@ -34,6 +36,23 @@ pub(crate) struct SessionGitStatusTarget {
     /// `wt/1234abcd`.
     pub(crate) branch_name: String,
     /// Stable session identifier used as the reducer map key.
+    pub(crate) session_id: String,
+}
+
+/// Per-session forge-sync polling target for one active review-request
+/// candidate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReviewRequestSyncTarget {
+    /// Session worktree directory used to resolve the repository remote and
+    /// forge command working directory.
+    pub(crate) folder: PathBuf,
+    /// Previously linked review request, when Agentty already knows the forge
+    /// display id.
+    pub(crate) linked_review_request: Option<crate::domain::session::ReviewRequest>,
+    /// Published upstream branch tracked by the session, used to discover an
+    /// externally created review request when no link has been persisted yet.
+    pub(crate) published_upstream_ref: Option<String>,
+    /// Stable session identifier used to route reducer updates.
     pub(crate) session_id: String,
 }
 
@@ -57,6 +76,9 @@ struct ReviewAssistPromptTemplate<'a> {
     review_diff: &'a str,
     session_summary: &'a str,
 }
+
+/// Polling interval for background review-request status checks.
+const REVIEW_REQUEST_SYNC_INTERVAL_SECONDS: u64 = 60;
 
 impl TaskService {
     /// Loads one fresh machine-scoped snapshot of locally runnable agent
@@ -171,6 +193,61 @@ impl TaskService {
         }
 
         session_git_statuses
+    }
+
+    /// Spawns a background loop that periodically refreshes linked or
+    /// published review-request state for active sessions.
+    ///
+    /// The task emits one [`AppEvent::ReviewRequestStatusUpdated`] per target
+    /// so the reducer can persist refreshed review-request summaries and
+    /// transition externally merged or closed sessions without requiring a
+    /// manual `s` shortcut.
+    pub(super) fn spawn_review_request_status_task(
+        review_request_sync_targets: Vec<ReviewRequestSyncTarget>,
+        cancel: Arc<AtomicBool>,
+        app_event_tx: mpsc::UnboundedSender<AppEvent>,
+        git_client: Arc<dyn GitClient>,
+        review_request_client: Arc<dyn ReviewRequestClient>,
+    ) {
+        tokio::spawn(async move {
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                for review_request_sync_target in &review_request_sync_targets {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    let result = sync_review_request_status(
+                        review_request_sync_target.folder.clone(),
+                        git_client.as_ref(),
+                        review_request_sync_target.linked_review_request.clone(),
+                        review_request_sync_target.published_upstream_ref.clone(),
+                        review_request_client.as_ref(),
+                    )
+                    .await;
+
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    let _ = app_event_tx.send(AppEvent::ReviewRequestStatusUpdated {
+                        result,
+                        session_id: review_request_sync_target.session_id.clone(),
+                    });
+                }
+
+                for _ in 0..REVIEW_REQUEST_SYNC_INTERVAL_SECONDS {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        });
     }
 
     /// Spawns a one-shot background check for newer `agentty` versions on
@@ -411,9 +488,84 @@ impl TaskService {
     }
 }
 
+/// Runs one review-request sync against the forge.
+///
+/// When the session has a linked review request, this refreshes it by display
+/// id. Otherwise, when the branch was published, this searches for an
+/// externally created review request by source branch name.
+async fn sync_review_request_status(
+    folder: PathBuf,
+    git_client: &dyn GitClient,
+    linked_review_request: Option<crate::domain::session::ReviewRequest>,
+    published_upstream_ref: Option<String>,
+    review_request_client: &dyn ReviewRequestClient,
+) -> Result<SyncReviewRequestTaskResult, String> {
+    let repo_url = git_client
+        .repo_url(folder.clone())
+        .await
+        .map_err(|error| format!("Failed to resolve repository remote: {error}"))?;
+    let remote = review_request_client
+        .detect_remote(repo_url)
+        .map(|remote| remote.with_command_working_directory(folder))
+        .map_err(|error| error.detail_message())?;
+
+    if let Some(review_request) = linked_review_request {
+        let refreshed_summary = review_request_client
+            .refresh_review_request(remote, review_request.summary.display_id)
+            .await
+            .map_err(|error| error.detail_message())?;
+
+        return Ok(sync_task_result_from_summary(refreshed_summary));
+    }
+
+    let upstream_ref = published_upstream_ref
+        .ok_or_else(|| "Session branch has not been published yet".to_string())?;
+    let source_branch = session::remote_branch_name_from_upstream_ref(&upstream_ref);
+    let found_summary = review_request_client
+        .find_by_source_branch(remote, source_branch)
+        .await
+        .map_err(|error| error.detail_message())?;
+
+    match found_summary {
+        Some(summary) => Ok(sync_task_result_from_summary(summary)),
+        None => Ok(SyncReviewRequestTaskResult {
+            outcome: session::SyncReviewRequestOutcome::NoReviewRequest,
+            summary: None,
+        }),
+    }
+}
+
+/// Builds one sync result from a normalized review-request summary.
+fn sync_task_result_from_summary(
+    summary: crate::domain::session::ReviewRequestSummary,
+) -> SyncReviewRequestTaskResult {
+    let display_id = summary.display_id.clone();
+    let outcome = match summary.state {
+        crate::domain::session::ReviewRequestState::Open => {
+            session::SyncReviewRequestOutcome::Open {
+                display_id,
+                status_summary: summary.status_summary.clone(),
+            }
+        }
+        crate::domain::session::ReviewRequestState::Merged => {
+            session::SyncReviewRequestOutcome::Merged { display_id }
+        }
+        crate::domain::session::ReviewRequestState::Closed => {
+            session::SyncReviewRequestOutcome::Closed { display_id }
+        }
+    };
+
+    SyncReviewRequestTaskResult {
+        outcome,
+        summary: Some(summary),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    use ag_forge::{ForgeKind, MockReviewRequestClient, ReviewRequestState, ReviewRequestSummary};
 
     use super::*;
     use crate::infra::agent::protocol::AgentResponse;
@@ -501,6 +653,23 @@ mod tests {
                 latest_available_version: None,
             }
         );
+    }
+
+    /// Builds one test review request summary for sync-task tests.
+    fn test_review_request_summary(
+        display_id: &str,
+        state: ReviewRequestState,
+    ) -> ReviewRequestSummary {
+        ReviewRequestSummary {
+            display_id: display_id.to_string(),
+            forge_kind: ForgeKind::GitHub,
+            source_branch: "wt/session-id".to_string(),
+            state,
+            status_summary: None,
+            target_branch: "main".to_string(),
+            title: "feat".to_string(),
+            web_url: String::new(),
+        }
     }
 
     #[tokio::test]
@@ -634,6 +803,151 @@ mod tests {
                 remote_status: None,
             })
         );
+    }
+
+    #[test]
+    /// Verifies open summaries keep their forge status text in the sync
+    /// outcome.
+    fn sync_task_result_from_open_summary_maps_open_outcome() {
+        // Arrange
+        let mut summary = test_review_request_summary("#42", ReviewRequestState::Open);
+        summary.status_summary = Some("Checks passing".to_string());
+
+        // Act
+        let result = sync_task_result_from_summary(summary);
+
+        // Assert
+        assert_eq!(
+            result.outcome,
+            session::SyncReviewRequestOutcome::Open {
+                display_id: "#42".to_string(),
+                status_summary: Some("Checks passing".to_string()),
+            }
+        );
+        assert!(result.summary.is_some());
+    }
+
+    #[tokio::test]
+    /// Verifies refresh requests inherit the session worktree directory when
+    /// building the forge remote.
+    async fn sync_review_request_status_attaches_worktree_to_detected_remote() {
+        // Arrange
+        let folder = PathBuf::from("/tmp/session-worktree");
+        let linked_review_request = crate::domain::session::ReviewRequest {
+            last_refreshed_at: 42,
+            summary: test_review_request_summary("#42", ReviewRequestState::Open),
+        };
+        let expected_remote = ag_forge::ForgeRemote {
+            command_working_directory: Some(folder.clone()),
+            forge_kind: ForgeKind::GitHub,
+            host: "github.com".to_string(),
+            namespace: "agentty-xyz".to_string(),
+            project: "agentty".to_string(),
+            repo_url: "https://github.com/agentty-xyz/agentty.git".to_string(),
+            web_url: "https://github.com/agentty-xyz/agentty".to_string(),
+        };
+        let expected_summary = test_review_request_summary("#42", ReviewRequestState::Merged);
+        let mut mock_git_client = MockGitClient::new();
+        mock_git_client
+            .expect_repo_url()
+            .once()
+            .withf({
+                let folder = folder.clone();
+                move |candidate_folder| candidate_folder == &folder
+            })
+            .returning(|_| {
+                Box::pin(async { Ok("https://github.com/agentty-xyz/agentty.git".to_string()) })
+            });
+        let mut mock_review_request_client = MockReviewRequestClient::new();
+        mock_review_request_client
+            .expect_detect_remote()
+            .once()
+            .withf(|repo_url| repo_url == "https://github.com/agentty-xyz/agentty.git")
+            .returning(|_| {
+                Ok(ag_forge::ForgeRemote {
+                    command_working_directory: None,
+                    forge_kind: ForgeKind::GitHub,
+                    host: "github.com".to_string(),
+                    namespace: "agentty-xyz".to_string(),
+                    project: "agentty".to_string(),
+                    repo_url: "https://github.com/agentty-xyz/agentty.git".to_string(),
+                    web_url: "https://github.com/agentty-xyz/agentty".to_string(),
+                })
+            });
+        mock_review_request_client
+            .expect_refresh_review_request()
+            .once()
+            .withf({
+                let expected_remote = expected_remote.clone();
+                move |candidate_remote, display_id| {
+                    candidate_remote == &expected_remote && display_id == "#42"
+                }
+            })
+            .returning({
+                let expected_summary = expected_summary.clone();
+                move |_, _| {
+                    let expected_summary = expected_summary.clone();
+
+                    Box::pin(async move { Ok(expected_summary) })
+                }
+            });
+
+        // Act
+        let result = sync_review_request_status(
+            folder,
+            &mock_git_client,
+            Some(linked_review_request),
+            None,
+            &mock_review_request_client,
+        )
+        .await
+        .expect("sync should succeed");
+
+        // Assert
+        assert_eq!(
+            result.outcome,
+            session::SyncReviewRequestOutcome::Merged {
+                display_id: "#42".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    /// Verifies merged summaries map to the merged sync outcome.
+    fn sync_task_result_from_merged_summary_maps_merged_outcome() {
+        // Arrange
+        let summary = test_review_request_summary("#99", ReviewRequestState::Merged);
+
+        // Act
+        let result = sync_task_result_from_summary(summary);
+
+        // Assert
+        assert_eq!(
+            result.outcome,
+            session::SyncReviewRequestOutcome::Merged {
+                display_id: "#99".to_string(),
+            }
+        );
+        assert!(result.summary.is_some());
+    }
+
+    #[test]
+    /// Verifies closed summaries map to the canceled-session sync outcome.
+    fn sync_task_result_from_closed_summary_maps_closed_outcome() {
+        // Arrange
+        let summary = test_review_request_summary("#7", ReviewRequestState::Closed);
+
+        // Act
+        let result = sync_task_result_from_summary(summary);
+
+        // Assert
+        assert_eq!(
+            result.outcome,
+            session::SyncReviewRequestOutcome::Closed {
+                display_id: "#7".to_string(),
+            }
+        );
+        assert!(result.summary.is_some());
     }
 
     #[test]

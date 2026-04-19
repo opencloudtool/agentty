@@ -227,7 +227,8 @@ impl AppStartup {
         session_manager
     }
 
-    /// Spawns background pollers for git status and version checks.
+    /// Spawns background pollers for git status, review-request status, and
+    /// version checks.
     pub(crate) fn spawn_background_tasks(
         auto_update: bool,
         event_tx: &mpsc::UnboundedSender<AppEvent>,
@@ -244,6 +245,13 @@ impl AppStartup {
                 projects.git_status_cancel(),
                 event_tx.clone(),
                 services.git_client(),
+            );
+            task::TaskService::spawn_review_request_status_task(
+                super::core::App::review_request_sync_targets(sessions),
+                projects.git_status_cancel(),
+                event_tx.clone(),
+                services.git_client(),
+                services.review_request_client(),
             );
         }
     }

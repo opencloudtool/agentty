@@ -6,6 +6,9 @@
 //! to the session list from session view.
 
 use agentty::db::{DB_DIR, DB_FILE, Database};
+use agentty::domain::session::{
+    ForgeKind, ReviewRequest, ReviewRequestState, ReviewRequestSummary,
+};
 use testty::assertion;
 use testty::region::Region;
 
@@ -39,10 +42,7 @@ fn seed_review_ready_session(env: &BuilderEnv) -> Result<(), Box<dyn std::error:
             )
             .await?;
         database
-            .update_session_title(
-                "review-shortcut-0001",
-                "Refresh review request from session view",
-            )
+            .update_session_title("review-shortcut-0001", "Review-ready session shortcuts")
             .await?;
         database
             .update_session_diff_stats(12, 3, "review-shortcut-0001", "M")
@@ -50,6 +50,41 @@ fn seed_review_ready_session(env: &BuilderEnv) -> Result<(), Box<dyn std::error:
     })?;
 
     std::fs::create_dir_all(env.agentty_root.join("wt").join("review-s"))?;
+
+    Ok(())
+}
+
+/// Seeds one review-ready session with a linked review request.
+fn seed_review_ready_session_with_review_request(
+    env: &BuilderEnv,
+) -> Result<(), Box<dyn std::error::Error>> {
+    seed_review_ready_session(env)?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        let db_path = env.agentty_root.join(DB_DIR).join(DB_FILE);
+        let database = Database::open(&db_path).await?;
+        let review_request = ReviewRequest {
+            last_refreshed_at: 55,
+            summary: ReviewRequestSummary {
+                display_id: "#42".to_string(),
+                forge_kind: ForgeKind::GitHub,
+                source_branch: "wt/review-s".to_string(),
+                state: ReviewRequestState::Open,
+                status_summary: Some("Checks passing".to_string()),
+                target_branch: "main".to_string(),
+                title: "Review-ready session shortcuts".to_string(),
+                web_url: "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
+            },
+        };
+
+        database
+            .update_session_review_request("review-shortcut-0001", Some(&review_request))
+            .await
+    })?;
 
     Ok(())
 }
@@ -287,6 +322,50 @@ fn review_request_publish_shortcut_opens_publish_popup() -> E2eResult {
                     frame,
                     "Leave blank to push as `wt/review-s`",
                     &full,
+                );
+            },
+        )?;
+
+    Ok(())
+}
+
+/// Verify that review-ready sessions no longer expose a manual review-request
+/// sync shortcut because linked review requests refresh in the background.
+#[test]
+fn review_request_sync_runs_in_background() -> E2eResult {
+    // Arrange, Act, Assert
+    FeatureTest::new("review_request_background_sync")
+        .with_git()
+        .setup(seed_review_ready_session_with_review_request)
+        .zola(
+            "Background review-request sync",
+            "Review sessions track linked pull requests in the background instead of exposing a \
+             manual sync shortcut.",
+            43,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .press_key("Enter")
+                    .sleep(std::time::Duration::from_secs(1))
+                    .press_key("?")
+                    .wait_for_stable_frame(300, 5000)
+                    .viewing_pause_ms(1500)
+                    .capture_labeled(
+                        "review_request_background_sync",
+                        "Review session help overlay without a manual sync shortcut",
+                    )
+            },
+            |frame, _report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                let view_text = frame.text_in_region(&full);
+
+                assertion::assert_text_in_region(frame, "p: Create or refresh", &full);
+                assert!(
+                    !view_text.contains("s: Sync"),
+                    "manual sync help action should be absent"
                 );
             },
         )?;

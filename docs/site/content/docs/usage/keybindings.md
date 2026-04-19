@@ -89,7 +89,7 @@ state:
 | `q` | Back to list |
 | `Enter` | Compose the first prompt or reply; in draft sessions it adds a draft |
 | `/` | Open the composer with `/` prefilled for slash commands |
-| `s` | Start a staged draft session; or sync review request status when a branch is published |
+| `s` | Start a staged draft session |
 | `o` | Open worktree in tmux when the session worktree exists |
 | `p` | Publish session branch |
 | `Shift+P` | Create or refresh forge review request |

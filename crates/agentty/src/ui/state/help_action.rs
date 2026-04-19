@@ -66,8 +66,6 @@ pub(crate) struct ViewHelpState {
     /// Whether the current session currently has a local worktree directory
     /// available to open.
     pub(crate) can_open_worktree: bool,
-    /// Whether the session can sync its review request state from the forge.
-    pub(crate) can_sync_review_request: bool,
     /// Launch/open action available for the selected follow-up task, when the
     /// current session exposes one.
     pub(crate) follow_up_task_action: Option<FollowUpTaskAction>,
@@ -310,10 +308,6 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
         actions.push(publish_pull_request_help_action(
             publish_pull_request_action,
         ));
-    }
-
-    if state.can_sync_review_request {
-        actions.push(HelpAction::new("sync", "s", "Sync review request status"));
     }
 
     if can_edit_session {
@@ -687,7 +681,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -709,7 +702,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: false,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -728,7 +720,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -750,7 +741,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -772,7 +762,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
@@ -811,7 +800,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
@@ -834,7 +822,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -856,7 +843,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -881,7 +867,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -906,7 +891,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
@@ -932,7 +916,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
@@ -958,7 +941,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -980,7 +962,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -1000,7 +981,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -1023,7 +1003,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -1075,7 +1054,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -1097,7 +1075,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -1116,7 +1093,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            can_sync_review_request: false,
             follow_up_task_action: None,
             has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
@@ -1150,52 +1126,5 @@ mod tests {
         // Assert
         assert_eq!(span.content, " | ");
         assert_eq!(span.style, Style::default().fg(Color::DarkGray));
-    }
-
-    #[test]
-    fn test_view_actions_shows_sync_when_can_sync_review_request_true() {
-        // Arrange
-        let state = ViewHelpState {
-            can_open_worktree: true,
-            can_sync_review_request: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
-            publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
-            session_state: ViewSessionState::Review,
-        };
-
-        // Act
-        let actions = view_actions(state);
-
-        // Assert
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.key == "s"
-                    && action.popup_label == "Sync review request status")
-        );
-    }
-
-    #[test]
-    fn test_view_actions_hides_sync_when_can_sync_review_request_false() {
-        // Arrange
-        let state = ViewHelpState {
-            can_open_worktree: true,
-            can_sync_review_request: false,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
-            publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
-            session_state: ViewSessionState::Review,
-        };
-
-        // Act
-        let actions = view_actions(state);
-
-        // Assert
-        assert!(
-            !actions
-                .iter()
-                .any(|action| action.popup_label == "Sync review request status")
-        );
     }
 }
