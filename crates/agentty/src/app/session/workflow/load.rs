@@ -11,7 +11,9 @@ use crate::domain::session::{
     SessionFollowUpTask, SessionHandles, SessionSize, SessionStats, Status,
 };
 use crate::infra::agent::protocol::QuestionItem;
-use crate::infra::db::{Database, SessionRow};
+#[cfg(test)]
+use crate::infra::db::Database;
+use crate::infra::db::{AppRepositories, SessionRow};
 use crate::infra::fs::FsClient;
 use crate::infra::git::GitClient;
 
@@ -54,7 +56,7 @@ impl SessionManager {
     /// availability keyed by session id.
     pub(crate) async fn load_sessions_with_fs_client(
         base: &Path,
-        db: &Database,
+        db: &AppRepositories,
         active_project_id: i64,
         working_dir: &Path,
         handles: &mut HashMap<String, SessionHandles>,

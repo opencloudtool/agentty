@@ -13,7 +13,9 @@ layer boundaries.
 ## Add or Modify a Session Workflow
 
 1. Update orchestration in `crates/agentty/src/app/session/` (`lifecycle.rs`, `worker.rs`, `task.rs`, etc.).
-1. Keep persistence in `crates/agentty/src/infra/db.rs`.
+1. Keep persistence in `crates/agentty/src/infra/db/` domain modules and keep
+   `crates/agentty/src/infra/db.rs` limited to pool wiring plus repository
+   composition.
 1. Keep git operations behind `GitClient` in `crates/agentty/src/infra/git/client.rs` (re-exported from `crates/agentty/src/infra/git.rs`).
 1. Preserve the session-branch invariant: one evolving commit per session branch, with the first file-changing turn creating it and later file-changing turns updating it by amending `HEAD`.
 1. Update docs when lifecycle/status behavior changes: `docs/site/content/docs/usage/workflow.md`.
@@ -38,7 +40,8 @@ layer boundaries.
 
 1. Add a new migration file in `crates/agentty/migrations/` (`NNN_description.sql`).
 1. Never modify existing migration files.
-1. Keep query changes in `crates/agentty/src/infra/db.rs`.
+1. Keep query changes in the matching `crates/agentty/src/infra/db/*.rs`
+   domain module instead of expanding `crates/agentty/src/infra/db.rs`.
 1. Ensure any status/model behavior changes are reflected in docs pages affected by user-facing behavior.
 
 ## Add a New UI Page or Component

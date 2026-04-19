@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use crate::app::AppEvent;
 use crate::app::session::{RunAgentAssistTaskInput, SessionError, SessionTaskService};
 use crate::domain::agent::AgentModel;
-use crate::infra::db::Database;
+use crate::infra::db::AppRepositories;
 use crate::infra::git::GitClient;
 
 /// Policy knobs controlling one assisted recovery loop.
@@ -26,8 +26,8 @@ pub(super) struct AssistContext {
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     /// Shared process identifier slot used for cancellation.
     pub(super) child_pid: Arc<Mutex<Option<u32>>>,
-    /// Database handle used for session persistence updates.
-    pub(super) db: Database,
+    /// Repository bundle used for session persistence updates.
+    pub(super) db: AppRepositories,
     /// Session worktree folder where git/agent commands run.
     pub(super) folder: PathBuf,
     /// Git boundary used for commit/rebase operations.

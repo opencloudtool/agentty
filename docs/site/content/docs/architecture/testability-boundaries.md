@@ -40,6 +40,13 @@ The traits below are mocked with `mockall`. Most use
 | `ProjectDiscoveryClient` | `infra/project_discovery.rs` | Home-directory repository discovery used by startup catalog refresh without walking the real filesystem from `app/`. |
 | `GitCommandRunner` | `infra/git/rebase.rs` | Rebase command invocation boundary for conflict/retry tests. |
 | `SyncAssistClient` | `app/session/workflow/merge.rs` | Sync-rebase assistance execution boundary. |
+| `SessionRepository` | `infra/db/session.rs` | Session row persistence, turn metadata storage, follow-up tasks, and session list queries without binding app workflows to the full `Database` surface. |
+| `ProjectRepository` | `infra/db/project.rs` | Project persistence and project-list aggregation behind a narrow mockable boundary. |
+| `ReviewRepository` | `infra/db/review.rs` | Session review-request linkage persistence used by branch publish and refresh flows. |
+| `UsageRepository` | `infra/db/usage.rs` | Per-session model usage aggregation used by turn persistence and usage views. |
+| `ActivityRepository` | `infra/db/activity.rs` | Session-activity history queries and backfill helpers used by startup and session list refresh. |
+| `OperationRepository` | `infra/db/operation.rs` | Persisted session-operation lifecycle tracking used by worker restart recovery and cancellation. |
+| `SettingRepository` | `infra/db/setting.rs` | Global and project-scoped setting persistence used by startup and settings orchestration. |
 | `AppServerClient` retry helpers | `infra/app_server/retry.rs` | Shared restart-and-replay orchestration for provider runtimes without duplicating lifecycle policy in each provider. |
 | `CodexRuntimeTransport` | `infra/agent/app_server/codex/transport.rs` | Codex stdio transport boundary for lifecycle, compaction, and turn-stream tests without scripted shell runtimes. |
 | `GeminiRuntimeTransport` | `infra/agent/app_server/gemini/transport.rs` | ACP stdio transport boundary for Gemini runtime protocol tests. |
@@ -52,7 +59,7 @@ so the app layer can discriminate failure causes without parsing formatted messa
 
 | Error Type | Module | Variants | Wraps |
 |------------|--------|----------|-------|
-| `DbError` | `infra/db.rs` | `Migration`, `Query`, `Connection` | `sqlx::Error` |
+| `DbError` | `infra/db.rs` | `Migration`, `Query`, `Io` | `sqlx::Error` |
 | `GitError` | `infra/git/error.rs` | `WorktreeCreate`, `WorktreeRemove`, `BranchDelete`, `Command`, etc. | `std::io::Error`, process exit details |
 | `AppServerTransportError` | `infra/app_server_transport.rs` | `Io`, `ProcessTerminated`, `Timeout` | `std::io::Error` |
 | `AppServerError` | `infra/app_server/error.rs` | `Transport`, `Provider`, `SessionNotFound`, `Shutdown` | `AppServerTransportError` via `#[from]` |

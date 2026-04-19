@@ -1,16 +1,40 @@
 //! Database layer for persisting session metadata using `SQLite` via `SQLx`.
 
+use std::ops::Deref;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
-use crate::domain::agent::ReasoningLevel;
-use crate::domain::session::{DailyActivity, ReviewRequest, SessionFollowUpTask, SessionStats};
-use crate::infra::agent;
+mod activity;
+mod operation;
+mod project;
+mod review;
+mod session;
+mod setting;
+mod usage;
 
-/// Typed error returned by [`Database`] operations.
+pub(crate) use activity::{ActivityRepository, SqliteActivityRepository};
+pub use operation::SessionOperationRow;
+pub(crate) use operation::{OperationRepository, SqliteOperationRepository};
+pub use project::{ProjectListRow, ProjectRow};
+pub(crate) use project::{ProjectRepository, SqliteProjectRepository};
+pub use review::SessionReviewRequestRow;
+pub(crate) use review::{ReviewRepository, SqliteReviewRepository};
+#[cfg(test)]
+pub(crate) use session::SessionJoinRow;
+pub use session::{SessionFollowUpTaskRow, SessionRow};
+pub(crate) use session::{SessionRepository, SessionTurnMetadata, SqliteSessionRepository};
+pub(crate) use setting::{SettingRepository, SqliteSettingRepository};
+pub use usage::SessionUsageRow;
+pub(crate) use usage::{SqliteUsageRepository, UsageRepository};
+
+use crate::domain::agent::ReasoningLevel;
+use crate::domain::session::{DailyActivity, ReviewRequest, SessionStats};
+
+/// Typed error returned by database operations.
 ///
 /// Wraps the underlying `SQLx`, migration, and I/O failures so callers can
 /// distinguish error categories without parsing opaque strings.
@@ -24,7 +48,8 @@ pub enum DbError {
     #[error("{0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
 
-    /// A filesystem operation failed (e.g. creating the database directory).
+    /// A filesystem operation failed (for example creating the database
+    /// directory).
     #[error("{0}")]
     Io(#[from] std::io::Error),
 }
@@ -42,372 +67,738 @@ pub const DB_FILE: &str = "agentty.db";
 /// queued writer contenders.
 pub const DB_POOL_MAX_CONNECTIONS: u32 = 4;
 
-/// Thin wrapper around a `SQLite` connection pool providing query methods.
+/// Thin wrapper around a `SQLite` connection pool.
 #[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
+    repositories: AppRepositories,
 }
 
-/// Transactional turn-metadata payload persisted after one completed agent
-/// turn.
-pub(crate) struct SessionTurnMetadata<'a> {
-    /// Persisted follow-up-task text list replacing any previous rows.
-    pub(crate) follow_up_tasks: &'a [String],
-    /// Session-scoped instruction bootstrap marker for app-server providers.
-    pub(crate) instruction_conversation_id: Option<&'a str>,
-    /// Model identifier used for per-model usage aggregation.
-    pub(crate) model: &'a str,
-    /// Persisted provider-native conversation identifier for future resumes.
-    pub(crate) provider_conversation_id: Option<&'a str>,
-    /// Serialized clarification-question payload stored on the session row.
-    pub(crate) questions_json: &'a str,
-    /// Serialized structured summary payload stored on the session row.
-    pub(crate) summary: &'a str,
-    /// Token-usage delta attributed to the completed turn.
-    pub(crate) token_usage_delta: &'a SessionStats,
+/// App-layer repository bundle used for selective mock injection.
+#[derive(Clone)]
+pub struct AppRepositories {
+    activity: Arc<dyn ActivityRepository>,
+    operation: Arc<dyn OperationRepository>,
+    project: Arc<dyn ProjectRepository>,
+    review: Arc<dyn ReviewRepository>,
+    session: Arc<dyn SessionRepository>,
+    setting: Arc<dyn SettingRepository>,
+    usage: Arc<dyn UsageRepository>,
 }
 
-/// Row returned when loading a project from the `project` table.
-pub struct ProjectRow {
-    pub created_at: i64,
-    pub display_name: Option<String>,
-    pub git_branch: Option<String>,
-    pub id: i64,
-    pub is_favorite: bool,
-    pub last_opened_at: Option<i64>,
-    pub path: String,
-    pub updated_at: i64,
-}
-
-/// Row returned when loading one project with aggregated session statistics.
-pub struct ProjectListRow {
-    pub active_session_count: i64,
-    pub created_at: i64,
-    pub display_name: Option<String>,
-    pub git_branch: Option<String>,
-    pub id: i64,
-    pub is_favorite: bool,
-    pub last_opened_at: Option<i64>,
-    pub last_session_updated_at: Option<i64>,
-    pub path: String,
-    pub session_count: i64,
-    pub updated_at: i64,
-}
-
-/// Row returned when loading one `session_review_request`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SessionReviewRequestRow {
-    pub display_id: String,
-    pub forge_kind: String,
-    pub last_refreshed_at: i64,
-    pub source_branch: String,
-    pub state: String,
-    pub status_summary: Option<String>,
-    pub target_branch: String,
-    pub title: String,
-    pub web_url: String,
-}
-
-/// Row returned when loading a session from the `session` table.
-///
-/// Includes optional normalized forge review-request linkage metadata loaded
-/// through the `session_review_request` table when the session has been
-/// published for remote review.
-pub struct SessionRow {
-    pub added_lines: i64,
-    pub base_branch: String,
-    pub created_at: i64,
-    pub deleted_lines: i64,
-    pub id: String,
-    pub in_progress_started_at: Option<i64>,
-    pub in_progress_total_seconds: i64,
-    pub input_tokens: i64,
-    pub is_draft: bool,
-    pub model: String,
-    pub output: String,
-    pub output_tokens: i64,
-    pub project_id: Option<i64>,
-    pub prompt: String,
-    pub reasoning_level_override: Option<String>,
-    pub published_upstream_ref: Option<String>,
-    pub questions: Option<String>,
-    pub review_request: Option<SessionReviewRequestRow>,
-    pub size: String,
-    pub status: String,
-    pub summary: Option<String>,
-    pub title: Option<String>,
-    pub updated_at: i64,
-}
-
-/// Row returned when loading one persisted `session_follow_up_task`.
-#[derive(Clone, Debug, Eq, PartialEq, sqlx::FromRow)]
-pub struct SessionFollowUpTaskRow {
-    pub id: i64,
-    pub launched_session_id: Option<String>,
-    pub position: i64,
-    pub session_id: String,
-    pub text: String,
-}
-
-impl SessionFollowUpTaskRow {
-    /// Converts one follow-up-task row into the domain snapshot used by the
-    /// UI.
-    pub fn into_session_follow_up_task(self) -> SessionFollowUpTask {
-        SessionFollowUpTask {
-            id: self.id,
-            launched_session_id: self.launched_session_id,
-            position: usize::try_from(self.position).unwrap_or(usize::MAX),
-            text: self.text,
+impl AppRepositories {
+    /// Creates a repository bundle from explicit repository implementations.
+    pub(crate) fn new(
+        activity: Arc<dyn ActivityRepository>,
+        operation: Arc<dyn OperationRepository>,
+        project: Arc<dyn ProjectRepository>,
+        review: Arc<dyn ReviewRepository>,
+        session: Arc<dyn SessionRepository>,
+        setting: Arc<dyn SettingRepository>,
+        usage: Arc<dyn UsageRepository>,
+    ) -> Self {
+        Self {
+            activity,
+            operation,
+            project,
+            review,
+            session,
+            setting,
+            usage,
         }
     }
-}
 
-/// Persisted operation lifecycle state for one session command.
-pub struct SessionOperationRow {
-    pub cancel_requested: bool,
-    pub finished_at: Option<i64>,
-    pub heartbeat_at: Option<i64>,
-    pub id: String,
-    pub kind: String,
-    pub last_error: Option<String>,
-    pub queued_at: i64,
-    pub session_id: String,
-    pub started_at: Option<i64>,
-    pub status: String,
-}
-
-/// Row returned when loading per-model token usage from the `session_usage`
-/// table.
-pub struct SessionUsageRow {
-    pub created_at: i64,
-    pub input_tokens: i64,
-    pub invocation_count: i64,
-    pub model: String,
-    pub output_tokens: i64,
-    pub session_id: Option<String>,
-}
-
-/// Row returned when loading one session activity timestamp.
-struct TimestampValueRow {
-    pub created_at: i64,
-}
-
-/// Row returned when loading aggregated session activity by local day.
-struct DailyActivityQueryRow {
-    day_key: i64,
-    session_count: i64,
-}
-
-impl DailyActivityQueryRow {
-    /// Converts one aggregate query row into the public daily activity model.
-    fn into_daily_activity(self) -> DailyActivity {
-        DailyActivity {
-            day_key: self.day_key,
-            session_count: u32::try_from(self.session_count).unwrap_or(u32::MAX),
-        }
+    /// Creates a repository bundle backed by one shared `SQLite` pool.
+    pub(crate) fn from_database(database: &Database) -> Self {
+        Self::from_pool(database.pool().clone())
     }
-}
 
-/// Row returned when loading both persisted timestamps for one session.
-struct SessionTimestampsRow {
-    created_at: i64,
-    updated_at: i64,
-}
-
-/// Row returned when loading an optional `i64` scalar value.
-struct OptionalI64ValueRow {
-    value: Option<i64>,
-}
-
-/// Row returned when loading the persisted instruction bootstrap marker for
-/// one session.
-#[derive(sqlx::FromRow)]
-struct SessionInstructionStateRow {
-    app_server_instruction_provider_conversation_id: Option<String>,
-}
-
-impl SessionInstructionStateRow {
-    /// Converts the optional stored provider conversation id into one
-    /// normalized bootstrap conversation id when present and non-empty.
-    fn into_instruction_conversation_id(self) -> Option<String> {
-        agent::normalize_instruction_conversation_id(
-            self.app_server_instruction_provider_conversation_id
-                .as_deref(),
+    /// Creates a repository bundle backed by one shared `SQLite` pool.
+    pub(crate) fn from_pool(pool: SqlitePool) -> Self {
+        Self::new(
+            Arc::new(SqliteActivityRepository::new(pool.clone())),
+            Arc::new(SqliteOperationRepository::new(pool.clone())),
+            Arc::new(SqliteProjectRepository::new(pool.clone())),
+            Arc::new(SqliteReviewRepository::new(pool.clone())),
+            Arc::new(SqliteSessionRepository::new(pool.clone())),
+            Arc::new(SqliteSettingRepository::new(pool.clone())),
+            Arc::new(SqliteUsageRepository::new(pool)),
         )
     }
-}
 
-/// Row returned when loading a required string scalar value.
-struct RequiredStringValueRow {
-    value: String,
-}
-
-/// Row returned when loading session count and latest-update metadata.
-struct SessionMetadataRow {
-    max_updated_at: i64,
-    session_count: i64,
-}
-
-/// Row returned when loading one non-null boolean scalar value.
-struct RequiredBoolValueRow {
-    value: bool,
-}
-
-/// Row returned when loading one `session` plus aliased
-/// `session_review_request` join columns.
-struct SessionJoinRow {
-    added_lines: i64,
-    base_branch: String,
-    created_at: i64,
-    deleted_lines: i64,
-    id: String,
-    in_progress_started_at: Option<i64>,
-    in_progress_total_seconds: i64,
-    input_tokens: i64,
-    is_draft: bool,
-    model: String,
-    output: String,
-    output_tokens: i64,
-    project_id: Option<i64>,
-    prompt: String,
-    reasoning_level_override: Option<String>,
-    published_upstream_ref: Option<String>,
-    questions: Option<String>,
-    review_request_display_id: Option<String>,
-    review_request_forge_kind: Option<String>,
-    review_request_last_refreshed_at: Option<i64>,
-    review_request_source_branch: Option<String>,
-    review_request_state: Option<String>,
-    review_request_status_summary: Option<String>,
-    review_request_target_branch: Option<String>,
-    review_request_title: Option<String>,
-    review_request_web_url: Option<String>,
-    size: String,
-    status: String,
-    summary: Option<String>,
-    title: Option<String>,
-    updated_at: i64,
-}
-
-impl SessionJoinRow {
-    /// Converts the macro-mapped join row into the public `SessionRow` model.
-    fn into_session_row(self) -> SessionRow {
-        let Self {
-            added_lines,
-            base_branch,
-            created_at,
-            deleted_lines,
-            id,
-            in_progress_started_at,
-            in_progress_total_seconds,
-            input_tokens,
-            is_draft,
-            model,
-            output,
-            output_tokens,
-            project_id,
-            prompt,
-            reasoning_level_override,
-            published_upstream_ref,
-            questions,
-            review_request_display_id,
-            review_request_forge_kind,
-            review_request_last_refreshed_at,
-            review_request_source_branch,
-            review_request_state,
-            review_request_status_summary,
-            review_request_target_branch,
-            review_request_title,
-            review_request_web_url,
-            size,
-            status,
-            summary,
-            title,
-            updated_at,
-        } = self;
-
-        let review_request = SessionReviewRequestJoinRow {
-            display_id: review_request_display_id,
-            forge_kind: review_request_forge_kind,
-            last_refreshed_at: review_request_last_refreshed_at,
-            source_branch: review_request_source_branch,
-            state: review_request_state,
-            status_summary: review_request_status_summary,
-            target_branch: review_request_target_branch,
-            title: review_request_title,
-            web_url: review_request_web_url,
-        }
-        .into_review_request_row();
-
-        SessionRow {
-            added_lines,
-            base_branch,
-            created_at,
-            deleted_lines,
-            id,
-            in_progress_started_at,
-            in_progress_total_seconds,
-            input_tokens,
-            is_draft,
-            model,
-            output,
-            output_tokens,
-            project_id,
-            prompt,
-            reasoning_level_override,
-            published_upstream_ref,
-            questions,
-            review_request,
-            size,
-            status,
-            summary,
-            title,
-            updated_at,
-        }
+    /// Loads aggregated session-creation activity counts keyed by local day.
+    pub(crate) async fn load_session_activity(&self) -> Result<Vec<DailyActivity>, DbError> {
+        self.activity.load_session_activity().await
     }
-}
 
-/// Aliased nullable `session_review_request` columns loaded through a joined
-/// session query.
-struct SessionReviewRequestJoinRow {
-    display_id: Option<String>,
-    forge_kind: Option<String>,
-    last_refreshed_at: Option<i64>,
-    source_branch: Option<String>,
-    state: Option<String>,
-    status_summary: Option<String>,
-    target_branch: Option<String>,
-    title: Option<String>,
-    web_url: Option<String>,
-}
+    #[cfg(test)]
+    /// Loads persisted activity event timestamps used for activity stats.
+    pub(crate) async fn load_session_activity_timestamps(&self) -> Result<Vec<i64>, DbError> {
+        self.activity.load_session_activity_timestamps().await
+    }
 
-impl SessionReviewRequestJoinRow {
-    /// Converts the joined nullable columns into a review-request row only
-    /// when every required field is present.
-    fn into_review_request_row(self) -> Option<SessionReviewRequestRow> {
-        let Self {
-            display_id,
-            forge_kind,
-            last_refreshed_at,
-            source_branch,
-            state,
-            status_summary,
-            target_branch,
-            title,
-            web_url,
-        } = self;
+    #[cfg(test)]
+    /// Rebuilds `session_activity` rows from current `session.created_at`.
+    pub(crate) async fn backfill_session_activity_from_sessions(&self) -> Result<(), DbError> {
+        self.activity
+            .backfill_session_activity_from_sessions()
+            .await
+    }
 
-        Some(SessionReviewRequestRow {
-            display_id: display_id?,
-            forge_kind: forge_kind?,
-            last_refreshed_at: last_refreshed_at?,
-            source_branch: source_branch?,
-            state: state?,
-            status_summary,
-            target_branch: target_branch?,
-            title: title?,
-            web_url: web_url?,
-        })
+    #[cfg(test)]
+    /// Deletes all rows from `session_activity`.
+    pub(crate) async fn clear_session_activity(&self) -> Result<(), DbError> {
+        self.activity.clear_session_activity().await
+    }
+
+    #[cfg(test)]
+    /// Persists one session-creation activity event at a specific Unix
+    /// timestamp.
+    pub(crate) async fn insert_session_creation_activity_at(
+        &self,
+        session_id: &str,
+        timestamp_seconds: i64,
+    ) -> Result<(), DbError> {
+        self.activity
+            .insert_session_creation_activity_at(session_id, timestamp_seconds)
+            .await
+    }
+
+    /// Persists one session-creation activity event at the current Unix
+    /// timestamp.
+    pub(crate) async fn insert_session_creation_activity_now(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DbError> {
+        self.activity
+            .insert_session_creation_activity_now(session_id)
+            .await
+    }
+
+    /// Loads operations still waiting in queue or currently running.
+    pub(crate) async fn load_unfinished_session_operations(
+        &self,
+    ) -> Result<Vec<SessionOperationRow>, DbError> {
+        self.operation.load_unfinished_session_operations().await
+    }
+
+    /// Marks an operation as canceled.
+    pub(crate) async fn mark_session_operation_canceled(
+        &self,
+        operation_id: &str,
+        reason: &str,
+    ) -> Result<(), DbError> {
+        self.operation
+            .mark_session_operation_canceled(operation_id, reason)
+            .await
+    }
+
+    /// Marks an operation as completed successfully.
+    pub(crate) async fn mark_session_operation_done(
+        &self,
+        operation_id: &str,
+    ) -> Result<(), DbError> {
+        self.operation
+            .mark_session_operation_done(operation_id)
+            .await
+    }
+
+    /// Marks an operation as failed with an error message.
+    pub(crate) async fn mark_session_operation_failed(
+        &self,
+        operation_id: &str,
+        error: &str,
+    ) -> Result<(), DbError> {
+        self.operation
+            .mark_session_operation_failed(operation_id, error)
+            .await
+    }
+
+    /// Marks an operation as running and refreshes its heartbeat timestamp.
+    pub(crate) async fn mark_session_operation_running(
+        &self,
+        operation_id: &str,
+    ) -> Result<(), DbError> {
+        self.operation
+            .mark_session_operation_running(operation_id)
+            .await
+    }
+
+    /// Inserts a queued operation row for a session.
+    pub(crate) async fn insert_session_operation(
+        &self,
+        operation_id: &str,
+        session_id: &str,
+        kind: &str,
+    ) -> Result<(), DbError> {
+        self.operation
+            .insert_session_operation(operation_id, session_id, kind)
+            .await
+    }
+
+    /// Requests cancellation for unfinished operations of a session.
+    pub(crate) async fn request_cancel_for_session_operations(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DbError> {
+        self.operation
+            .request_cancel_for_session_operations(session_id)
+            .await
+    }
+
+    /// Returns whether cancellation is requested for a specific operation.
+    pub(crate) async fn is_cancel_requested_for_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<bool, DbError> {
+        self.operation
+            .is_cancel_requested_for_operation(operation_id)
+            .await
+    }
+
+    /// Returns whether an operation is still unfinished.
+    pub(crate) async fn is_session_operation_unfinished(
+        &self,
+        operation_id: &str,
+    ) -> Result<bool, DbError> {
+        self.operation
+            .is_session_operation_unfinished(operation_id)
+            .await
+    }
+
+    /// Marks unfinished operations as failed after process restart.
+    pub(crate) async fn fail_unfinished_session_operations(
+        &self,
+        reason: &str,
+    ) -> Result<(), DbError> {
+        self.operation
+            .fail_unfinished_session_operations(reason)
+            .await
+    }
+
+    /// Looks up a project by identifier.
+    pub(crate) async fn get_project(&self, id: i64) -> Result<Option<ProjectRow>, DbError> {
+        self.project.get_project(id).await
+    }
+
+    /// Loads all configured projects with aggregated session stats.
+    pub(crate) async fn load_projects_with_stats(&self) -> Result<Vec<ProjectListRow>, DbError> {
+        self.project.load_projects_with_stats().await
+    }
+
+    #[cfg(test)]
+    /// Updates favorite state for one project.
+    pub(crate) async fn set_project_favorite(
+        &self,
+        project_id: i64,
+        is_favorite: bool,
+    ) -> Result<(), DbError> {
+        self.project
+            .set_project_favorite(project_id, is_favorite)
+            .await
+    }
+
+    /// Marks a project as recently opened at the current Unix timestamp.
+    ///
+    /// # Errors
+    /// Returns an error if the project row cannot be updated.
+    pub async fn touch_project_last_opened(&self, project_id: i64) -> Result<(), DbError> {
+        self.project.touch_project_last_opened(project_id).await
+    }
+
+    /// Inserts or updates a project by path and returns its identifier.
+    ///
+    /// # Errors
+    /// Returns an error if the project row cannot be written or read.
+    pub async fn upsert_project(
+        &self,
+        path: &str,
+        git_branch: Option<&str>,
+    ) -> Result<i64, DbError> {
+        self.project
+            .upsert_project(path, git_branch.map(str::to_string))
+            .await
+    }
+
+    /// Updates the persisted forge review-request linkage for a session.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be updated.
+    pub async fn update_session_review_request(
+        &self,
+        id: &str,
+        review_request: Option<&ReviewRequest>,
+    ) -> Result<(), DbError> {
+        self.review
+            .update_session_review_request(id, review_request.cloned())
+            .await
+    }
+
+    /// Appends text to the saved output for a session row.
+    pub(crate) async fn append_session_output(&self, id: &str, chunk: &str) -> Result<(), DbError> {
+        self.session.append_session_output(id, chunk).await
+    }
+
+    /// Sets `project_id` for sessions that do not yet reference a project.
+    pub(crate) async fn backfill_session_project(&self, project_id: i64) -> Result<(), DbError> {
+        self.session.backfill_session_project(project_id).await
+    }
+
+    /// Deletes a session row by identifier.
+    pub(crate) async fn delete_session(&self, id: &str) -> Result<(), DbError> {
+        self.session.delete_session(id).await
+    }
+
+    /// Returns the persisted base branch for a session, when present.
+    pub(crate) async fn get_session_base_branch(
+        &self,
+        id: &str,
+    ) -> Result<Option<String>, DbError> {
+        self.session.get_session_base_branch(id).await
+    }
+
+    /// Returns the persisted app-server instruction bootstrap marker for a
+    /// session, when present.
+    pub(crate) async fn get_session_instruction_conversation_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<String>, DbError> {
+        self.session
+            .get_session_instruction_conversation_id(id)
+            .await
+    }
+
+    /// Returns the provider conversation identifier for a session, when
+    /// present.
+    pub(crate) async fn get_session_provider_conversation_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<String>, DbError> {
+        self.session.get_session_provider_conversation_id(id).await
+    }
+
+    /// Inserts a newly created draft-session row.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be inserted.
+    pub async fn insert_draft_session(
+        &self,
+        id: &str,
+        model: &str,
+        base_branch: &str,
+        status: &str,
+        project_id: i64,
+    ) -> Result<(), DbError> {
+        self.session
+            .insert_draft_session(id, model, base_branch, status, project_id)
+            .await
+    }
+
+    /// Inserts a newly created session row.
+    ///
+    /// # Errors
+    /// Returns an error if the session row cannot be inserted.
+    pub async fn insert_session(
+        &self,
+        id: &str,
+        model: &str,
+        base_branch: &str,
+        status: &str,
+        project_id: i64,
+    ) -> Result<(), DbError> {
+        self.session
+            .insert_session(id, model, base_branch, status, project_id)
+            .await
+    }
+
+    #[cfg(test)]
+    /// Loads all sessions ordered by most recent update.
+    pub(crate) async fn load_sessions(&self) -> Result<Vec<SessionRow>, DbError> {
+        self.session.load_sessions().await
+    }
+
+    /// Loads all sessions ordered by most recent update for one project.
+    pub(crate) async fn load_sessions_for_project(
+        &self,
+        project_id: i64,
+    ) -> Result<Vec<SessionRow>, DbError> {
+        self.session.load_sessions_for_project(project_id).await
+    }
+
+    /// Loads all persisted session follow-up-task rows in stable display
+    /// order.
+    pub(crate) async fn load_session_follow_up_tasks(
+        &self,
+    ) -> Result<Vec<SessionFollowUpTaskRow>, DbError> {
+        self.session.load_session_follow_up_tasks().await
+    }
+
+    /// Loads lightweight session metadata used for cheap change detection.
+    pub(crate) async fn load_sessions_metadata(&self) -> Result<(i64, i64), DbError> {
+        self.session.load_sessions_metadata().await
+    }
+
+    /// Loads the project identifier associated with one session.
+    pub(crate) async fn load_session_project_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<i64>, DbError> {
+        self.session.load_session_project_id(session_id).await
+    }
+
+    /// Returns the persisted upstream reference for a published session
+    /// branch, when present.
+    pub(crate) async fn load_session_published_upstream_ref(
+        &self,
+        id: &str,
+    ) -> Result<Option<String>, DbError> {
+        self.session.load_session_published_upstream_ref(id).await
+    }
+
+    /// Loads the persisted session-specific reasoning override, when present.
+    pub(crate) async fn load_session_reasoning_level_override(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ReasoningLevel>, DbError> {
+        self.session
+            .load_session_reasoning_level_override(session_id)
+            .await
+    }
+
+    /// Loads the persisted summary text associated with one session.
+    pub(crate) async fn load_session_summary(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, DbError> {
+        self.session.load_session_summary(session_id).await
+    }
+
+    /// Returns `(created_at, updated_at)` timestamps for a session.
+    pub(crate) async fn load_session_timestamps(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(i64, i64)>, DbError> {
+        self.session.load_session_timestamps(session_id).await
+    }
+
+    /// Persists all canonical turn metadata for one completed agent turn in a
+    /// single transaction.
+    pub(crate) async fn persist_session_turn_metadata(
+        &self,
+        session_id: &str,
+        turn_metadata: &SessionTurnMetadata<'_>,
+    ) -> Result<(), DbError> {
+        self.session
+            .persist_session_turn_metadata(session_id, turn_metadata)
+            .await
+    }
+
+    #[cfg(test)]
+    /// Replaces the full output for a session row.
+    pub(crate) async fn replace_session_output(
+        &self,
+        id: &str,
+        output: &str,
+    ) -> Result<(), DbError> {
+        self.session.replace_session_output(id, output).await
+    }
+
+    #[cfg(test)]
+    /// Replaces the persisted follow-up task list for one session.
+    pub(crate) async fn replace_session_follow_up_tasks(
+        &self,
+        session_id: &str,
+        follow_up_tasks: &[String],
+    ) -> Result<(), DbError> {
+        self.session
+            .replace_session_follow_up_tasks(session_id, follow_up_tasks)
+            .await
+    }
+
+    /// Updates persisted diff-derived size and line-count fields for a
+    /// session row.
+    ///
+    /// # Errors
+    /// Returns an error if the diff-stats update fails.
+    pub async fn update_session_diff_stats(
+        &self,
+        added_lines: u64,
+        deleted_lines: u64,
+        id: &str,
+        size: &str,
+    ) -> Result<(), DbError> {
+        self.session
+            .update_session_diff_stats(added_lines, deleted_lines, id, size)
+            .await
+    }
+
+    /// Updates the launched sibling-session link for one persisted follow-up
+    /// task.
+    pub(crate) async fn update_session_follow_up_task_launched_session_id(
+        &self,
+        session_id: &str,
+        position: usize,
+        launched_session_id: Option<&str>,
+    ) -> Result<(), DbError> {
+        self.session
+            .update_session_follow_up_task_launched_session_id(
+                session_id,
+                position,
+                launched_session_id.map(str::to_string),
+            )
+            .await
+    }
+
+    /// Updates the persisted app-server instruction bootstrap marker for a
+    /// session.
+    pub(crate) async fn update_session_instruction_conversation_id(
+        &self,
+        id: &str,
+        provider_conversation_id: Option<&str>,
+    ) -> Result<(), DbError> {
+        self.session
+            .update_session_instruction_conversation_id(
+                id,
+                provider_conversation_id.map(str::to_string),
+            )
+            .await
+    }
+
+    /// Updates the persisted model for a session.
+    pub(crate) async fn update_session_model(&self, id: &str, model: &str) -> Result<(), DbError> {
+        self.session.update_session_model(id, model).await
+    }
+
+    /// Updates the saved prompt for a session row.
+    pub(crate) async fn update_session_prompt(
+        &self,
+        id: &str,
+        prompt: &str,
+    ) -> Result<(), DbError> {
+        self.session.update_session_prompt(id, prompt).await
+    }
+
+    /// Updates the persisted provider conversation identifier for a session.
+    pub(crate) async fn update_session_provider_conversation_id(
+        &self,
+        id: &str,
+        provider_conversation_id: Option<&str>,
+    ) -> Result<(), DbError> {
+        self.session
+            .update_session_provider_conversation_id(
+                id,
+                provider_conversation_id.map(str::to_string),
+            )
+            .await
+    }
+
+    /// Updates the model clarification questions for a session row.
+    pub(crate) async fn update_session_questions(
+        &self,
+        id: &str,
+        questions: &str,
+    ) -> Result<(), DbError> {
+        self.session.update_session_questions(id, questions).await
+    }
+
+    /// Updates the persisted session-specific reasoning override.
+    pub(crate) async fn update_session_reasoning_level(
+        &self,
+        id: &str,
+        reasoning_level: Option<&str>,
+    ) -> Result<(), DbError> {
+        self.session
+            .update_session_reasoning_level(id, reasoning_level.map(str::to_string))
+            .await
+    }
+
+    /// Updates the persisted upstream reference for a published session
+    /// branch.
+    pub(crate) async fn update_session_published_upstream_ref(
+        &self,
+        id: &str,
+        published_upstream_ref: Option<&str>,
+    ) -> Result<(), DbError> {
+        self.session
+            .update_session_published_upstream_ref(id, published_upstream_ref.map(str::to_string))
+            .await
+    }
+
+    /// Accumulates token statistics for a session.
+    pub(crate) async fn update_session_stats(
+        &self,
+        id: &str,
+        stats: &SessionStats,
+    ) -> Result<(), DbError> {
+        self.session.update_session_stats(id, stats).await
+    }
+
+    /// Updates the status for a session row and opens or closes the persisted
+    /// cumulative active-work interval when crossing the `InProgress`
+    /// boundary.
+    pub(crate) async fn update_session_status_with_timing_at(
+        &self,
+        id: &str,
+        status: &str,
+        timestamp_seconds: i64,
+    ) -> Result<(), DbError> {
+        self.session
+            .update_session_status_with_timing_at(id, status, timestamp_seconds)
+            .await
+    }
+
+    /// Updates the persisted session summary text for a session row.
+    pub(crate) async fn update_session_summary(
+        &self,
+        id: &str,
+        summary: &str,
+    ) -> Result<(), DbError> {
+        self.session.update_session_summary(id, summary).await
+    }
+
+    /// Updates the display title for a session row.
+    ///
+    /// # Errors
+    /// Returns an error if the title update fails.
+    pub async fn update_session_title(&self, id: &str, title: &str) -> Result<(), DbError> {
+        self.session.update_session_title(id, title).await
+    }
+
+    /// Updates the display title for a session row only when the persisted
+    /// prompt still matches the prompt snapshot used to generate that title.
+    pub(crate) async fn update_session_title_for_prompt(
+        &self,
+        id: &str,
+        expected_prompt: &str,
+        title: &str,
+    ) -> Result<bool, DbError> {
+        self.session
+            .update_session_title_for_prompt(id, expected_prompt, title)
+            .await
+    }
+
+    #[cfg(test)]
+    /// Overrides the `created_at` timestamp for one session row.
+    pub(crate) async fn update_session_created_at(
+        &self,
+        id: &str,
+        created_at: i64,
+    ) -> Result<(), DbError> {
+        self.session.update_session_created_at(id, created_at).await
+    }
+
+    #[cfg(test)]
+    /// Overrides the `updated_at` timestamp for one session row.
+    pub(crate) async fn update_session_updated_at(
+        &self,
+        id: &str,
+        updated_at: i64,
+    ) -> Result<(), DbError> {
+        self.session.update_session_updated_at(id, updated_at).await
+    }
+
+    /// Looks up one project-scoped setting value by project and name.
+    pub(crate) async fn get_project_setting(
+        &self,
+        project_id: i64,
+        name: crate::domain::setting::SettingName,
+    ) -> Result<Option<String>, DbError> {
+        self.setting.get_project_setting(project_id, name).await
+    }
+
+    /// Loads the active project identifier from application settings.
+    pub(crate) async fn load_active_project_id(&self) -> Result<Option<i64>, DbError> {
+        self.setting.load_active_project_id().await
+    }
+
+    /// Loads one project-scoped reasoning-effort setting.
+    pub(crate) async fn load_project_reasoning_level(
+        &self,
+        project_id: i64,
+    ) -> Result<ReasoningLevel, DbError> {
+        self.setting.load_project_reasoning_level(project_id).await
+    }
+
+    #[cfg(test)]
+    /// Looks up a setting value by name.
+    pub(crate) async fn get_setting(
+        &self,
+        name: crate::domain::setting::SettingName,
+    ) -> Result<Option<String>, DbError> {
+        self.setting.get_setting(name).await
+    }
+
+    #[cfg(test)]
+    /// Loads the persisted reasoning-effort setting.
+    pub(crate) async fn load_reasoning_level(&self) -> Result<ReasoningLevel, DbError> {
+        self.setting.load_reasoning_level().await
+    }
+
+    /// Persists the active project identifier in application settings.
+    pub(crate) async fn set_active_project_id(&self, project_id: i64) -> Result<(), DbError> {
+        self.setting.set_active_project_id(project_id).await
+    }
+
+    /// Persists one project-scoped reasoning-effort setting.
+    pub(crate) async fn set_project_reasoning_level(
+        &self,
+        project_id: i64,
+        reasoning_level: ReasoningLevel,
+    ) -> Result<(), DbError> {
+        self.setting
+            .set_project_reasoning_level(project_id, reasoning_level)
+            .await
+    }
+
+    #[cfg(test)]
+    /// Persists the global reasoning-effort setting.
+    pub(crate) async fn set_reasoning_level(
+        &self,
+        reasoning_level: ReasoningLevel,
+    ) -> Result<(), DbError> {
+        self.setting.set_reasoning_level(reasoning_level).await
+    }
+
+    /// Inserts or updates one project-scoped setting by project and name.
+    pub(crate) async fn upsert_project_setting(
+        &self,
+        project_id: i64,
+        name: crate::domain::setting::SettingName,
+        value: &str,
+    ) -> Result<(), DbError> {
+        self.setting
+            .upsert_project_setting(project_id, name, value)
+            .await
+    }
+
+    #[cfg(test)]
+    /// Inserts or updates a setting by name.
+    pub(crate) async fn upsert_setting(
+        &self,
+        name: crate::domain::setting::SettingName,
+        value: &str,
+    ) -> Result<(), DbError> {
+        self.setting.upsert_setting(name, value).await
+    }
+
+    /// Loads per-model token usage rows for a session, ordered by model name.
+    pub(crate) async fn load_session_usage(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionUsageRow>, DbError> {
+        self.usage.load_session_usage(session_id).await
+    }
+
+    /// Accumulates per-model token usage for a session.
+    pub(crate) async fn upsert_session_usage(
+        &self,
+        session_id: &str,
+        model: &str,
+        stats: &SessionStats,
+    ) -> Result<(), DbError> {
+        self.usage
+            .upsert_session_usage(session_id, model, stats)
+            .await
     }
 }
 
@@ -419,8 +810,8 @@ impl Database {
     /// can use effectively.
     ///
     /// # Errors
-    /// Returns an error if the directory cannot be created, the database cannot
-    /// be opened, or migrations fail.
+    /// Returns an error if the directory cannot be created, the database
+    /// cannot be opened, or migrations fail.
     pub async fn open(db_path: &Path) -> Result<Self, DbError> {
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -440,1624 +831,11 @@ impl Database {
 
         sqlx::migrate!("./migrations").run(&pool).await?;
 
-        Ok(Self { pool })
+        let repositories = AppRepositories::from_pool(pool.clone());
+
+        Ok(Self { pool, repositories })
     }
 
-    /// Returns the shared `SQLite` connection pool for lower-level query
-    /// access.
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
-    }
-
-    /// Inserts a newly created session row.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be inserted.
-    pub async fn insert_session(
-        &self,
-        id: &str,
-        model: &str,
-        base_branch: &str,
-        status: &str,
-        project_id: i64,
-    ) -> Result<(), DbError> {
-        self.insert_session_with_draft_mode(id, model, base_branch, status, false, project_id)
-            .await
-    }
-
-    /// Inserts a newly created draft-session row.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be inserted.
-    pub async fn insert_draft_session(
-        &self,
-        id: &str,
-        model: &str,
-        base_branch: &str,
-        status: &str,
-        project_id: i64,
-    ) -> Result<(), DbError> {
-        self.insert_session_with_draft_mode(id, model, base_branch, status, true, project_id)
-            .await
-    }
-
-    /// Inserts one newly created session row with explicit draft-mode
-    /// persistence.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be inserted.
-    async fn insert_session_with_draft_mode(
-        &self,
-        id: &str,
-        model: &str,
-        base_branch: &str,
-        status: &str,
-        is_draft: bool,
-        project_id: i64,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-INSERT INTO session (id, model, base_branch, status, is_draft, project_id, prompt, output)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-",
-        )
-        .bind(id)
-        .bind(model)
-        .bind(base_branch)
-        .bind(status)
-        .bind(is_draft)
-        .bind(project_id)
-        .bind("")
-        .bind("")
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Persists one session-creation activity event at the current Unix
-    /// timestamp.
-    ///
-    /// Duplicate events for the same session are ignored.
-    ///
-    /// # Errors
-    /// Returns an error if the activity event cannot be inserted.
-    pub async fn insert_session_creation_activity_now(
-        &self,
-        session_id: &str,
-    ) -> Result<(), DbError> {
-        self.insert_session_creation_activity_at(session_id, unix_timestamp_now())
-            .await
-    }
-
-    /// Persists one session-creation activity event at a specific Unix
-    /// timestamp.
-    ///
-    /// Duplicate events for the same session are ignored.
-    ///
-    /// # Errors
-    /// Returns an error if the activity event cannot be inserted.
-    pub async fn insert_session_creation_activity_at(
-        &self,
-        session_id: &str,
-        timestamp_seconds: i64,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-INSERT INTO session_activity (session_id, created_at)
-VALUES (?, ?)
-ON CONFLICT(session_id) DO NOTHING
-",
-        )
-        .bind(session_id)
-        .bind(timestamp_seconds)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Loads all sessions ordered by most recent update.
-    ///
-    /// # Errors
-    /// Returns an error if session rows cannot be read from the database.
-    pub async fn load_sessions_for_project(
-        &self,
-        project_id: i64,
-    ) -> Result<Vec<SessionRow>, DbError> {
-        let rows = sqlx::query_as!(
-            SessionJoinRow,
-            r#"
-SELECT session.base_branch AS "base_branch!",
-       session.added_lines AS "added_lines!",
-       session.created_at AS "created_at!",
-       session.deleted_lines AS "deleted_lines!",
-       session.id AS "id!",
-       session.in_progress_started_at,
-       session.in_progress_total_seconds AS "in_progress_total_seconds!",
-       session.input_tokens AS "input_tokens!",
-       session.is_draft AS "is_draft!: bool",
-       session.model AS "model!",
-       session.output AS "output!",
-       session.output_tokens AS "output_tokens!",
-       session.project_id,
-       session.prompt AS "prompt!",
-       session.reasoning_level AS "reasoning_level_override?",
-       session.published_upstream_ref,
-       session.questions,
-       session_review_request.display_id AS "review_request_display_id?",
-       session_review_request.forge_kind AS "review_request_forge_kind?",
-       session_review_request.last_refreshed_at AS "review_request_last_refreshed_at?",
-       session_review_request.source_branch AS "review_request_source_branch?",
-       session_review_request.state AS "review_request_state?",
-       session_review_request.status_summary AS "review_request_status_summary?",
-       session_review_request.target_branch AS "review_request_target_branch?",
-       session_review_request.title AS "review_request_title?",
-       session_review_request.web_url AS "review_request_web_url?",
-       session.size AS "size!",
-       session.status AS "status!",
-       session.summary,
-       session.title,
-       session.updated_at AS "updated_at!"
-FROM session
-LEFT JOIN session_review_request
-ON session_review_request.session_id = session.id
-WHERE session.project_id = ?
-ORDER BY session.updated_at DESC, session.id
-"#,
-            project_id
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(SessionJoinRow::into_session_row)
-            .collect())
-    }
-
-    /// Loads all sessions ordered by most recent update.
-    ///
-    /// # Errors
-    /// Returns an error if session rows cannot be read from the database.
-    pub async fn load_sessions(&self) -> Result<Vec<SessionRow>, DbError> {
-        let rows = sqlx::query_as!(
-            SessionJoinRow,
-            r#"
-SELECT session.base_branch AS "base_branch!",
-       session.added_lines AS "added_lines!",
-       session.created_at AS "created_at!",
-       session.deleted_lines AS "deleted_lines!",
-       session.id AS "id!",
-       session.in_progress_started_at,
-       session.in_progress_total_seconds AS "in_progress_total_seconds!",
-       session.input_tokens AS "input_tokens!",
-       session.is_draft AS "is_draft!: bool",
-       session.model AS "model!",
-       session.output AS "output!",
-       session.output_tokens AS "output_tokens!",
-       session.project_id,
-       session.prompt AS "prompt!",
-       session.reasoning_level AS "reasoning_level_override?",
-       session.published_upstream_ref,
-       session.questions,
-       session_review_request.display_id AS "review_request_display_id?",
-       session_review_request.forge_kind AS "review_request_forge_kind?",
-       session_review_request.last_refreshed_at AS "review_request_last_refreshed_at?",
-       session_review_request.source_branch AS "review_request_source_branch?",
-       session_review_request.state AS "review_request_state?",
-       session_review_request.status_summary AS "review_request_status_summary?",
-       session_review_request.target_branch AS "review_request_target_branch?",
-       session_review_request.title AS "review_request_title?",
-       session_review_request.web_url AS "review_request_web_url?",
-       session.size AS "size!",
-       session.status AS "status!",
-       session.summary,
-       session.title,
-       session.updated_at AS "updated_at!"
-FROM session
-LEFT JOIN session_review_request
-ON session_review_request.session_id = session.id
-ORDER BY session.updated_at DESC, session.id
-"#
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(SessionJoinRow::into_session_row)
-            .collect())
-    }
-
-    /// Loads persisted activity event timestamps used for activity stats.
-    ///
-    /// # Errors
-    /// Returns an error if activity timestamps cannot be read from the
-    /// database.
-    pub async fn load_session_activity_timestamps(&self) -> Result<Vec<i64>, DbError> {
-        let rows = sqlx::query_as!(
-            TimestampValueRow,
-            r"
-SELECT created_at
-FROM session_activity
-ORDER BY id
-",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(|row| row.created_at).collect())
-    }
-
-    /// Loads aggregated session-creation activity counts keyed by local day.
-    ///
-    /// Activity history stays available after session deletion because counts
-    /// are sourced from immutable `session_activity` rows instead of live
-    /// `session` records.
-    ///
-    /// # Errors
-    /// Returns an error if daily activity cannot be aggregated from the
-    /// database.
-    pub async fn load_session_activity(&self) -> Result<Vec<DailyActivity>, DbError> {
-        let rows = sqlx::query_as!(
-            DailyActivityQueryRow,
-            r#"
-SELECT CAST(
-           unixepoch(datetime(created_at, 'unixepoch', 'localtime', 'start of day', 'utc')) / 86400
-           AS INTEGER
-       ) AS "day_key!: _",
-       COUNT(*) AS "session_count!: _"
-FROM session_activity
-WHERE created_at IS NOT NULL
-GROUP BY 1
-ORDER BY 1
-"#
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(DailyActivityQueryRow::into_daily_activity)
-            .collect())
-    }
-
-    /// Loads lightweight session metadata used for cheap change detection.
-    ///
-    /// Returns `(session_count, max_updated_at)` from the `session` table so
-    /// callers can decide whether a full `load_sessions()` refresh is needed.
-    ///
-    /// # Errors
-    /// Returns an error if metadata cannot be queried from the database.
-    pub async fn load_sessions_metadata(&self) -> Result<(i64, i64), DbError> {
-        let row = sqlx::query_as!(
-            SessionMetadataRow,
-            r#"
-SELECT (SELECT COUNT(*) FROM session) AS "session_count!: _",
-       COALESCE(
-           (
-               SELECT updated_at
-               FROM session
-               ORDER BY updated_at DESC, id
-               LIMIT 1
-           ),
-           0
-       ) AS "max_updated_at!: _"
-"#
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok((row.session_count, row.max_updated_at))
-    }
-
-    /// Deletes a session row by identifier.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be deleted.
-    pub async fn delete_session(&self, id: &str) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-DELETE FROM session
-WHERE id = ?
-",
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Updates the status for a session row and opens or closes the persisted
-    /// cumulative active-work interval when crossing the `InProgress`
-    /// boundary.
-    ///
-    /// Entering `InProgress` records `timestamp_seconds` only when no timing
-    /// window is already open. Leaving `InProgress` adds the elapsed interval
-    /// to `in_progress_total_seconds` and clears `in_progress_started_at`.
-    ///
-    /// # Errors
-    /// Returns an error if the status or timing update fails.
-    pub async fn update_session_status_with_timing_at(
-        &self,
-        id: &str,
-        status: &str,
-        timestamp_seconds: i64,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET status = ?,
-    in_progress_total_seconds = CASE
-        WHEN ? = 'InProgress' OR in_progress_started_at IS NULL THEN in_progress_total_seconds
-        ELSE in_progress_total_seconds + MAX(0, ? - in_progress_started_at)
-    END,
-    in_progress_started_at = CASE
-        WHEN ? = 'InProgress' THEN COALESCE(in_progress_started_at, ?)
-        ELSE NULL
-    END
-WHERE id = ?
-",
-        )
-        // Placeholder mapping:
-        // 1 = status, 2 = status, 3 = timestamp_seconds,
-        // 4 = status, 5 = timestamp_seconds, 6 = id.
-        .bind(status)
-        .bind(status)
-        .bind(timestamp_seconds)
-        .bind(status)
-        .bind(timestamp_seconds)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Overrides the `updated_at` timestamp for one session row.
-    ///
-    /// This is primarily used by deterministic ordering tests.
-    ///
-    /// # Errors
-    /// Returns an error if the timestamp update fails.
-    pub async fn update_session_updated_at(
-        &self,
-        id: &str,
-        updated_at: i64,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET updated_at = ?
-WHERE id = ?
-",
-        )
-        .bind(updated_at)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Overrides the `created_at` timestamp for one session row.
-    ///
-    /// This is primarily used by activity aggregation tests.
-    ///
-    /// # Errors
-    /// Returns an error if the timestamp update fails.
-    pub async fn update_session_created_at(
-        &self,
-        id: &str,
-        created_at: i64,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET created_at = ?
-WHERE id = ?
-",
-        )
-        .bind(created_at)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Deletes all rows from `session_activity`.
-    ///
-    /// # Errors
-    /// Returns an error if deleting activity rows fails.
-    pub async fn clear_session_activity(&self) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-DELETE FROM session_activity
-",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Rebuilds `session_activity` rows from current `session.created_at`.
-    ///
-    /// # Errors
-    /// Returns an error if backfilling activity rows fails.
-    pub async fn backfill_session_activity_from_sessions(&self) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-INSERT INTO session_activity (session_id, created_at)
-SELECT id, created_at
-FROM session
-",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates persisted diff-derived size and line-count fields for a
-    /// session row.
-    ///
-    /// The update is skipped when all stored values already match the provided
-    /// diff summary.
-    ///
-    /// # Errors
-    /// Returns an error if the diff-stats update fails.
-    pub async fn update_session_diff_stats(
-        &self,
-        added_lines: u64,
-        deleted_lines: u64,
-        id: &str,
-        size: &str,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET added_lines = ?,
-    deleted_lines = ?,
-    size = ?
-WHERE id = ?
-  AND (
-      added_lines <> ?
-      OR deleted_lines <> ?
-      OR size <> ?
-  )
-",
-        )
-        .bind(added_lines.cast_signed())
-        .bind(deleted_lines.cast_signed())
-        .bind(size)
-        .bind(id)
-        .bind(added_lines.cast_signed())
-        .bind(deleted_lines.cast_signed())
-        .bind(size)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the model clarification questions for a session row.
-    ///
-    /// # Errors
-    /// Returns an error if the questions update fails.
-    pub async fn update_session_questions(&self, id: &str, questions: &str) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET questions = ?
-WHERE id = ?
-",
-        )
-        .bind(questions)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Persists all canonical turn metadata for one completed agent turn in a
-    /// single transaction.
-    ///
-    /// The session row update must affect exactly one row; otherwise the
-    /// transaction fails so callers do not project non-durable turn metadata
-    /// into memory.
-    ///
-    /// # Errors
-    /// Returns an error if any part of the turn-metadata transaction fails.
-    pub(crate) async fn persist_session_turn_metadata(
-        &self,
-        session_id: &str,
-        turn_metadata: &SessionTurnMetadata<'_>,
-    ) -> Result<(), DbError> {
-        let mut transaction = self.pool.begin().await?;
-
-        let session_update = sqlx::query(
-            r"
-UPDATE session
-SET questions = ?,
-    summary = ?,
-    provider_conversation_id = ?,
-    app_server_instruction_provider_conversation_id = ?
-WHERE id = ?
-",
-        )
-        .bind(turn_metadata.questions_json)
-        .bind(turn_metadata.summary)
-        .bind(turn_metadata.provider_conversation_id)
-        .bind(turn_metadata.instruction_conversation_id)
-        .bind(session_id)
-        .execute(&mut *transaction)
-        .await?;
-        if session_update.rows_affected() != 1 {
-            return Err(sqlx::Error::RowNotFound.into());
-        }
-
-        sqlx::query(
-            r"
-DELETE FROM session_follow_up_task
-WHERE session_id = ?
-",
-        )
-        .bind(session_id)
-        .execute(&mut *transaction)
-        .await?;
-
-        for (position, follow_up_task) in turn_metadata.follow_up_tasks.iter().enumerate() {
-            sqlx::query(
-                r"
-INSERT INTO session_follow_up_task (session_id, position, text)
-VALUES (?, ?, ?)
-",
-            )
-            .bind(session_id)
-            .bind(i64::try_from(position).unwrap_or(i64::MAX))
-            .bind(follow_up_task)
-            .execute(&mut *transaction)
-            .await?;
-        }
-
-        if turn_metadata.token_usage_delta.input_tokens != 0
-            || turn_metadata.token_usage_delta.output_tokens != 0
-        {
-            sqlx::query(
-                r"
-UPDATE session
-SET input_tokens = input_tokens + ?,
-    output_tokens = output_tokens + ?
-WHERE id = ?
-",
-            )
-            .bind(turn_metadata.token_usage_delta.input_tokens.cast_signed())
-            .bind(turn_metadata.token_usage_delta.output_tokens.cast_signed())
-            .bind(session_id)
-            .execute(&mut *transaction)
-            .await?;
-
-            sqlx::query(
-                r"
-INSERT INTO session_usage (session_id, model, input_tokens, output_tokens, invocation_count)
-VALUES (?, ?, ?, ?, 1)
-ON CONFLICT(session_id, model) DO UPDATE SET
-    input_tokens = input_tokens + excluded.input_tokens,
-    output_tokens = output_tokens + excluded.output_tokens,
-    invocation_count = invocation_count + 1
-",
-            )
-            .bind(session_id)
-            .bind(turn_metadata.model)
-            .bind(turn_metadata.token_usage_delta.input_tokens.cast_signed())
-            .bind(turn_metadata.token_usage_delta.output_tokens.cast_signed())
-            .execute(&mut *transaction)
-            .await?;
-        }
-
-        transaction.commit().await?;
-
-        Ok(())
-    }
-
-    /// Replaces the persisted follow-up task list for one session.
-    ///
-    /// Existing task rows are deleted first so the stored task list always
-    /// matches the latest assistant payload exactly.
-    ///
-    /// # Errors
-    /// Returns an error if the replacement transaction fails.
-    pub async fn replace_session_follow_up_tasks(
-        &self,
-        session_id: &str,
-        follow_up_tasks: &[String],
-    ) -> Result<(), DbError> {
-        let mut transaction = self.pool.begin().await?;
-
-        sqlx::query(
-            r"
-DELETE FROM session_follow_up_task
-WHERE session_id = ?
-",
-        )
-        .bind(session_id)
-        .execute(&mut *transaction)
-        .await?;
-
-        for (position, follow_up_task) in follow_up_tasks.iter().enumerate() {
-            sqlx::query(
-                r"
-INSERT INTO session_follow_up_task (session_id, position, text)
-VALUES (?, ?, ?)
-",
-            )
-            .bind(session_id)
-            .bind(i64::try_from(position).unwrap_or(i64::MAX))
-            .bind(follow_up_task)
-            .execute(&mut *transaction)
-            .await?;
-        }
-
-        transaction.commit().await?;
-
-        Ok(())
-    }
-
-    /// Updates the launched sibling-session link for one persisted follow-up
-    /// task.
-    ///
-    /// # Errors
-    /// Returns an error if the follow-up-task row cannot be updated.
-    pub async fn update_session_follow_up_task_launched_session_id(
-        &self,
-        session_id: &str,
-        position: usize,
-        launched_session_id: Option<&str>,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session_follow_up_task
-SET launched_session_id = ?
-WHERE session_id = ?
-  AND position = ?
-",
-        )
-        .bind(launched_session_id)
-        .bind(session_id)
-        .bind(i64::try_from(position).unwrap_or(i64::MAX))
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the saved prompt for a session row.
-    ///
-    /// # Errors
-    /// Returns an error if the prompt update fails.
-    pub async fn update_session_prompt(&self, id: &str, prompt: &str) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET prompt = ?
-WHERE id = ?
-",
-        )
-        .bind(prompt)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the display title for a session row.
-    ///
-    /// # Errors
-    /// Returns an error if the title update fails.
-    pub async fn update_session_title(&self, id: &str, title: &str) -> Result<(), DbError> {
-        sqlx::query!(
-            r#"
-UPDATE session
-SET title = ?
-WHERE id = ?
-"#,
-            title,
-            id,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the display title for a session row only when the persisted
-    /// prompt still matches the prompt snapshot used to generate that title.
-    ///
-    /// # Errors
-    /// Returns an error if the conditional title update fails.
-    pub async fn update_session_title_for_prompt(
-        &self,
-        id: &str,
-        expected_prompt: &str,
-        title: &str,
-    ) -> Result<bool, DbError> {
-        let result = sqlx::query!(
-            r#"
-UPDATE session
-SET title = ?
-WHERE id = ?
-  AND prompt = ?
-"#,
-            title,
-            id,
-            expected_prompt,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// Updates the persisted session summary text for a session row.
-    ///
-    /// This field stores the raw agent `summary` payload during
-    /// review/question states and, once the session reaches `Done`, the merge
-    /// workflow rewrites it into markdown with `# Summary` and `# Commit`
-    /// sections.
-    ///
-    /// # Errors
-    /// Returns an error if the summary update fails.
-    pub async fn update_session_summary(&self, id: &str, summary: &str) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET summary = ?
-WHERE id = ?
-",
-        )
-        .bind(summary)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Accumulates token statistics for a session.
-    ///
-    /// Each call **adds** the provided values to the existing totals so that
-    /// per-invocation stats reported by the agent CLI are summed over the
-    /// lifetime of the session.
-    ///
-    /// # Errors
-    /// Returns an error if the stats update fails.
-    pub async fn update_session_stats(
-        &self,
-        id: &str,
-        stats: &SessionStats,
-    ) -> Result<(), DbError> {
-        if stats.input_tokens == 0 && stats.output_tokens == 0 {
-            return Ok(());
-        }
-
-        sqlx::query(
-            r"
-UPDATE session
-SET input_tokens = input_tokens + ?,
-    output_tokens = output_tokens + ?
-WHERE id = ?
-",
-        )
-        .bind(stats.input_tokens.cast_signed())
-        .bind(stats.output_tokens.cast_signed())
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the persisted model for a session.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be updated.
-    pub async fn update_session_model(&self, id: &str, model: &str) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET model = ?
-WHERE id = ?
-",
-        )
-        .bind(model)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the persisted session-specific reasoning override.
-    ///
-    /// Passing `None` clears the override so future turns inherit the project
-    /// default reasoning level again.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be updated.
-    pub async fn update_session_reasoning_level(
-        &self,
-        id: &str,
-        reasoning_level: Option<&str>,
-    ) -> Result<(), DbError> {
-        sqlx::query!(
-            r#"
-UPDATE session
-SET reasoning_level = ?
-WHERE id = ?
-            "#,
-            reasoning_level,
-            id
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the persisted provider conversation identifier for a session.
-    ///
-    /// The identifier stores the provider-native thread/session id used to
-    /// resume app-server context without transcript replay after runtime
-    /// restart.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be updated.
-    pub async fn update_session_provider_conversation_id(
-        &self,
-        id: &str,
-        provider_conversation_id: Option<&str>,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET provider_conversation_id = ?
-WHERE id = ?
-",
-        )
-        .bind(provider_conversation_id)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the persisted app-server instruction bootstrap marker for a
-    /// session.
-    ///
-    /// Passing `None` clears the tracked provider-conversation marker so the
-    /// next app-server turn must re-bootstrap the full instruction contract.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be updated.
-    pub(crate) async fn update_session_instruction_conversation_id(
-        &self,
-        id: &str,
-        provider_conversation_id: Option<&str>,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET app_server_instruction_provider_conversation_id = ?
-WHERE id = ?
-",
-        )
-        .bind(provider_conversation_id)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Updates the persisted upstream reference for a published session
-    /// branch.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be updated.
-    pub async fn update_session_published_upstream_ref(
-        &self,
-        id: &str,
-        published_upstream_ref: Option<&str>,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET published_upstream_ref = ?
-WHERE id = ?
-",
-        )
-        .bind(published_upstream_ref)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Returns the persisted upstream reference for a published session
-    /// branch, when present.
-    ///
-    /// # Errors
-    /// Returns an error if the lookup query fails.
-    pub async fn load_session_published_upstream_ref(
-        &self,
-        id: &str,
-    ) -> Result<Option<String>, DbError> {
-        let value = sqlx::query_scalar!(
-            r"SELECT published_upstream_ref FROM session WHERE id = ?",
-            id
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten();
-
-        Ok(value)
-    }
-
-    /// Updates the persisted forge review-request linkage for a session.
-    ///
-    /// Passing `None` deletes the linked `session_review_request` row. Local
-    /// session status transitions should keep the link intact by persisting the
-    /// latest metadata instead of clearing it.
-    ///
-    /// # Errors
-    /// Returns an error if the session row cannot be updated.
-    pub async fn update_session_review_request(
-        &self,
-        id: &str,
-        review_request: Option<&ReviewRequest>,
-    ) -> Result<(), DbError> {
-        if let Some(review_request) = review_request {
-            sqlx::query(
-                r"
-INSERT INTO session_review_request (
-    session_id,
-    display_id,
-    forge_kind,
-    last_refreshed_at,
-    source_branch,
-    state,
-    status_summary,
-    target_branch,
-    title,
-    web_url
-)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(session_id) DO UPDATE
-SET display_id = excluded.display_id,
-    forge_kind = excluded.forge_kind,
-    last_refreshed_at = excluded.last_refreshed_at,
-    source_branch = excluded.source_branch,
-    state = excluded.state,
-    status_summary = excluded.status_summary,
-    target_branch = excluded.target_branch,
-    title = excluded.title,
-    web_url = excluded.web_url
-",
-            )
-            .bind(id)
-            .bind(review_request.summary.display_id.as_str())
-            .bind(review_request.summary.forge_kind.as_str())
-            .bind(review_request.last_refreshed_at)
-            .bind(review_request.summary.source_branch.as_str())
-            .bind(review_request.summary.state.as_str())
-            .bind(review_request.summary.status_summary.as_deref())
-            .bind(review_request.summary.target_branch.as_str())
-            .bind(review_request.summary.title.as_str())
-            .bind(review_request.summary.web_url.as_str())
-            .execute(&self.pool)
-            .await?;
-        } else {
-            sqlx::query(
-                r"
-DELETE FROM session_review_request
-WHERE session_id = ?
-",
-            )
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        }
-
-        Ok(())
-    }
-
-    /// Replaces the full output for a session row.
-    ///
-    /// Used when an operation needs to rewrite the persisted transcript
-    /// instead of appending incremental chunks.
-    ///
-    /// # Errors
-    /// Returns an error if the output update fails.
-    pub async fn replace_session_output(&self, id: &str, output: &str) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET output = ?
-WHERE id = ?
-",
-        )
-        .bind(output)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Appends text to the saved output for a session row.
-    ///
-    /// # Errors
-    /// Returns an error if the output append update fails.
-    pub async fn append_session_output(&self, id: &str, chunk: &str) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET output = output || ?
-WHERE id = ?
-",
-        )
-        .bind(chunk)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Sets `project_id` for sessions that do not yet reference a project.
-    ///
-    /// # Errors
-    /// Returns an error if the backfill update fails.
-    pub async fn backfill_session_project(&self, project_id: i64) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session
-SET project_id = ?
-WHERE project_id IS NULL
-",
-        )
-        .bind(project_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Returns the persisted base branch for a session, when present.
-    ///
-    /// # Errors
-    /// Returns an error if the base branch lookup query fails.
-    pub async fn get_session_base_branch(&self, id: &str) -> Result<Option<String>, DbError> {
-        let row = sqlx::query_as!(
-            RequiredStringValueRow,
-            r#"
-SELECT base_branch AS "value!: _"
-FROM session
-WHERE id = ?
-"#,
-            id
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.map(|row| row.value))
-    }
-
-    /// Returns the provider conversation identifier for a session, when
-    /// present.
-    ///
-    /// # Errors
-    /// Returns an error if the lookup query fails.
-    pub async fn get_session_provider_conversation_id(
-        &self,
-        id: &str,
-    ) -> Result<Option<String>, DbError> {
-        let value = sqlx::query_scalar!(
-            r"SELECT provider_conversation_id FROM session WHERE id = ?",
-            id
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten();
-
-        Ok(value)
-    }
-
-    /// Returns the persisted app-server instruction bootstrap marker for a
-    /// session, when present.
-    ///
-    /// # Errors
-    /// Returns an error if the lookup query fails.
-    pub(crate) async fn get_session_instruction_conversation_id(
-        &self,
-        id: &str,
-    ) -> Result<Option<String>, DbError> {
-        let row = sqlx::query_as::<_, SessionInstructionStateRow>(
-            r"
-SELECT app_server_instruction_provider_conversation_id
-FROM session
-WHERE id = ?
-",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.and_then(SessionInstructionStateRow::into_instruction_conversation_id))
-    }
-
-    /// Inserts a queued operation row for a session.
-    ///
-    /// # Errors
-    /// Returns an error if the operation row cannot be inserted.
-    pub async fn insert_session_operation(
-        &self,
-        operation_id: &str,
-        session_id: &str,
-        kind: &str,
-    ) -> Result<(), DbError> {
-        let queued_at = unix_timestamp_now();
-
-        sqlx::query(
-            r"
-INSERT INTO session_operation (id, session_id, kind, status, queued_at)
-VALUES (?, ?, ?, 'queued', ?)
-",
-        )
-        .bind(operation_id)
-        .bind(session_id)
-        .bind(kind)
-        .bind(queued_at)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Loads operations still waiting in queue or currently running.
-    ///
-    /// # Errors
-    /// Returns an error if operation rows cannot be read.
-    pub async fn load_unfinished_session_operations(
-        &self,
-    ) -> Result<Vec<SessionOperationRow>, DbError> {
-        let rows = sqlx::query_as!(
-            SessionOperationRow,
-            r#"
-SELECT id AS "id!", session_id AS "session_id!", kind AS "kind!", status AS "status!",
-       queued_at, started_at, finished_at,
-       heartbeat_at, last_error,
-       cancel_requested AS "cancel_requested: _"
-FROM session_operation
-WHERE status IN ('queued', 'running')
-ORDER BY queued_at ASC, id ASC
-            "#
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows)
-    }
-
-    /// Returns whether an operation is still unfinished.
-    ///
-    /// Unfinished means the operation is in `queued` or `running` status.
-    ///
-    /// # Errors
-    /// Returns an error if operation state cannot be read.
-    pub async fn is_session_operation_unfinished(
-        &self,
-        operation_id: &str,
-    ) -> Result<bool, DbError> {
-        let row = sqlx::query_as!(
-            RequiredBoolValueRow,
-            r#"
-SELECT EXISTS(
-    SELECT 1
-    FROM session_operation
-    WHERE id = ?
-      AND status IN ('queued', 'running')
-) AS "value!: _"
-"#,
-            operation_id
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(row.value)
-    }
-
-    /// Marks an operation as running and refreshes its heartbeat timestamp.
-    ///
-    /// # Errors
-    /// Returns an error if the operation row cannot be updated.
-    pub async fn mark_session_operation_running(&self, operation_id: &str) -> Result<(), DbError> {
-        let now = unix_timestamp_now();
-
-        sqlx::query(
-            r"
-UPDATE session_operation
-SET status = 'running',
-    started_at = COALESCE(started_at, ?),
-    heartbeat_at = ?,
-    last_error = NULL
-WHERE id = ?
-",
-        )
-        .bind(now)
-        .bind(now)
-        .bind(operation_id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Marks an operation as completed successfully.
-    ///
-    /// # Errors
-    /// Returns an error if the operation row cannot be updated.
-    pub async fn mark_session_operation_done(&self, operation_id: &str) -> Result<(), DbError> {
-        let now = unix_timestamp_now();
-
-        sqlx::query(
-            r"
-UPDATE session_operation
-SET status = 'done',
-    finished_at = ?,
-    heartbeat_at = ?,
-    last_error = NULL
-WHERE id = ?
-",
-        )
-        .bind(now)
-        .bind(now)
-        .bind(operation_id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Marks an operation as failed with an error message.
-    ///
-    /// # Errors
-    /// Returns an error if the operation row cannot be updated.
-    pub async fn mark_session_operation_failed(
-        &self,
-        operation_id: &str,
-        error: &str,
-    ) -> Result<(), DbError> {
-        let now = unix_timestamp_now();
-
-        sqlx::query(
-            r"
-UPDATE session_operation
-SET status = 'failed',
-    finished_at = ?,
-    heartbeat_at = ?,
-    last_error = ?
-WHERE id = ?
-",
-        )
-        .bind(now)
-        .bind(now)
-        .bind(error)
-        .bind(operation_id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Marks an operation as canceled.
-    ///
-    /// # Errors
-    /// Returns an error if the operation row cannot be updated.
-    pub async fn mark_session_operation_canceled(
-        &self,
-        operation_id: &str,
-        reason: &str,
-    ) -> Result<(), DbError> {
-        let now = unix_timestamp_now();
-
-        sqlx::query(
-            r"
-UPDATE session_operation
-SET status = 'canceled',
-    finished_at = ?,
-    heartbeat_at = ?,
-    last_error = ?
-WHERE id = ?
-",
-        )
-        .bind(now)
-        .bind(now)
-        .bind(reason)
-        .bind(operation_id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Requests cancellation for unfinished operations of a session.
-    ///
-    /// # Errors
-    /// Returns an error if the operation rows cannot be updated.
-    pub async fn request_cancel_for_session_operations(
-        &self,
-        session_id: &str,
-    ) -> Result<(), DbError> {
-        sqlx::query(
-            r"
-UPDATE session_operation
-SET cancel_requested = 1
-WHERE session_id = ?
-  AND status IN ('queued', 'running')
-",
-        )
-        .bind(session_id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Returns whether cancellation is requested for a specific operation.
-    ///
-    /// The check is scoped to a single operation so that stale cancel flags
-    /// from previously cancelled operations do not block newly created ones
-    /// in the same session.
-    ///
-    /// # Errors
-    /// Returns an error if cancellation state cannot be read.
-    pub async fn is_cancel_requested_for_operation(
-        &self,
-        operation_id: &str,
-    ) -> Result<bool, DbError> {
-        let row = sqlx::query_as!(
-            RequiredBoolValueRow,
-            r#"
-SELECT EXISTS(
-    SELECT 1
-    FROM session_operation
-    WHERE id = ?
-      AND cancel_requested = 1
-      AND status IN ('queued', 'running')
-) AS "value!: _"
-"#,
-            operation_id
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(row.value)
-    }
-
-    /// Marks unfinished operations as failed after process restart.
-    ///
-    /// # Errors
-    /// Returns an error if operation rows cannot be updated.
-    pub async fn fail_unfinished_session_operations(&self, reason: &str) -> Result<(), DbError> {
-        let now = unix_timestamp_now();
-
-        sqlx::query(
-            r"
-UPDATE session_operation
-SET status = 'failed',
-    finished_at = ?,
-    heartbeat_at = ?,
-    last_error = ?,
-    cancel_requested = 1
-WHERE status IN ('queued', 'running')
-",
-        )
-        .bind(now)
-        .bind(now)
-        .bind(reason)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Loads the project identifier associated with one session.
-    ///
-    /// # Errors
-    /// Returns an error if the session lookup query fails.
-    pub async fn load_session_project_id(&self, session_id: &str) -> Result<Option<i64>, DbError> {
-        let row = sqlx::query_as!(
-            OptionalI64ValueRow,
-            r#"
-SELECT project_id AS "value: _"
-FROM session
-WHERE id = ?
-"#,
-            session_id
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.and_then(|row| row.value))
-    }
-
-    /// Loads the persisted session-specific reasoning override, when present.
-    ///
-    /// Invalid persisted values are treated as if no override was stored.
-    ///
-    /// # Errors
-    /// Returns an error if the session lookup query fails.
-    pub async fn load_session_reasoning_level_override(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ReasoningLevel>, DbError> {
-        let value = sqlx::query_scalar!(
-            r"SELECT reasoning_level FROM session WHERE id = ?",
-            session_id
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten();
-
-        Ok(value.and_then(|value| value.parse::<ReasoningLevel>().ok()))
-    }
-
-    /// Loads the persisted summary text associated with one session.
-    ///
-    /// # Errors
-    /// Returns an error if the session summary lookup query fails.
-    pub async fn load_session_summary(&self, session_id: &str) -> Result<Option<String>, DbError> {
-        let row = sqlx::query_scalar::<_, Option<String>>(
-            r"
-SELECT summary
-FROM session
-WHERE id = ?
-",
-        )
-        .bind(session_id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.flatten())
-    }
-
-    /// Loads all persisted session follow-up-task rows in stable display
-    /// order.
-    ///
-    /// # Errors
-    /// Returns an error if the follow-up-task lookup query fails.
-    pub async fn load_session_follow_up_tasks(
-        &self,
-    ) -> Result<Vec<SessionFollowUpTaskRow>, DbError> {
-        let rows = sqlx::query_as::<_, SessionFollowUpTaskRow>(
-            r"
-SELECT id,
-       launched_session_id,
-       position,
-       session_id,
-       text
-FROM session_follow_up_task
-ORDER BY session_id, position, id
-",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows)
-    }
-
-    /// Accumulates per-model token usage for a session.
-    ///
-    /// Each call inserts a new row if the `(session_id, model)` pair does not
-    /// exist, or adds the provided values to the existing totals.
-    /// `invocation_count` is incremented by 1 on each call.
-    ///
-    /// # Errors
-    /// Returns an error if the upsert fails.
-    pub async fn upsert_session_usage(
-        &self,
-        session_id: &str,
-        model: &str,
-        stats: &SessionStats,
-    ) -> Result<(), DbError> {
-        if stats.input_tokens == 0 && stats.output_tokens == 0 {
-            return Ok(());
-        }
-
-        sqlx::query(
-            r"
-INSERT INTO session_usage (session_id, model, input_tokens, output_tokens, invocation_count)
-VALUES (?, ?, ?, ?, 1)
-ON CONFLICT(session_id, model) DO UPDATE SET
-    input_tokens = input_tokens + excluded.input_tokens,
-    output_tokens = output_tokens + excluded.output_tokens,
-    invocation_count = invocation_count + 1
-",
-        )
-        .bind(session_id)
-        .bind(model)
-        .bind(stats.input_tokens.cast_signed())
-        .bind(stats.output_tokens.cast_signed())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Loads per-model token usage rows for a session, ordered by model name.
-    ///
-    /// # Errors
-    /// Returns an error if the query fails.
-    pub async fn load_session_usage(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<SessionUsageRow>, DbError> {
-        let rows = sqlx::query_as!(
-            SessionUsageRow,
-            r#"
-SELECT session_id, model, created_at, input_tokens, invocation_count, output_tokens
-FROM session_usage
-WHERE session_id = ?
-ORDER BY model
-            "#,
-            session_id
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows)
-    }
-
-    /// Returns `(created_at, updated_at)` timestamps for a session.
-    ///
-    /// Returns `None` if the session does not exist.
-    ///
-    /// # Errors
-    /// Returns an error if the query fails.
-    pub async fn load_session_timestamps(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<(i64, i64)>, DbError> {
-        let row = sqlx::query_as!(
-            SessionTimestampsRow,
-            r#"
-SELECT created_at, updated_at
-FROM session
-WHERE id = ?
-            "#,
-            session_id
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.map(|row| (row.created_at, row.updated_at)))
-    }
-}
-
-pub(crate) fn unix_timestamp_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(0))
-}
-
-impl Database {
     /// Opens an in-memory `SQLite` database and runs migrations.
     ///
     /// This is primarily used by tests and any ephemeral workflows that need
@@ -2080,8 +858,37 @@ impl Database {
 
         sqlx::migrate!("./migrations").run(&pool).await?;
 
-        Ok(Self { pool })
+        let repositories = AppRepositories::from_pool(pool.clone());
+
+        Ok(Self { pool, repositories })
     }
+
+    /// Returns the shared `SQLite` connection pool for lower-level query
+    /// access.
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+}
+
+impl Deref for Database {
+    type Target = AppRepositories;
+
+    fn deref(&self) -> &Self::Target {
+        &self.repositories
+    }
+}
+
+impl From<Database> for AppRepositories {
+    fn from(database: Database) -> Self {
+        database.repositories
+    }
+}
+
+/// Returns the current Unix timestamp in whole seconds.
+pub(crate) fn unix_timestamp_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -2231,41 +1038,7 @@ WHERE id = ?
     /// Builds one deterministic joined-session row fixture for conversion
     /// tests.
     fn session_join_row_fixture() -> SessionJoinRow {
-        SessionJoinRow {
-            added_lines: 14,
-            base_branch: "main".to_string(),
-            created_at: 100,
-            deleted_lines: 6,
-            id: "session-a".to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            input_tokens: 11,
-            is_draft: false,
-            model: "gpt-5.4".to_string(),
-            output: "Saved output".to_string(),
-            output_tokens: 29,
-            project_id: Some(7),
-            prompt: "Implement feature".to_string(),
-            reasoning_level_override: None,
-            published_upstream_ref: Some("origin/session-a".to_string()),
-            questions: Some("Question text".to_string()),
-            review_request_display_id: Some("#42".to_string()),
-            review_request_forge_kind: Some("GitHub".to_string()),
-            review_request_last_refreshed_at: Some(456),
-            review_request_source_branch: Some("feature/forge".to_string()),
-            review_request_state: Some("Open".to_string()),
-            review_request_status_summary: Some("2 approvals, checks passing".to_string()),
-            review_request_target_branch: Some("main".to_string()),
-            review_request_title: Some("Add forge review support".to_string()),
-            review_request_web_url: Some(
-                "https://github.com/agentty-xyz/agentty/pull/42".to_string(),
-            ),
-            size: "M".to_string(),
-            status: "Review".to_string(),
-            summary: Some("Summary text".to_string()),
-            title: Some("Review session".to_string()),
-            updated_at: 200,
-        }
+        SessionJoinRow::fixture_for_test()
     }
 
     /// Verifies `open()` creates missing parent directories before opening the

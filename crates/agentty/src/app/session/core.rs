@@ -1048,13 +1048,13 @@ mod tests {
         app.services = AppServices::new(
             base_path,
             app.services.clock(),
-            db,
             event_sender,
             crate::app::service::AppServiceDeps {
                 app_server_client_override,
                 available_agent_kinds,
                 fs_client,
                 git_client: Arc::clone(&mock_git_client),
+                repositories: db,
                 review_request_client,
             },
         );

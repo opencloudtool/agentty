@@ -1589,7 +1589,7 @@ impl SessionManager {
     /// handle and abort any older in-flight task before replacing it.
     pub(crate) fn spawn_session_title_generation_task(
         app_event_tx: mpsc::UnboundedSender<AppEvent>,
-        db: db::Database,
+        db: db::AppRepositories,
         session_id: &str,
         folder: &Path,
         prompt: &str,
@@ -2309,7 +2309,7 @@ mod tests {
     /// Builds app services with caller-provided filesystem, git, and forge
     /// boundaries.
     fn test_services_with_fs_client(
-        database: Database,
+        database: &Database,
         fs_client: Arc<dyn fs::FsClient>,
         git_client: Arc<dyn git::GitClient>,
         review_request_client: Arc<dyn forge::ReviewRequestClient>,
@@ -2319,13 +2319,13 @@ mod tests {
         AppServices::new(
             PathBuf::from("/tmp/agentty-tests"),
             Arc::new(crate::app::session::RealClock),
-            database,
             event_tx,
             crate::app::service::AppServiceDeps {
                 app_server_client_override: Some(mock_app_server()),
                 fs_client,
                 available_agent_kinds: AgentKind::ALL.to_vec(),
                 git_client,
+                repositories: crate::db::AppRepositories::from_database(database),
                 review_request_client,
             },
         )
@@ -2333,7 +2333,7 @@ mod tests {
 
     /// Builds app services with caller-provided git and forge boundaries.
     fn test_services(
-        database: Database,
+        database: &Database,
         git_client: Arc<dyn git::GitClient>,
         review_request_client: Arc<dyn forge::ReviewRequestClient>,
     ) -> AppServices {
@@ -2348,7 +2348,7 @@ mod tests {
     /// Builds app services plus an event receiver for reducer-event
     /// assertions.
     fn test_services_with_event_receiver(
-        database: Database,
+        database: &Database,
         git_client: Arc<dyn git::GitClient>,
         review_request_client: Arc<dyn forge::ReviewRequestClient>,
     ) -> (AppServices, mpsc::UnboundedReceiver<AppEvent>) {
@@ -2356,13 +2356,13 @@ mod tests {
         let services = AppServices::new(
             PathBuf::from("/tmp/agentty-tests"),
             Arc::new(crate::app::session::RealClock),
-            database,
             event_tx,
             crate::app::service::AppServiceDeps {
                 app_server_client_override: Some(mock_app_server()),
                 fs_client: Arc::new(create_passthrough_mock_fs_client()),
                 available_agent_kinds: AgentKind::ALL.to_vec(),
                 git_client,
+                repositories: crate::db::AppRepositories::from_database(database),
                 review_request_client,
             },
         );
@@ -2440,7 +2440,7 @@ mod tests {
         let database = database_with_session(&session).await;
         let mut session_manager = session_manager_with_one_session(session);
         let (services, mut event_rx) = test_services_with_event_receiver(
-            database.clone(),
+            &database,
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
         );
@@ -2532,7 +2532,7 @@ mod tests {
                 Box::pin(async move { Ok(created_summary) })
             });
         let services = test_services(
-            database.clone(),
+            &database,
             Arc::new(mock_git_client),
             Arc::new(mock_review_request_client),
         );
@@ -2616,7 +2616,7 @@ mod tests {
             })
         });
         let services = test_services_with_fs_client(
-            database.clone(),
+            &database,
             Arc::new(mock_fs_client),
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
@@ -2661,7 +2661,7 @@ mod tests {
         mock_git_client.expect_create_worktree().times(0);
         mock_git_client.expect_find_git_repo_root().times(0);
         let services = test_services_with_fs_client(
-            database,
+            &database,
             Arc::new(mock_fs_client),
             Arc::new(mock_git_client),
             Arc::new(forge::MockReviewRequestClient::new()),
@@ -2689,7 +2689,7 @@ mod tests {
         mock_git_client.expect_create_worktree().times(0);
         mock_git_client.expect_find_git_repo_root().times(0);
         let services = test_services_with_fs_client(
-            database,
+            &database,
             Arc::new(mock_fs_client),
             Arc::new(mock_git_client),
             Arc::new(forge::MockReviewRequestClient::new()),
@@ -2825,7 +2825,7 @@ mod tests {
             .expect_create_review_request()
             .times(0);
         let services = test_services(
-            database,
+            &database,
             Arc::new(mock_git_client),
             Arc::new(mock_review_request_client),
         );
@@ -2889,7 +2889,7 @@ mod tests {
                 Box::pin(async move { Ok(refreshed_summary) })
             });
         let services = test_services(
-            database.clone(),
+            &database,
             Arc::new(mock_git_client),
             Arc::new(mock_review_request_client),
         );
@@ -2947,7 +2947,7 @@ mod tests {
             .times(1)
             .returning(|summary| Ok(summary.web_url.clone()));
         let services = test_services(
-            database,
+            &database,
             Arc::new(git::MockGitClient::new()),
             Arc::new(mock_review_request_client),
         );
@@ -3490,7 +3490,7 @@ mod tests {
             .expect("seed instruction conversation id");
         let mut session_manager = session_manager_with_one_session(session);
         let (services, mut event_rx) = test_services_with_event_receiver(
-            database.clone(),
+            &database,
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
         );
@@ -3544,7 +3544,7 @@ mod tests {
             .expect("seed provider conversation id");
         let mut session_manager = session_manager_with_one_session(session);
         let (services, mut event_rx) = test_services_with_event_receiver(
-            database.clone(),
+            &database,
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
         );
@@ -3579,7 +3579,7 @@ mod tests {
         let database = database_with_session(&session).await;
         let mut session_manager = session_manager_with_one_session(session);
         let services = test_services(
-            database,
+            &database,
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
         );

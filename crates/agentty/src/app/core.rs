@@ -55,7 +55,7 @@ use crate::domain::session::{
     Status,
 };
 use crate::infra::channel::TurnPrompt;
-use crate::infra::db::Database;
+use crate::infra::db::{AppRepositories, Database};
 use crate::infra::file_index::FileEntry;
 use crate::infra::fs::{FsClient, RealFsClient};
 use crate::infra::git::{GitClient, RealGitClient};
@@ -766,8 +766,8 @@ impl App {
         db: Database,
         clients: AppClients,
     ) -> Result<Self, AppError> {
-        let current_project_id =
-            AppStartup::persist_startup_project(&db, working_dir.as_path(), git_branch.as_deref())
+        let (repositories, startup_project_context) =
+            Self::load_startup_project_state(working_dir.as_path(), git_branch, &db, &clients)
                 .await?;
         let StartupProjectContext {
             active_project_id,
@@ -776,42 +776,20 @@ impl App {
             startup_git_branch,
             startup_git_upstream_ref,
             startup_working_dir,
-        } = AppStartup::load_startup_project_context(
-            &db,
-            clients.fs_client.as_ref(),
-            &clients.git_client,
-            clients.project_discovery_client.as_ref(),
-            working_dir.as_path(),
-            git_branch,
-            current_project_id,
-        )
-        .await?;
+        } = startup_project_context;
 
         let clock: Arc<dyn session::Clock> = Arc::new(session::RealClock);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let available_agent_kinds = task::TaskService::load_agent_availability(Arc::clone(
-            &clients.agent_availability_probe,
-        ))
-        .await;
-        AppStartup::validate_startup_agent_availability(&available_agent_kinds)?;
-        let services = AppServices::new(
+        let services = Self::build_services(
             base_path.clone(),
             Arc::clone(&clock),
-            db.clone(),
             event_tx.clone(),
-            AppServiceDeps {
-                app_server_client_override: clients
-                    .app_server_client_override
-                    .as_ref()
-                    .map(Arc::clone),
-                available_agent_kinds,
-                fs_client: Arc::clone(&clients.fs_client),
-                git_client: Arc::clone(&clients.git_client),
-                review_request_client: Arc::clone(&clients.review_request_client),
-            },
-        );
+            repositories.clone(),
+            &clients,
+        )
+        .await?;
         SessionManager::fail_unfinished_operations_from_previous_run(
-            db.clone(),
+            repositories.clone(),
             Arc::clone(&clock),
         )
         .await;
@@ -867,6 +845,72 @@ impl App {
             sync_main_runner: clients.sync_main_runner,
             tmux_client: clients.tmux_client,
         })
+    }
+
+    /// Loads the startup project state and builds the repository bundle used
+    /// by the app layer.
+    ///
+    /// # Errors
+    /// Returns an error if startup project metadata cannot be persisted or
+    /// loaded from storage.
+    async fn load_startup_project_state(
+        working_dir: &Path,
+        git_branch: Option<String>,
+        db: &Database,
+        clients: &AppClients,
+    ) -> Result<(AppRepositories, StartupProjectContext), AppError> {
+        let repositories = AppRepositories::from_database(db);
+        let current_project_id =
+            AppStartup::persist_startup_project(&repositories, working_dir, git_branch.as_deref())
+                .await?;
+        let startup_project_context = AppStartup::load_startup_project_context(
+            &repositories,
+            clients.fs_client.as_ref(),
+            &clients.git_client,
+            clients.project_discovery_client.as_ref(),
+            working_dir,
+            git_branch,
+            current_project_id,
+        )
+        .await?;
+
+        Ok((repositories, startup_project_context))
+    }
+
+    /// Builds the shared app services after validating startup agent
+    /// availability.
+    ///
+    /// # Errors
+    /// Returns an error when no supported agent backend is available.
+    async fn build_services(
+        base_path: PathBuf,
+        clock: Arc<dyn session::Clock>,
+        event_tx: mpsc::UnboundedSender<AppEvent>,
+        repositories: AppRepositories,
+        clients: &AppClients,
+    ) -> Result<AppServices, AppError> {
+        let available_agent_kinds = task::TaskService::load_agent_availability(Arc::clone(
+            &clients.agent_availability_probe,
+        ))
+        .await;
+        AppStartup::validate_startup_agent_availability(&available_agent_kinds)?;
+
+        Ok(AppServices::new(
+            base_path,
+            clock,
+            event_tx,
+            AppServiceDeps {
+                app_server_client_override: clients
+                    .app_server_client_override
+                    .as_ref()
+                    .map(Arc::clone),
+                available_agent_kinds,
+                fs_client: Arc::clone(&clients.fs_client),
+                git_client: Arc::clone(&clients.git_client),
+                repositories,
+                review_request_client: Arc::clone(&clients.review_request_client),
+            },
+        ))
     }
 
     /// Returns the active project identifier.
@@ -2778,7 +2822,7 @@ impl App {
     /// current working directory when the stored project row is stale.
     #[cfg(test)]
     async fn resolve_startup_active_project_id(
-        db: &Database,
+        db: &AppRepositories,
         fs_client: &dyn FsClient,
         current_project_id: i64,
     ) -> i64 {
@@ -2790,7 +2834,10 @@ impl App {
     /// Agentty-managed session worktrees and missing project directories are
     /// excluded so the list keeps only user-facing repository roots that still
     /// exist on disk.
-    async fn load_project_items(db: &Database, fs_client: &dyn FsClient) -> Vec<ProjectListItem> {
+    async fn load_project_items(
+        db: &AppRepositories,
+        fs_client: &dyn FsClient,
+    ) -> Vec<ProjectListItem> {
         AppStartup::load_project_items(db, fs_client).await
     }
 
@@ -2798,7 +2845,7 @@ impl App {
     /// root for filtering.
     #[cfg(test)]
     async fn load_project_items_with_session_worktree_root(
-        db: &Database,
+        db: &AppRepositories,
         fs_client: &dyn FsClient,
         session_worktree_root: &Path,
     ) -> Vec<ProjectListItem> {
@@ -2814,7 +2861,7 @@ impl App {
     /// during startup before the first project list render.
     #[cfg(test)]
     async fn load_projects_from_home_directory(
-        db: &Database,
+        db: &AppRepositories,
         project_discovery_client: &dyn ProjectDiscoveryClient,
         session_worktree_root: &Path,
         home_directory: Option<&Path>,
@@ -3703,7 +3750,7 @@ mod tests {
         let result = push_session_branch(
             PublishBranchAction::Push,
             &branch_session,
-            database,
+            database.into(),
             git_client,
             None,
         )
@@ -3742,7 +3789,7 @@ mod tests {
         let result = push_session_branch(
             PublishBranchAction::Push,
             &branch_session,
-            database,
+            database.into(),
             git_client,
             Some("feature/existing"),
         )
@@ -3783,7 +3830,7 @@ mod tests {
         let result = push_session_branch(
             PublishBranchAction::Push,
             &branch_session,
-            database,
+            database.into(),
             git_client,
             Some("feature/new"),
         )
@@ -3876,7 +3923,7 @@ mod tests {
         let result = push_session_branch(
             PublishBranchAction::Push,
             &branch_session,
-            database.clone(),
+            database.clone().into(),
             git_client,
             Some("review/custom-branch"),
         )
@@ -3926,7 +3973,7 @@ mod tests {
         let result = push_session_branch(
             PublishBranchAction::Push,
             &branch_session,
-            database,
+            database.into(),
             git_client,
             None,
         )
@@ -6035,13 +6082,13 @@ mod tests {
         app.services = AppServices::new(
             base_path,
             app.services.clock(),
-            db,
             event_sender,
             AppServiceDeps {
                 app_server_client_override,
                 available_agent_kinds,
                 fs_client,
                 git_client: Arc::clone(&mock_git_client),
+                repositories: db,
                 review_request_client,
             },
         );

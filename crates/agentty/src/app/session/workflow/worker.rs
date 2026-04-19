@@ -26,7 +26,7 @@ use crate::infra::channel::{
     AgentChannel, AgentError, AgentRequestKind, TurnEvent, TurnPrompt, TurnRequest, TurnResult,
     create_agent_channel,
 };
-use crate::infra::db::{Database, SessionTurnMetadata};
+use crate::infra::db::{AppRepositories, SessionTurnMetadata};
 use crate::infra::fs::FsClient;
 use crate::infra::git::GitClient;
 use crate::infra::{agent, process};
@@ -109,7 +109,7 @@ struct SessionWorkerContext {
     channel: Arc<dyn AgentChannel>,
     child_pid: Arc<Mutex<Option<u32>>>,
     clock: Arc<dyn Clock>,
-    db: Database,
+    db: AppRepositories,
     folder: PathBuf,
     fs_client: Arc<dyn FsClient>,
     git_client: Arc<dyn GitClient>,
@@ -160,7 +160,7 @@ impl SessionWorkerService {
     /// Marks unfinished operations from previous process runs as failed and
     /// closes any open active-work timing window at `timestamp_seconds`.
     pub(super) async fn fail_unfinished_operations_from_previous_run_at(
-        db: &Database,
+        db: &AppRepositories,
         timestamp_seconds: i64,
     ) {
         let interrupted_session_ids: HashSet<String> = db
@@ -518,7 +518,7 @@ impl SessionWorkerService {
 impl SessionManager {
     /// Marks unfinished operations from previous process runs as failed.
     pub(crate) async fn fail_unfinished_operations_from_previous_run(
-        db: Database,
+        db: AppRepositories,
         clock: Arc<dyn Clock>,
     ) {
         let timestamp_seconds = unix_timestamp_from_system_time(clock.now_system_time());
@@ -929,8 +929,8 @@ fn start_published_branch_auto_push(
 pub(super) struct PublishedBranchAutoPushInput {
     /// Reducer event sender used to publish auto-push progress and completion.
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
-    /// Database handle used to resolve and persist branch-publish state.
-    pub(super) db: Database,
+    /// Repository bundle used to resolve and persist branch-publish state.
+    pub(super) db: AppRepositories,
     /// Session worktree folder pushed to its tracked upstream branch.
     pub(super) folder: PathBuf,
     /// Git boundary used for the remote push operation.
@@ -1053,13 +1053,13 @@ async fn spawn_start_turn_title_generation(
 }
 
 /// Loads the project identifier associated with one persisted session.
-async fn load_session_project_id(db: &Database, session_id: &str) -> Option<i64> {
+async fn load_session_project_id(db: &AppRepositories, session_id: &str) -> Option<i64> {
     db.load_session_project_id(session_id).await.ok().flatten()
 }
 
 /// Loads the effective reasoning level for one session context.
 async fn load_session_reasoning_level(
-    db: &Database,
+    db: &AppRepositories,
     session_id: &str,
     project_id: Option<i64>,
 ) -> ReasoningLevel {
@@ -1081,7 +1081,7 @@ async fn load_session_reasoning_level(
 /// Retired persisted model ids are upgraded to their current replacement
 /// models before the setting is returned.
 async fn load_project_model_setting(
-    db: &Database,
+    db: &AppRepositories,
     project_id: Option<i64>,
     setting_name: SettingName,
 ) -> Option<AgentModel> {
@@ -1486,7 +1486,7 @@ mod tests {
             channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db,
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(mock_fs_client_with_existing_directories()),
             git_client: Arc::new(mock_git_client),
@@ -1589,7 +1589,7 @@ mod tests {
             channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db,
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(mock_fs_client_with_existing_directories()),
             git_client: Arc::new(mock_git_client),
@@ -1645,7 +1645,9 @@ mod tests {
             channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: Database::open_in_memory().await.expect("failed to open db"),
+            db: AppRepositories::from_database(
+                &Database::open_in_memory().await.expect("failed to open db"),
+            ),
             folder: std::env::temp_dir(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
@@ -1709,7 +1711,9 @@ mod tests {
             channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: Database::open_in_memory().await.expect("failed to open db"),
+            db: AppRepositories::from_database(
+                &Database::open_in_memory().await.expect("failed to open db"),
+            ),
             folder: std::env::temp_dir(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
@@ -1770,7 +1774,9 @@ mod tests {
             channel: Arc::new(MockAgentChannel::new()),
             child_pid: Arc::new(Mutex::new(Some(child_pid))),
             clock: Arc::new(crate::app::session::RealClock),
-            db: Database::open_in_memory().await.expect("failed to open db"),
+            db: AppRepositories::from_database(
+                &Database::open_in_memory().await.expect("failed to open db"),
+            ),
             folder: std::env::temp_dir(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
@@ -1806,7 +1812,9 @@ mod tests {
             channel: Arc::new(MockAgentChannel::new()),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: Database::open_in_memory().await.expect("failed to open db"),
+            db: AppRepositories::from_database(
+                &Database::open_in_memory().await.expect("failed to open db"),
+            ),
             folder: std::env::temp_dir(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
@@ -1892,7 +1900,7 @@ mod tests {
             channel: Arc::new(MockAgentChannel::new()),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: db.clone(),
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(mock_git_client),
@@ -2003,7 +2011,7 @@ mod tests {
             channel: Arc::new(MockAgentChannel::new()),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: db.clone(),
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().join("sess1"),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(mock_git_client),
@@ -2106,7 +2114,7 @@ mod tests {
             channel: Arc::new(MockAgentChannel::new()),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db,
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().join("sess1"),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(mock_git_client),
@@ -2193,7 +2201,7 @@ mod tests {
             channel: Arc::new(MockAgentChannel::new()),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db,
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
@@ -2283,7 +2291,7 @@ mod tests {
             channel: Arc::new(MockAgentChannel::new()),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db,
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(mock_git_client),
@@ -2352,7 +2360,7 @@ mod tests {
             channel: Arc::new(MockAgentChannel::new()),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: db.clone(),
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(mock_git_client),
@@ -2504,7 +2512,7 @@ mod tests {
             channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: db.clone(),
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
@@ -2563,7 +2571,7 @@ mod tests {
             channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: db.clone(),
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),
@@ -2634,7 +2642,7 @@ mod tests {
             channel: Arc::new(mock_channel),
             child_pid: Arc::new(Mutex::new(None)),
             clock: Arc::new(crate::app::session::RealClock),
-            db: db.clone(),
+            db: AppRepositories::from_database(&db),
             folder: base_dir.path().to_path_buf(),
             fs_client: Arc::new(fs::MockFsClient::new()),
             git_client: Arc::new(MockGitClient::new()),

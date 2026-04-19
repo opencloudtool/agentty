@@ -1449,13 +1449,13 @@ mod tests {
         app.services = crate::app::AppServices::new(
             base_path,
             app.services.clock(),
-            db,
             event_sender,
             crate::app::AppServiceDeps {
                 app_server_client_override,
                 available_agent_kinds,
                 fs_client,
                 git_client: mock_git_client,
+                repositories: db,
                 review_request_client,
             },
         );

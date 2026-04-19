@@ -381,7 +381,7 @@ mod tests {
 
     /// Builds app services with caller-provided git and forge boundaries.
     fn test_services(
-        database: Database,
+        database: &Database,
         git_client: Arc<dyn git::GitClient>,
         review_request_client: Arc<dyn forge::ReviewRequestClient>,
     ) -> AppServices {
@@ -390,13 +390,13 @@ mod tests {
         AppServices::new(
             PathBuf::from("/tmp/agentty-tests"),
             Arc::new(crate::app::session::RealClock),
-            database,
             event_tx,
             crate::app::service::AppServiceDeps {
                 app_server_client_override: Some(mock_app_server()),
                 available_agent_kinds: crate::domain::agent::AgentKind::ALL.to_vec(),
                 fs_client: Arc::new(create_passthrough_mock_fs_client()),
                 git_client,
+                repositories: crate::db::AppRepositories::from_database(database),
                 review_request_client,
             },
         )
@@ -509,7 +509,7 @@ mod tests {
                 })
             });
         let services = test_services(
-            database,
+            &database,
             Arc::new(mock_git_client),
             Arc::new(mock_review_request_client),
         );
@@ -682,7 +682,7 @@ mod tests {
                 Box::pin(async move { Ok(refreshed_summary) })
             });
         let services = test_services(
-            database.clone(),
+            &database,
             Arc::new(mock_git_client),
             Arc::new(mock_review_request_client),
         );
@@ -773,7 +773,7 @@ mod tests {
         let mut session_manager = session_manager_fixture(clock);
         let original_deadline = session_manager.state.refresh_deadline;
         let services = test_services(
-            database,
+            &database,
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
         );
@@ -804,7 +804,7 @@ mod tests {
         let clock: Arc<dyn Clock> = fake_clock.clone();
         let mut session_manager = session_manager_fixture(clock);
         let services = test_services(
-            database,
+            &database,
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
         );
@@ -835,7 +835,7 @@ mod tests {
         let clock: Arc<dyn Clock> = fake_clock.clone();
         let mut session_manager = session_manager_fixture(clock);
         let services = test_services(
-            database,
+            &database,
             Arc::new(git::MockGitClient::new()),
             Arc::new(forge::MockReviewRequestClient::new()),
         );

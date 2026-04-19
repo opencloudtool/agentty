@@ -19,8 +19,6 @@ pub mod git;
 pub(crate) mod process;
 /// Startup project-discovery boundary for home-directory repository scans.
 pub mod project_discovery;
-mod project_repository;
-mod setting_repository;
 /// Tmux process boundary used by app orchestration.
 pub mod tmux;
 pub mod version;

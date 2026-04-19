@@ -255,7 +255,7 @@ pub(crate) fn pull_request_publish_success_message(
 pub(crate) async fn run_branch_publish_action(
     publish_branch_action: PublishBranchAction,
     branch_publish_session: BranchPublishTaskSession,
-    db: db::Database,
+    db: db::AppRepositories,
     clock: Arc<dyn Clock>,
     git_client: Arc<dyn GitClient>,
     review_request_client: Arc<dyn forge::ReviewRequestClient>,
@@ -374,7 +374,7 @@ pub(crate) fn git_push_authentication_message(
 pub(crate) async fn push_session_branch(
     publish_branch_action: PublishBranchAction,
     branch_publish_session: &BranchPublishTaskSession,
-    db: db::Database,
+    db: db::AppRepositories,
     git_client: Arc<dyn GitClient>,
     remote_branch_name: Option<&str>,
 ) -> BranchPublishTaskResult {
@@ -413,7 +413,7 @@ pub(crate) async fn push_session_branch(
 /// request.
 async fn publish_pull_request(
     branch_publish_session: &BranchPublishTaskSession,
-    db: db::Database,
+    db: db::AppRepositories,
     clock: Arc<dyn Clock>,
     git_client: Arc<dyn GitClient>,
     review_request_client: Arc<dyn forge::ReviewRequestClient>,
@@ -471,7 +471,7 @@ async fn publish_pull_request(
 /// `published_upstream_ref`, a pre-flight `git ls-remote` check blocks
 /// the push if the remote branch already exists.
 pub(crate) async fn push_session_branch_to_remote(
-    db: &db::Database,
+    db: &db::AppRepositories,
     folder: PathBuf,
     git_client: Arc<dyn GitClient>,
     publish_branch_action: PublishBranchAction,
@@ -593,7 +593,7 @@ async fn review_request_remote(
 async fn create_or_refresh_review_request(
     branch_publish_session: &BranchPublishTaskSession,
     clock: &Arc<dyn Clock>,
-    db: &db::Database,
+    db: &db::AppRepositories,
     git_client: Arc<dyn GitClient>,
     review_request_client: Arc<dyn forge::ReviewRequestClient>,
     remote: forge::ForgeRemote,

@@ -17,7 +17,7 @@ use crate::domain::agent::AgentModel;
 use crate::domain::session::{SessionSize, Status};
 use crate::domain::setting::SettingName;
 use crate::infra::agent;
-use crate::infra::db::Database;
+use crate::infra::db::AppRepositories;
 use crate::infra::fs::FsClient;
 use crate::infra::git::{self as git, GitClient};
 
@@ -60,8 +60,8 @@ pub(crate) struct RunAgentAssistTaskInput {
     pub(crate) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     /// Shared process identifier slot used for cancellation.
     pub(crate) child_pid: Arc<Mutex<Option<u32>>>,
-    /// Database handle used for output/status persistence.
-    pub(crate) db: Database,
+    /// Repository bundle used for output and status persistence.
+    pub(crate) db: AppRepositories,
     /// Session worktree folder where the assist prompt runs.
     pub(crate) folder: std::path::PathBuf,
     /// Session identifier for persisted updates.
@@ -81,7 +81,7 @@ impl SessionTaskService {
     /// Returns the recomputed size plus added/deleted line totals when the
     /// base-branch lookup and persistence both succeed.
     pub(crate) async fn refresh_persisted_session_diff_stats(
-        db: &Database,
+        db: &AppRepositories,
         fs_client: &dyn FsClient,
         git_client: &dyn GitClient,
         session_id: &str,
@@ -180,7 +180,7 @@ impl SessionTaskService {
     /// New projects default this toggle to disabled until a valid persisted
     /// boolean overrides it.
     pub(crate) async fn load_include_coauthored_by_agentty_setting(
-        db: &Database,
+        db: &AppRepositories,
         session_id: &str,
     ) -> bool {
         let Some(project_id) = db.load_session_project_id(session_id).await.ok().flatten() else {
@@ -201,7 +201,7 @@ impl SessionTaskService {
     /// `DefaultSmartModel`, and finally returns `fallback_model` when no
     /// persisted setting can be parsed.
     pub(crate) async fn load_auto_commit_model_setting(
-        db: &Database,
+        db: &AppRepositories,
         session_id: &str,
         fallback_model: AgentModel,
     ) -> AgentModel {
@@ -312,7 +312,7 @@ impl SessionTaskService {
     /// Retired persisted model ids are upgraded to their current replacement
     /// models before the setting is returned.
     async fn load_project_model_setting(
-        db: &Database,
+        db: &AppRepositories,
         project_id: Option<i64>,
         setting_name: SettingName,
     ) -> Option<AgentModel> {
@@ -695,7 +695,7 @@ impl SessionTaskService {
     pub(crate) async fn update_status(
         status: &Mutex<Status>,
         clock: &dyn Clock,
-        db: &Database,
+        db: &AppRepositories,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
         id: &str,
         new: Status,
@@ -734,7 +734,7 @@ impl SessionTaskService {
     /// Appends output to the in-memory handle buffer and database.
     pub(crate) async fn append_session_output(
         output: &Arc<Mutex<String>>,
-        db: &Database,
+        db: &AppRepositories,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
         id: &str,
         message: &str,
@@ -1208,7 +1208,7 @@ mod tests {
         let context = AssistContext {
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
-            db: database,
+            db: AppRepositories::from_database(&database),
             folder: PathBuf::from("/tmp/project"),
             git_client: Arc::new(mock_git_client),
             id: "session-id".to_string(),
@@ -1246,7 +1246,7 @@ mod tests {
         let context = AssistContext {
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
-            db: database,
+            db: AppRepositories::from_database(&database),
             folder: PathBuf::from("/tmp/project"),
             git_client: Arc::new(mock_git_client),
             id: "session-id".to_string(),
@@ -1362,7 +1362,7 @@ mod tests {
         let context = AssistContext {
             app_event_tx,
             child_pid: Arc::new(Mutex::new(None)),
-            db: database.clone(),
+            db: AppRepositories::from_database(&database),
             folder: PathBuf::from("/tmp/project"),
             git_client: Arc::new(mock_git_client),
             id: "session-id".to_string(),
@@ -1520,7 +1520,7 @@ mod tests {
             RunAgentAssistTaskInput {
                 app_event_tx,
                 child_pid: Arc::clone(&child_pid),
-                db: database.clone(),
+                db: AppRepositories::from_database(&database),
                 folder: temp_dir.path().to_path_buf(),
                 id: "session-id".to_string(),
                 output: Arc::clone(&output),
@@ -1583,7 +1583,7 @@ mod tests {
             RunAgentAssistTaskInput {
                 app_event_tx,
                 child_pid: Arc::new(Mutex::new(None)),
-                db: database.clone(),
+                db: AppRepositories::from_database(&database),
                 folder: temp_dir.path().to_path_buf(),
                 id: "session-id".to_string(),
                 output: Arc::clone(&output),
@@ -1634,7 +1634,7 @@ mod tests {
             RunAgentAssistTaskInput {
                 app_event_tx,
                 child_pid: Arc::new(Mutex::new(None)),
-                db: database,
+                db: AppRepositories::from_database(&database),
                 folder: temp_dir.path().to_path_buf(),
                 id: "session-id".to_string(),
                 output: Arc::new(Mutex::new(String::new())),

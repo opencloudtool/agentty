@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
 use crate::app::session::Clock;
-use crate::db::Database;
+use crate::db::AppRepositories;
 use crate::domain::agent::AgentKind;
 use crate::infra::app_server::AppServerClient;
 use crate::infra::fs::FsClient;
@@ -26,6 +26,8 @@ pub(crate) struct AppServiceDeps {
     pub(crate) fs_client: Arc<dyn FsClient>,
     /// Shared git client for async git operations.
     pub(crate) git_client: Arc<dyn GitClient>,
+    /// Shared repository bundle used by app workflows.
+    pub(crate) repositories: AppRepositories,
     /// Shared forge review-request client.
     pub(crate) review_request_client: Arc<dyn ReviewRequestClient>,
 }
@@ -36,10 +38,10 @@ pub struct AppServices {
     app_server_client_override: Option<Arc<dyn AppServerClient>>,
     base_path: PathBuf,
     clock: Arc<dyn Clock>,
-    db: Database,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     fs_client: Arc<dyn FsClient>,
     git_client: Arc<dyn GitClient>,
+    repositories: AppRepositories,
     review_request_client: Arc<dyn ReviewRequestClient>,
 }
 
@@ -49,7 +51,6 @@ impl AppServices {
     pub(crate) fn new(
         base_path: PathBuf,
         clock: Arc<dyn Clock>,
-        db: Database,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         deps: AppServiceDeps,
     ) -> Self {
@@ -58,6 +59,7 @@ impl AppServices {
             available_agent_kinds,
             fs_client,
             git_client,
+            repositories,
             review_request_client,
         } = deps;
 
@@ -66,10 +68,10 @@ impl AppServices {
             app_server_client_override,
             base_path,
             clock,
-            db,
             event_tx,
             fs_client,
             git_client,
+            repositories,
             review_request_client,
         }
     }
@@ -84,9 +86,9 @@ impl AppServices {
         self.available_agent_kinds.as_ref().to_vec()
     }
 
-    /// Returns the application database handle.
-    pub(crate) fn db(&self) -> &Database {
-        &self.db
+    /// Returns the application repository bundle.
+    pub(crate) fn db(&self) -> &AppRepositories {
+        &self.repositories
     }
 
     /// Returns the shared wall-clock used by session workflows.

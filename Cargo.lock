@@ -73,6 +73,7 @@ dependencies = [
  "arboard",
  "askama",
  "assert_cmd",
+ "async-trait",
  "base64",
  "crossterm",
  "dirs",

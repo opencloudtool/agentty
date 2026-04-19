@@ -21,6 +21,8 @@ use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{PublishedBranchSyncStatus, Status};
 use crate::infra::agent;
 use crate::infra::agent::protocol::AgentResponseSummary;
+use crate::infra::db::AppRepositories;
+#[cfg(test)]
 use crate::infra::db::Database;
 use crate::infra::fs::{self as fs, FsClient};
 use crate::infra::git::{self as git, GitClient};
@@ -53,7 +55,7 @@ struct MergeTaskInput {
     base_branch: String,
     child_pid: Arc<Mutex<Option<u32>>>,
     clock: Arc<dyn Clock>,
-    db: Database,
+    db: AppRepositories,
     folder: PathBuf,
     fs_client: Arc<dyn FsClient>,
     git_client: Arc<dyn GitClient>,
@@ -70,7 +72,7 @@ struct RebaseAssistInput {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
     base_branch: String,
     child_pid: Arc<Mutex<Option<u32>>>,
-    db: Database,
+    db: AppRepositories,
     folder: PathBuf,
     fs_client: Arc<dyn FsClient>,
     git_client: Arc<dyn GitClient>,
@@ -84,7 +86,7 @@ struct RebaseTaskInput {
     base_branch: String,
     child_pid: Arc<Mutex<Option<u32>>>,
     clock: Arc<dyn Clock>,
-    db: Database,
+    db: AppRepositories,
     folder: PathBuf,
     fs_client: Arc<dyn FsClient>,
     git_client: Arc<dyn GitClient>,
@@ -98,7 +100,7 @@ struct RebaseTaskInput {
 struct FinalizeRebaseInput<'a> {
     app_event_tx: &'a mpsc::UnboundedSender<AppEvent>,
     clock: &'a dyn Clock,
-    db: &'a Database,
+    db: &'a AppRepositories,
     folder: &'a Path,
     git_client: &'a Arc<dyn GitClient>,
     id: &'a str,
@@ -497,7 +499,7 @@ impl SessionMergeService {
     async fn restore_review_status(
         status: &Arc<Mutex<Status>>,
         clock: &dyn Clock,
-        db: &Database,
+        db: &AppRepositories,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
         session_id: &str,
     ) {
@@ -816,7 +818,7 @@ impl SessionManager {
         merge_result: Result<String, SessionError>,
         clock: &dyn Clock,
         output: &Arc<Mutex<String>>,
-        db: &Database,
+        db: &AppRepositories,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
         id: &str,
         status: &Arc<Mutex<Status>>,
@@ -1332,7 +1334,7 @@ impl SessionManager {
     /// Starts a detached auto-push task when the rebased session has a
     /// previously published upstream branch.
     async fn start_auto_push_after_rebase(
-        db: &Database,
+        db: &AppRepositories,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
         folder: &Path,
         git_client: &Arc<dyn GitClient>,
@@ -1381,7 +1383,7 @@ impl SessionManager {
 
     /// Updates the persisted session title from the canonical commit message.
     pub(crate) async fn update_session_title_from_commit_message(
-        db: &Database,
+        db: &AppRepositories,
         session_id: &str,
         commit_message: &str,
         app_event_tx: &mpsc::UnboundedSender<AppEvent>,
@@ -1400,7 +1402,7 @@ impl SessionManager {
     /// from raw JSON payloads when needed, and canonical commit message into
     /// markdown sections.
     async fn update_done_session_summary_from_commit_message(
-        db: &Database,
+        db: &AppRepositories,
         session_id: &str,
         commit_message: &str,
     ) {
@@ -1416,7 +1418,7 @@ impl SessionManager {
     }
 
     /// Loads the currently persisted session summary text for one session.
-    async fn persisted_session_summary(db: &Database, session_id: &str) -> Option<String> {
+    async fn persisted_session_summary(db: &AppRepositories, session_id: &str) -> Option<String> {
         db.load_session_summary(session_id).await.ok().flatten()
     }
 
@@ -1970,7 +1972,7 @@ mod tests {
                 app_event_tx,
                 base_branch: "main".to_string(),
                 child_pid: Arc::new(Mutex::new(None)),
-                db,
+                db: AppRepositories::from_database(&db),
                 folder,
                 fs_client: test_fs_client(),
                 git_client,
@@ -1999,7 +2001,7 @@ mod tests {
                 base_branch: "main".to_string(),
                 child_pid: Arc::new(Mutex::new(None)),
                 clock: Arc::new(crate::app::session::RealClock),
-                db,
+                db: AppRepositories::from_database(&db),
                 folder,
                 fs_client: test_fs_client(),
                 git_client,
@@ -2427,7 +2429,7 @@ mod tests {
             app_event_tx: tx,
             base_branch: "main".to_string(),
             child_pid: Arc::new(Mutex::new(None)),
-            db,
+            db: AppRepositories::from_database(&db),
             folder: temp_dir.path().to_path_buf(),
             fs_client: test_fs_client(),
             git_client: Arc::new(git::RealGitClient),

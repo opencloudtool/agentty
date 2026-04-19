@@ -874,13 +874,13 @@ mod tests {
         let services = AppServices::new(
             PathBuf::from("/tmp/agentty-settings-tests"),
             Arc::new(crate::app::session::RealClock),
-            database,
             event_tx,
             crate::app::service::AppServiceDeps {
                 app_server_client_override: Some(Arc::new(app_server::MockAppServerClient::new())),
                 available_agent_kinds: AgentKind::ALL.to_vec(),
                 fs_client: Arc::new(fs::MockFsClient::new()),
                 git_client: Arc::new(git::MockGitClient::new()),
+                repositories: crate::db::AppRepositories::from_database(&database),
                 review_request_client: Arc::new(forge::MockReviewRequestClient::new()),
             },
         );
@@ -1601,13 +1601,13 @@ mod tests {
         services = AppServices::new(
             services.base_path().to_path_buf(),
             services.clock(),
-            services.db().clone(),
             services.event_sender(),
             crate::app::service::AppServiceDeps {
                 app_server_client_override: services.app_server_client_override(),
                 available_agent_kinds: vec![AgentKind::Codex],
                 fs_client: services.fs_client(),
                 git_client: services.git_client(),
+                repositories: services.db().clone(),
                 review_request_client: services.review_request_client(),
             },
         );

@@ -14,6 +14,8 @@ use crate::app::session_state::SessionState;
 use crate::app::{AppError, ProjectManager, session};
 use crate::domain::agent::{AgentKind, AgentModel};
 use crate::domain::project::{Project, ProjectListItem, project_name_from_path};
+use crate::infra::db::AppRepositories;
+#[cfg(test)]
 use crate::infra::db::Database;
 use crate::infra::fs::FsClient;
 use crate::infra::git::{GitClient, detect_git_info};
@@ -67,7 +69,7 @@ impl AppStartup {
 
     /// Persists the startup project row and backfills legacy session rows.
     pub(crate) async fn persist_startup_project(
-        db: &Database,
+        db: &AppRepositories,
         working_dir: &Path,
         git_branch: Option<&str>,
     ) -> Result<i64, AppError> {
@@ -95,7 +97,7 @@ impl AppStartup {
 
     /// Resolves startup project state and persists active-project metadata.
     pub(crate) async fn load_startup_project_context(
-        db: &Database,
+        db: &AppRepositories,
         fs_client: &dyn FsClient,
         git_client: &Arc<dyn GitClient>,
         project_discovery_client: &dyn ProjectDiscoveryClient,
@@ -253,7 +255,7 @@ impl AppStartup {
 
     /// Loads project list entries for the projects tab.
     pub(crate) async fn load_project_items(
-        db: &Database,
+        db: &AppRepositories,
         fs_client: &dyn FsClient,
     ) -> Vec<ProjectListItem> {
         let session_worktree_root = super::core::agentty_home().join(AGENTTY_WT_DIR);
@@ -268,7 +270,7 @@ impl AppStartup {
 
     /// Loads project list entries with one caller-provided worktree root.
     pub(crate) async fn load_project_items_with_session_worktree_root(
-        db: &Database,
+        db: &AppRepositories,
         fs_client: &dyn FsClient,
         session_worktree_root: &Path,
     ) -> Vec<ProjectListItem> {
@@ -285,7 +287,7 @@ impl AppStartup {
     /// Refreshes the persisted project catalog from the user home directory
     /// through the injected project-discovery boundary.
     pub(crate) async fn refresh_project_catalog_on_startup(
-        db: &Database,
+        db: &AppRepositories,
         project_discovery_client: &dyn ProjectDiscoveryClient,
     ) {
         let session_worktree_root = super::core::agentty_home().join(AGENTTY_WT_DIR);
@@ -303,7 +305,7 @@ impl AppStartup {
     /// Discovers git repositories under the user home directory through the
     /// injected project-discovery boundary and persists them.
     pub(crate) async fn load_projects_from_home_directory(
-        db: &Database,
+        db: &AppRepositories,
         project_discovery_client: &dyn ProjectDiscoveryClient,
         session_worktree_root: &Path,
         home_directory: Option<&Path>,
@@ -445,7 +447,7 @@ impl AppStartup {
 
     /// Resolves startup active project id from settings.
     pub(crate) async fn resolve_startup_active_project_id(
-        db: &Database,
+        db: &AppRepositories,
         fs_client: &dyn FsClient,
         current_project_id: i64,
     ) -> i64 {
@@ -464,7 +466,7 @@ impl AppStartup {
 
     /// Loads one project and falls back to the current working directory.
     pub(crate) async fn load_project(
-        db: &Database,
+        db: &AppRepositories,
         project_id: i64,
         fallback_working_dir: &Path,
         fallback_git_branch: Option<&str>,

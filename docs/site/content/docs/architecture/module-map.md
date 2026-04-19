@@ -58,8 +58,8 @@ also writes a machine-readable workspace summary to
 - `crates/agentty/src/app/project.rs`: `ProjectManager` for project CRUD and
   selection orchestration.
 - `crates/agentty/src/app/service.rs`: `AppServices` dependency container for
-  `Database`, `FsClient`, `GitClient`, `ReviewRequestClient`, the optional
-  app-server test override, and the event sender.
+  `AppRepositories`, `FsClient`, `GitClient`, `ReviewRequestClient`, the
+  optional app-server test override, and the event sender.
 - `crates/agentty/src/app/session_state.rs`: `SessionState`, the per-session
   runtime state container.
 - `crates/agentty/src/app/session/workflow.rs`: Router-only session workflow
@@ -111,13 +111,24 @@ also writes a machine-readable workspace summary to
 
 ## Infrastructure Layer (`infra/`)
 
-- `crates/agentty/src/infra/db.rs`: SQLite database types, shared row models,
-  session queries, and database open config that enables `WAL` and foreign
-  keys.
-- `crates/agentty/src/infra/project_repository.rs`: Aggregate-specific
-  `Database` impl for project persistence and project list queries.
-- `crates/agentty/src/infra/setting_repository.rs`: Aggregate-specific
-  `Database` impl for global and project-scoped settings queries.
+- `crates/agentty/src/infra/db.rs`: SQLite database open and pool wiring,
+  shared repository bundle construction, and row or repository re-exports.
+- `crates/agentty/src/infra/db/session.rs`: `SessionRepository`,
+  `SqliteSessionRepository`, session row models, turn-metadata persistence,
+  and session query helpers.
+- `crates/agentty/src/infra/db/project.rs`: `ProjectRepository`,
+  `SqliteProjectRepository`, project row models, and project list queries.
+- `crates/agentty/src/infra/db/review.rs`: `ReviewRepository`,
+  `SqliteReviewRepository`, and persisted session review-request linkage.
+- `crates/agentty/src/infra/db/usage.rs`: `UsageRepository`,
+  `SqliteUsageRepository`, and per-model session usage aggregation.
+- `crates/agentty/src/infra/db/activity.rs`: `ActivityRepository`,
+  `SqliteActivityRepository`, and session-activity history queries.
+- `crates/agentty/src/infra/db/operation.rs`: `OperationRepository`,
+  `SqliteOperationRepository`, and persisted session-operation lifecycle
+  queries.
+- `crates/agentty/src/infra/db/setting.rs`: `SettingRepository`,
+  `SqliteSettingRepository`, and global or project-scoped settings queries.
 - `crates/agentty/src/infra/fs.rs`: `FsClient` trait and production async
   filesystem adapter used by app orchestration.
 - `crates/agentty/src/infra/git.rs` and `crates/agentty/src/infra/git/`: Git
