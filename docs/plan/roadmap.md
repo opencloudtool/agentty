@@ -67,34 +67,6 @@ Each Agentty project can declare its expected landing path, and review-ready ses
 
 - [ ] Update `docs/site/content/docs/usage/workflow.md`, `docs/site/content/docs/usage/keybindings.md`, and `docs/site/content/docs/getting-started/overview.md` to explain the new per-project delivery strategy setting and how it affects review-ready session actions.
 
-### [a7e41b3c-9d28-4f56-8c1a-6b5e2d4f8a91] Quality: Add draft session and prompt input feature tests
-
-#### Assignee
-
-`@minev-dev`
-
-#### Why now
-
-The `feature-test` skill has landed, so the next quality slice should immediately apply that pattern to already-landed visible behavior. Draft sessions and prompt input stay within the existing PTY feature-test harness and avoid the agent-dependent blockers tracked elsewhere.
-
-#### Usable outcome
-
-`FeatureTest`-based E2E coverage validates draft session creation via `Shift+A`, draft staging persistence, draft-only worktree affordances such as hiding `o` until the staged bundle starts, and prompt-input affordances such as slash-command entry and file `@` mention lookup.
-
-#### Substeps
-
-- [ ] **Cover draft session creation with the `FeatureTest` builder.** Extend `crates/agentty/tests/e2e/session.rs` and shared helpers in `crates/agentty/tests/e2e/common.rs` so a feature test exercises `Shift+A`, verifies draft-mode session state, confirms staged draft content persists through the visible session flow, and checks that `o` stays hidden until the draft session actually starts.
-- [ ] **Teach the PTY feature-test harness to synthesize shifted character shortcuts.** The current `testty` key helper cannot drive `Shift+A` with the required `KeyModifiers::SHIFT`, which blocks end-to-end coverage for draft-session entry points even though the runtime path is unit-tested.
-- [ ] **Cover prompt input affordances with the same harness.** Add or extend `FeatureTest` scenarios in `crates/agentty/tests/e2e/session.rs` and `crates/agentty/tests/e2e/common.rs` so the PTY suite validates slash-command input and file `@` mention lookup behavior without reverting to the legacy `save_feature_gif` pattern.
-
-#### Tests
-
-- [ ] Run `cargo test -p agentty --test e2e` after adding the new scenarios so the full PTY-driven feature-test suite validates the draft and prompt flows together.
-
-#### Docs
-
-- [ ] No user-facing docs needed unless the feature tests add new docs-side assets or feature pages beyond the standard `FeatureTest` flow.
-
 ### [b2f83d5e-1a64-47c9-9e3b-8c7d6f2a4e10] Quality: Migrate legacy E2E tests to `FeatureTest` builder
 
 #### Assignee
@@ -188,9 +160,9 @@ Completed turns persist one shared activity-summary record and can print a stabl
 ```mermaid
 flowchart TD
     R1["[17a9e2ba] Delivery: project commit strategy"]
-    R2["[a7e41b3c] Quality: draft and prompt feature tests"] --> R3["[b2f83d5e] Quality: migrate legacy E2E to FeatureTest"]
-    R4["[84aa58cc] Protocol: compact reset memory"]
-    R5["[eff3638c] Session Output: turn activity base"]
+    R2["[b2f83d5e] Quality: migrate legacy E2E to FeatureTest"]
+    R3["[84aa58cc] Protocol: compact reset memory"]
+    R4["[eff3638c] Session Output: turn activity base"]
 ```
 
 ## Queued Next
