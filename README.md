@@ -1,18 +1,14 @@
-<h1 align="center">Agentty</h1>
-
 <p align="center">
   <img alt="NPM Version" src="https://img.shields.io/npm/v/agentty" />
   <a href="https://codecov.io/gh/agentty-xyz/agentty"><img alt="codecov" src="https://codecov.io/gh/agentty-xyz/agentty/graph/badge.svg?token=YRGKGTM0HP" /></a>
   <a href="https://github.com/agentty-xyz/agentty/actions/workflows/postsubmit.yml"><img alt="Postsubmit" src="https://github.com/agentty-xyz/agentty/actions/workflows/postsubmit.yml/badge.svg?branch=main" /></a>
 </p>
 
-<p align="center"><em>Agentic Development Environment for structured, controllable AI-assisted software development.</em></p>
+<p align="center">Built with Rust and <a href="https://ratatui.rs">Ratatui</a>, and refined through its own day-to-day use, Agentty brings agents, review, and iteration into one focused terminal workflow.</p>
 
 <p align="center">
   <img src="docs/site/static/demo/demo.gif" alt="Agentty demo" width="900" />
 </p>
-
-Built with Rust and [Ratatui](https://ratatui.rs), and refined through its own day-to-day use, Agentty brings agents, review, and iteration into one focused terminal workflow.
 
 ## Installation
 
