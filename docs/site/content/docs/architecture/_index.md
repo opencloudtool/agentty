@@ -20,3 +20,5 @@ testability boundaries, and change paths.
   common contribution scenarios.
 - [Testability Boundaries](testability-boundaries.md) documents trait
   boundaries and deterministic testing guidance for external integrations.
+- [Architecture Diagrams](diagrams.md) provides comprehensive Mermaid diagrams
+  for workspace crates, module layers, pipelines, state machines, and data flows.
