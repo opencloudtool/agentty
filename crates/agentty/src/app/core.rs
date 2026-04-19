@@ -1756,6 +1756,10 @@ impl App {
     }
 
     /// Processes currently queued app events without waiting.
+    ///
+    /// The foreground runtime calls this before draw so queued
+    /// `SessionUpdated` events can synchronize only the touched sessions into
+    /// render snapshots without polling every live handle each frame.
     pub(crate) async fn process_pending_app_events(&mut self) {
         let Ok(first_event) = self.event_rx.try_recv() else {
             return;

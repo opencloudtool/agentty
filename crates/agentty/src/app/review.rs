@@ -181,9 +181,9 @@ pub(crate) fn apply_review_updates(
 
 /// Starts focused review generation for sessions that just entered review.
 ///
-/// Uses a status-based check instead of transition detection because the
-/// render-loop `sync_from_handles()` may update session status before the
-/// reducer processes the corresponding event, making transition detection
+/// Uses a status-based check instead of transition detection because pending
+/// `SessionUpdated` events may synchronize handle-backed status before the
+/// paired review-related reducer work runs, making transition detection
 /// unreliable.
 ///
 /// Sessions returning to `InProgress` clear their cached review immediately so

@@ -137,6 +137,10 @@ impl SessionState {
     }
 
     /// Copies current values from runtime handles into plain `Session` fields.
+    ///
+    /// The runtime uses targeted `sync_session_from_handle()` calls for
+    /// queued `SessionUpdated` events. This full sweep remains for explicit
+    /// catch-up paths and focused tests.
     pub fn sync_from_handles(&mut self) {
         let handles = &self.handles;
 

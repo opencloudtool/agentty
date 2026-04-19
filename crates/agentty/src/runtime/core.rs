@@ -114,8 +114,11 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     /// Runs one render/event cycle and returns the continuation result.
+    ///
+    /// Pending app events are reduced before draw so touched sessions refresh
+    /// from their live handles without a full per-frame session sweep.
     async fn run_cycle(&mut self) -> io::Result<EventResult> {
-        self.app.sessions.sync_from_handles();
+        self.app.process_pending_app_events().await;
         render_frame(self.app, self.terminal)?;
 
         event::process_events(self.app, self.terminal, self.event_rx, self.tick).await
@@ -154,13 +157,18 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::time::Duration;
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use tempfile::tempdir;
 
     use super::*;
+    use crate::app::AppEvent;
     use crate::db::Database;
+    use crate::domain::session::tests::SessionFixtureBuilder;
+    use crate::domain::session::{SessionHandles, Status};
+    use crate::ui::state::app_mode::{AppMode, DoneSessionOutputMode};
 
     /// Test-only loop state that records call counts and scripted outcomes.
     struct TestLoopState {
@@ -256,6 +264,15 @@ mod tests {
         (app, base_dir)
     }
 
+    /// Flattens a test terminal buffer into one searchable string.
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
     /// Verifies that `run_with_backend` drives the main loop with a
     /// `TestBackend` and exits cleanly when quit key events are injected.
     #[tokio::test]
@@ -287,6 +304,76 @@ mod tests {
         assert!(
             result.is_ok(),
             "run_with_backend should exit cleanly on quit"
+        );
+    }
+
+    #[tokio::test]
+    /// Verifies one queued `SessionUpdated` event syncs the touched session
+    /// before the next render without scanning all session handles.
+    async fn run_cycle_renders_pending_session_update_before_waiting_for_events() {
+        // Arrange
+        let (mut app, base_dir) = new_test_app().await;
+        let session_id = "session-1".to_string();
+        let mut event_rx = mpsc::unbounded_channel().1;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("failed to create test terminal");
+        let mut tick = tokio::time::interval(Duration::from_millis(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let session = SessionFixtureBuilder::new()
+            .id(session_id.clone())
+            .folder(base_dir.path().to_path_buf())
+            .status(Status::InProgress)
+            .build();
+        app.sessions.push_session(session);
+        app.sessions.handles.insert(
+            session_id.clone(),
+            SessionHandles::new(String::new(), Status::InProgress),
+        );
+
+        app.mode = AppMode::View {
+            done_session_output_mode: DoneSessionOutputMode::Output,
+            review_status_message: None,
+            review_text: None,
+            session_id: session_id.clone(),
+            scroll_offset: None,
+        };
+        if let Some(session) = app
+            .sessions
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.status = Status::InProgress;
+        }
+        if let Some(handles) = app.sessions.handles.get(&session_id) {
+            if let Ok(mut output) = handles.output.lock() {
+                output.push_str("synced output");
+            }
+            if let Ok(mut status) = handles.status.lock() {
+                *status = Status::InProgress;
+            }
+        }
+        app.services.emit_app_event(AppEvent::SessionUpdated {
+            session_id: session_id.clone(),
+        });
+
+        let mut main_loop_state = MainLoopState {
+            app: &mut app,
+            event_rx: &mut event_rx,
+            terminal: &mut terminal,
+            tick: &mut tick,
+        };
+
+        // Act
+        let cycle_result = main_loop_state.run_cycle().await;
+        let rendered_text = buffer_text(terminal.backend().buffer());
+
+        // Assert
+        assert!(matches!(cycle_result, Ok(EventResult::Continue)));
+        assert!(
+            rendered_text.contains("synced output"),
+            "expected rendered session output to contain synced handle text: {rendered_text}"
         );
     }
 }

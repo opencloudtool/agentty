@@ -46,7 +46,7 @@ flowchart TD
   terminal["terminal::setup_terminal()"]
   event_reader["event::spawn_event_reader()<br/>dedicated OS thread"]
   main_loop["run_main_loop()"]
-  sync["sessions.sync_from_handles()<br/>pull Arc&lt;Mutex&gt; state into snapshots"]
+  drain["process_pending_app_events()<br/>reduce queued AppEvent values"]
   draw["ui::render::draw()"]
   process["event::process_events()"]
   key_events["Key events<br/>mode handlers -> app/session orchestration"]
@@ -62,7 +62,7 @@ flowchart TD
   runtime --> terminal
   runtime --> event_reader
   runtime --> main_loop
-  main_loop --> sync
+  main_loop --> drain
   main_loop --> draw
   main_loop --> process
   process --> key_events
@@ -73,7 +73,8 @@ flowchart TD
 <a id="architecture-runtime-flow-notes"></a>
 Foreground loop details:
 
-- `run_main_loop()` renders every cycle and applies snapshot sync before draw.
+- `run_main_loop()` drains queued app events before draw so touched sessions
+  sync from their live handles without a full list-wide sweep every frame.
 - `process_events()` waits on terminal events, app events, or tick (`tokio::select!`).
 - After one event, it drains queued terminal events immediately to avoid one-key-per-frame lag.
 - Tick interval is `50ms`; metadata-based session reload fallback is `5s` (`SESSION_REFRESH_INTERVAL`).
@@ -108,9 +109,9 @@ Agentty uses four primary runtime data channels:
 ### Session handles (`SessionHandles`)
 
 - Producer(s): Workers and session task helpers
-- Consumer(s): `SessionState::sync_from_handles()`
+- Consumer(s): `App::apply_app_events()` via `SessionUpdated`-driven `sync_session_from_handle()` calls
 - Payload: Shared `Arc<Mutex<...>>` output, status, and pid handles
-- Purpose: Fast snapshot sync without a full DB reload.
+- Purpose: Fast targeted snapshot sync without a full DB reload.
 
 ## App Event Reducer Flow
 
