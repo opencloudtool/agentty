@@ -138,9 +138,6 @@ Additional notes:
   and non-editing verification commands, but it should not edit files or
   mutate git/workspace state.
 
-The rotating status-bar `FYI:` messages in session chat currently surface `?`
-for session-specific help and `/` for opening slash commands immediately.
-
 ## Publish Popup
 
 | Key | Action |

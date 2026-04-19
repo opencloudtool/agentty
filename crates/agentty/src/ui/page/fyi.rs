@@ -12,9 +12,16 @@ const SESSION_LIST_FYI_MESSAGES: [&str; 2] = [
 
 /// Rotating FYI messages shown in the top status bar while session chat is
 /// visible.
-const SESSION_CHAT_FYI_MESSAGES: [&str; 2] = [
+///
+/// These preserve the existing help and slash-command reminders while also
+/// calling out the automatic focused-review pass that begins after each turn
+/// and the `f` shortcut for opening or regenerating the same review on
+/// demand.
+const SESSION_CHAT_FYI_MESSAGES: [&str; 4] = [
     "Press ? to inspect the shortcuts available for the current session state.",
     "Press / to open slash commands without typing into the composer first.",
+    "Agentty starts focused review automatically after each turn.",
+    "Press f to open or regenerate focused review output on demand.",
 ];
 
 /// Returns the full rotating sessions-list FYI set used by the top status bar.

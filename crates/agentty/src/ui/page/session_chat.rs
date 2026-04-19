@@ -1039,9 +1039,17 @@ mod tests {
             crate::ui::page::fyi::session_chat_messages(),
             1,
         );
-        let wrapped_message = crate::ui::page::fyi::rotating_message(
+        let third_message = crate::ui::page::fyi::rotating_message(
             crate::ui::page::fyi::session_chat_messages(),
             2,
+        );
+        let fourth_message = crate::ui::page::fyi::rotating_message(
+            crate::ui::page::fyi::session_chat_messages(),
+            3,
+        );
+        let wrapped_message = crate::ui::page::fyi::rotating_message(
+            crate::ui::page::fyi::session_chat_messages(),
+            4,
         );
 
         // Assert
@@ -1052,6 +1060,14 @@ mod tests {
         assert_eq!(
             second_message,
             Some("Press / to open slash commands without typing into the composer first.")
+        );
+        assert_eq!(
+            third_message,
+            Some("Agentty starts focused review automatically after each turn.")
+        );
+        assert_eq!(
+            fourth_message,
+            Some("Press f to open or regenerate focused review output on demand.")
         );
         assert_eq!(
             wrapped_message,
