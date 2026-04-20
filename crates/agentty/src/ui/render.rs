@@ -29,9 +29,6 @@ pub trait Component {
 pub struct RenderContext<'a> {
     /// Exact prompt transcript blocks keyed by session id for active turns.
     pub active_prompt_outputs: &'a HashMap<String, String>,
-    /// Selected follow-up-task positions keyed by session id for session-view
-    /// rendering.
-    pub follow_up_task_positions: &'a HashMap<String, usize>,
     /// Identifier of the currently active project.
     pub active_project_id: i64,
     /// Active top-level tab selection.

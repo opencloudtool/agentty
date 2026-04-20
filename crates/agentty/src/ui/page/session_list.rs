@@ -449,7 +449,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
             id: id.to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,

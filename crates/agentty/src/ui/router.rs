@@ -75,7 +75,6 @@ impl RouteSharedContext<'_> {
 struct SessionChatRenderContext<'a> {
     active_prompt_outputs: &'a HashMap<String, String>,
     default_reasoning_level: ReasoningLevel,
-    follow_up_task_positions: &'a HashMap<String, usize>,
     markdown_render_cache: &'a markdown::MarkdownRenderCache,
     mode: &'a AppMode,
     session_id: &'a str,
@@ -93,7 +92,6 @@ struct PublishBranchOverlayContext<'a> {
     default_branch_name: &'a str,
     active_prompt_outputs: &'a HashMap<String, String>,
     default_reasoning_level: ReasoningLevel,
-    follow_up_task_positions: &'a HashMap<String, usize>,
     markdown_render_cache: &'a markdown::MarkdownRenderCache,
     input: &'a InputState,
     locked_upstream_ref: Option<&'a str>,
@@ -108,7 +106,6 @@ struct PublishBranchOverlayContext<'a> {
 struct RouteAuxContext<'a> {
     active_prompt_outputs: &'a HashMap<String, String>,
     default_reasoning_level: ReasoningLevel,
-    follow_up_task_positions: &'a HashMap<String, usize>,
     markdown_render_cache: &'a markdown::MarkdownRenderCache,
     session_progress_messages: &'a HashMap<String, String>,
     session_worktree_availability: &'a HashMap<String, bool>,
@@ -118,7 +115,6 @@ struct RouteAuxContext<'a> {
 /// Routes the content-area render path by active `AppMode`.
 pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>) {
     let RenderContext {
-        follow_up_task_positions,
         active_project_id,
         active_prompt_outputs,
         current_tab,
@@ -158,7 +154,6 @@ pub(crate) fn route_frame(f: &mut Frame, area: Rect, context: RenderContext<'_>)
     let aux = RouteAuxContext {
         active_prompt_outputs,
         default_reasoning_level: shared.settings.reasoning_level,
-        follow_up_task_positions,
         markdown_render_cache,
         session_progress_messages,
         session_worktree_availability,
@@ -271,7 +266,6 @@ fn render_confirmation_mode(
             SessionOverlayRenderContext {
                 active_prompt_outputs: aux.active_prompt_outputs,
                 default_reasoning_level: aux.default_reasoning_level,
-                follow_up_task_positions: aux.follow_up_task_positions,
                 markdown_render_cache: aux.markdown_render_cache,
                 restore_view: view_mode,
                 session_progress_messages: aux.session_progress_messages,
@@ -358,8 +352,6 @@ struct SessionOverlayRenderContext<'a> {
     active_prompt_outputs: &'a HashMap<String, String>,
     /// Active project-scoped default reasoning level.
     default_reasoning_level: ReasoningLevel,
-    /// Follow-up-task selection state keyed by session id.
-    follow_up_task_positions: &'a HashMap<String, usize>,
     /// Shared render cache for session transcript markdown.
     markdown_render_cache: &'a markdown::MarkdownRenderCache,
     /// Session view restored after the overlay closes.
@@ -390,7 +382,6 @@ fn render_session_overlay_background(
         SessionChatRenderContext {
             active_prompt_outputs: context.active_prompt_outputs,
             default_reasoning_level: context.default_reasoning_level,
-            follow_up_task_positions: context.follow_up_task_positions,
             markdown_render_cache: context.markdown_render_cache,
             mode: &background_mode,
             session_id: &context.restore_view.session_id,
@@ -451,7 +442,6 @@ fn render_session_or_diff_mode(
             SessionChatRenderContext {
                 active_prompt_outputs: aux.active_prompt_outputs,
                 default_reasoning_level: aux.default_reasoning_level,
-                follow_up_task_positions: aux.follow_up_task_positions,
                 markdown_render_cache: aux.markdown_render_cache,
                 mode,
                 session_id,
@@ -472,7 +462,6 @@ fn render_session_or_diff_mode(
             SessionOverlayRenderContext {
                 active_prompt_outputs: aux.active_prompt_outputs,
                 default_reasoning_level: aux.default_reasoning_level,
-                follow_up_task_positions: aux.follow_up_task_positions,
                 markdown_render_cache: aux.markdown_render_cache,
                 restore_view,
                 session_progress_messages: aux.session_progress_messages,
@@ -496,7 +485,6 @@ fn render_session_or_diff_mode(
                 default_branch_name,
                 active_prompt_outputs: aux.active_prompt_outputs,
                 default_reasoning_level: aux.default_reasoning_level,
-                follow_up_task_positions: aux.follow_up_task_positions,
                 markdown_render_cache: aux.markdown_render_cache,
                 input,
                 locked_upstream_ref: locked_upstream_ref.as_deref(),
@@ -558,7 +546,6 @@ fn render_publish_branch_overlay(
         default_branch_name,
         active_prompt_outputs,
         default_reasoning_level,
-        follow_up_task_positions,
         markdown_render_cache,
         input,
         locked_upstream_ref,
@@ -573,7 +560,6 @@ fn render_publish_branch_overlay(
         SessionOverlayRenderContext {
             active_prompt_outputs,
             default_reasoning_level,
-            follow_up_task_positions,
             markdown_render_cache,
             restore_view,
             session_progress_messages,
@@ -596,7 +582,6 @@ fn render_session_chat(f: &mut Frame, area: Rect, context: SessionChatRenderCont
     let SessionChatRenderContext {
         active_prompt_outputs,
         default_reasoning_level,
-        follow_up_task_positions,
         markdown_render_cache,
         mode,
         session_id,
@@ -634,7 +619,6 @@ fn render_session_chat(f: &mut Frame, area: Rect, context: SessionChatRenderCont
             .get(session_id)
             .unwrap_or(&false),
     )
-    .selected_follow_up_task_position(follow_up_task_positions.get(session_id).copied())
     .render(f, area);
 }
 
@@ -784,7 +768,6 @@ mod tests {
                     RouteAuxContext {
                         active_prompt_outputs: &HashMap::new(),
                         default_reasoning_level: ReasoningLevel::default(),
-                        follow_up_task_positions: &HashMap::new(),
                         markdown_render_cache: &cache,
                         session_progress_messages: &progress_messages,
                         session_worktree_availability: &HashMap::new(),
@@ -829,7 +812,6 @@ mod tests {
                     RouteAuxContext {
                         active_prompt_outputs: &HashMap::new(),
                         default_reasoning_level: ReasoningLevel::default(),
-                        follow_up_task_positions: &HashMap::new(),
                         markdown_render_cache: &cache,
                         session_progress_messages: &progress_messages,
                         session_worktree_availability: &HashMap::new(),
@@ -875,7 +857,6 @@ mod tests {
                     RouteAuxContext {
                         active_prompt_outputs: &HashMap::new(),
                         default_reasoning_level: ReasoningLevel::default(),
-                        follow_up_task_positions: &HashMap::new(),
                         markdown_render_cache: &cache,
                         session_progress_messages: &progress_messages,
                         session_worktree_availability: &HashMap::new(),
@@ -922,7 +903,6 @@ mod tests {
                     SessionOverlayRenderContext {
                         active_prompt_outputs: &HashMap::new(),
                         default_reasoning_level: ReasoningLevel::High,
-                        follow_up_task_positions: &HashMap::new(),
                         markdown_render_cache: &cache,
                         restore_view: &view_mode,
                         session_progress_messages: &progress_messages,

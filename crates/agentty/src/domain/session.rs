@@ -252,15 +252,6 @@ pub enum PublishBranchAction {
     PublishPullRequest,
 }
 
-/// Launch action currently available for one persisted follow-up task.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FollowUpTaskAction {
-    /// Starts a new sibling session from the selected task text.
-    Launch,
-    /// Opens the already launched sibling session linked to the task.
-    Open,
-}
-
 /// Auto-push state for one already-published session branch.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PublishedBranchSyncStatus {
@@ -322,31 +313,6 @@ pub struct DailyActivity {
     pub session_count: u32,
 }
 
-/// Persisted read-only follow-up task rendered alongside one session.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SessionFollowUpTask {
-    /// Stable database identifier for the persisted follow-up task row.
-    pub id: i64,
-    /// Previously launched sibling session linked to this task, when one has
-    /// already been created.
-    pub launched_session_id: Option<String>,
-    /// Stable display-order position persisted for this follow-up task.
-    pub position: usize,
-    /// User-visible task text emitted by the agent.
-    pub text: String,
-}
-
-impl SessionFollowUpTask {
-    /// Returns the action the session view should expose for this task.
-    pub fn action(&self) -> FollowUpTaskAction {
-        if self.launched_session_id.is_some() {
-            return FollowUpTaskAction::Open;
-        }
-
-        FollowUpTaskAction::Launch
-    }
-}
-
 /// In-memory snapshot of one persisted session row used by the UI and app
 /// orchestration layers.
 pub struct Session {
@@ -359,8 +325,6 @@ pub struct Session {
     pub draft_attachments: Vec<TurnPromptAttachment>,
     /// Planned or active worktree folder path for this session.
     pub folder: PathBuf,
-    /// Persisted read-only follow-up tasks emitted after the latest turn.
-    pub follow_up_tasks: Vec<SessionFollowUpTask>,
     /// Stable session identifier.
     pub id: String,
     /// Unix timestamp when the current active-work interval started, if the
@@ -532,13 +496,6 @@ impl Session {
             .allows_review_actions()
             .then_some(PublishBranchAction::PublishPullRequest)
     }
-
-    /// Returns the follow-up task at `position`, when present.
-    pub fn follow_up_task(&self, position: usize) -> Option<&SessionFollowUpTask> {
-        self.follow_up_tasks
-            .iter()
-            .find(|task| task.position == position)
-    }
 }
 
 /// Shared runtime handles for one active session worker.
@@ -599,7 +556,6 @@ pub(crate) mod tests {
                     created_at: 0,
                     draft_attachments: Vec::new(),
                     folder: PathBuf::new(),
-                    follow_up_tasks: Vec::new(),
                     id: "session-id".to_string(),
                     in_progress_started_at: None,
                     in_progress_total_seconds: 0,
@@ -983,7 +939,6 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -1020,7 +975,6 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -1057,7 +1011,6 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: Some(60),
             in_progress_total_seconds: 120,
@@ -1094,7 +1047,6 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: PathBuf::new(),
-            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 180,
@@ -1143,7 +1095,6 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             published_upstream_ref: None,
             published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
             stats: SessionStats::default(),
@@ -1180,7 +1131,6 @@ diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1,2 @@\n-old line\n+new line\n+anot
             published_upstream_ref: None,
             published_branch_sync_status: PublishedBranchSyncStatus::Idle,
             questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
             review_request: None,
             size: SessionSize::Xs,
             stats: SessionStats::default(),

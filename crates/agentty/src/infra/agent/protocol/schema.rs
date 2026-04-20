@@ -279,16 +279,10 @@ mod tests {
         assert!(
             required_fields
                 .iter()
-                .any(|value| value.as_str() == Some("follow_up_tasks"))
-        );
-        assert!(
-            required_fields
-                .iter()
                 .any(|value| value.as_str() == Some("summary"))
         );
         assert!(properties.contains_key("answer"));
         assert!(properties.contains_key("questions"));
-        assert!(properties.contains_key("follow_up_tasks"));
         assert!(properties.contains_key("summary"));
     }
 
@@ -496,19 +490,6 @@ mod tests {
                 .and_then(|value| value.get("description"))
                 .and_then(Value::as_str),
             Some(expected_questions_description.as_str())
-        );
-        assert_schema_property_title_and_description(
-            response_properties,
-            "follow_up_tasks",
-            "follow_up_tasks",
-            "Ordered low-severity follow-up tasks emitted for this turn. Use this field for \
-             optional code-change follow-up suggestions that should be shown in the session UI \
-             without blocking the current turn. Keep each item focused on implementation work \
-             that changes code or tests, not standalone command execution such as running checks \
-             or scripts. Formulate each item as a direct standalone task statement because it may \
-             be reused as the prompt for a new session (for example, `Add integration coverage \
-             for ...`), not as a conditional offer such as `If you'd like, I can ...`. Defaults \
-             to an empty array when omitted.",
         );
         assert_schema_property_title_and_description(
             response_properties,

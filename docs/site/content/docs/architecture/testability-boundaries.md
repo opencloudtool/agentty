@@ -40,7 +40,7 @@ The traits below are mocked with `mockall`. Most use
 | `ProjectDiscoveryClient` | `infra/project_discovery.rs` | Home-directory repository discovery used by startup catalog refresh without walking the real filesystem from `app/`. |
 | `GitCommandRunner` | `infra/git/rebase.rs` | Rebase command invocation boundary for conflict/retry tests. |
 | `SyncAssistClient` | `app/session/workflow/merge.rs` | Sync-rebase assistance execution boundary. |
-| `SessionRepository` | `infra/db/session.rs` | Session row persistence, turn metadata storage, follow-up tasks, and session list queries without binding app workflows to the full `Database` surface. |
+| `SessionRepository` | `infra/db/session.rs` | Session row persistence, turn metadata storage, and session list queries without binding app workflows to the full `Database` surface. |
 | `ProjectRepository` | `infra/db/project.rs` | Project persistence and project-list aggregation behind a narrow mockable boundary. |
 | `ReviewRepository` | `infra/db/review.rs` | Session review-request linkage persistence used by branch publish and refresh flows. |
 | `UsageRepository` | `infra/db/usage.rs` | Per-session model usage aggregation used by turn persistence and usage views. |

@@ -19,7 +19,7 @@ use crate::app::session::{
 use crate::app::{AppEvent, AppServices, SessionManager, branch_publish};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{
-    PublishBranchAction, PublishedBranchSyncStatus, SessionFollowUpTask, SessionStats, Status,
+    PublishBranchAction, PublishedBranchSyncStatus, SessionStats, Status,
 };
 use crate::domain::setting::SettingName;
 use crate::infra::channel::{
@@ -616,11 +616,6 @@ impl TurnPersistence<'_> {
         } else {
             serde_json::to_string(&questions).unwrap_or_default()
         };
-        let follow_up_tasks = turn_applied_follow_up_tasks(assistant_message);
-        let persisted_follow_up_text = follow_up_tasks
-            .iter()
-            .map(|follow_up_task| follow_up_task.text.clone())
-            .collect::<Vec<_>>();
         let token_usage_delta = SessionStats {
             added_lines: 0,
             deleted_lines: 0,
@@ -638,7 +633,6 @@ impl TurnPersistence<'_> {
             .persist_session_turn_metadata(
                 &self.context.session_id,
                 &SessionTurnMetadata {
-                    follow_up_tasks: &persisted_follow_up_text,
                     instruction_conversation_id: instruction_conversation_id.as_deref(),
                     model: self.session_model.as_str(),
                     provider_conversation_id,
@@ -650,7 +644,6 @@ impl TurnPersistence<'_> {
             .await?;
 
         Ok(TurnAppliedState {
-            follow_up_tasks,
             questions,
             summary: (!summary.is_empty()).then_some(summary),
             token_usage_delta,
@@ -1139,24 +1132,6 @@ fn persisted_session_summary_payload(assistant_message: &agent::AgentResponse) -
         .unwrap_or_default()
 }
 
-/// Builds the reducer-facing follow-up-task projection for one assistant
-/// response.
-fn turn_applied_follow_up_tasks(
-    assistant_message: &agent::AgentResponse,
-) -> Vec<SessionFollowUpTask> {
-    assistant_message
-        .follow_up_task_items()
-        .into_iter()
-        .enumerate()
-        .map(|(index, text)| SessionFollowUpTask {
-            id: i64::try_from(index).unwrap_or(i64::MAX),
-            launched_session_id: None,
-            position: index,
-            text,
-        })
-        .collect()
-}
-
 /// Consumes [`TurnEvent`]s from `event_rx` and applies their side effects.
 ///
 /// - [`TurnEvent::ThoughtDelta`]: updates the transient thinking loader text.
@@ -1278,7 +1253,6 @@ mod tests {
                 QuestionItem::new("Need a target branch?"),
                 QuestionItem::new("Need migration notes?"),
             ],
-            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -1304,7 +1278,6 @@ mod tests {
         let agent_response = AgentResponse {
             answer: String::new(),
             questions: vec![QuestionItem::new(numbered_questions)],
-            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -1323,7 +1296,6 @@ mod tests {
         let response = AgentResponse {
             answer: "Implemented the fix.".to_string(),
             questions: vec![QuestionItem::new("Need me to run tests?")],
-            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -1345,7 +1317,6 @@ mod tests {
         let response = AgentResponse {
             answer: String::new(),
             questions: vec![QuestionItem::new("Should I apply the patch?")],
-            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -1366,7 +1337,6 @@ mod tests {
         let response = AgentResponse {
             answer: String::new(),
             questions: vec![QuestionItem::new("\n")],
-            follow_up_tasks: Vec::new(),
             summary: None,
         };
 
@@ -1385,7 +1355,6 @@ mod tests {
         let response = AgentResponse {
             answer: "Implemented the fix.".to_string(),
             questions: Vec::new(),
-            follow_up_tasks: Vec::new(),
             summary: Some(AgentResponseSummary {
                 turn: "Updated the greeting flow.".to_string(),
                 session: "Session now greets users on startup.".to_string(),
@@ -1559,7 +1528,6 @@ mod tests {
                     Ok(TurnResult {
                         assistant_message: AgentResponse {
                             answer: "done".to_string(),
-                            follow_up_tasks: Vec::new(),
                             questions: Vec::new(),
                             summary: None,
                         },
@@ -1912,10 +1880,6 @@ mod tests {
             assistant_message: AgentResponse {
                 answer: "Implemented the change.".to_string(),
                 questions: Vec::new(),
-                follow_up_tasks: vec![
-                    "Document the worker summary flow.".to_string(),
-                    "Add a follow-up rendering test.".to_string(),
-                ],
                 summary: Some(AgentResponseSummary {
                     turn: "- Updated the worker flow.".to_string(),
                     session: "- Active review now reloads summary from persistence.".to_string(),
@@ -1949,21 +1913,6 @@ mod tests {
                 session: "- Active review now reloads summary from persistence.".to_string(),
                 turn: "- Updated the worker flow.".to_string(),
             })
-        );
-        let follow_up_tasks = db
-            .load_session_follow_up_tasks()
-            .await
-            .expect("failed to load follow-up tasks");
-        assert_eq!(
-            follow_up_tasks
-                .into_iter()
-                .filter(|task| task.session_id == "sess1")
-                .map(|task| task.text)
-                .collect::<Vec<_>>(),
-            vec![
-                "Document the worker summary flow.".to_string(),
-                "Add a follow-up rendering test.".to_string()
-            ]
         );
         let output = context.output.lock().expect("output lock poisoned");
         assert!(output.starts_with("Implemented the change.\n\n"));
@@ -2023,7 +1972,6 @@ mod tests {
             assistant_message: AgentResponse {
                 answer: "Implemented the change.".to_string(),
                 questions: Vec::new(),
-                follow_up_tasks: Vec::new(),
                 summary: None,
             },
             context_reset: false,
@@ -2126,7 +2074,6 @@ mod tests {
             assistant_message: AgentResponse {
                 answer: "Implemented the change.".to_string(),
                 questions: Vec::new(),
-                follow_up_tasks: Vec::new(),
                 summary: None,
             },
             context_reset: false,
@@ -2213,7 +2160,6 @@ mod tests {
             assistant_message: AgentResponse {
                 answer: "Implemented the change.".to_string(),
                 questions: Vec::new(),
-                follow_up_tasks: vec!["Document the failure path.".to_string()],
                 summary: Some(AgentResponseSummary {
                     turn: "- Attempted the update.".to_string(),
                     session: "- Session state should not project without persistence.".to_string(),
@@ -2303,7 +2249,6 @@ mod tests {
             assistant_message: AgentResponse {
                 answer: "Hey! How can I help you today?".to_string(),
                 questions: Vec::new(),
-                follow_up_tasks: Vec::new(),
                 summary: Some(AgentResponseSummary {
                     turn: "No changes".to_string(),
                     session: "No changes".to_string(),
@@ -2372,7 +2317,6 @@ mod tests {
             assistant_message: AgentResponse {
                 answer: "Implemented the change.".to_string(),
                 questions: Vec::new(),
-                follow_up_tasks: Vec::new(),
                 summary: None,
             },
             context_reset: true,
@@ -2399,39 +2343,6 @@ mod tests {
         assert_eq!(
             instruction_conversation_id,
             agent::normalize_instruction_conversation_id(Some("thread-123"))
-        );
-    }
-
-    #[test]
-    /// Builds reducer-facing follow-up tasks with stable UI positions and
-    /// placeholder in-memory identifiers.
-    fn test_turn_applied_follow_up_tasks_preserve_order() {
-        // Arrange
-        let assistant_message = AgentResponse {
-            answer: String::new(),
-            questions: Vec::new(),
-            follow_up_tasks: vec![
-                "Document the flow.".to_string(),
-                "Add a regression test.".to_string(),
-            ],
-            summary: None,
-        };
-
-        // Act
-        let follow_up_tasks = turn_applied_follow_up_tasks(&assistant_message);
-
-        // Assert
-        assert_eq!(
-            follow_up_tasks
-                .iter()
-                .map(|follow_up_task| (follow_up_task.position, follow_up_task.text.as_str()))
-                .collect::<Vec<_>>(),
-            vec![(0, "Document the flow."), (1, "Add a regression test.")]
-        );
-        assert!(
-            follow_up_tasks
-                .iter()
-                .all(|follow_up_task| follow_up_task.launched_session_id.is_none())
         );
     }
 

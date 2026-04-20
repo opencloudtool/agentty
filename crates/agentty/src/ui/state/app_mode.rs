@@ -5,7 +5,7 @@ use super::prompt::{
     PromptAtMentionState, PromptAttachmentState, PromptHistoryState, PromptSlashState,
 };
 use crate::domain::input::InputState;
-use crate::domain::session::{FollowUpTaskAction, PublishBranchAction};
+use crate::domain::session::PublishBranchAction;
 use crate::infra::agent::protocol::QuestionItem;
 
 /// Selects the visible panel content for session view output.
@@ -279,8 +279,6 @@ pub enum HelpContext {
     View {
         can_open_worktree: bool,
         done_session_output_mode: DoneSessionOutputMode,
-        follow_up_task_action: Option<FollowUpTaskAction>,
-        has_multiple_follow_up_tasks: bool,
         review_status_message: Option<String>,
         review_text: Option<String>,
         publish_pull_request_action: Option<PublishBranchAction>,
@@ -305,15 +303,11 @@ impl HelpContext {
         match self {
             HelpContext::View {
                 can_open_worktree,
-                follow_up_task_action,
-                has_multiple_follow_up_tasks,
                 publish_pull_request_action,
                 session_state,
                 ..
             } => help_action::view_actions(ViewHelpState {
                 can_open_worktree: *can_open_worktree,
-                follow_up_task_action: *follow_up_task_action,
-                has_multiple_follow_up_tasks: *has_multiple_follow_up_tasks,
                 publish_pull_request_action: *publish_pull_request_action,
                 session_state: *session_state,
             }),
@@ -328,8 +322,6 @@ impl HelpContext {
             HelpContext::List { .. } => AppMode::List,
             HelpContext::View {
                 done_session_output_mode,
-                follow_up_task_action: _,
-                has_multiple_follow_up_tasks: _,
                 review_status_message,
                 review_text,
                 publish_pull_request_action: _,
@@ -426,8 +418,6 @@ mod tests {
         let context = HelpContext::View {
             can_open_worktree: true,
             done_session_output_mode: DoneSessionOutputMode::Summary,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             review_status_message: None,
             review_text: None,
             publish_pull_request_action: None,
@@ -457,8 +447,6 @@ mod tests {
         let context = HelpContext::View {
             can_open_worktree: true,
             done_session_output_mode: DoneSessionOutputMode::Summary,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             review_status_message: Some("Preparing review...".to_string()),
             review_text: Some("Ready".to_string()),
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
@@ -491,8 +479,6 @@ mod tests {
         let context = HelpContext::View {
             can_open_worktree: true,
             done_session_output_mode: DoneSessionOutputMode::Summary,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             review_status_message: None,
             review_text: None,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),

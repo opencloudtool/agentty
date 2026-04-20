@@ -27,11 +27,10 @@ const GIF_NAME: &str = "demo";
 /// Gated behind `#[ignore]` because it requires VHS, the real `agentty`
 /// binary, and ~2 minutes of wall clock time.
 #[test]
-#[ignore]
+#[ignore = "requires VHS and regenerates a marketing asset"]
 fn generate_marketing_demo_gif() -> DemoResult {
     // Arrange
     if Command::new("vhs").arg("--version").output().is_err() {
-        eprintln!("vhs not installed; skipping marketing demo");
         return Ok(());
     }
 
@@ -84,8 +83,7 @@ fn generate_marketing_demo_gif() -> DemoResult {
 fn make_fresh_demo_root() -> std::io::Result<PathBuf> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_nanos());
     let root = PathBuf::from(format!("/tmp/agentty-demo-{nanos}"));
     if root.exists() {
         std::fs::remove_dir_all(&root)?;
@@ -149,7 +147,7 @@ printf '%s\n' '{"type":"system","subtype":"init"}'
 sleep 1
 printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi! I am Agentty, ready to help."}]}}'
 sleep 1
-printf '%s\n' '{"type":"result","subtype":"success","result":"{\"answer\":\"Hi! I am Agentty, ready to help.\",\"questions\":[],\"follow_up_tasks\":[],\"summary\":null}","usage":{"input_tokens":5,"output_tokens":9}}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"{\"answer\":\"Hi! I am Agentty, ready to help.\",\"questions\":[],\"summary\":null}","usage":{"input_tokens":5,"output_tokens":9}}'
 "#;
     std::fs::write(&claude_path, script)?;
     #[cfg(unix)]
@@ -257,9 +255,10 @@ fn build_demo_tape(env: &BuilderEnv, gif_path: &Path) -> String {
         let system_path = std::env::var("PATH").unwrap_or_default();
         let mut parts = vec![env.stub_bin.clone()];
         parts.extend(std::env::split_paths(&system_path));
-        std::env::join_paths(parts)
-            .map(|value| value.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| env.stub_bin.display().to_string())
+        std::env::join_paths(parts).map_or_else(
+            |_| env.stub_bin.display().to_string(),
+            |value| value.to_string_lossy().into_owned(),
+        )
     };
     let workdir = env.workdir.display().to_string();
 

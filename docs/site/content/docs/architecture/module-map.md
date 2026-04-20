@@ -77,7 +77,7 @@ also writes a machine-readable workspace summary to
 - `crates/agentty/src/app/session/workflow/lifecycle.rs`: Session creation,
   prompt/reply workflows, and forge review-request publication or open helpers.
 - `crates/agentty/src/app/session/workflow/load.rs`: Session snapshot loading,
-  including persisted follow-up-task hydration.
+  including persisted question and summary hydration.
 - `crates/agentty/src/app/session/workflow/merge.rs`: Merge and rebase
   workflows.
 - `crates/agentty/src/app/session/workflow/refresh.rs`: Periodic refresh
@@ -89,7 +89,7 @@ also writes a machine-readable workspace summary to
   keeps one evolving session-branch commit, and status persistence.
 - `crates/agentty/src/app/session/workflow/worker.rs`: Per-session command
   queue orchestration, `AgentChannel` turn dispatch, and post-turn persistence
-  for summaries, questions, and follow-up tasks.
+  for summaries and questions.
 
 ## Domain Layer (`domain/`)
 
@@ -104,7 +104,7 @@ also writes a machine-readable workspace summary to
   logic.
 - `crates/agentty/src/domain/project.rs`: Project entities and display helpers.
 - `crates/agentty/src/domain/session.rs`: Session entities, statuses, sizes,
-  stats, persisted follow-up-task snapshots, review-request linkage wrappers,
+  stats, review-request linkage wrappers,
   and re-exports of shared forge review-request types from `ag-forge`.
 - `crates/agentty/src/domain/setting.rs`: Shared persisted setting keys used
   across app and infrastructure layers.
@@ -179,7 +179,7 @@ also writes a machine-readable workspace summary to
 - `crates/agentty/src/infra/agent/protocol.rs` and
   `crates/agentty/src/infra/agent/protocol/`: Router plus focused protocol
   submodules. `model.rs` owns the wire contract with `answer`, `questions`,
-  `follow_up_tasks`, and `summary`; `schema.rs` owns prompt and transport
+  and `summary`; `schema.rs` owns prompt and transport
   schema generation; `parse.rs` owns final and stream parsing plus shared
   debug diagnostics for schema mismatches.
 - `crates/agentty/src/infra/agent/response_parser.rs`: Provider-specific final
@@ -301,8 +301,8 @@ also writes a machine-readable workspace summary to
 - `crates/agentty/src/ui/component/publish_branch_overlay.rs`: Session
   branch-publish overlay.
 - `crates/agentty/src/ui/component/session_output.rs`: Session output display
-  widget, including read-only follow-up-task rendering separate from the
-  persisted transcript.
+  widget, including synthetic summary and review rendering layered on top of
+  the persisted transcript.
 - `crates/agentty/src/ui/component/status_bar.rs`: Status bar widget.
 - `crates/agentty/src/ui/component/tab.rs`: Tabs navigation widget.
 - `crates/agentty/src/ui/state/app_mode.rs`: `AppMode` enum and mode

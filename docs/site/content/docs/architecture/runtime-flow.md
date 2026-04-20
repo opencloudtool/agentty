@@ -132,7 +132,7 @@ Reducer behaviors that matter for data flow:
 - `ReviewRequestStatusUpdated` persists refreshed forge summaries for review-ready sessions and silently transitions externally merged sessions to `Done` or externally closed sessions to `Canceled`.
 - `SessionUpdated` marks touched sessions so reducer can call `sync_session_from_handle()` selectively.
 - `SessionProgressUpdated` refreshes transient loader text used by the session view.
-- `AgentResponseReceived` routes question-mode transitions for active view sessions and applies the worker's reducer-ready turn projection (summary, follow-up tasks, questions, token deltas) to the currently loaded session.
+- `AgentResponseReceived` routes question-mode transitions for active view sessions and applies the worker's reducer-ready turn projection (summary, questions, token deltas) to the currently loaded session.
 - `PublishedBranchSyncUpdated` tracks detached post-turn auto-push state for already-published session branches so stale background completions do not overwrite newer sync attempts in the active session view.
 - After touched-session sync, terminal statuses (`Done`, `Canceled`) drop per-session worker senders so workers can shut down runtimes.
 
@@ -174,14 +174,6 @@ The printed session-chat data comes from these sources:
   copy inside `session.output`. For merged/done flows, merge helpers can
   rewrite the stored value into a display-oriented markdown form before the
   next reload.
-- `session.follow_up_tasks`
-  Persisted as separate rows by the worker in
-  `crates/agentty/src/app/session/workflow/worker.rs`, rehydrated into session
-  snapshots in `crates/agentty/src/app/session/workflow/load.rs`, and also
-  updated immediately in memory by the worker-provided `TurnAppliedState`
-  projection in `App::apply_agent_response_received()` so the active session
-  view reflects the latest persisted metadata without waiting for a full
-  reload.
 - `session.questions`
   Persisted by the worker alongside the latest turn metadata and applied
   immediately by the reducer, but these items do not render inside
@@ -239,17 +231,16 @@ flowchart TD
   footer_split --> completed_md["Render completed-turn markdown"]
 
   completed_md --> summary["Append synthetic session.summary block"]
-  summary --> tasks["Append synthetic follow-up-task section"]
-  tasks --> footer["Append trailing commit footer"]
+  summary --> footer["Append trailing commit footer"]
   footer --> active_prompt["Append active-turn prompt block"]
   active_prompt --> review["Append focused review markdown<br/>(review_text)"]
   review --> branch_sync["Append published-branch sync row<br/>(auto-push started, completed, or failed)"]
   branch_sync --> final_row["Append final status row<br/>or t toggle hint"]
 ```
 
-This means `session.output` stays the durable transcript, while summary,
-follow-up tasks, and focused review are layered on during render instead of
-being appended back into that transcript string.
+This means `session.output` stays the durable transcript, while summary and
+focused review are layered on during render instead of being appended back into
+that transcript string.
 
 `App` owns one shared `MarkdownRenderCache` and threads it through
 `RenderContext`, the router, overlay restore state, and `SessionChatPage` so
@@ -277,9 +268,9 @@ The exact session-chat render path is:
    lines: it optionally splits the transcript using `active_prompt_output`,
    normalizes prompt spacing, splits any trailing commit footer, renders the
    completed-turn markdown, appends the synthetic summary block from
-   `session.summary` when the current status/mode allows it, appends
-   follow-up tasks, reattaches the trailing commit footer, appends the active
-   prompt block, appends focused review markdown from `review_text`, appends
+   `session.summary` when the current status/mode allows it, reattaches the
+   trailing commit footer, appends the active prompt block, appends focused
+   review markdown from `review_text`, appends
    the published-branch sync row when a detached auto-push starts, completes,
    or fails, and finally adds the loader row or `t` toggle hint when the
    current status requires it.
@@ -307,7 +298,6 @@ flowchart TD
   answer --> answer_kind["Protocol answer<br/>or joined clarification-question text"]
   turn_done --> metadata["Persist and apply latest-turn metadata"]
   metadata --> summary_meta["session.summary"]
-  metadata --> task_meta["session.follow_up_tasks"]
   metadata --> question_meta["session.questions"]
   turn_done --> clear_active["Drop active_prompt_output"]
   turn_done --> next_status["Move session to Review or Question"]
@@ -381,14 +371,6 @@ stays readable on narrow screens.
   second time when `Done + Summary` mode already uses the summary as the base
   body.
 
-#### Follow-up tasks
-
-- Comes from: `session.follow_up_tasks`
-- Prints: always appended synthetically after the summary block when any tasks
-  exist.
-- Hidden or removed: replaced wholesale by the next completed turn's
-  follow-up-task set. Not stored inside `session.output`.
-
 #### Commit footer
 
 - Comes from: trailing lines in `session.output` that begin with `[Commit]` or
@@ -425,10 +407,10 @@ stays readable on narrow screens.
 
 - `DoneSessionOutputMode::Summary`
   Uses rendered summary text as the primary body for `Status::Done`. The panel
-  still appends the `t` toggle hint and any follow-up-task block.
+  still appends the `t` toggle hint.
 - `DoneSessionOutputMode::Output`
-  Uses `session.output` as the primary body, then appends synthetic summary and
-  follow-up-task sections.
+  Uses `session.output` as the primary body, then appends the synthetic summary
+  section.
 - `DoneSessionOutputMode::Review`
   Still uses transcript output as the primary body. If focused review text is
   available, it is appended after the transcript; if not, the transcript
@@ -463,7 +445,7 @@ From prompt submit to persisted result:
 1. `AgentChannel::run_turn()` streams `TurnEvent` values and returns `TurnResult`.
 1. Worker applies final result:
 1. Append final assistant transcript output when no assistant chunks were already streamed (`answer` text, fallback `question` text).
-1. `TurnPersistence::apply(...)` transactionally stores the canonical summary payload, question payload, follow-up-task rows, token-usage deltas, and provider conversation markers, then returns `TurnAppliedState`.
+1. `TurnPersistence::apply(...)` transactionally stores the canonical summary payload, question payload, token-usage deltas, and provider conversation markers, then returns `TurnAppliedState`.
 1. Emit `AppEvent::AgentResponseReceived` with that reducer projection so the active session updates without a forced reload.
 1. If canonical metadata persistence fails, append a recovery error to the transcript, trigger `RefreshSessions`, and skip reducer projection emission so the UI falls back to durable state on reload.
 1. Run auto-commit assistance path, which preserves a single evolving commit on the session branch: the first successful file-changing turn creates the commit, later turns regenerate the message from the cumulative diff with the active project's `Default Fast Model`, auto-commit recovery prompts use that same fast-model selection, and the session `title` is synced from the rewritten commit after success while the structured response `summary` payload remains unchanged.
@@ -563,13 +545,13 @@ Provider output is normalized to one structured response protocol:
    routes to the authoritative protocol model/schema/parse submodules.
 1. `BootstrapFull` and `BootstrapWithReplay` still prepend the same
    self-descriptive `schemars` document, so every provider sees the same
-   `answer`/`questions`/`follow_up_tasks`/optional-`summary` schema and
-   transport-enforced `outputSchema` paths can normalize that same contract
+   `answer`/`questions`/optional-`summary` schema and transport-enforced
+   `outputSchema` paths can normalize that same contract
    separately.
 1. The caller selects one canonical `AgentRequestKind` before transport handoff, and the transport derives the matching `ProtocolRequestProfile` from it. Session turns use `SessionStart` or `SessionResume`, while isolated utility prompts use `UtilityPrompt`.
 1. Session discussion turns typically populate `summary.turn` and `summary.session`, while one-shot prompts may leave `summary` unused.
 1. Channels emit transient loader updates as `TurnEvent::ThoughtDelta` values when providers surface thought or tool-status text during the turn.
-1. Final output is parsed to protocol `answer`, `questions`, `follow_up_tasks`, and the optional structured summary. The final assistant payload itself must match the shared protocol JSON object, while direct deserialization into the shared wire type still accepts summary-only or otherwise defaulted top-level fields. If a provider prepends prose before one final schema object, parsing now recovers that trailing payload as long as nothing except whitespace follows it. Rejected payloads now surface parse diagnostics including response sizing, JSON parser location/category, and discovered top-level keys.
+1. Final output is parsed to protocol `answer`, `questions`, and the optional structured summary. The final assistant payload itself must match the shared protocol JSON object, while direct deserialization into the shared wire type still accepts summary-only or otherwise defaulted top-level fields. If a provider prepends prose before one final schema object, parsing now recovers that trailing payload as long as nothing except whitespace follows it. Rejected payloads now surface parse diagnostics including response sizing, JSON parser location/category, and discovered top-level keys.
 1. Worker persists final display text, then `TurnPersistence::apply(...)` commits the canonical turn metadata and emits `AgentResponseReceived` with the matching reducer projection. If that transaction fails, the worker requests `RefreshSessions` and does not emit the projection.
 
 <a id="architecture-agent-interaction-streaming"></a>

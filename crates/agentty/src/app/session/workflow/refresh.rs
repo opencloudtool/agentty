@@ -128,8 +128,6 @@ impl SessionManager {
             .iter()
             .map(|session| session.id.clone())
             .collect();
-        self.state
-            .retain_follow_up_task_positions(&active_session_ids);
         self.state.retain_session_branch_names(&active_session_ids);
         self.state.retain_session_git_statuses(&active_session_ids);
         self.worker_service_mut()
@@ -431,7 +429,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder,
-            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,

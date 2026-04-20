@@ -589,8 +589,7 @@ mod tests {
     fn select_preferred_assistant_message_prefers_structured_completion_payload() {
         // Arrange
         let streamed_message = "partial non-json";
-        let completion_message =
-            Some(r#"{"answer":"Final","questions":[],"follow_up_tasks":[],"summary":null}"#);
+        let completion_message = Some(r#"{"answer":"Final","questions":[],"summary":null}"#);
 
         // Act
         let selected =
@@ -599,7 +598,7 @@ mod tests {
         // Assert
         assert_eq!(
             selected,
-            r#"{"answer":"Final","questions":[],"follow_up_tasks":[],"summary":null}"#
+            r#"{"answer":"Final","questions":[],"summary":null}"#
         );
     }
 }

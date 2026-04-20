@@ -18,9 +18,6 @@ pub struct SessionGitStatus {
 
 /// Holds all in-memory state related to session listing and refresh tracking.
 pub struct SessionState {
-    /// Selected follow-up-task positions keyed by session id for session-view
-    /// affordances.
-    pub(crate) follow_up_task_positions: HashMap<String, usize>,
     pub handles: HashMap<String, SessionHandles>,
     /// Cached detected branch names keyed by session id.
     pub(crate) session_branch_names: HashMap<String, String>,
@@ -53,7 +50,6 @@ impl SessionState {
         let _state_created_at = clock.now_system_time();
         let refresh_deadline = clock.now_instant() + SESSION_REFRESH_INTERVAL;
         let mut state = Self {
-            follow_up_task_positions: HashMap::new(),
             handles,
             session_branch_names: HashMap::new(),
             session_worktree_availability: HashMap::new(),
@@ -173,57 +169,6 @@ impl SessionState {
         session.size = session_size;
     }
 
-    /// Returns the currently selected follow-up task position for one session.
-    pub fn selected_follow_up_task_position(&self, session_id: &str) -> Option<usize> {
-        let session = self.session_for_id(session_id)?;
-        if session.follow_up_tasks.is_empty() {
-            return None;
-        }
-
-        let selected_position = self
-            .follow_up_task_positions
-            .get(session_id)
-            .copied()
-            .unwrap_or(0);
-
-        Some(selected_position.min(session.follow_up_tasks.len().saturating_sub(1)))
-    }
-
-    /// Advances the selected follow-up task for one session to the next item,
-    /// wrapping at the end of the task list.
-    pub fn select_next_follow_up_task(&mut self, session_id: &str) {
-        self.advance_follow_up_task_selection(session_id, true);
-    }
-
-    /// Moves the selected follow-up task for one session to the previous item,
-    /// wrapping at the beginning of the task list.
-    pub fn select_previous_follow_up_task(&mut self, session_id: &str) {
-        self.advance_follow_up_task_selection(session_id, false);
-    }
-
-    /// Sets the launched sibling-session identifier for the matching cached
-    /// follow-up task.
-    pub fn set_follow_up_task_launched_session_id(
-        &mut self,
-        session_id: &str,
-        position: usize,
-        launched_session_id: Option<String>,
-    ) {
-        let Some(session) = self.session_mut_for_id(session_id) else {
-            return;
-        };
-
-        let Some(follow_up_task) = session
-            .follow_up_tasks
-            .iter_mut()
-            .find(|task| task.position == position)
-        else {
-            return;
-        };
-
-        follow_up_task.launched_session_id = launched_session_id;
-    }
-
     /// Replaces all cached session git-status snapshots with one fresh poll
     /// result.
     pub(crate) fn replace_session_git_statuses(
@@ -277,36 +222,6 @@ impl SessionState {
             .retain(|session_id, _| active_session_ids.contains(session_id));
     }
 
-    /// Drops or clamps cached follow-up-task selection for sessions that no
-    /// longer exist after a reload.
-    pub(crate) fn retain_follow_up_task_positions(&mut self, active_session_ids: &HashSet<String>) {
-        let follow_up_task_counts = self
-            .sessions
-            .iter()
-            .map(|session| (session.id.as_str(), session.follow_up_tasks.len()))
-            .collect::<HashMap<_, _>>();
-
-        self.follow_up_task_positions
-            .retain(|session_id, position| {
-                if !active_session_ids.contains(session_id) {
-                    return false;
-                }
-
-                let Some(follow_up_task_count) =
-                    follow_up_task_counts.get(session_id.as_str()).copied()
-                else {
-                    return false;
-                };
-                if follow_up_task_count == 0 {
-                    return false;
-                }
-
-                *position = (*position).min(follow_up_task_count.saturating_sub(1));
-
-                true
-            });
-    }
-
     /// Synchronizes one session snapshot from shared runtime handles.
     ///
     /// Output synchronization prefers an append-only fast path: when runtime
@@ -345,39 +260,6 @@ impl SessionState {
             session_output.clear();
             session_output.push_str(handle_output);
         }
-    }
-
-    /// Advances the selected follow-up task for one session in the requested
-    /// direction when at least one task exists.
-    fn advance_follow_up_task_selection(&mut self, session_id: &str, move_forward: bool) {
-        let Some(session) = self.session_for_id(session_id) else {
-            return;
-        };
-        let follow_up_task_count = session.follow_up_tasks.len();
-        if follow_up_task_count <= 1 {
-            if follow_up_task_count == 1 {
-                self.follow_up_task_positions
-                    .insert(session_id.to_string(), 0);
-            }
-
-            return;
-        }
-
-        let next_position = match self.selected_follow_up_task_position(session_id) {
-            Some(current_position) if move_forward => (current_position + 1) % follow_up_task_count,
-            Some(0) => follow_up_task_count.saturating_sub(1),
-            Some(current_position) => current_position.saturating_sub(1),
-            None => 0,
-        };
-        self.follow_up_task_positions
-            .insert(session_id.to_string(), next_position);
-    }
-
-    /// Returns one mutable session snapshot by identifier.
-    fn session_mut_for_id(&mut self, session_id: &str) -> Option<&mut Session> {
-        let session_index = self.session_index_by_id.get(session_id).copied()?;
-
-        self.sessions.get_mut(session_index)
     }
 
     /// Rebuilds the cached session-id lookup map from the current session
@@ -442,7 +324,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: session_id.clone(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -493,7 +374,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: "session-2".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -533,7 +413,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: "session-3".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -575,7 +454,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: session_id.clone(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -623,7 +501,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: "session-1".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -649,7 +526,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: "session-2".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -697,7 +573,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: "session-1".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -723,7 +598,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: "session-2".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -775,7 +649,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: "session-4".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -849,104 +722,5 @@ mod tests {
                 remote_status: None,
             })
         );
-    }
-
-    #[test]
-    /// Verifies cached follow-up-task selections are clamped for surviving
-    /// sessions and dropped for removed or taskless sessions in one refresh
-    /// pass.
-    fn retain_follow_up_task_positions_clamps_and_drops_invalid_entries() {
-        // Arrange
-        let mut surviving_session = Session {
-            base_branch: "main".to_string(),
-            created_at: 0,
-            draft_attachments: Vec::new(),
-            folder: std::env::temp_dir(),
-            follow_up_tasks: vec![crate::domain::session::SessionFollowUpTask {
-                id: 1,
-                launched_session_id: None,
-                position: 0,
-                text: "Document the behavior.".to_string(),
-            }],
-            id: "session-1".to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft: false,
-            model: AgentKind::Gemini.default_model(),
-            output: String::new(),
-            project_name: "project".to_string(),
-            prompt: "prompt".to_string(),
-            reasoning_level_override: None,
-            published_upstream_ref: None,
-            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Status::Done,
-            summary: None,
-            title: None,
-            updated_at: 0,
-        };
-        surviving_session
-            .follow_up_tasks
-            .push(crate::domain::session::SessionFollowUpTask {
-                id: 2,
-                launched_session_id: None,
-                position: 1,
-                text: "Add the regression test.".to_string(),
-            });
-        let taskless_session = Session {
-            base_branch: "main".to_string(),
-            created_at: 0,
-            draft_attachments: Vec::new(),
-            folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
-            id: "session-2".to_string(),
-            in_progress_started_at: None,
-            in_progress_total_seconds: 0,
-            is_draft: false,
-            model: AgentKind::Gemini.default_model(),
-            output: String::new(),
-            project_name: "project".to_string(),
-            prompt: "prompt".to_string(),
-            reasoning_level_override: None,
-            published_upstream_ref: None,
-            published_branch_sync_status: crate::domain::session::PublishedBranchSyncStatus::Idle,
-            questions: Vec::new(),
-            review_request: None,
-            size: SessionSize::Xs,
-            stats: SessionStats::default(),
-            status: Status::Done,
-            summary: None,
-            title: None,
-            updated_at: 0,
-        };
-        let mut state = SessionState::new(
-            HashMap::new(),
-            vec![surviving_session, taskless_session],
-            TableState::default(),
-            Arc::new(FixedClock::new()),
-            0,
-            0,
-        );
-        state
-            .follow_up_task_positions
-            .insert("session-1".to_string(), 9);
-        state
-            .follow_up_task_positions
-            .insert("session-2".to_string(), 4);
-        state
-            .follow_up_task_positions
-            .insert("session-3".to_string(), 2);
-        let active_session_ids = HashSet::from(["session-1".to_string(), "session-2".to_string()]);
-
-        // Act
-        state.retain_follow_up_task_positions(&active_session_ids);
-
-        // Assert
-        assert_eq!(state.follow_up_task_positions.get("session-1"), Some(&1));
-        assert_eq!(state.follow_up_task_positions.get("session-2"), None);
-        assert_eq!(state.follow_up_task_positions.get("session-3"), None);
     }
 }

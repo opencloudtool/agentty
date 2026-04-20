@@ -52,7 +52,6 @@ pub struct SessionChatPage<'a> {
     pub default_reasoning_level: ReasoningLevel,
     pub markdown_render_cache: Option<&'a markdown::MarkdownRenderCache>,
     pub mode: &'a AppMode,
-    pub selected_follow_up_task_position: Option<usize>,
     pub scroll_offset: Option<u16>,
     pub session_index: usize,
     pub sessions: &'a [Session],
@@ -121,20 +120,11 @@ impl<'a> SessionChatPage<'a> {
             default_reasoning_level,
             markdown_render_cache: Some(markdown_render_cache),
             mode,
-            selected_follow_up_task_position: None,
             scroll_offset,
             session_index,
             sessions,
             wall_clock_unix_seconds,
         }
-    }
-
-    /// Sets the selected follow-up task position used for task affordances in
-    /// session view.
-    #[must_use]
-    pub fn selected_follow_up_task_position(mut self, position: Option<usize>) -> Self {
-        self.selected_follow_up_task_position = position;
-        self
     }
 
     /// Sets whether the rendered session currently exposes a materialized
@@ -356,7 +346,6 @@ impl<'a> SessionChatPage<'a> {
         output = output.active_prompt_output(self.active_prompt_output);
         output = output.review_status_message(self.review_status_message());
         output = output.review_text(self.review_text());
-        output = output.selected_follow_up_task_position(self.selected_follow_up_task_position);
         if let Some(scroll_offset) = self.scroll_offset {
             output = output.scroll_offset(scroll_offset);
         }
@@ -566,7 +555,6 @@ impl<'a> SessionChatPage<'a> {
             session,
             self.can_open_worktree,
             self.done_session_output_mode(),
-            self.selected_follow_up_task_position,
         );
         let help_message = Paragraph::new(help_action::footer_line(&help_actions));
         f.render_widget(help_message, bottom_area);
@@ -586,19 +574,10 @@ impl<'a> SessionChatPage<'a> {
         session: &Session,
         can_open_worktree: bool,
         done_session_output_mode: DoneSessionOutputMode,
-        selected_follow_up_task_position: Option<usize>,
     ) -> Vec<help_action::HelpAction> {
         let session_state = help_action::session_view_state(session);
-
-        let selected_follow_up_task_position =
-            Self::resolved_follow_up_task_position(session, selected_follow_up_task_position);
-        let selected_follow_up_task_action = selected_follow_up_task_position
-            .and_then(|position| session.follow_up_task(position))
-            .map(crate::domain::session::SessionFollowUpTask::action);
         let mut actions = help_action::view_footer_actions(ViewHelpState {
             can_open_worktree,
-            follow_up_task_action: selected_follow_up_task_action,
-            has_multiple_follow_up_tasks: session.follow_up_tasks.len() > 1,
             publish_pull_request_action: session.publish_pull_request_action(),
             session_state,
         });
@@ -612,20 +591,6 @@ impl<'a> SessionChatPage<'a> {
         }
 
         actions
-    }
-
-    /// Returns the selected follow-up task position for session-view footer
-    /// affordances, defaulting to the first task when no explicit selection
-    /// has been stored yet.
-    fn resolved_follow_up_task_position(
-        session: &Session,
-        selected_follow_up_task_position: Option<usize>,
-    ) -> Option<usize> {
-        if let Some(selected_follow_up_task_position) = selected_follow_up_task_position {
-            return Some(selected_follow_up_task_position);
-        }
-
-        session.follow_up_tasks.first().map(|task| task.position)
     }
 
     /// Returns the `t` footer label for `Status::Done` output mode toggling.
@@ -1021,7 +986,6 @@ mod tests {
             session,
             can_open_worktree,
             done_session_output_mode,
-            None,
         ))
         .to_string()
     }
@@ -1073,27 +1037,6 @@ mod tests {
             wrapped_message,
             Some("Press ? to inspect the shortcuts available for the current session state.")
         );
-    }
-
-    #[test]
-    /// Shows the launch shortcut in the footer when follow-up tasks exist but
-    /// the UI has not stored an explicit task selection yet.
-    fn test_view_help_text_defaults_first_follow_up_task_to_launch_action() {
-        // Arrange
-        let mut session = session_fixture();
-        session.follow_up_tasks = vec![crate::domain::session::SessionFollowUpTask {
-            id: 1,
-            launched_session_id: None,
-            position: 0,
-            text: "Launch the sibling task.".to_string(),
-        }];
-
-        // Act
-        let help_text = view_help_text(&session, true, DoneSessionOutputMode::Summary);
-
-        // Assert
-        assert!(help_text.contains("launch task"));
-        assert!(help_text.contains('l'));
     }
 
     #[test]
@@ -1428,42 +1371,11 @@ mod tests {
                 done_session_output_mode: DoneSessionOutputMode::Summary,
                 review_status_message: None,
                 review_text: None,
-                selected_follow_up_task_position: None,
             },
         );
 
         // Assert
         assert!(rendered_line_count > raw_line_count);
-    }
-
-    #[test]
-    fn test_rendered_output_line_count_review_mode_includes_follow_up_tasks() {
-        // Arrange
-        let mut session = session_fixture();
-        session.status = Status::Review;
-        session.follow_up_tasks = vec![crate::domain::session::SessionFollowUpTask {
-            id: 1,
-            launched_session_id: None,
-            position: 0,
-            text: "Run cargo test -q.".to_string(),
-        }];
-
-        // Act
-        let rendered_line_count = SessionChatPage::rendered_output_line_count(
-            &session,
-            80,
-            SessionOutputLineContext {
-                active_prompt_output: None,
-                active_progress: None,
-                done_session_output_mode: DoneSessionOutputMode::Review,
-                review_status_message: Some("Reviewing changes with gpt-5.4"),
-                review_text: None,
-                selected_follow_up_task_position: None,
-            },
-        );
-
-        // Assert
-        assert!(rendered_line_count > 2);
     }
 
     #[test]

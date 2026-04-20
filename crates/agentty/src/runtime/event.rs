@@ -422,7 +422,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: std::env::temp_dir(),
-            follow_up_tasks: Vec::new(),
             id: session_id.clone(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,

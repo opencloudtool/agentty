@@ -18,8 +18,7 @@ use crate::app::session_state::SessionGitStatus;
 use crate::app::{AppServices, SessionState, setting};
 use crate::domain::agent::{AgentModel, ReasoningLevel};
 use crate::domain::session::{
-    DailyActivity, FollowUpTaskAction, PublishedBranchSyncStatus, ReviewRequest, Session,
-    SessionFollowUpTask, SessionStats,
+    DailyActivity, PublishedBranchSyncStatus, ReviewRequest, Session, SessionStats,
 };
 use crate::infra::agent::protocol::QuestionItem;
 use crate::infra::git;
@@ -41,11 +40,9 @@ pub(crate) struct SessionDefaults {
 ///
 /// The worker computes this projection immediately after writing canonical turn
 /// metadata so the reducer can apply the same summary, clarification-question,
-/// follow-up-task, and token-usage updates without waiting for a full reload.
+/// and token-usage updates without waiting for a full reload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TurnAppliedState {
-    /// Persisted follow-up tasks for the latest completed turn.
-    pub(crate) follow_up_tasks: Vec<SessionFollowUpTask>,
     /// Persisted clarification questions for the latest completed turn.
     pub(crate) questions: Vec<QuestionItem>,
     /// Raw persisted summary payload, if the turn produced one.
@@ -57,12 +54,11 @@ pub(crate) struct TurnAppliedState {
 impl TurnAppliedState {
     /// Merges one newer reducer projection into this batched state.
     ///
-    /// Latest-turn fields (`follow_up_tasks`, `questions`, `summary`) replace
-    /// the previous projection, while `token_usage_delta` accumulates so
-    /// multiple completed turns queued in one reducer tick do not undercount
-    /// session usage.
+    /// Latest-turn fields (`questions`, `summary`) replace the previous
+    /// projection, while `token_usage_delta` accumulates so multiple
+    /// completed turns queued in one reducer tick do not undercount session
+    /// usage.
     pub(crate) fn merge_newer(&mut self, newer_turn_applied_state: Self) {
-        self.follow_up_tasks = newer_turn_applied_state.follow_up_tasks;
         self.questions = newer_turn_applied_state.questions;
         self.summary = newer_turn_applied_state.summary;
         self.token_usage_delta.input_tokens = self
@@ -396,9 +392,6 @@ impl SessionManager {
             return;
         };
 
-        session
-            .follow_up_tasks
-            .clone_from(&turn_applied_state.follow_up_tasks);
         session.questions.clone_from(&turn_applied_state.questions);
         session.summary.clone_from(&turn_applied_state.summary);
         session.stats.input_tokens = session
@@ -551,64 +544,6 @@ impl SessionManager {
         }
 
         self.replace_session_branch_names(session_branch_names);
-    }
-
-    /// Returns the selected follow-up task position for one session.
-    pub(crate) fn selected_follow_up_task_position(&self, session_id: &str) -> Option<usize> {
-        self.state.selected_follow_up_task_position(session_id)
-    }
-
-    /// Returns the action currently available for the selected follow-up task
-    /// in one session.
-    pub(crate) fn selected_follow_up_task_action(
-        &self,
-        session_id: &str,
-    ) -> Option<FollowUpTaskAction> {
-        let position = self.selected_follow_up_task_position(session_id)?;
-        let session = self
-            .state
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)?;
-
-        session
-            .follow_up_task(position)
-            .map(crate::domain::session::SessionFollowUpTask::action)
-    }
-
-    /// Returns whether one session has more than one follow-up task.
-    pub(crate) fn has_multiple_follow_up_tasks(&self, session_id: &str) -> bool {
-        self.state
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .is_some_and(|session| session.follow_up_tasks.len() > 1)
-    }
-
-    /// Advances the selected follow-up task to the next item for one session.
-    pub(crate) fn select_next_follow_up_task(&mut self, session_id: &str) {
-        self.state.select_next_follow_up_task(session_id);
-    }
-
-    /// Moves the selected follow-up task to the previous item for one
-    /// session.
-    pub(crate) fn select_previous_follow_up_task(&mut self, session_id: &str) {
-        self.state.select_previous_follow_up_task(session_id);
-    }
-
-    /// Sets the launched sibling-session link for the matching cached
-    /// follow-up task.
-    pub(crate) fn set_follow_up_task_launched_session_id(
-        &mut self,
-        session_id: &str,
-        position: usize,
-        launched_session_id: Option<String>,
-    ) {
-        self.state.set_follow_up_task_launched_session_id(
-            session_id,
-            position,
-            launched_session_id,
-        );
     }
 }
 
@@ -1156,7 +1091,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder,
-            follow_up_tasks: Vec::new(),
             id: id.to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -1201,7 +1135,6 @@ mod tests {
                 created_at: 0,
                 draft_attachments: Vec::new(),
                 folder: PathBuf::from(format!("/tmp/{session_id}")),
-                follow_up_tasks: Vec::new(),
                 id: session_id.to_string(),
                 in_progress_started_at: None,
                 in_progress_total_seconds: 0,
@@ -1283,7 +1216,6 @@ mod tests {
         app.sessions.apply_turn_applied_state(
             "session-id",
             &TurnAppliedState {
-                follow_up_tasks: Vec::new(),
                 questions: Vec::new(),
                 summary: None,
                 token_usage_delta: SessionStats::default(),

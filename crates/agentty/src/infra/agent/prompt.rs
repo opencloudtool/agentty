@@ -320,12 +320,9 @@ mod tests {
         assert!(rendered_prompt.contains("session"));
         assert!(rendered_prompt.contains("\"answer\""));
         assert!(rendered_prompt.contains("\"questions\""));
-        assert!(rendered_prompt.contains("\"follow_up_tasks\""));
         assert!(rendered_prompt.contains("\"title\""));
         assert!(rendered_prompt.contains("\"description\""));
         assert!(rendered_prompt.contains("summary"));
-        assert!(rendered_prompt.contains("changes code or tests"));
-        assert!(rendered_prompt.contains("not standalone command execution"));
         assert!(rendered_prompt.ends_with(prompt));
     }
 
@@ -362,11 +359,7 @@ mod tests {
         assert!(rendered_prompt.contains("Structured response protocol:"));
         assert!(rendered_prompt.contains("---"));
         assert!(rendered_prompt.contains("For this one-shot utility prompt"));
-        assert!(
-            rendered_prompt
-                .contains(r#"{"answer":"...","questions":[],"follow_up_tasks":[],"summary":null}"#)
-        );
-        assert!(rendered_prompt.contains("\"follow_up_tasks\""));
+        assert!(rendered_prompt.contains(r#"{"answer":"...","questions":[],"summary":null}"#));
         assert!(rendered_prompt.contains("\"summary\""));
         assert!(rendered_prompt.ends_with(prompt));
     }
@@ -408,7 +401,6 @@ mod tests {
         assert!(rendered_prompt.contains("Protocol refresh reminder:"));
         assert!(rendered_prompt.contains("repository-root-relative POSIX paths"));
         assert!(rendered_prompt.contains("read-only git commands"));
-        assert!(rendered_prompt.contains("follow_up_tasks"));
         assert!(!rendered_prompt.contains("Authoritative JSON Schema:"));
         assert!(rendered_prompt.ends_with(prompt));
     }

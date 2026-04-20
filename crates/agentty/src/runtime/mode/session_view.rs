@@ -11,7 +11,7 @@ use crate::app::{
 };
 use crate::domain::agent::AgentModel;
 use crate::domain::input::InputState;
-use crate::domain::session::{FollowUpTaskAction, PublishBranchAction, Status};
+use crate::domain::session::{PublishBranchAction, Status};
 use crate::runtime::EventResult;
 use crate::runtime::mode::confirmation::DEFAULT_OPTION_INDEX;
 use crate::runtime::mode::input_key::is_insertable_char_key;
@@ -71,7 +71,6 @@ struct ViewKeyContext<'a> {
 struct ViewSessionSnapshot {
     can_start_staged_session: bool,
     can_open_worktree: bool,
-    follow_up_task_action: Option<FollowUpTaskAction>,
     publish_pull_request_action: Option<PublishBranchAction>,
     session_state: ViewSessionState,
     session_status: Status,
@@ -181,20 +180,6 @@ async fn handle_primary_view_key(
         KeyCode::Char('o') if view_session_snapshot.can_open_worktree => {
             open_worktree_for_view_session(app, view_context).await;
         }
-        KeyCode::Char('l') if view_session_snapshot.follow_up_task_action.is_some() => {
-            if let Err(error) = app
-                .launch_or_open_selected_follow_up_task(&view_context.session_id)
-                .await
-            {
-                app.append_output_for_session(
-                    &view_context.session_id,
-                    &format!("\n[Follow-Up Task Error] {error}\n"),
-                )
-                .await;
-            }
-
-            return Some(false);
-        }
         KeyCode::Char('s') if view_session_snapshot.can_start_staged_session => {
             if let Err(error) = app.start_staged_session(&view_context.session_id).await {
                 app.append_output_for_session(
@@ -205,12 +190,6 @@ async fn handle_primary_view_key(
             }
 
             return Some(false);
-        }
-        KeyCode::Char('[') if app.has_multiple_follow_up_tasks(&view_context.session_id) => {
-            app.select_previous_follow_up_task(&view_context.session_id);
-        }
-        KeyCode::Char(']') if app.has_multiple_follow_up_tasks(&view_context.session_id) => {
-            app.select_next_follow_up_task(&view_context.session_id);
         }
         KeyCode::Enter if is_view_action_allowed(view_session_snapshot.session_status) => {
             switch_view_to_prompt(
@@ -454,7 +433,6 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
             && session.status == Status::New
             && session.has_staged_drafts(),
         can_open_worktree,
-        follow_up_task_action: app.selected_follow_up_task_action(&view_context.session_id),
         publish_pull_request_action: session.publish_pull_request_action(),
         session_state: help_action::session_view_state(session),
         session_status,
@@ -638,9 +616,6 @@ fn open_view_help_overlay(
         context: HelpContext::View {
             can_open_worktree: view_session_snapshot.can_open_worktree,
             done_session_output_mode: view_context.done_session_output_mode,
-            follow_up_task_action: view_session_snapshot.follow_up_task_action,
-            has_multiple_follow_up_tasks: app
-                .has_multiple_follow_up_tasks(&view_context.session_id),
             review_status_message: view_context.review_status_message.clone(),
             review_text: view_context.review_text.clone(),
             publish_pull_request_action: view_session_snapshot.publish_pull_request_action,
@@ -768,9 +743,6 @@ fn view_total_lines(
                     done_session_output_mode,
                     review_status_message,
                     review_text,
-                    selected_follow_up_task_position: app
-                        .sessions
-                        .selected_follow_up_task_position(session_id),
                 },
             )
         })
@@ -2109,7 +2081,6 @@ mod tests {
         let view_session_snapshot = ViewSessionSnapshot {
             can_start_staged_session: false,
             can_open_worktree: true,
-            follow_up_task_action: None,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_state: ViewSessionState::Review,
             session_status: Status::Review,
@@ -2125,8 +2096,6 @@ mod tests {
                 context: HelpContext::View {
                     can_open_worktree: true,
                     done_session_output_mode: DoneSessionOutputMode::Review,
-                    follow_up_task_action: None,
-                    has_multiple_follow_up_tasks: false,
                     review_status_message: Some(ref status_message),
                     review_text: Some(ref review_text),
                     publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
@@ -2504,7 +2473,6 @@ mod tests {
         let view_session_snapshot = ViewSessionSnapshot {
             can_start_staged_session: false,
             can_open_worktree: false,
-            follow_up_task_action: None,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Done,
             session_status: Status::Done,
@@ -2545,60 +2513,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_launch_follow_up_task_key_opens_linked_sibling_session() {
-        // Arrange
-        let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
-        let sibling_session_id = app
-            .create_session()
-            .await
-            .expect("failed to create sibling session");
-        let source_session = app
-            .sessions
-            .sessions
-            .iter_mut()
-            .find(|session| session.id == session_id)
-            .expect("expected source session in session list");
-        source_session.follow_up_tasks = vec![crate::domain::session::SessionFollowUpTask {
-            id: 1,
-            launched_session_id: Some(sibling_session_id.clone()),
-            position: 0,
-            text: "Open the sibling session.".to_string(),
-        }];
-        app.mode = AppMode::View {
-            done_session_output_mode: DoneSessionOutputMode::Summary,
-            review_status_message: None,
-            review_text: None,
-            session_id,
-            scroll_offset: Some(0),
-        };
-        let backend = ratatui::backend::TestBackend::new(120, 30);
-        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
-
-        // Act
-        let result = handle(
-            &mut app,
-            &mut terminal,
-            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
-        )
-        .await
-        .expect("launch/open key should be handled");
-
-        // Assert
-        assert!(matches!(result, EventResult::Continue));
-        assert_eq!(
-            app.selected_session().map(|session| session.id.as_str()),
-            Some(sibling_session_id.as_str())
-        );
-        assert!(matches!(
-            app.mode,
-            AppMode::View {
-                ref session_id,
-                ..
-            } if session_id == &sibling_session_id
-        ));
-    }
-
-    #[tokio::test]
     async fn test_handle_view_key_slash_opens_prompt_with_prefilled_slash() {
         // Arrange
         let (mut app, _base_dir, session_id) = new_test_app_with_session().await;
@@ -2614,7 +2528,6 @@ mod tests {
         let view_session_snapshot = ViewSessionSnapshot {
             can_start_staged_session: false,
             can_open_worktree: true,
-            follow_up_task_action: None,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Review,
             session_status: Status::Review,
@@ -2672,7 +2585,6 @@ mod tests {
         let view_session_snapshot = ViewSessionSnapshot {
             can_start_staged_session: false,
             can_open_worktree: true,
-            follow_up_task_action: None,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_state: ViewSessionState::Review,
             session_status: Status::Review,
@@ -2723,7 +2635,6 @@ mod tests {
         let view_session_snapshot = ViewSessionSnapshot {
             can_start_staged_session: false,
             can_open_worktree: true,
-            follow_up_task_action: None,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_state: ViewSessionState::Review,
             session_status: Status::Review,
@@ -2792,7 +2703,6 @@ mod tests {
             let view_session_snapshot = ViewSessionSnapshot {
                 can_start_staged_session: false,
                 can_open_worktree: false,
-                follow_up_task_action: None,
                 publish_pull_request_action: None,
                 session_state: ViewSessionState::Done,
                 session_status: Status::Done,

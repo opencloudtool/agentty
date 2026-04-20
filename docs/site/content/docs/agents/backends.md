@@ -145,7 +145,6 @@ Example payload:
 ```json
 {
   "answer": "Implemented the change.",
-  "follow_up_tasks": [],
   "questions": [
     {
       "text": "Should I run the full test suite?",

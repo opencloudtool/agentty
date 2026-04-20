@@ -25,7 +25,7 @@ pub use review::SessionReviewRequestRow;
 pub(crate) use review::{ReviewRepository, SqliteReviewRepository};
 #[cfg(test)]
 pub(crate) use session::SessionJoinRow;
-pub use session::{SessionFollowUpTaskRow, SessionRow};
+pub use session::SessionRow;
 pub(crate) use session::{SessionRepository, SessionTurnMetadata, SqliteSessionRepository};
 pub(crate) use setting::{SettingRepository, SqliteSettingRepository};
 pub use usage::SessionUsageRow;
@@ -425,14 +425,6 @@ impl AppRepositories {
         self.session.load_sessions_for_project(project_id).await
     }
 
-    /// Loads all persisted session follow-up-task rows in stable display
-    /// order.
-    pub(crate) async fn load_session_follow_up_tasks(
-        &self,
-    ) -> Result<Vec<SessionFollowUpTaskRow>, DbError> {
-        self.session.load_session_follow_up_tasks().await
-    }
-
     /// Loads lightweight session metadata used for cheap change detection.
     pub(crate) async fn load_sessions_metadata(&self) -> Result<(i64, i64), DbError> {
         self.session.load_sessions_metadata().await
@@ -503,18 +495,6 @@ impl AppRepositories {
         self.session.replace_session_output(id, output).await
     }
 
-    #[cfg(test)]
-    /// Replaces the persisted follow-up task list for one session.
-    pub(crate) async fn replace_session_follow_up_tasks(
-        &self,
-        session_id: &str,
-        follow_up_tasks: &[String],
-    ) -> Result<(), DbError> {
-        self.session
-            .replace_session_follow_up_tasks(session_id, follow_up_tasks)
-            .await
-    }
-
     /// Updates persisted diff-derived size and line-count fields for a
     /// session row.
     ///
@@ -529,23 +509,6 @@ impl AppRepositories {
     ) -> Result<(), DbError> {
         self.session
             .update_session_diff_stats(added_lines, deleted_lines, id, size)
-            .await
-    }
-
-    /// Updates the launched sibling-session link for one persisted follow-up
-    /// task.
-    pub(crate) async fn update_session_follow_up_task_launched_session_id(
-        &self,
-        session_id: &str,
-        position: usize,
-        launched_session_id: Option<&str>,
-    ) -> Result<(), DbError> {
-        self.session
-            .update_session_follow_up_task_launched_session_id(
-                session_id,
-                position,
-                launched_session_id.map(str::to_string),
-            )
             .await
     }
 
@@ -1096,8 +1059,6 @@ WHERE id = ?
             Some("origin/wt/session-a")
         );
         assert_review_request_row(&session_row);
-
-        assert_joined_session_follow_up_tasks(&database).await;
     }
 
     /// Builds an in-memory database with one session covering joined fields
@@ -1137,16 +1098,6 @@ WHERE id = ?
             .update_session_questions("session-a", "[\"Need logs?\"]")
             .await
             .expect("failed to update session questions");
-        database
-            .replace_session_follow_up_tasks(
-                "session-a",
-                &[
-                    "Document the new shortcut.".to_string(),
-                    "Add a session-view regression test.".to_string(),
-                ],
-            )
-            .await
-            .expect("failed to replace session follow-up tasks");
         database
             .update_session_prompt("session-a", "Implement the feature")
             .await
@@ -1208,28 +1159,6 @@ WHERE id = ?
             .update_session_updated_at("session-a", 200)
             .await
             .expect("failed to update session updated_at");
-    }
-
-    /// Asserts follow-up task rows persisted for the joined-session mapping
-    /// test.
-    async fn assert_joined_session_follow_up_tasks(database: &Database) {
-        let follow_up_tasks = database
-            .load_session_follow_up_tasks()
-            .await
-            .expect("failed to load session follow-up tasks");
-        let follow_up_task_text = follow_up_tasks
-            .into_iter()
-            .filter(|task| task.session_id == "session-a")
-            .map(|task| task.text)
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            follow_up_task_text,
-            vec![
-                "Document the new shortcut.".to_string(),
-                "Add a session-view regression test.".to_string()
-            ]
-        );
     }
 
     /// Verifies generated titles only overwrite the session title when the
@@ -2723,61 +2652,6 @@ WHERE model = ?
     }
 
     #[tokio::test]
-    /// Verifies follow-up-task replacement persists rows in display order and
-    /// clears superseded tasks.
-    async fn test_replace_session_follow_up_tasks_round_trips_latest_tasks() {
-        // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("failed to open in-memory db");
-        let project_id = database
-            .upsert_project("/tmp/project", Some("main"))
-            .await
-            .expect("failed to insert project");
-        database
-            .insert_session("session-a", "gpt-5.4", "main", "Done", project_id)
-            .await
-            .expect("failed to insert session");
-        database
-            .replace_session_follow_up_tasks(
-                "session-a",
-                &["Stale task".to_string(), "Remove me".to_string()],
-            )
-            .await
-            .expect("failed to insert initial follow-up tasks");
-
-        // Act
-        database
-            .replace_session_follow_up_tasks(
-                "session-a",
-                &[
-                    "Document the release note.".to_string(),
-                    "Add integration coverage.".to_string(),
-                ],
-            )
-            .await
-            .expect("failed to replace follow-up tasks");
-        let follow_up_tasks = database
-            .load_session_follow_up_tasks()
-            .await
-            .expect("failed to load session follow-up tasks");
-
-        // Assert
-        let follow_up_task_text = follow_up_tasks
-            .into_iter()
-            .filter(|task| task.session_id == "session-a")
-            .map(|task| task.text)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            follow_up_task_text,
-            vec![
-                "Document the release note.".to_string(),
-                "Add integration coverage.".to_string()
-            ]
-        );
-    }
-
-    #[tokio::test]
     /// Verifies transactional turn-metadata persistence rolls back partial
     /// writes when any statement in the transaction fails.
     async fn test_persist_session_turn_metadata_rolls_back_on_failure() {
@@ -2797,17 +2671,16 @@ WHERE model = ?
             .update_session_summary("session-a", "persisted summary")
             .await
             .expect("failed to seed summary");
-        sqlx::query("DROP TABLE session_follow_up_task")
+        sqlx::query("DROP TABLE session_usage")
             .execute(database.pool())
             .await
-            .expect("failed to drop follow-up-task table");
+            .expect("failed to drop session-usage table");
 
         // Act
         let result = database
             .persist_session_turn_metadata(
                 "session-a",
                 &SessionTurnMetadata {
-                    follow_up_tasks: &["Document the failure path.".to_string()],
                     instruction_conversation_id: Some("instruction-thread"),
                     model: AgentModel::Gpt54.as_str(),
                     provider_conversation_id: Some("thread-123"),
@@ -2841,53 +2714,6 @@ WHERE model = ?
         assert_eq!(session.input_tokens, 0);
         assert_eq!(session.output_tokens, 0);
         assert_eq!(provider_conversation_id.as_deref(), None);
-    }
-
-    #[tokio::test]
-    /// Verifies launched sibling-session links round-trip through persisted
-    /// follow-up-task rows.
-    async fn test_update_session_follow_up_task_launched_session_id_round_trips() {
-        // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("failed to open in-memory db");
-        let project_id = database
-            .upsert_project("/tmp/project", Some("main"))
-            .await
-            .expect("failed to insert project");
-        database
-            .insert_session("session-a", "gpt-5.4", "main", "Done", project_id)
-            .await
-            .expect("failed to insert source session");
-        database
-            .insert_session("session-b", "gpt-5.4", "main", "New", project_id)
-            .await
-            .expect("failed to insert sibling session");
-        database
-            .replace_session_follow_up_tasks("session-a", &["Launch the sibling task.".to_string()])
-            .await
-            .expect("failed to insert follow-up task");
-
-        // Act
-        database
-            .update_session_follow_up_task_launched_session_id("session-a", 0, Some("session-b"))
-            .await
-            .expect("failed to persist launched sibling-session id");
-        let follow_up_tasks = database
-            .load_session_follow_up_tasks()
-            .await
-            .expect("failed to load follow-up tasks");
-
-        // Assert
-        let follow_up_task = follow_up_tasks
-            .into_iter()
-            .find(|task| task.session_id == "session-a")
-            .expect("expected persisted follow-up task");
-        assert_eq!(
-            follow_up_task.launched_session_id.as_deref(),
-            Some("session-b")
-        );
-        assert_eq!(follow_up_task.position, 0);
     }
 
     #[tokio::test]

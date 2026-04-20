@@ -45,7 +45,6 @@ pub(super) fn preferred_completed_assistant_message(assistant_messages: &[String
         let response = parse_agent_response_strict(trimmed_message).ok()?;
         if response.answer.trim().is_empty()
             && response.questions.is_empty()
-            && response.follow_up_task_items().is_empty()
             && response.summary.is_none()
         {
             return None;

@@ -2192,7 +2192,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: PathBuf::from("/tmp/session"),
-            follow_up_tasks: Vec::new(),
             id: "session-id".to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,

@@ -176,7 +176,6 @@ fn question_view_metrics(app: &App, terminal_size: Rect) -> QuestionViewMetrics 
                     done_session_output_mode: DoneSessionOutputMode::Summary,
                     review_status_message: None,
                     review_text: None,
-                    selected_follow_up_task_position: None,
                 },
             )
         });
@@ -1019,7 +1018,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: PathBuf::from("/tmp/test"),
-            follow_up_tasks: Vec::new(),
             id: session_id.to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -1090,7 +1088,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: PathBuf::from("/tmp/test"),
-            follow_up_tasks: Vec::new(),
             id: session_id.to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,
@@ -2628,7 +2625,6 @@ mod tests {
             created_at: 0,
             draft_attachments: Vec::new(),
             folder: session_dir.path().to_path_buf(),
-            follow_up_tasks: Vec::new(),
             id: session_id.to_string(),
             in_progress_started_at: None,
             in_progress_total_seconds: 0,

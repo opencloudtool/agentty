@@ -1,7 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::domain::session::{FollowUpTaskAction, PublishBranchAction, Session, Status};
+use crate::domain::session::{PublishBranchAction, Session, Status};
 
 /// One user-visible shortcut entry that can be rendered in the footer and
 /// in the help popup.
@@ -66,12 +66,6 @@ pub(crate) struct ViewHelpState {
     /// Whether the current session currently has a local worktree directory
     /// available to open.
     pub(crate) can_open_worktree: bool,
-    /// Launch/open action available for the selected follow-up task, when the
-    /// current session exposes one.
-    pub(crate) follow_up_task_action: Option<FollowUpTaskAction>,
-    /// Whether the current session exposes more than one follow-up task to
-    /// cycle through.
-    pub(crate) has_multiple_follow_up_tasks: bool,
     /// Pull-request publish action available for the current session, when
     /// any.
     pub(crate) publish_pull_request_action: Option<PublishBranchAction>,
@@ -326,23 +320,6 @@ pub(crate) fn view_actions(state: ViewHelpState) -> Vec<HelpAction> {
         actions.push(HelpAction::new("toggle view", "t", "Switch summary/output"));
     }
 
-    if let Some(follow_up_task_action) = state.follow_up_task_action {
-        actions.push(follow_up_task_help_action(follow_up_task_action));
-    }
-
-    if state.has_multiple_follow_up_tasks {
-        actions.push(HelpAction::new(
-            "prev task",
-            "[",
-            "Select previous follow-up task",
-        ));
-        actions.push(HelpAction::new(
-            "next task",
-            "]",
-            "Select next follow-up task",
-        ));
-    }
-
     actions.push(HelpAction::new("scroll", "j/k", "Scroll output"));
     actions.push(HelpAction::new("top", "g", "Scroll to top"));
     actions.push(HelpAction::new("bottom", "G", "Scroll to bottom"));
@@ -406,23 +383,6 @@ pub(crate) fn view_footer_actions(state: ViewHelpState) -> Vec<HelpAction> {
 
     if state.session_state == ViewSessionState::Done {
         actions.push(HelpAction::new("toggle view", "t", "Switch summary/output"));
-    }
-
-    if let Some(follow_up_task_action) = state.follow_up_task_action {
-        actions.push(follow_up_task_help_action(follow_up_task_action));
-    }
-
-    if state.has_multiple_follow_up_tasks {
-        actions.push(HelpAction::new(
-            "prev task",
-            "[",
-            "Select previous follow-up task",
-        ));
-        actions.push(HelpAction::new(
-            "next task",
-            "]",
-            "Select next follow-up task",
-        ));
     }
 
     actions.push(HelpAction::new("scroll", "j/k", "Scroll output"));
@@ -570,16 +530,6 @@ fn publish_pull_request_help_action(action: PublishBranchAction) -> HelpAction {
     }
 }
 
-/// Returns the view-mode shortcut entry for the selected follow-up task.
-fn follow_up_task_help_action(action: FollowUpTaskAction) -> HelpAction {
-    match action {
-        FollowUpTaskAction::Launch => HelpAction::new("launch task", "l", "Launch sibling session"),
-        FollowUpTaskAction::Open => {
-            HelpAction::new("open task", "l", "Open launched sibling session")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,8 +631,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::InProgress,
         };
@@ -702,8 +650,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: false,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Review,
         };
@@ -720,8 +666,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Rebasing,
         };
@@ -741,8 +685,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::MergeQueue,
         };
@@ -762,8 +704,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_state: ViewSessionState::Review,
         };
@@ -800,8 +740,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_state: ViewSessionState::AgentReview,
         };
@@ -822,8 +760,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Interactive,
         };
@@ -843,8 +779,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::NewSession,
         };
@@ -867,8 +801,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Done,
         };
@@ -891,8 +823,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_state: ViewSessionState::Review,
         };
@@ -916,8 +846,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: Some(PublishBranchAction::PublishPullRequest),
             session_state: ViewSessionState::AgentReview,
         };
@@ -941,8 +869,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Rebasing,
         };
@@ -962,8 +888,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::NewSession,
         };
@@ -981,8 +905,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::MergeQueue,
         };
@@ -1003,8 +925,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Canceled,
         };
@@ -1054,8 +974,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::InProgress,
         };
@@ -1075,8 +993,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Review,
         };
@@ -1093,8 +1009,6 @@ mod tests {
         // Arrange
         let state = ViewHelpState {
             can_open_worktree: true,
-            follow_up_task_action: None,
-            has_multiple_follow_up_tasks: false,
             publish_pull_request_action: None,
             session_state: ViewSessionState::Review,
         };

@@ -8,7 +8,7 @@ use crate::app::SessionManager;
 use crate::domain::agent::{AgentKind, AgentModel, ReasoningLevel};
 use crate::domain::session::{
     DailyActivity, PublishedBranchSyncStatus, ReviewRequest, ReviewRequestSummary, Session,
-    SessionFollowUpTask, SessionHandles, SessionSize, SessionStats, Status,
+    SessionHandles, SessionSize, SessionStats, Status,
 };
 use crate::infra::agent::protocol::QuestionItem;
 #[cfg(test)]
@@ -20,7 +20,6 @@ use crate::infra::git::GitClient;
 /// Precomputed fields needed to assemble one loaded session snapshot.
 struct LoadedSessionInput {
     draft_attachments: Vec<crate::infra::channel::TurnPromptAttachment>,
-    follow_up_tasks: Vec<SessionFollowUpTask>,
     folder: std::path::PathBuf,
     project_name: String,
     questions: Vec<QuestionItem>,
@@ -72,18 +71,9 @@ impl SessionManager {
             .load_sessions_for_project(active_project_id)
             .await
             .unwrap_or_default();
-        let persisted_follow_up_tasks = db.load_session_follow_up_tasks().await.unwrap_or_default();
         let stats_activity = db.load_session_activity().await.unwrap_or_default();
         let mut sessions: Vec<Session> = Vec::new();
-        let mut follow_up_tasks_by_session = HashMap::<String, Vec<_>>::new();
         let mut session_worktree_availability = HashMap::new();
-
-        for persisted_follow_up_task in persisted_follow_up_tasks {
-            follow_up_tasks_by_session
-                .entry(persisted_follow_up_task.session_id.clone())
-                .or_default()
-                .push(persisted_follow_up_task.into_session_follow_up_task());
-        }
 
         for row in db_rows {
             let folder = session_folder(base, &row.id);
@@ -146,13 +136,8 @@ impl SessionManager {
                 .reasoning_level_override
                 .as_deref()
                 .and_then(|value| value.parse::<ReasoningLevel>().ok());
-            let follow_up_tasks = follow_up_tasks_by_session
-                .remove(&row.id)
-                .unwrap_or_default();
-
             sessions.push(Self::build_loaded_session(LoadedSessionInput {
                 draft_attachments,
-                follow_up_tasks,
                 folder,
                 project_name: project_name.clone(),
                 questions,
@@ -202,7 +187,6 @@ impl SessionManager {
             created_at: input.row.created_at,
             draft_attachments: input.draft_attachments,
             folder: input.folder,
-            follow_up_tasks: input.follow_up_tasks,
             id: input.row.id,
             in_progress_started_at: input.row.in_progress_started_at,
             in_progress_total_seconds: input.row.in_progress_total_seconds,
@@ -665,80 +649,6 @@ mod tests {
             .find(|session| session.id == session_id)
             .expect("missing reloaded session");
         assert_eq!(session.review_request, Some(review_request));
-    }
-
-    #[tokio::test]
-    /// Ensures reload maps persisted launched sibling-session links onto
-    /// follow-up tasks.
-    async fn test_load_sessions_maps_follow_up_task_launch_links() {
-        // Arrange
-        let db = Database::open_in_memory()
-            .await
-            .expect("failed to open in-memory db");
-        let project_id = db
-            .upsert_project("/tmp/test", None)
-            .await
-            .expect("failed to upsert project");
-
-        db.insert_session(
-            "source-session",
-            "gemini-3-flash-preview",
-            "main",
-            "Review",
-            project_id,
-        )
-        .await
-        .expect("failed to insert source session");
-        db.insert_session(
-            "sibling-session",
-            "gemini-3-flash-preview",
-            "main",
-            "New",
-            project_id,
-        )
-        .await
-        .expect("failed to insert sibling session");
-        db.replace_session_follow_up_tasks(
-            "source-session",
-            &["Launch the sibling task.".to_string()],
-        )
-        .await
-        .expect("failed to persist follow-up task");
-        db.update_session_follow_up_task_launched_session_id(
-            "source-session",
-            0,
-            Some("sibling-session"),
-        )
-        .await
-        .expect("failed to persist launched sibling-session id");
-
-        let base_path = Path::new("/virtual/session-base");
-        let mock_fs_client =
-            create_folder_lookup_mock(vec![session_folder(base_path, "source-session")]);
-        let mut handles = HashMap::new();
-
-        // Act
-        let (sessions, _, _) = SessionManager::load_sessions_with_fs_client(
-            base_path,
-            &db,
-            project_id,
-            Path::new("/tmp/test"),
-            &mut handles,
-            &mock_fs_client,
-        )
-        .await;
-
-        // Assert
-        let session = sessions
-            .iter()
-            .find(|session| session.id == "source-session")
-            .expect("missing reloaded session");
-        assert_eq!(session.follow_up_tasks.len(), 1);
-        assert_eq!(
-            session.follow_up_tasks[0].launched_session_id.as_deref(),
-            Some("sibling-session")
-        );
-        assert_eq!(session.follow_up_tasks[0].position, 0);
     }
 
     #[test]

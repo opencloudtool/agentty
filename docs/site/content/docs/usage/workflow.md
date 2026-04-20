@@ -62,13 +62,13 @@ Session statuses and what you can do in each state:
 |--------|-------------|-------------------|
 | **New** | Session created but not yet started. Regular sessions submit their first prompt immediately; draft sessions can stage multiple prompts locally first and only create their worktree when the staged bundle starts. | `Enter` compose first prompt or add draft, `/` open slash-command composer, `s` start staged draft session, `m` add to merge queue, `r` rebase, `o` open worktree after the session has started, scroll, help |
 | **InProgress** | Agent is actively working. | `o` open worktree, scroll, help |
-| **Review** | Agent finished; changes are ready for review. Linked pull requests / merge requests refresh in the background; merged requests move the session to `Done`, and closed requests move it to `Canceled`. | `Enter` reply, `/` open slash-command composer, `m` add to merge queue, `r` rebase, `o` open worktree, `p` create or refresh forge review request, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
-| **AgentReview** | Agentty is generating the focused review output in the background. Linked pull requests / merge requests continue refreshing in the background. | `Enter` reply, `/` open slash-command composer, `m` add to merge queue, `o` open worktree, `p` create or refresh forge review request, `d` diff, `f` focused review, `l` launch/open follow-up task, `[` / `]` select follow-up task, scroll, help |
+| **Review** | Agent finished; changes are ready for review. Linked pull requests / merge requests refresh in the background; merged requests move the session to `Done`, and closed requests move it to `Canceled`. | `Enter` reply, `/` open slash-command composer, `m` add to merge queue, `r` rebase, `o` open worktree, `p` create or refresh forge review request, `d` diff, `f` focused review, scroll, help |
+| **AgentReview** | Agentty is generating the focused review output in the background. Linked pull requests / merge requests continue refreshing in the background. | `Enter` reply, `/` open slash-command composer, `m` add to merge queue, `o` open worktree, `p` create or refresh forge review request, `d` diff, `f` focused review, scroll, help |
 | **Question** | Agent requested clarification before continuing. | question input mode (`Enter` submit, `Tab` toggle chat scroll, `Esc` end turn) |
 | **Queued** | Session is waiting in the merge queue. | read-only view (`q`, scroll, help) |
 | **Rebasing** | Worktree branch is rebasing onto the base branch. | `o` open worktree, scroll, help |
 | **Merging** | Changes are being merged into the base branch. | read-only view (`q`, scroll, help) |
-| **Done** | Session completed, merged, and its worktree checkout was removed. | `t` toggle summary/output, `l` open follow-up task, `[` / `]` select follow-up task, scroll, help |
+| **Done** | Session completed, merged, and its worktree checkout was removed. | `t` toggle summary/output, scroll, help |
 | **Canceled** | Session was canceled by the user and its worktree checkout was removed. | read-only view (`q`, scroll, help) |
 
 Settings values are stored per active project. Switching projects reloads that
@@ -90,12 +90,6 @@ cleared when you submit the next prompt.
 Pressing `/` from an editable session view opens the same composer with a
 prefilled `/` so you can pick a slash command without typing the leading
 character first.
-
-When a completed turn emits `follow_up_tasks`, the session view renders them as
-a separate follow-up section. The selected task shows `[Launch]` until it has
-started a sibling session, then switches to `[Open]` so you can jump back to
-that linked sibling later. Use `l` to launch or open the selected task, and
-use `[` / `]` to move between tasks when multiple follow-up tasks are present.
 
 After each successful turn with file changes, Agentty keeps the session branch
 at one evolving commit. It regenerates that commit message from the cumulative
