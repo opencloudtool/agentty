@@ -27,6 +27,12 @@ const AUTO_COMMIT_ASSIST_POLICY: AssistPolicy = AssistPolicy {
 };
 const SESSION_COMMIT_COAUTHORED_BY_AGENTTY_TRAILER: &str =
     "Co-Authored-By: [Agentty](https://github.com/agentty-xyz/agentty)";
+const SESSION_COMMIT_DIFF_TRUNCATION_LIMIT: usize = 60_000;
+const SESSION_COMMIT_DIFF_TRUNCATED_SECTION_MARKER: &str =
+    "[Commit message diff was truncated to fit context window]";
+const AUTO_COMMIT_ERROR_TRUNCATION_LIMIT: usize = 20_000;
+const AUTO_COMMIT_ERROR_TRUNCATED_SECTION_MARKER: &str =
+    "[Commit error was truncated to fit context window]";
 
 /// Askama view model for rendering auto-commit recovery prompts.
 #[derive(Template)]
@@ -346,7 +352,8 @@ impl SessionTaskService {
         context: &AssistContext,
         commit_error: &str,
     ) -> Result<(), SessionError> {
-        let prompt = Self::auto_commit_assist_prompt(commit_error)?;
+        let compacted_error = compact_commit_error_for_assist(commit_error);
+        let prompt = Self::auto_commit_assist_prompt(&compacted_error)?;
         let assist_context = AssistContext {
             app_event_tx: context.app_event_tx.clone(),
             child_pid: Arc::clone(&context.child_pid),
@@ -553,7 +560,8 @@ impl SessionTaskService {
     ///
     /// # Errors
     /// Returns an error when prompt rendering fails, the one-shot agent call
-    /// fails, or the returned `answer` text is blank.
+    /// fails, the returned `answer` text is blank, or fallback retry with a
+    /// truncated diff fails after a context-window error.
     async fn generate_session_commit_message_with_backend(
         folder: &Path,
         session_model: AgentModel,
@@ -563,7 +571,7 @@ impl SessionTaskService {
         include_coauthored_by_agentty: bool,
     ) -> Result<String, SessionError> {
         let prompt = Self::session_commit_message_prompt(diff, current_commit_message)?;
-        let submission = Self::submit_utility_prompt_with_backend(
+        let submission = match Self::submit_utility_prompt_with_backend(
             session_model,
             backend,
             agent::OneShotRequest {
@@ -575,7 +583,32 @@ impl SessionTaskService {
                 reasoning_level: crate::domain::agent::ReasoningLevel::default(),
             },
         )
-        .await?;
+        .await
+        {
+            Ok(submission) => submission,
+            Err(error) if is_context_window_exceeded_error(&error) => {
+                let Some(truncated_diff) = truncate_session_diff_for_commit_message(diff) else {
+                    return Err(error);
+                };
+                let truncated_prompt =
+                    Self::session_commit_message_prompt(&truncated_diff, current_commit_message)?;
+
+                Self::submit_utility_prompt_with_backend(
+                    session_model,
+                    backend,
+                    agent::OneShotRequest {
+                        child_pid: None,
+                        folder,
+                        model: session_model,
+                        prompt: &truncated_prompt,
+                        request_kind: crate::infra::channel::AgentRequestKind::UtilityPrompt,
+                        reasoning_level: crate::domain::agent::ReasoningLevel::default(),
+                    },
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
         let answer_text = submission.response.to_answer_display_text();
         let trimmed_answer_text = answer_text.trim();
         if trimmed_answer_text.is_empty() {
@@ -818,11 +851,84 @@ fn append_agentty_coauthor_trailer(
     format!("{trimmed_commit_message}\n\n{SESSION_COMMIT_COAUTHORED_BY_AGENTTY_TRAILER}")
 }
 
+/// Returns true when a commit-generation error indicates a failed app-server
+/// one-shot flow due to provider context limits.
+fn is_context_window_exceeded_error(error: &SessionError) -> bool {
+    match error {
+        SessionError::Workflow(message) => is_context_window_exceeded_error_message(message),
+        _ => false,
+    }
+}
+
+/// Returns whether a commit-assist error message indicates a provider context
+/// window overflow and is therefore a candidate for error compaction.
+fn is_context_window_exceeded_error_message(message: &str) -> bool {
+    message.contains("contextWindowExceeded")
+        || message.contains("context_window_exceeded")
+        || message.contains("context window exceeded")
+}
+
+/// Returns a commit-assist error compacted for prompt context when the
+/// model-reported context window has already been exceeded.
+///
+/// The helper keeps both the head and tail of the error text and inserts a
+/// small marker between them so critical diagnostics and retry details remain
+/// visible while trimming duplicated or excessive payload.
+fn compact_commit_error_for_assist(commit_error: &str) -> String {
+    if !is_context_window_exceeded_error_message(commit_error) {
+        return commit_error.to_string();
+    }
+
+    if commit_error.chars().count() <= AUTO_COMMIT_ERROR_TRUNCATION_LIMIT {
+        return commit_error.to_string();
+    }
+
+    let half_limit = AUTO_COMMIT_ERROR_TRUNCATION_LIMIT / 2;
+    let error_head = commit_error.chars().take(half_limit).collect::<String>();
+    let error_tail = commit_error
+        .chars()
+        .rev()
+        .take(half_limit)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+
+    format!("{error_head}\n\n{AUTO_COMMIT_ERROR_TRUNCATED_SECTION_MARKER}\n\n{error_tail}")
+}
+
+/// Returns a truncated diff payload if the input exceeds the safe assistant
+/// window.
+///
+/// Keeps the head and tail of the diff, inserts a marker, and returns `None`
+/// when truncation is unnecessary.
+fn truncate_session_diff_for_commit_message(diff: &str) -> Option<String> {
+    if diff.chars().count() <= SESSION_COMMIT_DIFF_TRUNCATION_LIMIT {
+        return None;
+    }
+
+    let half_limit = SESSION_COMMIT_DIFF_TRUNCATION_LIMIT / 2;
+    let diff_head = diff.chars().take(half_limit).collect::<String>();
+    let diff_tail = diff
+        .chars()
+        .rev()
+        .take(half_limit)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+
+    Some(format!(
+        "{diff_head}\n\n{SESSION_COMMIT_DIFF_TRUNCATED_SECTION_MARKER}\n\n{diff_tail}"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant, SystemTime};
 
     use super::*;
@@ -1120,6 +1226,128 @@ mod tests {
                 .to_string()
                 .contains("response:\nRefactor agent prompt and protocol handling")
         );
+    }
+
+    #[tokio::test]
+    /// Verifies large diffs are retried with truncation after a
+    /// context-window-overflow one-shot failure.
+    async fn test_generate_session_commit_message_with_backend_retries_with_truncated_diff() {
+        // Arrange
+        let temp_directory = tempfile::tempdir().expect("failed to create temp dir");
+        let diff = "diff line\n".repeat(SESSION_COMMIT_DIFF_TRUNCATION_LIMIT + 1);
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_for_build = Arc::clone(&call_count);
+        let mut backend = MockAgentBackend::new();
+        backend
+            .expect_build_command()
+            .times(2)
+            .returning(move |request| {
+                let request_index = call_count_for_build.fetch_add(1, Ordering::SeqCst) + 1;
+                assert!(matches!(
+                    request.request_kind,
+                    AgentRequestKind::UtilityPrompt
+                ));
+
+                if request_index == 1 {
+                    assert!(request.prompt.contains("diff line"));
+
+                    return Ok(mock_shell_command("", "contextWindowExceeded", 1));
+                }
+
+                assert!(
+                    request
+                        .prompt
+                        .contains(SESSION_COMMIT_DIFF_TRUNCATED_SECTION_MARKER)
+                );
+                assert!(request.prompt.len() < SESSION_COMMIT_DIFF_TRUNCATION_LIMIT * 2);
+
+                Ok(mock_shell_command(
+                    r#"{"answer":"Truncated diff commit","questions":[],"summary":null}"#,
+                    "",
+                    0,
+                ))
+            });
+
+        // Act
+        let generated_message = SessionTaskService::generate_session_commit_message_with_backend(
+            temp_directory.path(),
+            AgentModel::ClaudeSonnet46,
+            diff.as_str(),
+            None,
+            &backend,
+            false,
+        )
+        .await
+        .expect("truncated retry should succeed");
+
+        // Assert
+        assert_eq!(generated_message, "Truncated diff commit");
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    /// Verifies context-window overflow error detection recognizes provider
+    /// diagnostics.
+    fn test_is_context_window_exceeded_error_detects_window_limits() {
+        // Arrange
+        let overflow_error =
+            SessionError::Workflow("Codex app-server failed: contextWindowExceeded".to_string());
+        let other_error = SessionError::Workflow("network timeout".to_string());
+
+        // Act
+        let overflow_is_detected = is_context_window_exceeded_error(&overflow_error);
+        let other_is_detected = is_context_window_exceeded_error(&other_error);
+
+        // Assert
+        assert!(overflow_is_detected);
+        assert!(!other_is_detected);
+    }
+
+    #[test]
+    /// Verifies long context-window overflow messages are compacted for
+    /// auto-commit assistance prompts.
+    fn test_compact_commit_error_for_assist_truncates_overflow_messages() {
+        // Arrange
+        let commit_error = "contextWindowExceeded\n".repeat(10_000);
+
+        // Act
+        let compacted = compact_commit_error_for_assist(&commit_error);
+
+        // Assert
+        assert!(compacted.len() < commit_error.len());
+        assert!(compacted.contains(AUTO_COMMIT_ERROR_TRUNCATED_SECTION_MARKER));
+    }
+
+    #[test]
+    /// Verifies non-window-overflow messages are left unchanged.
+    fn test_compact_commit_error_for_assist_keeps_non_overflow_messages() {
+        // Arrange
+        let commit_error = "network timeout while pushing";
+
+        // Act
+        let compacted = compact_commit_error_for_assist(commit_error);
+
+        // Assert
+        assert_eq!(compacted, commit_error);
+    }
+
+    #[test]
+    /// Verifies diff truncation removes middle content and adds a marker.
+    fn test_truncate_session_commit_diff_preserves_edge_content() {
+        // Arrange
+        let diff = (0..SESSION_COMMIT_DIFF_TRUNCATION_LIMIT + 1)
+            .map(|index| format!("file {index}\n"))
+            .collect::<String>();
+
+        // Act
+        let truncated =
+            truncate_session_diff_for_commit_message(&diff).expect("long diff should be truncated");
+
+        // Assert
+        assert!(truncated.contains(SESSION_COMMIT_DIFF_TRUNCATED_SECTION_MARKER));
+        assert!(truncated.len() < diff.len());
+        assert!(truncated.starts_with("file 0"));
+        assert!(truncated.contains("file 60000"));
     }
 
     #[test]

@@ -395,8 +395,11 @@ pub(super) fn extract_turn_completed_error_message(response_value: &Value) -> Op
 
 /// Returns whether a turn error message indicates context window overflow.
 pub(super) fn is_context_window_exceeded_error(error_message: &str) -> bool {
-    error_message.contains("ContextWindowExceeded")
-        || error_message.contains("context_window_exceeded")
+    let normalized = error_message.to_ascii_lowercase();
+
+    normalized.contains("contextwindowexceeded")
+        || normalized.contains("context_window_exceeded")
+        || normalized.contains("context window exceeded")
 }
 
 /// Extracts one turn id from a `turn/completed` notification payload.
@@ -500,6 +503,19 @@ mod tests {
 
         // Assert
         assert_eq!(turn_id, Some("turn-nested".to_string()));
+    }
+
+    #[test]
+    fn is_context_window_exceeded_error_detects_codex_camel_case_suffix() {
+        // Arrange
+        let message =
+            "[contextWindowExceeded] Codex ran out of room in the model's context window.";
+
+        // Act
+        let is_overflow = is_context_window_exceeded_error(message);
+
+        // Assert
+        assert!(is_overflow);
     }
 
     #[test]

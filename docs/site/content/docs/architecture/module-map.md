@@ -39,8 +39,19 @@ also writes a machine-readable workspace summary to
 
 - `crates/agentty/src/app.rs`: App module router and public re-exports for app
   orchestration APIs.
-- `crates/agentty/src/app/core.rs`: `App` facade and thin orchestration entry
-  points that compose startup, reducer, review, and branch-publish helpers.
+- `crates/agentty/src/app/core.rs`: Router-only `App` core module that
+  re-exports the facade and focused child modules under `app/core/`.
+- `crates/agentty/src/app/core/state.rs`: `App`, `AppClients`,
+  `SyncMainRunner`, shared state structs, and remaining workflow glue that does
+  not belong to startup, draw, reducer, or roadmap slices.
+- `crates/agentty/src/app/core/new.rs`: `App` construction, startup project
+  loading, service wiring, and startup-only app helpers.
+- `crates/agentty/src/app/core/draw.rs`: Frame rendering plus render-facing app
+  accessors used to assemble `ui::RenderContext`.
+- `crates/agentty/src/app/core/events.rs`: `AppEvent`, reducer batch
+  coalescing, app-event application, and sync or branch-publish popup helpers.
+- `crates/agentty/src/app/core/roadmap.rs`: Active-project roadmap cache state,
+  `Tasks` tab availability, and roadmap loading or scrolling helpers.
 - `crates/agentty/src/app/startup.rs`: `AppStartup` for startup project
   resolution, initial session hydration, and project catalog refresh helpers.
 - `crates/agentty/src/app/reducer.rs`: `AppEventReducer` and `AppEventBatch`
