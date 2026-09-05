@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ag_agent as agent;
 use ag_agent::{
     AgentError, AgentRequestKind, LiveTranscript, OneShotClient, PersonalityPrompt,
     TurnContinuation, TurnEvent, TurnRequest, TurnResult,
@@ -140,9 +141,10 @@ impl MainCheckoutSnapshot {
 /// the lifecycle before enqueueing). Start and resume turns schedule detached
 /// title generation while the current title remains provisional. Progress
 /// events update the UI indicator; `PidUpdate` events update the shared PID
-/// slot used for cancellation. If the turn fails, the error is appended to
-/// session output before transitioning to `Review`; user-stopped turns
-/// skip that fallback so the UI cancellation path can finalize `Canceled`.
+/// slot used for accounting and CLI cancellation. If the turn fails, the
+/// error is appended to session output before transitioning to `Review`;
+/// user-stopped turns skip that fallback so the UI cancellation path can
+/// finalize `Canceled`.
 ///
 /// A fresh [`CancellationToken`] is swapped into the shared mutex at
 /// the top of this function so stale cancellations from previous
@@ -515,14 +517,13 @@ async fn prepare_resume_turn(context: &SessionWorkerContext, request_kind: &Agen
 /// Runs one agent turn with cancellation support.
 ///
 /// Races `run_turn` against the per-turn [`CancellationToken`]. When the
-/// token is cancelled (`Ctrl+c`), `SIGTERM` is sent to the active child
+/// token is cancelled (`Ctrl+c`), `SIGTERM` is sent only to a CLI child
 /// process (if any) via [`terminate_child_process`], the channel is shut
 /// down gracefully through `shutdown_session`, and the function waits for
 /// the `run_turn` future to resolve (with a timeout) so the subprocess is
-/// not orphaned. Sending `SIGTERM` from inside the cancellation branch
-/// (rather than from the UI) eliminates the stale-PID / PID-reuse risk:
-/// `run_turn` has not returned yet, so the PID slot still belongs to the
-/// active child.
+/// not orphaned. App-server PIDs are accounting metadata, never signal
+/// targets: their runtime owners handle cancellation through
+/// `shutdown_session`, including when a retained PID has been recycled.
 ///
 /// Each turn receives its own fresh token, created at the start of
 /// [`run_channel_turn`]. This eliminates the stale-permit problem that
@@ -538,7 +539,7 @@ pub(super) async fn run_turn_with_cancellation(
     // at the top of `run_channel_turn`, so a cancelled state here is a
     // real `Ctrl+c`, not a stale leftover.
     if cancel_token.is_cancelled() {
-        terminate_child_process(context);
+        terminate_child_process(&context.child_pid, context.session_agent.kind());
         let _ = context
             .channel
             .shutdown_session(context.session_id.to_string())
@@ -557,12 +558,9 @@ pub(super) async fn run_turn_with_cancellation(
     tokio::select! {
         result = &mut turn_future => result,
         () = cancel_token.cancelled() => {
-            // Send SIGTERM to the child process while it is guaranteed
-            // alive (run_turn has not returned yet). This is safe from
-            // PID-reuse because the PID slot is only cleared after
-            // run_turn completes. App-server channels ignore the signal
-            // because their PID slot is always None.
-            terminate_child_process(context);
+            // Only CLI PIDs are signal targets. App-server runtimes are
+            // stopped by their owner below, never through sampled PIDs.
+            terminate_child_process(&context.child_pid, context.session_agent.kind());
 
             // Graceful shutdown: close stdin, wait for exit, kill if
             // needed.
@@ -768,23 +766,23 @@ async fn add_main_checkout_warning(
     }
 }
 
-/// Sends `SIGTERM` to the active child process tracked in
-/// `context.child_pid`, if any.
+/// Clears tracked accounting and sends `SIGTERM` only for a CLI transport.
+/// App-server PIDs may outlive a turn and must never authorize a signal.
 ///
-/// Best-effort: the PID slot may be `None` (app-server channels never
-/// publish a PID) or the process may have already exited. Both cases are
-/// silently ignored.
-pub(super) fn terminate_child_process(context: &SessionWorkerContext) {
+/// Best-effort: the PID slot may be `None` before a runtime starts, or the
+/// process may have already exited. Both cases are silently ignored.
+pub(super) fn terminate_child_process(child_pid: &Mutex<Option<u32>>, kind: AgentKind) {
     // Sync critical section (the guard is dropped at the end of the chain
     // expression, before any `.await`); `std::sync::Mutex` is the correct
     // choice per CLAUDE.md §"Mutex Selection".
-    let active_pid = context
-        .child_pid
+    let active_pid = child_pid
         .lock()
         .ok()
         .and_then(|mut child_pid| child_pid.take());
 
-    if let Some(pid) = active_pid {
+    if !agent::transport_mode(kind).uses_app_server()
+        && let Some(pid) = active_pid
+    {
         process::send_terminate_signal(pid);
     }
 }

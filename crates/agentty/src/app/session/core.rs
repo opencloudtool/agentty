@@ -21,6 +21,7 @@ use crate::app::{AppServices, SessionState, setting};
 use crate::domain::agent::{AgentModel, AgentSelection, ReasoningLevel, ResponseStyle, SpeedMode};
 use crate::domain::file_entry::FileEntry;
 use crate::domain::question::QuestionItem;
+use crate::domain::resource::SessionResources;
 use crate::domain::session::{
     DailyActivity, FollowUpTaskAction, ReviewRequest, Session, SessionFollowUpTask, SessionId,
     SessionStats, Status,
@@ -113,6 +114,8 @@ pub(crate) struct SessionRenderParts<'a> {
     pub(crate) session_git_statuses: &'a HashMap<SessionId, SessionGitStatus>,
     /// Cached session list positions keyed by stable session id.
     pub(crate) session_index_by_id: &'a HashMap<SessionId, usize>,
+    /// Latest resource totals for tracked agent process trees.
+    pub(crate) session_resources: &'a HashMap<SessionId, SessionResources>,
     /// Whether each rendered session currently has a materialized worktree on
     /// disk, keyed by session id.
     pub(crate) session_worktree_availability: &'a HashMap<SessionId, bool>,
@@ -169,6 +172,7 @@ pub struct SessionManager {
     pub(super) default_session_model: AgentModel,
     pub(super) git_client: Arc<dyn git::GitClient>,
     pub(super) merge_service: SessionMergeService,
+    pub(super) resources: super::resource::ResourceMonitor,
     pub(super) state: SessionState,
     pub(super) stats_activity: Vec<DailyActivity>,
     pub(super) workflow_state: SessionWorkflowState,
@@ -211,6 +215,9 @@ impl SessionManager {
 
         Self {
             active_prompt_outputs: HashMap::new(),
+            resources: super::resource::ResourceMonitor::new(Arc::new(
+                crate::infra::resource::RealResourceClient,
+            )),
             at_mention_indexes: HashMap::new(),
             default_session_model: defaults.model,
             git_client,
@@ -340,6 +347,7 @@ impl SessionManager {
     pub(crate) fn render_parts(&self) -> SessionRenderParts<'_> {
         SessionRenderParts {
             active_prompt_outputs: &self.active_prompt_outputs,
+            session_resources: &self.resources.values,
             session_branch_names: &self.state.session_branch_names,
             session_git_statuses: &self.state.session_git_statuses,
             session_index_by_id: &self.state.session_index_by_id,
@@ -348,6 +356,27 @@ impl SessionManager {
             stats_activity: &self.stats_activity,
             selected_index: self.state.table_state.selected(),
         }
+    }
+
+    /// Refreshes live process accounting through the background sampler.
+    pub(crate) async fn refresh_resources(&mut self) -> bool {
+        let roots = self
+            .state
+            .handles()
+            .iter()
+            .filter_map(|(id, handles)| {
+                handles
+                    .child_pid
+                    .lock()
+                    .ok()
+                    .and_then(|pid| *pid)
+                    .map(|pid| (id.clone(), pid))
+            })
+            .collect();
+
+        self.resources
+            .refresh(roots, self.state.clock.now_instant())
+            .await
     }
 
     /// Returns all loaded session snapshots in current list order.

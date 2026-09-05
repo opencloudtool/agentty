@@ -5,6 +5,7 @@
 
 mod core;
 mod error;
+mod resource;
 mod state;
 mod workflow;
 

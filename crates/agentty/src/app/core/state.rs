@@ -1782,6 +1782,7 @@ impl App {
     /// Returns `true` when the fallback poll refreshed render-visible session
     /// state.
     pub async fn refresh_sessions_if_needed(&mut self) -> bool {
+        let resources_refreshed = self.sessions.refresh_resources().await;
         let refreshed = self
             .sessions
             .refresh_sessions_if_needed(&mut self.mode, &self.projects, &self.services)
@@ -1795,7 +1796,7 @@ impl App {
             app::review::hydrate_review_transients(&self.review_cache, self.sessions.state_mut());
         }
 
-        refreshed
+        refreshed || resources_refreshed
     }
 
     /// Forces immediate session list reload.

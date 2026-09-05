@@ -39,6 +39,13 @@ application ports:
 adjacency per project, and atomically claims roll-up submission before the session API
 uses its stable operation identifier.
 
+`ResourceClient` supplies process-table snapshots to the session manager. Its production
+adapter runs a locale-stable, time-limited `ps` command between native creation-identity
+queries for the tracked roots. Native queries run off the async executor. Deterministic
+snapshots test process-tree attribution, same-second PID reuse, refresh throttling, and
+invalidation without host-dependent resource assertions. Isolated host tests check both
+accounting and native identity access.
+
 Beyond these, narrower internal command-runner boundaries (for example
 `ForgeCommandRunner`, `GitCommandRunner`, `CompatibilityMergeRunner`,
 `TmuxCommandRunner`, `UpdateRunner`, the `ag-harness` repository-inspection runner, and

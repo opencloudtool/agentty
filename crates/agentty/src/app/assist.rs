@@ -28,7 +28,7 @@ pub(super) struct AssistPolicy {
 pub(super) struct AssistContext {
     /// App event sender used to update UI progress/output state.
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
-    /// Shared process identifier slot used for cancellation.
+    /// Session PID slot for CLI cancellation or retained app-server accounting.
     pub(super) child_pid: Arc<Mutex<Option<u32>>>,
     /// Repository bundle used for session persistence updates.
     pub(super) db: AppRepositories,

@@ -116,6 +116,12 @@ impl BuilderEnv {
         }
         Self::create_gemini_cli_stub(&stub_bin)?;
 
+        // Keep host CPU and memory out of feature-recording hashes. Resource
+        // scenarios replace this stub with a deterministic process table.
+        let ps_path = stub_bin.join("ps");
+        std::fs::write(&ps_path, "#!/bin/sh\nexit 1\n")?;
+        std::fs::set_permissions(&ps_path, std::fs::Permissions::from_mode(0o750))?;
+
         Ok(Self {
             agentty_root,
             home_dir,

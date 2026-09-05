@@ -5,6 +5,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::domain::agent::ReasoningLevel;
 use crate::domain::question::QuestionItem;
+use crate::domain::resource::SessionResources;
 use crate::domain::session::{
     Session, can_merge_session_branch_in_stack, can_mutate_session_branch_in_stack,
     can_rebase_session_branch_in_stack, can_reply_to_session_in_stack,
@@ -70,13 +71,17 @@ struct SessionChatLayoutPlan {
 impl SessionChatLayoutPlan {
     /// Resolves all session-chat geometry and prepared prompt data once.
     fn new(input: SessionChatLayoutInput<'_>) -> Self {
-        let header_lines = session_format::session_header_lines(
+        let mut header_lines = session_format::session_header_lines(
             input.session,
             input.area.width.saturating_sub(2),
             input.default_reasoning_level,
             input.wall_clock_unix_seconds,
             input.has_merge_conflict,
         );
+        header_lines.push(session_format::session_resources_line(
+            None,
+            input.area.width.saturating_sub(2),
+        ));
         let prompt_panel =
             prepare_prompt_panel(input.area, input.mode, input.review_text, input.session);
         let bottom_height = prompt_panel.as_ref().map_or_else(
@@ -125,6 +130,8 @@ pub struct SessionChatPage<'a> {
     /// Shared fully assembled output-layout cache for scroll metrics and
     /// frame rendering.
     pub output_layout_cache: &'a SessionOutputLayoutCache,
+    /// Most recent tracked agent process-tree totals.
+    pub resources: Option<SessionResources>,
     /// Focused-review output for the rendered session.
     pub review_text: Option<&'a str>,
     /// Current vertical transcript scroll offset.
@@ -157,6 +164,8 @@ pub struct SessionChatPageInput<'a> {
     pub mode: &'a AppMode,
     /// Shared output-layout cache for this render pass.
     pub output_layout_cache: &'a SessionOutputLayoutCache,
+    /// Most recent tracked agent process-tree totals.
+    pub resources: Option<SessionResources>,
     /// Focused-review output for the rendered session.
     pub review_text: Option<&'a str>,
     /// Current vertical output scroll offset.
@@ -175,6 +184,7 @@ impl<'a> SessionChatPage<'a> {
         let SessionChatPageInput {
             active_prompt_output,
             active_progress,
+            resources,
             default_reasoning_level,
             frame_time,
             has_merge_conflict,
@@ -191,6 +201,7 @@ impl<'a> SessionChatPage<'a> {
         Self {
             active_prompt_output,
             active_progress,
+            resources,
             can_open_worktree: false,
             default_reasoning_level,
             frame_time,
@@ -242,7 +253,7 @@ impl<'a> SessionChatPage<'a> {
     /// Renders the session header, output panel, and context-aware bottom
     /// panel.
     fn render_session(&self, f: &mut Frame, area: Rect, session: &Session) {
-        let layout_plan = SessionChatLayoutPlan::new(SessionChatLayoutInput {
+        let mut layout_plan = SessionChatLayoutPlan::new(SessionChatLayoutInput {
             area,
             default_reasoning_level: self.default_reasoning_level,
             has_merge_conflict: self.has_merge_conflict,
@@ -251,6 +262,13 @@ impl<'a> SessionChatPage<'a> {
             session,
             wall_clock_unix_seconds: self.frame_time.unix_seconds(),
         });
+
+        if let Some(line) = layout_plan.header_lines.last_mut() {
+            *line = session_format::session_resources_line(
+                self.resources,
+                area.width.saturating_sub(2),
+            );
+        }
 
         let mut output = SessionOutput::new(session)
             .markdown_render_cache(self.markdown_render_cache)
@@ -738,6 +756,7 @@ mod tests {
         SessionChatPage::new(SessionChatPageInput {
             active_prompt_output: None,
             active_progress: None,
+            resources: None,
             default_reasoning_level: ReasoningLevel::default(),
             frame_time: FrameTime::new(0, 0, 0),
             has_merge_conflict: false,

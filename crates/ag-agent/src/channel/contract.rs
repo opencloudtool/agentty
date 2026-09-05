@@ -302,9 +302,11 @@ pub enum TurnEvent {
     Failed(String),
     /// A child process PID update.
     ///
-    /// Sent by CLI channels immediately after spawning the child process
-    /// (`Some(pid)`) and again after the child exits (`None`). Consumers
-    /// update the shared PID slot used by cancellation signals.
+    /// Announces a running or retained runtime (`Some(pid)`) or clears it
+    /// when the runtime shuts down (`None`). Consumers update resource
+    /// accounting. Only CLI transports may use this
+    /// PID for cancellation signals; app-server cancellation belongs to the
+    /// runtime owner and must not signal an accounting PID.
     PidUpdate(Option<u32>),
 }
 

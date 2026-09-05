@@ -211,7 +211,6 @@ where
     ShutdownRuntime: for<'scope> FnMut(&'scope mut Runtime) -> BorrowedAppServerFuture<'scope, ()>,
 {
     let (assistant_message, input_tokens, output_tokens) = attempt_output;
-    let pid = (inspector.pid)(&session_runtime);
     let provider_conversation_id = (inspector.provider_conversation_id)(&session_runtime);
 
     if !inspector.retain_runtime_after_turn {
@@ -222,11 +221,12 @@ where
             context_reset,
             input_tokens,
             output_tokens,
-            pid,
+            pid: None,
             provider_conversation_id,
         });
     }
 
+    let pid = (inspector.pid)(&session_runtime);
     if let Err((error, mut leaked)) = sessions.store_session_or_recover(session_id, session_runtime)
     {
         shutdown_runtime(&mut leaked).await;
@@ -755,6 +755,7 @@ mod tests {
             response.provider_conversation_id.as_deref(),
             Some("gemini-session")
         );
+        assert_eq!(response.pid, None);
         assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
         assert!(stored_runtime.is_none());
     }

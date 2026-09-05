@@ -28,6 +28,8 @@ pub(crate) type BorrowedAppServerFuture<'scope, T> =
 /// agent output and progress updates to the UI.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppServerStreamEvent {
+    /// Runtime process available before executing a turn or retry.
+    PidUpdate(Option<u32>),
     /// Assistant text received while a turn is running.
     AssistantMessage {
         /// Text payload emitted by the provider.
@@ -100,7 +102,8 @@ pub struct AppServerTurnResponse {
     pub input_tokens: u64,
     /// Output token count reported for the completed turn.
     pub output_tokens: u64,
-    /// Provider runtime process identifier when available.
+    /// Provider runtime process identifier when retained after the turn.
+    /// Cleared once a non-retained runtime has shut down.
     pub pid: Option<u32>,
     /// Provider-native thread/session id observed after the turn.
     pub provider_conversation_id: Option<String>,

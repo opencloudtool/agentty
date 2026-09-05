@@ -36,6 +36,7 @@ crossterm = { version = "0.29.0", default-features = false, features = ["bracket
 ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }
 jsonschema = { version = "0.52.0", default-features = false }
+libproc = "0.14.11"
 mockall = "0.15"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false }

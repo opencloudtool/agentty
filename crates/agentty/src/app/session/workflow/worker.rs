@@ -42,7 +42,6 @@ use crate::domain::turn_prompt::TurnPrompt;
 use crate::infra::db::{AppRepositories, OperationRepository, SessionOperationRow};
 use crate::infra::fs::FsClient;
 use crate::infra::personality::PersonalityCatalogClient;
-use crate::infra::process;
 
 const RESTART_FAILURE_REASON: &str = "Interrupted by app restart";
 const CANCEL_BEFORE_EXECUTION_REASON: &str = "Session canceled before execution";
@@ -253,6 +252,7 @@ pub(super) struct SessionWorkerContext {
     pub(super) cancel_token: Arc<Mutex<CancellationToken>>,
     /// Provider-agnostic agent channel for this session's worker.
     pub(super) channel: Arc<dyn AgentChannel>,
+    /// Runtime accounting root; only CLI transports may use it for signaling.
     pub(super) child_pid: Arc<Mutex<Option<u32>>>,
     pub(super) clock: Arc<dyn Clock>,
     pub(super) db: AppRepositories,
@@ -338,7 +338,7 @@ struct SessionWorkerRebaseAssistClient {
     cancel_token: Arc<Mutex<CancellationToken>>,
     /// Provider channel already associated with this session.
     channel: Arc<dyn AgentChannel>,
-    /// Shared child-process PID slot used by cancellation.
+    /// Runtime accounting root; app-server cancellation uses channel shutdown.
     child_pid: Arc<Mutex<Option<u32>>>,
     /// Repository bundle used for conversation and usage persistence.
     db: AppRepositories,
@@ -459,7 +459,7 @@ impl SessionWorkerRebaseAssistClient {
         event_tx: mpsc::UnboundedSender<TurnEvent>,
     ) -> Result<TurnResult, AgentError> {
         if cancel_token.is_cancelled() {
-            self.terminate_child_process();
+            turn::terminate_child_process(&self.child_pid, self.session_agent.kind());
             let _ = self
                 .channel
                 .shutdown_session(self.session_id.to_string())
@@ -478,7 +478,7 @@ impl SessionWorkerRebaseAssistClient {
         tokio::select! {
             result = &mut turn_future => result,
             () = cancel_token.cancelled() => {
-                self.terminate_child_process();
+                turn::terminate_child_process(&self.child_pid, self.session_agent.kind());
                 let _ = self.channel.shutdown_session(self.session_id.to_string()).await;
                 let _ = tokio::time::timeout(Duration::from_secs(5), &mut turn_future).await;
 
@@ -486,21 +486,6 @@ impl SessionWorkerRebaseAssistClient {
                     "[Stopped] Session interrupted by user.".to_string(),
                 ))
             }
-        }
-    }
-
-    /// Sends `SIGTERM` to the active child process tracked by this assist turn.
-    fn terminate_child_process(&self) {
-        // Sync critical section (take PID, no `.await`); `std::sync::Mutex`
-        // is the correct choice per CLAUDE.md §"Mutex Selection".
-        let active_pid = self
-            .child_pid
-            .lock()
-            .ok()
-            .and_then(|mut child_pid| child_pid.take());
-
-        if let Some(pid) = active_pid {
-            process::send_terminate_signal(pid);
         }
     }
 
@@ -3338,6 +3323,12 @@ mod tests {
     async fn test_run_turn_with_cancellation_honours_pre_turn_cancel() {
         // Arrange — create a pre-cancelled token, simulating a Ctrl+c
         // that arrived during pre-turn setup.
+        let mut unrelated_child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("start unrelated process");
+        let recycled_pid = unrelated_child.id().expect("unrelated PID");
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
 
@@ -3347,7 +3338,7 @@ mod tests {
         mock_channel.expect_run_turn().never();
         mock_channel
             .expect_shutdown_session()
-            .times(1)
+            .times(2)
             .returning(|_| Box::pin(async { Ok(()) }));
 
         let context = SessionWorkerContext {
@@ -3355,7 +3346,7 @@ mod tests {
             branch_operation_lock: Arc::new(tokio::sync::Mutex::new(())),
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
             channel: Arc::new(mock_channel),
-            child_pid: Arc::new(Mutex::new(None)),
+            child_pid: Arc::new(Mutex::new(Some(recycled_pid))),
             clock: Arc::new(crate::infra::clock::RealClock),
             db: AppRepositories::in_memory().await.expect("db should open"),
             folder: std::env::temp_dir(),
@@ -3390,11 +3381,37 @@ mod tests {
         };
 
         // Act — pass the pre-cancelled token directly.
-        let result =
-            run_turn_with_cancellation(&context, cancel_token, req, mpsc::unbounded_channel().0)
-                .await;
+        let result = run_turn_with_cancellation(
+            &context,
+            cancel_token.clone(),
+            req.clone(),
+            mpsc::unbounded_channel().0,
+        )
+        .await;
 
-        // Assert — should return [Stopped] without ever calling run_turn.
+        *context.child_pid.lock().expect("PID slot") = Some(recycled_pid);
+        let assist = SessionWorkerRebaseAssistClient::from_context(&context, None);
+        let assist_result = assist
+            .run_turn_with_cancellation(cancel_token, req, mpsc::unbounded_channel().0)
+            .await;
+
+        // Assert — a retained runtime's recycled PID never authorizes a signal.
+        assert!(
+            assist_result
+                .expect_err("assist canceled")
+                .to_string()
+                .contains("[Stopped]")
+        );
+        assert!(context.child_pid.lock().expect("PID slot").is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), unrelated_child.wait())
+                .await
+                .is_err()
+        );
+        unrelated_child
+            .kill()
+            .await
+            .expect("clean up owned process");
         let error_message = result.expect_err("should return an error").to_string();
         assert!(
             error_message.contains("[Stopped]"),
@@ -3408,85 +3425,108 @@ mod tests {
     /// 5-second timeout guard ensures the cancellation branch does not
     /// block indefinitely.
     async fn test_run_turn_with_cancellation_returns_stopped_after_drain_timeout() {
-        // Arrange — mock channel whose `run_turn` never resolves and
-        // whose `shutdown_session` completes immediately (simulating a
-        // channel that ignores the shutdown request).
-        let cancel_token = CancellationToken::new();
+        for rebase_assist in [false, true] {
+            // Arrange — mock channel whose `run_turn` never resolves and
+            // whose `shutdown_session` completes immediately (simulating a
+            // channel that ignores the shutdown request).
+            let mut unrelated_child = tokio::process::Command::new("sleep")
+                .arg("60")
+                .kill_on_drop(true)
+                .spawn()
+                .expect("start unrelated process");
+            let recycled_pid = unrelated_child.id().expect("unrelated PID");
+            let cancel_token = CancellationToken::new();
 
-        let mut mock_channel = MockAgentChannel::new();
-        mock_channel
-            .expect_run_turn()
-            .returning(|_session_id, _req, _events| {
-                Box::pin(async {
-                    // Never resolves — simulates a stuck channel.
-                    std::future::pending::<Result<TurnResult, AgentError>>().await
-                })
+            let mut mock_channel = MockAgentChannel::new();
+            mock_channel
+                .expect_run_turn()
+                .returning(|_session_id, _req, _events| {
+                    Box::pin(async {
+                        // Never resolves — simulates a stuck channel.
+                        std::future::pending::<Result<TurnResult, AgentError>>().await
+                    })
+                });
+            mock_channel
+                .expect_shutdown_session()
+                .times(1)
+                .returning(|_| Box::pin(async { Ok(()) }));
+
+            let context = SessionWorkerContext {
+                app_event_tx: mpsc::unbounded_channel().0,
+                branch_operation_lock: Arc::new(tokio::sync::Mutex::new(())),
+                cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
+                channel: Arc::new(mock_channel),
+                child_pid: Arc::new(Mutex::new(Some(recycled_pid))),
+                clock: Arc::new(crate::infra::clock::RealClock),
+                db: AppRepositories::in_memory().await.expect("db should open"),
+                folder: std::env::temp_dir(),
+                fs_client: Arc::new(fs::MockFsClient::new()),
+                git_client: Arc::new(MockGitClient::new()),
+                transcript: empty_transcript(),
+                personality_catalog_client: Arc::new(RealPersonalityCatalogClient),
+                queued_messages: Arc::new(Mutex::new(VecDeque::new())),
+                review_request_client: Arc::new(forge::MockReviewRequestClient::new()),
+
+                session_update_versions: Arc::default(),
+                session_id: "sess-timeout".into(),
+                session_agent: AgentSelection::new(
+                    crate::domain::agent::AgentKind::Antigravity,
+                    AgentModel::Gemini38Flash,
+                ),
+                status: Arc::new(Mutex::new(Status::InProgress)),
+            };
+
+            let req = TurnRequest {
+                continuation: TurnContinuation::fresh(),
+                folder: context.folder.clone(),
+                main_checkout_root: None,
+                model: "gemini-3.8-flash".to_string(),
+                permission_mode: ag_agent::PermissionMode::AutoEdit,
+                personality: ag_agent::PersonalityPrompt::default(),
+                prompt: "test".into(),
+                reasoning_level: ReasoningLevel::default(),
+                request_kind: AgentRequestKind::SessionStart,
+                response_style: ag_agent::ResponseStyle::default(),
+                speed_mode: crate::domain::agent::SpeedMode::default(),
+            };
+
+            // Spawn a task that cancels the token after a small delay so the
+            // select branch fires mid-turn (not before the pre-check).
+            let token_for_cancel = cancel_token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                token_for_cancel.cancel();
             });
-        mock_channel
-            .expect_shutdown_session()
-            .times(1)
-            .returning(|_| Box::pin(async { Ok(()) }));
 
-        let context = SessionWorkerContext {
-            app_event_tx: mpsc::unbounded_channel().0,
-            branch_operation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
-            channel: Arc::new(mock_channel),
-            child_pid: Arc::new(Mutex::new(None)),
-            clock: Arc::new(crate::infra::clock::RealClock),
-            db: AppRepositories::in_memory().await.expect("db should open"),
-            folder: std::env::temp_dir(),
-            fs_client: Arc::new(fs::MockFsClient::new()),
-            git_client: Arc::new(MockGitClient::new()),
-            transcript: empty_transcript(),
-            personality_catalog_client: Arc::new(RealPersonalityCatalogClient),
-            queued_messages: Arc::new(Mutex::new(VecDeque::new())),
-            review_request_client: Arc::new(forge::MockReviewRequestClient::new()),
+            // Act — the drain timeout (5 seconds) runs with real wall-clock
+            // delay. This test validates that the function does not block
+            // indefinitely when `run_turn` never resolves.
+            let result = if rebase_assist {
+                SessionWorkerRebaseAssistClient::from_context(&context, None)
+                    .run_turn_with_cancellation(cancel_token, req, mpsc::unbounded_channel().0)
+                    .await
+            } else {
+                run_turn_with_cancellation(&context, cancel_token, req, mpsc::unbounded_channel().0)
+                    .await
+            };
 
-            session_update_versions: Arc::default(),
-            session_id: "sess-timeout".into(),
-            session_agent: AgentSelection::new(
-                crate::domain::agent::AgentKind::Antigravity,
-                AgentModel::Gemini38Flash,
-            ),
-            status: Arc::new(Mutex::new(Status::InProgress)),
-        };
-
-        let req = TurnRequest {
-            continuation: TurnContinuation::fresh(),
-            folder: context.folder.clone(),
-            main_checkout_root: None,
-            model: "gemini-3.8-flash".to_string(),
-            permission_mode: ag_agent::PermissionMode::AutoEdit,
-            personality: ag_agent::PersonalityPrompt::default(),
-            prompt: "test".into(),
-            reasoning_level: ReasoningLevel::default(),
-            request_kind: AgentRequestKind::SessionStart,
-            response_style: ag_agent::ResponseStyle::default(),
-            speed_mode: crate::domain::agent::SpeedMode::default(),
-        };
-
-        // Spawn a task that cancels the token after a small delay so the
-        // select branch fires mid-turn (not before the pre-check).
-        let token_for_cancel = cancel_token.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            token_for_cancel.cancel();
-        });
-
-        // Act — the drain timeout (5 seconds) runs with real wall-clock
-        // delay. This test validates that the function does not block
-        // indefinitely when `run_turn` never resolves.
-        let result =
-            run_turn_with_cancellation(&context, cancel_token, req, mpsc::unbounded_channel().0)
-                .await;
-
-        // Assert — returns [Stopped] despite `run_turn` never resolving.
-        let error_message = result.expect_err("should return an error").to_string();
-        assert!(
-            error_message.contains("[Stopped]"),
-            "error should contain [Stopped], got: {error_message}"
-        );
+            // Assert — cancellation cannot signal a retained runtime's recycled PID.
+            assert!(
+                unrelated_child
+                    .try_wait()
+                    .expect("poll unrelated process")
+                    .is_none()
+            );
+            unrelated_child
+                .kill()
+                .await
+                .expect("clean up owned process");
+            let error_message = result.expect_err("should return an error").to_string();
+            assert!(
+                error_message.contains("[Stopped]"),
+                "error should contain [Stopped], got: {error_message}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3520,14 +3560,14 @@ mod tests {
             session_update_versions: Arc::default(),
             session_id: "sess-term".into(),
             session_agent: AgentSelection::new(
-                crate::domain::agent::AgentKind::Antigravity,
-                AgentModel::Gemini38Flash,
+                crate::domain::agent::AgentKind::Claude,
+                AgentModel::ClaudeHaiku4520251001,
             ),
             status: Arc::new(Mutex::new(Status::InProgress)),
         };
 
         // Act
-        terminate_child_process(&context);
+        terminate_child_process(&context.child_pid, context.session_agent.kind());
 
         // Assert — the child should have been terminated by SIGTERM.
         let exit_status = child.wait().await.expect("failed to wait on child");
@@ -3544,7 +3584,7 @@ mod tests {
 
     #[tokio::test]
     /// Verifies that `terminate_child_process` is a no-op when no child
-    /// PID is stored (app-server channels never set a PID).
+    /// PID is stored for a CLI channel.
     async fn test_terminate_child_process_noop_when_no_pid() {
         // Arrange
         let context = SessionWorkerContext {
@@ -3566,14 +3606,14 @@ mod tests {
             session_update_versions: Arc::default(),
             session_id: "sess-nopid".into(),
             session_agent: AgentSelection::new(
-                crate::domain::agent::AgentKind::Antigravity,
-                AgentModel::Gemini38Flash,
+                crate::domain::agent::AgentKind::Claude,
+                AgentModel::ClaudeHaiku4520251001,
             ),
             status: Arc::new(Mutex::new(Status::InProgress)),
         };
 
         // Act — should not panic or error.
-        terminate_child_process(&context);
+        terminate_child_process(&context.child_pid, context.session_agent.kind());
 
         // Assert — PID slot remains None.
         assert!(

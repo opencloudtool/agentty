@@ -14,8 +14,12 @@ pub mod home;
 pub mod personality;
 /// Process-management utilities for agent subprocess lifecycle.
 pub(crate) mod process;
+/// Native process creation identities for resource accounting.
+pub(crate) mod process_identity;
 /// Startup project-discovery boundary for home-directory repository scans.
 pub mod project_discovery;
+/// Host process-accounting boundary.
+pub(crate) mod resource;
 /// Tmux process boundary used by app orchestration.
 pub mod tmux;
 pub mod version;
