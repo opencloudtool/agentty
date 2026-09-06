@@ -1663,6 +1663,12 @@ fn lifecycle_harness(server: &MockServer, repository: &std::path::Path) -> Harne
     let observers = LifecycleObserverSet::new(LifecycleMetrics::new())
         .with_observer(LifecycleTraceObserver::new());
 
+    let repository = ag_harness::Repository::new(
+        repository,
+        std::env::current_exe().expect("test executable should be available"),
+    )
+    .expect("repository fixture should be valid");
+
     Harness::new(PolicyDenialModel { client })
         .repository(repository)
         .allow(Tool::Read)

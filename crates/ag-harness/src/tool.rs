@@ -127,7 +127,11 @@ fn repository_path_schema() -> Value {
         "type": "string",
         "minLength": 1,
         "maxLength": MAX_PATH_BYTES,
-        "pattern": "^(?:[^./\\\\\\u0000][^/\\\\\\u0000]*|\\.[^./\\\\\\u0000][^/\\\\\\u0000]*|\\.\\.[^/\\\\\\u0000]+)(?:/(?:[^./\\\\\\u0000][^/\\\\\\u0000]*|\\.[^./\\\\\\u0000][^/\\\\\\u0000]*|\\.\\.[^/\\\\\\u0000]+))*$"
+        "pattern": "^(?:[^./\\\\\\u0000][^/\\\\\\u0000]*|\\.[^./\\\\\\u0000][^/\\\\\\u0000]*|\\.\\.[^/\\\\\\u0000]+)(?:/(?:[^./\\\\\\u0000][^/\\\\\\u0000]*|\\.[^./\\\\\\u0000][^/\\\\\\u0000]*|\\.\\.[^/\\\\\\u0000]+))*$",
+        "not": {
+            "type": "string",
+            "pattern": "(^|/)\\.[gG][iI][tT](/|$)"
+        }
     })
 }
 
@@ -647,6 +651,12 @@ fn validate_repository_path(path: String) -> Result<String, &'static str> {
             "path must not contain empty, current-directory, or parent-directory components",
         );
     }
+    if path
+        .split('/')
+        .any(|component| component.eq_ignore_ascii_case(".git"))
+    {
+        return Err("path must not access Git administrative state");
+    }
 
     Ok(path)
 }
@@ -869,6 +879,8 @@ mod tests {
             json!({ "action": "file", "path": "/Cargo.toml" }),
             json!({ "action": "file", "path": "C:\\Cargo.toml" }),
             json!({ "action": "file", "path": "../Cargo.toml" }),
+            json!({ "action": "file", "path": ".git/config" }),
+            json!({ "action": "file", "path": "nested/.GIT/index" }),
             json!({ "action": "file", "path": "Cargo\0.toml" }),
             json!({ "action": "search", "query": "needle\0suffix" }),
             json!({ "action": "file", "path": "Cargo.toml", "offset": 0 }),
@@ -1034,6 +1046,8 @@ mod tests {
             json!({ "path": "src/lib.rs" }),
             json!({ "path": "src/lib.rs", "patch": "" }),
             json!({ "path": "../lib.rs", "patch": "patch" }),
+            json!({ "path": ".git/config", "patch": "patch" }),
+            json!({ "path": "nested/.GIT/index", "patch": "patch" }),
             json!({ "path": "src/lib.rs", "patch": "patch", "extra": true }),
             json!({ "path": "a".repeat(MAX_PATH_BYTES + 1), "patch": "patch" }),
             json!({ "path": "src/lib.rs", "patch": "x".repeat(MAX_PATCH_BYTES + 1) }),
@@ -1111,6 +1125,9 @@ mod tests {
             "src//lib.rs",
             "src/./lib.rs",
             "../lib.rs",
+            ".git",
+            ".git/config",
+            "nested/.GIT/index",
             "Cargo\0.toml",
         ];
 

@@ -9,8 +9,8 @@ use ag_harness::{
     CompletionMetadata, CompletionUsage, FileSystem, Harness, LifecycleEventKind, LifecycleMetrics,
     LifecycleObserverSet, LifecycleTraceObserver, Model, ModelCompletion, ModelConfiguration,
     ModelError, ModelMessage, ModelMetadata, ModelProvider, ModelRequest, ModelResponse,
-    ModelResponseType, OutputSchema, OutputSchemaError, SessionError, SessionInfo, Tool, ToolCall,
-    TurnError,
+    ModelResponseType, OutputSchema, OutputSchemaError, Repository, RepositoryError, SessionError,
+    SessionInfo, Tool, ToolCall, TurnError,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -99,7 +99,7 @@ impl FileSystem for NameFileSystem {
         root: &Path,
         path: &Path,
     ) -> io::Result<Box<dyn AsyncRead + Send + Unpin>> {
-        assert_eq!(root, Path::new("fixture"));
+        assert!(root.is_absolute());
         assert_eq!(path, Path::new("name.txt"));
 
         Ok(Box::new(Cursor::new(b"Ada\n")))
@@ -116,6 +116,25 @@ impl FileSystem for NameFileSystem {
     }
 }
 
+#[test]
+fn external_repository_configuration_rejects_relative_git_executable() -> Result<(), Box<dyn Error>>
+{
+    // Arrange
+    let repository = tempfile::tempdir()?;
+
+    // Act
+    let error = Repository::new(repository.path(), "git")
+        .expect_err("relative Git executable should be rejected");
+
+    // Assert
+    assert!(matches!(
+        error,
+        RepositoryError::GitExecutableNotAbsolute { .. }
+    ));
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn external_model_reads_tool_results_and_retains_chat_history() -> Result<(), Box<dyn Error>>
 {
@@ -127,9 +146,10 @@ async fn external_model_reads_tool_results_and_retains_chat_history() -> Result<
             requests: Arc::clone(&requests),
         };
         let directory = tempfile::tempdir()?;
+        let repository = Repository::new(directory.path(), std::env::current_exe()?)?;
         let harness = Harness::new(model)
             .database(directory.path().join("harness.db"))
-            .repository("fixture")
+            .repository(repository)
             .file_system(NameFileSystem)
             .allow(Tool::Read);
         let mut chat = harness

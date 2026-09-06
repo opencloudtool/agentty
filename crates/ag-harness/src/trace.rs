@@ -856,7 +856,7 @@ mod tests {
             observed_baggage: Arc::clone(&observed_baggage),
         })
         .file_system(file_system)
-        .repository("repo")
+        .repository(crate::Repository::fixture("repo"))
         .allow(Tool::Read)
         .with_lifecycle_observer(LifecycleTraceObserver::new());
 

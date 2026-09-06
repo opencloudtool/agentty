@@ -24,9 +24,12 @@ fixed tool surface can validly measure.
 ## Run
 
 Configure `KIMI_API_KEY`, `KIMI_BASE_URL`, `KIMI_MODEL`, `MODEL_API_KEY`,
-`DASHSCOPE_API_KEY`, and `DASHSCOPE_BASE_URL`, then run:
+`DASHSCOPE_API_KEY`, and `DASHSCOPE_BASE_URL`. Repository-backed cases also require
+`AG_HARNESS_GIT_EXECUTABLE` to be an absolute path to a host-controlled Git executable
+outside the worktree. To run the full benchmark:
 
 ```sh
+AG_HARNESS_GIT_EXECUTABLE=/absolute/path/to/git \
 AG_HARNESS_BENCHMARK_REPETITIONS=2 \
   cargo test --locked -p ag-harness --test benchmark
 ```

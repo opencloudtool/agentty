@@ -3,14 +3,15 @@
 mod summary;
 
 use std::collections::BTreeSet;
-use std::io::Write as _;
+use std::io::{self, Write as _};
+use std::path::Path;
 use std::time::{Duration, Instant};
 use std::{env, fmt};
 
 use ag_harness::{
     Harness, KimiConfig, LifecycleMetrics, LifecycleObserverSet, LifecycleTraceObserver,
     MUSE_SPARK_1_3, ModelClient, ModelRequestActivity, ModelResponseType, MuseConfig, OutputSchema,
-    QwenConfig, Tool, ToolActivity, TurnOutcome,
+    QwenConfig, Repository, Tool, ToolActivity, TurnOutcome,
 };
 use opentelemetry::global;
 use opentelemetry::trace::SpanId;
@@ -21,6 +22,7 @@ use serde_json::{Value, json};
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 const MODEL_API_BASE_URL: &str = "https://api.meta.ai/v1";
+const GIT_EXECUTABLE_ENV: &str = "AG_HARNESS_GIT_EXECUTABLE";
 const KIMI_CASE_INTERVAL: Duration = Duration::from_secs(60);
 const PERSISTENT_TURNS_PER_CASE: usize = 2;
 
@@ -166,14 +168,26 @@ fn structured(provider: Provider) -> CaseFuture {
     })
 }
 
+fn benchmark_repository(root: &Path) -> Result<Repository, DynError> {
+    let git_executable = env::var_os(GIT_EXECUTABLE_ENV).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{GIT_EXECUTABLE_ENV} must select the host Git executable"),
+        )
+    })?;
+
+    Repository::new(root, git_executable).map_err(Into::into)
+}
+
 fn parallel_read(provider: Provider) -> CaseFuture {
     Box::pin(async move {
         let repository = tempfile::tempdir()?;
         std::fs::write(repository.path().join("alpha.txt"), "first=amber\n")?;
         std::fs::write(repository.path().join("beta.txt"), "second=17\n")?;
         let schema = string_value_schema("code")?;
+        let repository = benchmark_repository(repository.path())?;
         let outcome = Harness::new(provider.client()?)
-            .repository(repository.path())
+            .repository(repository)
             .allow(Tool::Read)
             .run_once(
                 "In one response, call read twice using exactly the paths alpha.txt and beta.txt \
@@ -224,8 +238,9 @@ fn read_recovery(provider: Provider) -> CaseFuture {
         let repository = tempfile::tempdir()?;
         std::fs::write(repository.path().join("fallback.txt"), "code=violet-29\n")?;
         let schema = string_value_schema("code")?;
+        let repository = benchmark_repository(repository.path())?;
         let outcome = Harness::new(provider.client()?)
-            .repository(repository.path())
+            .repository(repository)
             .allow(Tool::Read)
             .run_once(
                 "First read missing.txt. When that is rejected, recover by reading fallback.txt \
@@ -262,8 +277,9 @@ fn write(provider: Provider) -> CaseFuture {
             "required": ["changed"],
             "additionalProperties": false
         }))?;
+        let repository = benchmark_repository(repository.path())?;
         let outcome = Harness::new(provider.client()?)
-            .repository(repository.path())
+            .repository(repository)
             .allow(Tool::Write)
             .run_once(
                 "Use the write tool to change status.txt from status=pending to status=complete.",
