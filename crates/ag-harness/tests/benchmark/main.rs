@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use std::{env, fmt};
 
 use ag_harness::{
-    Database, Harness, KimiConfig, LifecycleMetrics, LifecycleObserverSet, LifecycleTraceObserver,
+    Harness, KimiConfig, LifecycleMetrics, LifecycleObserverSet, LifecycleTraceObserver,
     MUSE_SPARK_1_3, ModelClient, ModelRequestActivity, ModelResponseType, MuseConfig, OutputSchema,
-    QwenConfig, SessionConfig, Tool, ToolActivity, TurnOutcome,
+    QwenConfig, Tool, ToolActivity, TurnOutcome,
 };
 use opentelemetry::global;
 use opentelemetry::trace::SpanId;
@@ -152,7 +152,7 @@ fn structured(provider: Provider) -> CaseFuture {
             "additionalProperties": false
         }))?;
         let outcome = Harness::new(provider.client()?)
-            .run_report(
+            .run_once(
                 "Extract this record exactly: Ada has score 17, is active, and has tags rust then \
                  agent.",
                 schema,
@@ -175,7 +175,7 @@ fn parallel_read(provider: Provider) -> CaseFuture {
         let outcome = Harness::new(provider.client()?)
             .repository(repository.path())
             .allow(Tool::Read)
-            .run_report(
+            .run_once(
                 "In one response, call read twice using exactly the paths alpha.txt and beta.txt \
                  without a ./ prefix. Combine their values as first-second.",
                 schema,
@@ -227,7 +227,7 @@ fn read_recovery(provider: Provider) -> CaseFuture {
         let outcome = Harness::new(provider.client()?)
             .repository(repository.path())
             .allow(Tool::Read)
-            .run_report(
+            .run_once(
                 "First read missing.txt. When that is rejected, recover by reading fallback.txt \
                  and return its code.",
                 schema,
@@ -265,7 +265,7 @@ fn write(provider: Provider) -> CaseFuture {
         let outcome = Harness::new(provider.client()?)
             .repository(repository.path())
             .allow(Tool::Write)
-            .run_report(
+            .run_once(
                 "Use the write tool to change status.txt from status=pending to status=complete.",
                 schema,
             )
@@ -293,23 +293,22 @@ fn persistent_memory(provider: Provider) -> CaseFuture {
         }))?;
         let directory = tempfile::tempdir()?;
         let database_path = directory.path().join("sessions.db");
-        let harness = instrumented_harness(provider)?;
-        let config = SessionConfig::new("benchmark-session", schema);
+        let harness = instrumented_harness(provider)?.database(&database_path);
         let create_started = Instant::now();
-        let database = Database::open(&database_path).await?;
-        let mut session = harness.create_session(&database, config).await?;
+        let mut session = harness
+            .session("benchmark-session", schema)
+            .create()
+            .await?;
         let create_duration = create_started.elapsed();
         let stored = session
             .send("Remember the code cobalt-41 and answer only with stored.")
             .await?;
         drop(session);
-        drop(database);
         drop(harness);
 
-        let harness = instrumented_harness(provider)?;
+        let harness = instrumented_harness(provider)?.database(&database_path);
         let reopen_started = Instant::now();
-        let database = Database::open(&database_path).await?;
-        let mut session = harness.open_session(&database, "benchmark-session").await?;
+        let mut session = harness.resume("benchmark-session").await?;
         let reopen_duration = reopen_started.elapsed();
         let recalled = session
             .send("What exact code did I ask you to remember?")

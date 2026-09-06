@@ -240,12 +240,12 @@ async fn harness_owns_model_events_without_duplicate_model_observation() {
 
     // Act
     let output = harness
-        .run("SECRET_PROMPT", request().schema().clone())
+        .run_once("SECRET_PROMPT", request().schema().clone())
         .await
         .expect("harness request should complete");
 
     // Assert
-    assert_eq!(output, json!({"name": "SECRET_OUTPUT"}));
+    assert_eq!(output.output(), &json!({"name": "SECRET_OUTPUT"}));
     assert_eq!(model_events.events(), [] as [ag_harness::LifecycleEvent; 0]);
     let harness_events = harness_events.events();
     assert_sequence(&harness_events);
@@ -311,7 +311,7 @@ async fn cancelling_harness_turn_closes_model_and_turn_lifecycles_once() {
     // Act
     let mut turn = tokio::spawn(async move {
         harness
-            .run("SECRET_PROMPT", request().schema().clone())
+            .run_once("SECRET_PROMPT", request().schema().clone())
             .await
     });
     wait_for_provider(&request_started, &mut turn)

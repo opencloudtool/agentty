@@ -10,9 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ag_harness::{
-    Harness, LifecycleMetrics, LifecycleObserverSet, LifecycleTraceObserver, ModelClient,
-    ModelCompletion, ModelError, ModelMetadata, ModelRequest, ModelWithMetadata, OutputSchema,
-    Tool, ToolDefinition,
+    Harness, LifecycleMetrics, LifecycleObserverSet, LifecycleTraceObserver, Model, ModelClient,
+    ModelCompletion, ModelError, ModelMetadata, ModelRequest, OutputSchema, Tool, ToolDefinition,
 };
 use async_trait::async_trait;
 use opentelemetry::{KeyValue, global};
@@ -99,17 +98,14 @@ struct PolicyDenialModel {
 }
 
 #[async_trait]
-impl ModelWithMetadata for PolicyDenialModel {
+impl Model for PolicyDenialModel {
     fn metadata(&self) -> Option<ModelMetadata> {
         Some(self.client.metadata().clone())
     }
 
-    async fn complete_with_metadata(
-        &self,
-        request: ModelRequest,
-    ) -> Result<ModelCompletion, ModelError> {
+    async fn complete(&self, request: ModelRequest) -> Result<ModelCompletion, ModelError> {
         self.client
-            .complete_with_metadata(request.with_tool(ToolDefinition::write()))
+            .complete(request.with_tool(ToolDefinition::write()))
             .await
     }
 }
@@ -1675,38 +1671,44 @@ fn lifecycle_harness(server: &MockServer, repository: &std::path::Path) -> Harne
 
 async fn exercise_lifecycle_outcomes(harness: &Arc<Harness>, pending_started: &Notify) {
     let success = harness
-        .run("sensitive-user-prompt", lifecycle_schema())
+        .run_once("sensitive-user-prompt", lifecycle_schema())
         .await
         .expect("tool round trip should succeed");
-    assert_eq!(success, json!({"summary": "sensitive-response-content"}));
+    assert_eq!(
+        success.output(),
+        &json!({"summary": "sensitive-response-content"})
+    );
 
     let provider_failure = harness
-        .run("provider failure", lifecycle_schema())
+        .run_once("provider failure", lifecycle_schema())
         .await
         .expect_err("provider failure should fail the turn");
     assert!(provider_failure.to_string().contains("503"));
 
     harness
-        .run("invalid output", lifecycle_schema())
+        .run_once("invalid output", lifecycle_schema())
         .await
         .expect_err("invalid output should fail the turn");
 
     let denial = harness
-        .run("denied tool", lifecycle_schema())
+        .run_once("denied tool", lifecycle_schema())
         .await
         .expect_err("denied tool should fail the turn");
     assert_eq!(denial.to_string(), "tool `write` is denied by policy");
 
     let recovered = harness
-        .run("failed tool", lifecycle_schema())
+        .run_once("failed tool", lifecycle_schema())
         .await
         .expect("the model should recover from the rejected read path");
-    assert_eq!(recovered, json!({"summary": "recovered-response"}));
+    assert_eq!(
+        recovered.output(),
+        &json!({"summary": "recovered-response"})
+    );
 
     let harness = Arc::clone(harness);
     let mut cancelled_turn = tokio::spawn(async move {
         harness
-            .run("sensitive-cancelled-prompt", lifecycle_schema())
+            .run_once("sensitive-cancelled-prompt", lifecycle_schema())
             .await
     });
     wait_for_provider(pending_started, &mut cancelled_turn)
@@ -1943,7 +1945,7 @@ async fn run_otlp_lifecycle_contract_fixture() {
 
     // Arrange and Act
     harness
-        .run("sensitive-shutdown-prompt", lifecycle_schema())
+        .run_once("sensitive-shutdown-prompt", lifecycle_schema())
         .await
         .expect("turn before telemetry shutdown should succeed");
     tracer_provider
@@ -1970,7 +1972,7 @@ async fn run_otlp_lifecycle_contract_fixture() {
 
     // Arrange and Act
     harness
-        .run("sensitive-post-shutdown-prompt", lifecycle_schema())
+        .run_once("sensitive-post-shutdown-prompt", lifecycle_schema())
         .await
         .expect("turn after telemetry shutdown should still succeed");
 

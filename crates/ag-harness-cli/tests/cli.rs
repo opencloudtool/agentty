@@ -79,10 +79,18 @@ fn response(message: &str, input_tokens: u64, output_tokens: u64) -> ResponseTem
     }))
 }
 
+fn harness_command() -> std::io::Result<(tempfile::TempDir, Command)> {
+    let storage = tempfile::tempdir()?;
+    let mut command = Command::new(cargo_bin!("ag-harness"));
+    command.env("AG_HARNESS_ROOT", storage.path());
+
+    Ok((storage, command))
+}
+
 #[test]
 fn help_describes_the_chat_interface() {
     // Arrange
-    let mut command = Command::new(cargo_bin!("ag-harness"));
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
 
     // Act
     let output = command.arg("--help").output().expect("CLI help should run");
@@ -91,9 +99,10 @@ fn help_describes_the_chat_interface() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help should be UTF-8");
     assert!(stdout.contains("Chats with models through a repository harness"));
-    assert!(stdout.contains("Usage: ag-harness <COMMAND>"));
+    assert!(stdout.contains("Usage: ag-harness [OPTIONS] <COMMAND>"));
     assert!(stdout.contains("Commands:"));
-    assert!(stdout.contains("Starts an in-memory chat"));
+    assert!(stdout.contains("Starts a new durable session"));
+    assert!(stdout.contains("Resumes a durable session"));
     assert!(stdout.contains("Supported models"));
     for provider in ModelProvider::all() {
         assert!(stdout.contains(provider.as_str()));
@@ -112,7 +121,7 @@ fn help_describes_the_chat_interface() {
 #[test]
 fn run_help_describes_optional_initial_prompt() {
     // Arrange
-    let mut command = Command::new(cargo_bin!("ag-harness"));
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
 
     // Act
     let output = command
@@ -172,7 +181,7 @@ async fn provider_flags_select_kimi_and_qwen_wire_formats() {
             .expect(1)
             .mount(&server)
             .await;
-        let mut command = Command::new(cargo_bin!("ag-harness"));
+        let (_storage, mut command) = harness_command().expect("temporary storage should exist");
         let output = command
             .args(["run", model, "Hello", "--provider", provider.as_str()])
             .env(provider.api_key_environment(), "test-key")
@@ -227,7 +236,7 @@ async fn initial_prompt_prints_answer_and_model_metadata() {
         .expect(1)
         .mount(&server)
         .await;
-    let mut command = Command::new(cargo_bin!("ag-harness"));
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
 
     // Act
     let output = command
@@ -243,7 +252,8 @@ async fn initial_prompt_prints_answer_and_model_metadata() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).expect("output should be UTF-8");
-    assert!(stdout.starts_with("assistant> Hi there\n---\n"));
+    assert!(stdout.starts_with("session: "));
+    assert!(stdout.contains("assistant> Hi there\n---\n"));
     assert!(stdout.contains("model calls: 1\n"));
     assert!(stdout.contains("output; muse-reported; stop;"));
     assert!(stdout.contains("tokens 9 in, 3 out, 12 total"));
@@ -274,7 +284,7 @@ async fn model_output_and_metadata_cannot_spoof_terminal_framing() {
         .expect(1)
         .mount(&server)
         .await;
-    let mut command = Command::new(cargo_bin!("ag-harness"));
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
 
     // Act
     let output = command
@@ -293,7 +303,7 @@ async fn model_output_and_metadata_cannot_spoof_terminal_framing() {
     assert!(!output.stdout.contains(&0x07));
     let stdout = String::from_utf8(output.stdout).expect("output should be UTF-8");
     assert!(
-        stdout.starts_with(
+        stdout.contains(
             "assistant> before�]52;c;Y2xpcGJvYXJk�after\n           ---\n           turn: \
              forged\n           model calls: forged\n           tools: forged\n---\n"
         )
@@ -331,6 +341,7 @@ async fn stdin_prompts_share_conversation_history() {
         .expect(1)
         .mount(&server)
         .await;
+    let storage = tempfile::tempdir().expect("temporary storage should exist");
     let mut child = Command::new(cargo_bin!("ag-harness"))
         .args([
             "run",
@@ -340,6 +351,7 @@ async fn stdin_prompts_share_conversation_history() {
             &server.uri(),
         ])
         .env("MODEL_API_KEY", "test-key")
+        .env("AG_HARNESS_ROOT", storage.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -364,6 +376,76 @@ async fn stdin_prompts_share_conversation_history() {
     let stdout = String::from_utf8(output.stdout).expect("output should be UTF-8");
     assert!(stdout.contains("assistant> first answer\n---\n"));
     assert!(stdout.contains("assistant> second answer\n---\n"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_restores_history_from_the_default_database() {
+    // Arrange
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_string_contains(
+            r#""content":"first question","role":"user""#,
+        ))
+        .respond_with(response("first answer", 4, 2))
+        .with_priority(2)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_string_contains(
+            r#""content":"{\"message\":\"first answer\"}","role":"assistant""#,
+        ))
+        .and(body_string_contains(
+            r#""content":"second question","role":"user""#,
+        ))
+        .respond_with(response("second answer", 8, 2))
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let storage = tempfile::tempdir().expect("temporary storage should exist");
+    let mut first = Command::new(cargo_bin!("ag-harness"));
+    first
+        .args([
+            "run",
+            "muse-test",
+            "first question",
+            "--session",
+            "cli-resume",
+            "--base-url",
+            &server.uri(),
+        ])
+        .env("MODEL_API_KEY", "test-key")
+        .env("AG_HARNESS_ROOT", storage.path());
+
+    // Act
+    let first_output = first.output().expect("first CLI request should run");
+    let mut second = Command::new(cargo_bin!("ag-harness"));
+    let second_output = second
+        .args([
+            "resume",
+            "cli-resume",
+            "second question",
+            "--base-url",
+            &server.uri(),
+        ])
+        .env("MODEL_API_KEY", "test-key")
+        .env("AG_HARNESS_ROOT", storage.path())
+        .output()
+        .expect("resumed CLI request should run");
+
+    // Assert
+    assert!(first_output.status.success());
+    assert!(
+        second_output.status.success(),
+        "resume failed: {}",
+        String::from_utf8_lossy(&second_output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&second_output.stdout).contains("assistant> second answer\n---\n")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -400,9 +482,11 @@ async fn stdin_chat_emits_failure_before_retry_and_exits_unsuccessfully() {
         .expect(1)
         .mount(&server)
         .await;
+    let storage = tempfile::tempdir().expect("temporary storage should exist");
     let mut child = Command::new(cargo_bin!("ag-harness"))
         .args(["run", "muse-test", "--base-url", &server.uri()])
         .env("MODEL_API_KEY", "test-key")
+        .env("AG_HARNESS_ROOT", storage.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -417,6 +501,10 @@ async fn stdin_chat_emits_failure_before_retry_and_exits_unsuccessfully() {
         .write_all(b"first question\n")
         .expect("first prompt should be written");
     stdin.flush().expect("first prompt should be flushed");
+    let mut announcement = String::new();
+    stdout
+        .read_line(&mut announcement)
+        .expect("session identifier should be emitted");
     let mut failure = String::new();
     stdout
         .read_line(&mut failure)
@@ -439,6 +527,8 @@ async fn stdin_chat_emits_failure_before_retry_and_exits_unsuccessfully() {
         .expect("stderr should be readable");
 
     // Assert
+    assert!(announcement.starts_with("session: "));
+    assert!(announcement.ends_with('\n'));
     assert!(failure.contains("error: model request failed:"));
     assert!(recovered.contains("assistant> recovered answer\n---\n"));
     assert!(!status.success());
@@ -494,7 +584,7 @@ async fn read_tool_reports_the_file_without_printing_its_contents() {
         .expect(1)
         .mount(&server)
         .await;
-    let mut command = Command::new(cargo_bin!("ag-harness"));
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
 
     // Act
     let output = command
@@ -562,7 +652,7 @@ async fn allow_write_enables_the_tool_and_creates_an_empty_file() {
         .mount(&server)
         .await;
     let repository = tempfile::TempDir::new().expect("temporary repository should exist");
-    let mut command = Command::new(cargo_bin!("ag-harness"));
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
 
     // Act
     let output = command
@@ -633,6 +723,14 @@ async fn redirected_output_with_terminal_stdin_is_one_shot() {
         .env("MODEL_API_KEY", "test-key")
         .env("MODEL_BASE_URL", server.uri())
         .env(
+            "AG_HARNESS_ROOT",
+            temp_dir
+                .path()
+                .join("harness-root")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .env(
             "MODEL_OUTPUT_PATH",
             output_path.to_string_lossy().into_owned(),
         )
@@ -647,7 +745,8 @@ async fn redirected_output_with_terminal_stdin_is_one_shot() {
     // Assert
     assert!(succeeded);
     let stdout = fs::read_to_string(output_path).expect("redirected output should be readable");
-    assert!(stdout.starts_with("assistant> one-shot answer\n---\n"));
+    assert!(stdout.starts_with("session: "));
+    assert!(stdout.contains("assistant> one-shot answer\n---\n"));
     assert!(!stdout.contains("Chat with"));
     assert!(!stdout.contains(">>>"));
 }
@@ -695,7 +794,7 @@ fn redirected_output_with_blank_prompt_exits_with_an_error() {
 #[test]
 fn missing_api_key_fails_without_model_output() {
     // Arrange
-    let mut command = Command::new(cargo_bin!("ag-harness"));
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
 
     // Act
     let output = command

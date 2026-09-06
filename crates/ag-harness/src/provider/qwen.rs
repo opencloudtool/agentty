@@ -260,14 +260,16 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let model: Box<dyn model::ModelWithMetadata> = Box::new(qwen(&server));
+        let model: Box<dyn model::Model> = Box::new(qwen(&server));
 
         // Act
         let completion = model
-            .complete_with_metadata(request("extract the name"))
+            .complete(request("extract the name"))
             .await
             .expect("Qwen completion metadata should decode");
-        let metadata = completion.metadata();
+        let metadata = completion
+            .metadata()
+            .expect("Qwen completion should include metadata");
         let usage = metadata.usage().expect("Qwen usage should be retained");
 
         // Assert

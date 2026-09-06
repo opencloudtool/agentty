@@ -16,19 +16,61 @@ use crate::{OutputSchema, OutputSchemaError, TurnError};
 
 const DB_POOL_MAX_CONNECTIONS: u32 = 4;
 const DB_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+const TURN_LEASE_SECONDS: i64 = 300;
 const TURN_SIZE_PAGE_SIZE: i64 = 64;
+type SessionRow = (
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    i64,
+    Option<String>,
+);
+
+/// Stored identity needed to reconstruct a built-in model client.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionInfo {
+    model: Option<String>,
+    provider: Option<String>,
+}
+
+impl SessionInfo {
+    /// Loads a session's stored model identity without constructing a harness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] when the database cannot be opened or the
+    /// session does not exist.
+    pub async fn load(database_path: impl AsRef<Path>, id: &str) -> Result<Self, SessionError> {
+        let database = Database::open(database_path.as_ref()).await?;
+        let (provider, model) = database.load_model_identity(id).await?;
+
+        Ok(Self { model, provider })
+    }
+
+    /// Returns the stored model identifier, when the session model exposed it.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    /// Returns the stored provider identifier, when the session model exposed
+    /// it.
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref()
+    }
+}
 
 /// Configuration stored when creating a persistent chat session.
 #[derive(Clone, Debug)]
-pub struct SessionConfig {
+pub(crate) struct NewSession {
     id: String,
     schema: OutputSchema,
     system_prompt: Option<String>,
 }
 
-impl SessionConfig {
+impl NewSession {
     /// Creates a persistent-session configuration.
-    pub fn new(id: impl Into<String>, schema: OutputSchema) -> Self {
+    pub(crate) fn new(id: impl Into<String>, schema: OutputSchema) -> Self {
         Self {
             id: id.into(),
             schema,
@@ -38,30 +80,37 @@ impl SessionConfig {
 
     /// Adds a system prompt that is restored with the session.
     #[must_use]
-    pub fn with_system_prompt(mut self, system_prompt: impl Into<String>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_system_prompt(mut self, system_prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(system_prompt.into());
 
         self
     }
 
+    pub(crate) fn with_optional_system_prompt(mut self, system_prompt: Option<String>) -> Self {
+        self.system_prompt = system_prompt;
+
+        self
+    }
+
     /// Returns the stable application-provided session identifier.
-    pub fn id(&self) -> &str {
+    pub(crate) fn id(&self) -> &str {
         &self.id
     }
 
     /// Returns the structured-output schema retained by the session.
-    pub fn schema(&self) -> &OutputSchema {
+    pub(crate) fn schema(&self) -> &OutputSchema {
         &self.schema
     }
 
     /// Returns the optional session system prompt.
-    pub fn system_prompt(&self) -> Option<&str> {
+    pub(crate) fn system_prompt(&self) -> Option<&str> {
         self.system_prompt.as_deref()
     }
 }
 
 /// Supplies Unix timestamps for persistent session writes.
-pub trait TimestampSource: Send + Sync {
+pub(crate) trait TimestampSource: Send + Sync {
     /// Returns the current Unix timestamp in whole seconds.
     fn now_timestamp_seconds(&self) -> i64;
 }
@@ -77,7 +126,7 @@ where
 
 /// SQLite database used by persistent harness sessions.
 #[derive(Clone)]
-pub struct Database {
+pub(crate) struct Database {
     pool: SqlitePool,
     timestamp_source: Arc<dyn TimestampSource>,
 }
@@ -89,7 +138,7 @@ impl Database {
     ///
     /// Returns an error when the parent directory cannot be created, the
     /// database cannot be opened, or a migration fails.
-    pub async fn open(path: &Path) -> Result<Self, SessionError> {
+    pub(crate) async fn open(path: &Path) -> Result<Self, SessionError> {
         Self::open_with_timestamp_source(path, system_timestamp_source()).await
     }
 
@@ -99,7 +148,7 @@ impl Database {
     ///
     /// Returns an error when the parent directory cannot be created, the
     /// database cannot be opened, or a migration fails.
-    pub async fn open_with_timestamp_source(
+    pub(crate) async fn open_with_timestamp_source(
         path: &Path,
         timestamp_source: Arc<dyn TimestampSource>,
     ) -> Result<Self, SessionError> {
@@ -128,7 +177,8 @@ impl Database {
     ///
     /// Returns an error when the database cannot be opened or a migration
     /// fails.
-    pub async fn open_in_memory() -> Result<Self, SessionError> {
+    #[cfg(test)]
+    pub(crate) async fn open_in_memory() -> Result<Self, SessionError> {
         Self::open_in_memory_with_timestamp_source(system_timestamp_source()).await
     }
 
@@ -138,7 +188,8 @@ impl Database {
     ///
     /// Returns an error when the database cannot be opened or a migration
     /// fails.
-    pub async fn open_in_memory_with_timestamp_source(
+    #[cfg(test)]
+    pub(crate) async fn open_in_memory_with_timestamp_source(
         timestamp_source: Arc<dyn TimestampSource>,
     ) -> Result<Self, SessionError> {
         let options = connect_options(Path::new(":memory:"));
@@ -158,7 +209,7 @@ impl Database {
 
     pub(crate) async fn create_session(
         &self,
-        config: &SessionConfig,
+        config: &NewSession,
         metadata: Option<ModelMetadata>,
         max_history_bytes: usize,
     ) -> Result<(), SessionError> {
@@ -208,10 +259,10 @@ ON CONFLICT(id) DO NOTHING
     }
 
     pub(crate) async fn load_session(&self, id: &str) -> Result<LoadedSession, SessionError> {
-        type SessionRow = (Option<String>, Option<String>, String, Option<String>, i64);
+        self.recover_stale_turns(id).await?;
         let row = sqlx::query_as::<_, SessionRow>(
             r"
-SELECT provider, model, output_schema, system_prompt, max_history_bytes
+SELECT provider, model, output_schema, system_prompt, max_history_bytes, provider_session_id
 FROM session
 WHERE id = ?
 ",
@@ -221,7 +272,8 @@ WHERE id = ?
         .await
         .session_context("load persistent session")?
         .ok_or_else(|| SessionError::NotFound { id: id.to_string() })?;
-        let (provider, model, output_schema, system_prompt, max_history_bytes) = row;
+        let (provider, model, output_schema, system_prompt, max_history_bytes, provider_session_id) =
+            row;
         let max_history_bytes =
             usize::try_from(max_history_bytes).map_err(|_| SessionError::InvalidData {
                 reason: format!("session `{id}` has an invalid history byte limit"),
@@ -238,12 +290,250 @@ WHERE id = ?
             max_history_bytes,
             model,
             provider,
+            provider_session_id,
             schema,
             system_prompt,
             turns,
         })
     }
 
+    async fn load_model_identity(
+        &self,
+        id: &str,
+    ) -> Result<(Option<String>, Option<String>), SessionError> {
+        sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT provider, model FROM session WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .session_context("load persistent session model identity")?
+        .ok_or_else(|| SessionError::NotFound { id: id.to_string() })
+    }
+
+    pub(crate) async fn begin_turn(
+        &self,
+        session_id: &str,
+        prompt: &str,
+    ) -> Result<i64, SessionError> {
+        let message = EncodedMessage::from_message(&ModelMessage::User(prompt.to_string()))?;
+        let now = self.timestamp_source.now_timestamp_seconds();
+        let lease_expires_at = now.saturating_add(TURN_LEASE_SECONDS);
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .session_context("begin persistent session turn")?;
+        recover_stale_turns(&mut transaction, session_id, now).await?;
+        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM session WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .session_context("begin persistent session turn")?;
+        if exists == 0 {
+            return Err(SessionError::NotFound {
+                id: session_id.to_string(),
+            });
+        }
+        let turn_position = next_turn_position(&mut transaction, session_id).await?;
+        let result = sqlx::query(
+            r"
+INSERT INTO session_turn (
+    session_id, turn_position, status, error_type, lease_expires_at, created_at, updated_at
+)
+VALUES (?, ?, 'pending', NULL, ?, ?, ?)
+",
+        )
+        .bind(session_id)
+        .bind(turn_position)
+        .bind(lease_expires_at)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await;
+        if let Err(error) = result {
+            if is_unique_violation(&error) {
+                return Err(SessionError::Busy {
+                    id: session_id.to_string(),
+                });
+            }
+
+            return Err(error).session_context("begin persistent session turn");
+        }
+        insert_message(
+            &mut transaction,
+            session_id,
+            turn_position,
+            0,
+            &message,
+            now,
+            "begin persistent session turn",
+        )
+        .await?;
+        sqlx::query(
+            r"
+UPDATE session_turn
+SET status = 'running', updated_at = ?
+WHERE session_id = ? AND turn_position = ?
+",
+        )
+        .bind(now)
+        .bind(session_id)
+        .bind(turn_position)
+        .execute(&mut *transaction)
+        .await
+        .session_context("begin persistent session turn")?;
+        transaction
+            .commit()
+            .await
+            .session_context("begin persistent session turn")?;
+
+        Ok(turn_position)
+    }
+
+    pub(crate) async fn complete_turn(
+        &self,
+        session_id: &str,
+        turn_position: i64,
+        messages: &[ModelMessage],
+        provider_session_id: Option<&str>,
+    ) -> Result<(), SessionError> {
+        let encoded_messages = messages
+            .iter()
+            .map(EncodedMessage::from_message)
+            .collect::<Result<Vec<_>, _>>()?;
+        let now = self.timestamp_source.now_timestamp_seconds();
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .session_context("complete persistent session turn")?;
+        for (index, message) in encoded_messages.iter().enumerate() {
+            let message_position = i64::try_from(index).unwrap_or(i64::MAX).saturating_add(1);
+            insert_message(
+                &mut transaction,
+                session_id,
+                turn_position,
+                message_position,
+                message,
+                now,
+                "complete persistent session turn",
+            )
+            .await?;
+        }
+        let result = sqlx::query(
+            r"
+UPDATE session_turn
+SET status = 'completed', error_type = NULL, lease_expires_at = NULL, updated_at = ?
+WHERE session_id = ? AND turn_position = ? AND status = 'running'
+",
+        )
+        .bind(now)
+        .bind(session_id)
+        .bind(turn_position)
+        .execute(&mut *transaction)
+        .await
+        .session_context("complete persistent session turn")?;
+        if result.rows_affected() == 0 {
+            return Err(SessionError::InvalidData {
+                reason: format!("session `{session_id}` turn {turn_position} is not running"),
+            });
+        }
+        sqlx::query(
+            r"
+UPDATE session
+SET provider_session_id = ?, updated_at = ?
+WHERE id = ?
+",
+        )
+        .bind(provider_session_id)
+        .bind(now)
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await
+        .session_context("complete persistent session turn")?;
+        transaction
+            .commit()
+            .await
+            .session_context("complete persistent session turn")?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn fail_turn(
+        &self,
+        session_id: &str,
+        turn_position: i64,
+        error: &TurnError,
+    ) -> Result<(), SessionError> {
+        let now = self.timestamp_source.now_timestamp_seconds();
+        let error_type = format!("{:?}", error.error_type());
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .session_context("fail persistent session turn")?;
+        let result = sqlx::query(
+            r"
+UPDATE session_turn
+SET status = 'failed', error_type = ?, lease_expires_at = NULL, updated_at = ?
+WHERE session_id = ? AND turn_position = ? AND status = 'running'
+",
+        )
+        .bind(error_type)
+        .bind(now)
+        .bind(session_id)
+        .bind(turn_position)
+        .execute(&mut *transaction)
+        .await
+        .session_context("fail persistent session turn")?;
+        if result.rows_affected() == 0 {
+            return Err(SessionError::InvalidData {
+                reason: format!("session `{session_id}` turn {turn_position} is not running"),
+            });
+        }
+        sqlx::query(
+            r"
+UPDATE session
+SET provider_session_id = NULL, updated_at = ?
+WHERE id = ?
+",
+        )
+        .bind(now)
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await
+        .session_context("fail persistent session turn")?;
+        transaction
+            .commit()
+            .await
+            .session_context("fail persistent session turn")?;
+
+        Ok(())
+    }
+
+    async fn recover_stale_turns(&self, session_id: &str) -> Result<(), SessionError> {
+        let now = self.timestamp_source.now_timestamp_seconds();
+        sqlx::query(
+            r"
+UPDATE session_turn
+SET status = 'interrupted', error_type = 'interrupted', lease_expires_at = NULL, updated_at = ?
+WHERE session_id = ?
+  AND status IN ('pending', 'running')
+  AND lease_expires_at <= ?
+",
+        )
+        .bind(now)
+        .bind(session_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .session_context("recover stale persistent session turns")?;
+
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) async fn append_turn(
         &self,
         session_id: &str,
@@ -277,6 +567,21 @@ WHERE id = ?
             });
         }
         let turn_position = next_turn_position(&mut transaction, session_id).await?;
+        sqlx::query(
+            r"
+INSERT INTO session_turn (
+    session_id, turn_position, status, error_type, lease_expires_at, created_at, updated_at
+)
+VALUES (?, ?, 'completed', NULL, NULL, ?, ?)
+",
+        )
+        .bind(session_id)
+        .bind(turn_position)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .session_context("append persistent session turn")?;
 
         for (message_position, message) in encoded_messages.iter().enumerate() {
             let message_position = i64::try_from(message_position).unwrap_or(i64::MAX);
@@ -321,10 +626,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
         };
         let rows = sqlx::query_as::<_, (i64, String, String)>(
             r"
-SELECT turn_position, kind, payload
-FROM session_message
-WHERE session_id = ? AND turn_position >= ?
-ORDER BY turn_position, message_position
+SELECT message.turn_position, message.kind, message.payload
+FROM session_message AS message
+JOIN session_turn AS turn
+  ON turn.session_id = message.session_id
+ AND turn.turn_position = message.turn_position
+WHERE message.session_id = ?
+  AND message.turn_position >= ?
+  AND turn.status = 'completed'
+ORDER BY message.turn_position, message.message_position
 ",
         )
         .bind(session_id)
@@ -400,6 +710,12 @@ pub enum SessionError {
         /// Conflicting session identifier.
         id: String,
     },
+    /// Another process or task is already running a turn for this session.
+    #[error("persistent session `{id}` already has an active turn")]
+    Busy {
+        /// Busy session identifier.
+        id: String,
+    },
     /// A filesystem operation failed while opening the database.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -447,6 +763,9 @@ pub enum SessionError {
     /// A persisted output schema is no longer valid.
     #[error(transparent)]
     Schema(#[from] OutputSchemaError),
+    /// Durable session operations require a configured SQLite database.
+    #[error("durable sessions require Harness::database(path)")]
+    StorageRequired,
     /// The model turn failed before it could be persisted.
     #[error(transparent)]
     Turn(#[from] TurnError),
@@ -456,6 +775,7 @@ pub(crate) struct LoadedSession {
     pub(crate) max_history_bytes: usize,
     pub(crate) model: Option<String>,
     pub(crate) provider: Option<String>,
+    pub(crate) provider_session_id: Option<String>,
     pub(crate) schema: OutputSchema,
     pub(crate) system_prompt: Option<String>,
     pub(crate) turns: Vec<Vec<ModelMessage>>,
@@ -620,11 +940,16 @@ async fn load_turn_size_page(
     let query = if let Some(before_turn) = before_turn {
         sqlx::query_as::<_, (i64, i64)>(
             r"
-SELECT turn_position, SUM(retained_bytes)
-FROM session_message
-WHERE session_id = ? AND turn_position < ?
-GROUP BY turn_position
-ORDER BY turn_position DESC
+SELECT message.turn_position, SUM(message.retained_bytes)
+FROM session_message AS message
+JOIN session_turn AS turn
+  ON turn.session_id = message.session_id
+ AND turn.turn_position = message.turn_position
+WHERE message.session_id = ?
+  AND message.turn_position < ?
+  AND turn.status = 'completed'
+GROUP BY message.turn_position
+ORDER BY message.turn_position DESC
 LIMIT ?
 ",
         )
@@ -633,11 +958,14 @@ LIMIT ?
     } else {
         sqlx::query_as::<_, (i64, i64)>(
             r"
-SELECT turn_position, SUM(retained_bytes)
-FROM session_message
-WHERE session_id = ?
-GROUP BY turn_position
-ORDER BY turn_position DESC
+SELECT message.turn_position, SUM(message.retained_bytes)
+FROM session_message AS message
+JOIN session_turn AS turn
+  ON turn.session_id = message.session_id
+ AND turn.turn_position = message.turn_position
+WHERE message.session_id = ? AND turn.status = 'completed'
+GROUP BY message.turn_position
+ORDER BY message.turn_position DESC
 LIMIT ?
 ",
         )
@@ -658,7 +986,7 @@ async fn next_turn_position(
     sqlx::query_scalar::<_, i64>(
         r"
 SELECT COALESCE(MAX(turn_position), -1) + 1
-FROM session_message
+FROM session_turn
 WHERE session_id = ?
 ",
     )
@@ -666,6 +994,67 @@ WHERE session_id = ?
     .fetch_one(&mut **transaction)
     .await
     .session_context("append persistent session turn")
+}
+
+async fn insert_message(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    session_id: &str,
+    turn_position: i64,
+    message_position: i64,
+    message: &EncodedMessage,
+    now: i64,
+    operation: &'static str,
+) -> Result<(), SessionError> {
+    sqlx::query(
+        r"
+INSERT INTO session_message (
+    session_id, turn_position, message_position, kind, payload, retained_bytes, created_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+",
+    )
+    .bind(session_id)
+    .bind(turn_position)
+    .bind(message_position)
+    .bind(message.kind)
+    .bind(&message.payload)
+    .bind(message.retained_bytes)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .session_context(operation)?;
+
+    Ok(())
+}
+
+async fn recover_stale_turns(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    session_id: &str,
+    now: i64,
+) -> Result<(), SessionError> {
+    sqlx::query(
+        r"
+UPDATE session_turn
+SET status = 'interrupted', error_type = 'interrupted', lease_expires_at = NULL, updated_at = ?
+WHERE session_id = ?
+  AND status IN ('pending', 'running')
+  AND lease_expires_at <= ?
+",
+    )
+    .bind(now)
+    .bind(session_id)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .session_context("recover stale persistent session turns")?;
+
+    Ok(())
+}
+
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
 }
 
 fn serialize_payload<T: Serialize>(payload: &T) -> Result<String, SessionError> {
@@ -766,7 +1155,7 @@ mod tests {
         let schema = schema();
 
         // Act
-        let config = SessionConfig::new("session-a", schema.clone())
+        let config = NewSession::new("session-a", schema.clone())
             .with_system_prompt("persistent instructions");
 
         // Assert
@@ -856,7 +1245,7 @@ mod tests {
             .await
             .expect("database should open");
         let config =
-            SessionConfig::new("session-a", schema()).with_system_prompt("persistent instructions");
+            NewSession::new("session-a", schema()).with_system_prompt("persistent instructions");
         let metadata = ModelMetadata::new("provider", "model").expect("metadata should be valid");
         database
             .create_session(&config, Some(metadata), 100_000)
@@ -920,6 +1309,176 @@ LIMIT 1
     }
 
     #[tokio::test]
+    async fn session_info_loads_model_identity_and_reports_missing_sessions() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
+        let database = Database::open(&database_path)
+            .await
+            .expect("database should open");
+        let metadata = ModelMetadata::new("provider", "model").expect("metadata should be valid");
+        database
+            .create_session(
+                &NewSession::new("session-a", schema()),
+                Some(metadata),
+                100_000,
+            )
+            .await
+            .expect("session should be created");
+
+        // Act
+        let info = SessionInfo::load(&database_path, "session-a")
+            .await
+            .expect("session identity should load");
+        let missing = SessionInfo::load(&database_path, "missing")
+            .await
+            .expect_err("missing session should fail");
+
+        // Assert
+        assert_eq!(info.provider(), Some("provider"));
+        assert_eq!(info.model(), Some("model"));
+        assert!(matches!(missing, SessionError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn beginning_a_turn_for_a_missing_session_reports_not_found() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("database should open");
+
+        // Act
+        let error = database
+            .begin_turn("missing", "prompt")
+            .await
+            .expect_err("missing session should fail");
+
+        // Assert
+        assert!(matches!(error, SessionError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn beginning_a_turn_preserves_non_unique_database_failures() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        sqlx::query(
+            r"
+CREATE TRIGGER reject_session_turn
+BEFORE INSERT ON session_turn
+BEGIN
+    SELECT RAISE(ABORT, 'turn rejected');
+END
+",
+        )
+        .execute(&database.pool)
+        .await
+        .expect("trigger should be created");
+
+        // Act
+        let error = database
+            .begin_turn("session-a", "prompt")
+            .await
+            .expect_err("database failure should be preserved");
+
+        // Assert
+        assert!(matches!(error, SessionError::QueryContext { .. }));
+    }
+
+    #[tokio::test]
+    async fn failing_or_completing_a_turn_that_is_not_running_reports_invalid_data() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        let turn_position = database
+            .begin_turn("session-a", "prompt")
+            .await
+            .expect("turn should begin");
+        database
+            .fail_turn(
+                "session-a",
+                turn_position,
+                &TurnError::Model(crate::ModelError::InvalidResponse),
+            )
+            .await
+            .expect("turn should fail");
+
+        // Act
+        let error = database
+            .complete_turn("session-a", turn_position, &[], None)
+            .await
+            .expect_err("non-running turn should fail");
+        let repeated_failure = database
+            .fail_turn(
+                "session-a",
+                turn_position,
+                &TurnError::Model(crate::ModelError::InvalidResponse),
+            )
+            .await
+            .expect_err("repeated turn failure should fail");
+
+        // Assert
+        assert!(matches!(error, SessionError::InvalidData { .. }));
+        assert!(matches!(repeated_failure, SessionError::InvalidData { .. }));
+    }
+
+    #[tokio::test]
+    async fn database_recovers_expired_active_turns_as_interrupted() {
+        // Arrange
+        let now = Arc::new(AtomicI64::new(10));
+        let timestamp_source: Arc<dyn TimestampSource> = {
+            let now = Arc::clone(&now);
+
+            Arc::new(move || now.load(Ordering::SeqCst))
+        };
+        let database = Database::open_in_memory_with_timestamp_source(timestamp_source)
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        let abandoned = database
+            .begin_turn("session-a", "abandoned")
+            .await
+            .expect("turn should begin");
+        now.store(10 + TURN_LEASE_SECONDS + 1, Ordering::SeqCst);
+
+        // Act
+        let loaded = database
+            .load_session("session-a")
+            .await
+            .expect("session should load");
+        let replacement = database
+            .begin_turn("session-a", "replacement")
+            .await
+            .expect("replacement turn should begin");
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM session_turn WHERE session_id = ? AND turn_position = ?",
+        )
+        .bind("session-a")
+        .bind(abandoned)
+        .fetch_one(&database.pool)
+        .await
+        .expect("turn status should load");
+
+        // Assert
+        assert_eq!(loaded.turns, [] as [Vec<ModelMessage>; 0]);
+        assert_eq!(status, "interrupted");
+        assert_eq!(replacement, abandoned + 1);
+    }
+
+    #[tokio::test]
     async fn database_loads_only_newest_complete_turns_within_budget() {
         // Arrange
         let database = Database::open_in_memory()
@@ -929,11 +1488,7 @@ LIMIT 1
         let latest_turn = turn("latest question", "latest answer");
         let latest_bytes = latest_turn.iter().map(ModelMessage::retained_bytes).sum();
         database
-            .create_session(
-                &SessionConfig::new("session-a", schema()),
-                None,
-                latest_bytes,
-            )
+            .create_session(&NewSession::new("session-a", schema()), None, latest_bytes)
             .await
             .expect("session should be created");
         database
@@ -977,7 +1532,7 @@ LIMIT 1
             .sum();
         database
             .create_session(
-                &SessionConfig::new("session-a", schema()),
+                &NewSession::new("session-a", schema()),
                 None,
                 max_history_bytes,
             )
@@ -1007,7 +1562,7 @@ LIMIT 1
             .await
             .expect("database should open");
         database
-            .create_session(&SessionConfig::new("session-a", schema()), None, 1)
+            .create_session(&NewSession::new("session-a", schema()), None, 1)
             .await
             .expect("session should be created");
         database
@@ -1032,7 +1587,7 @@ LIMIT 1
             .await
             .expect("database should open");
         database
-            .create_session(&SessionConfig::new("session-a", schema()), None, 100_000)
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
             .await
             .expect("session should be created");
         sqlx::query(
@@ -1083,7 +1638,7 @@ END
             .expect("database should open");
         for session_id in ["session-a", "session-b"] {
             database
-                .create_session(&SessionConfig::new(session_id, schema()), None, 100_000)
+                .create_session(&NewSession::new(session_id, schema()), None, 100_000)
                 .await
                 .expect("session should be created");
         }
@@ -1146,7 +1701,7 @@ END
         let database = Database::open_in_memory()
             .await
             .expect("database should open");
-        let config = SessionConfig::new("session-a", schema());
+        let config = NewSession::new("session-a", schema());
         database
             .create_session(&config, None, 100)
             .await
@@ -1158,11 +1713,11 @@ END
             .await
             .expect_err("duplicate should fail");
         let empty = database
-            .create_session(&SessionConfig::new(" ", schema()), None, 100)
+            .create_session(&NewSession::new(" ", schema()), None, 100)
             .await
             .expect_err("empty identifier should fail");
         let oversized_limit = database
-            .create_session(&SessionConfig::new("session-b", schema()), None, usize::MAX)
+            .create_session(&NewSession::new("session-b", schema()), None, usize::MAX)
             .await
             .expect_err("oversized limit should fail");
         let missing = database
@@ -1185,7 +1740,7 @@ END
             .await
             .expect("database should open");
         database
-            .create_session(&SessionConfig::new("session-a", schema()), None, 100_000)
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
             .await
             .expect("session should be created");
         database
@@ -1229,7 +1784,7 @@ END
             .await
             .expect("database should open");
         database
-            .create_session(&SessionConfig::new("session-a", schema()), None, 100_000)
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
             .await
             .expect("session should be created");
         database
@@ -1302,42 +1857,37 @@ END
     #[tokio::test]
     async fn persistent_chat_restores_completed_history_and_system_prompt() {
         // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("database should open");
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                let expected = if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    vec![
-                        ModelMessage::System("persistent instructions".to_string()),
-                        ModelMessage::User("first".to_string()),
-                    ]
-                } else {
-                    vec![
-                        ModelMessage::System("persistent instructions".to_string()),
-                        ModelMessage::User("first".to_string()),
-                        ModelMessage::Assistant(r#"{"summary":"one"}"#.to_string()),
-                        ModelMessage::User("second".to_string()),
-                    ]
-                };
-                assert_eq!(request.messages(), expected);
+        model.expect_complete().times(2).returning(move |request| {
+            let expected = if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                vec![
+                    ModelMessage::System("persistent instructions".to_string()),
+                    ModelMessage::User("first".to_string()),
+                ]
+            } else {
+                vec![
+                    ModelMessage::System("persistent instructions".to_string()),
+                    ModelMessage::User("first".to_string()),
+                    ModelMessage::Assistant(r#"{"summary":"one"}"#.to_string()),
+                    ModelMessage::User("second".to_string()),
+                ]
+            };
+            assert_eq!(request.messages(), expected);
 
-                Ok((
-                    ModelResponse::Output(json!({
-                        "summary": if expected.len() == 2 { "one" } else { "two" }
-                    })),
-                    None,
-                ))
-            });
-        let harness = crate::Harness::new(model);
-        let config =
-            SessionConfig::new("session-a", schema()).with_system_prompt("persistent instructions");
+            Ok(crate::ModelCompletion::from_response(
+                ModelResponse::Output(json!({
+                    "summary": if expected.len() == 2 { "one" } else { "two" }
+                })),
+            ))
+        });
+        let harness = crate::Harness::new(model).database(&database_path);
         let mut session = harness
-            .create_session(&database, config)
+            .session("session-a", schema())
+            .system_prompt("persistent instructions")
+            .create()
             .await
             .expect("session should be created");
 
@@ -1348,7 +1898,7 @@ END
             .expect("first turn should succeed");
         drop(session);
         let mut resumed = harness
-            .open_session(&database, "session-a")
+            .resume("session-a")
             .await
             .expect("session should reopen");
         let second = resumed
@@ -1365,24 +1915,35 @@ END
     #[tokio::test]
     async fn persistent_chat_does_not_store_failed_turns() {
         // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("database should open");
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
         let mut model = model();
         model
-            .expect_complete_with_optional_metadata()
+            .expect_complete()
             .times(1)
             .returning(|_| Err(crate::ModelError::InvalidResponse));
-        let harness = crate::Harness::new(model);
+        let harness = crate::Harness::new(model).database(&database_path);
         let mut session = harness
-            .create_session(&database, SessionConfig::new("session-a", schema()))
+            .session("session-a", schema())
+            .create()
             .await
             .expect("session should be created");
 
         // Act
         let error = session.send("failed").await.expect_err("turn should fail");
-        let message_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM session_message WHERE session_id = ?",
+        let database = Database::open(&database_path)
+            .await
+            .expect("database should open");
+        let (message_count, status) = sqlx::query_as::<_, (i64, String)>(
+            r"
+SELECT COUNT(message.id), turn.status
+FROM session_turn AS turn
+LEFT JOIN session_message AS message
+  ON message.session_id = turn.session_id
+ AND message.turn_position = turn.turn_position
+WHERE turn.session_id = ?
+GROUP BY turn.status
+",
         )
         .bind("session-a")
         .fetch_one(&database.pool)
@@ -1391,30 +1952,33 @@ END
 
         // Assert
         assert!(matches!(error, SessionError::Turn(_)));
-        assert_eq!(message_count, 0);
+        assert_eq!(message_count, 1);
+        assert_eq!(status, "failed");
     }
 
     #[tokio::test]
     async fn opening_session_validates_saved_model_identity() {
         // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("database should open");
-        let original = crate::Harness::new(metadata_model("provider-a", "model-a"));
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
+        let original =
+            crate::Harness::new(metadata_model("provider-a", "model-a")).database(&database_path);
         original
-            .create_session(&database, SessionConfig::new("session-a", schema()))
+            .session("session-a", schema())
+            .create()
             .await
             .expect("session should be created");
-        let different = crate::Harness::new(metadata_model("provider-b", "model-b"));
+        let different =
+            crate::Harness::new(metadata_model("provider-b", "model-b")).database(&database_path);
 
         // Act
         let mismatch = different
-            .open_session(&database, "session-a")
+            .resume("session-a")
             .await
             .err()
             .expect("model mismatch should fail");
         let missing = different
-            .open_session(&database, "missing")
+            .resume("missing")
             .await
             .err()
             .expect("missing session should fail");
@@ -1427,19 +1991,21 @@ END
     #[tokio::test]
     async fn opening_session_accepts_matching_model_identity() {
         // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("database should open");
-        let original = crate::Harness::new(metadata_model("provider", "model"));
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
+        let original =
+            crate::Harness::new(metadata_model("provider", "model")).database(&database_path);
         original
-            .create_session(&database, SessionConfig::new("session-a", schema()))
+            .session("session-a", schema())
+            .create()
             .await
             .expect("session should be created");
-        let matching = crate::Harness::new(metadata_model("provider", "model"));
+        let matching =
+            crate::Harness::new(metadata_model("provider", "model")).database(&database_path);
 
         // Act
         let session = matching
-            .open_session(&database, "session-a")
+            .resume("session-a")
             .await
             .expect("matching session should open");
 
@@ -1450,26 +2016,34 @@ END
     #[tokio::test]
     async fn opening_session_rejects_incomplete_saved_model_identity() {
         // Arrange
-        let database = Database::open_in_memory()
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
+        let database = Database::open(&database_path)
             .await
             .expect("database should open");
         database
-            .create_session(&SessionConfig::new("session-a", schema()), None, 100_000)
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
             .await
             .expect("session should be created");
+        let mut connection = database
+            .pool
+            .acquire()
+            .await
+            .expect("connection should open");
         sqlx::query("PRAGMA ignore_check_constraints = ON")
-            .execute(&database.pool)
+            .execute(&mut *connection)
             .await
             .expect("constraints should be disabled for corruption fixture");
         sqlx::query("UPDATE session SET provider = 'provider' WHERE id = 'session-a'")
-            .execute(&database.pool)
+            .execute(&mut *connection)
             .await
             .expect("model identity should be corrupted");
-        let harness = crate::Harness::new(model());
+        drop(connection);
+        let harness = crate::Harness::new(model()).database(&database_path);
 
         // Act
         let error = harness
-            .open_session(&database, "session-a")
+            .resume("session-a")
             .await
             .err()
             .expect("incomplete identity should fail");
@@ -1481,25 +2055,28 @@ END
     #[tokio::test]
     async fn persistent_chat_uses_saved_history_budget_when_reopened() {
         // Arrange
-        let database = Database::open_in_memory()
-            .await
-            .expect("database should open");
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
         let harness = crate::Harness::new(model())
+            .database(&database_path)
             .max_history_bytes(NonZeroUsize::new(64).expect("history limit should be nonzero"));
         let session = harness
-            .create_session(&database, SessionConfig::new("session-a", schema()))
+            .session("session-a", schema())
+            .create()
             .await
             .expect("session should be created");
         drop(session);
 
         // Act
         let _reopened = harness
-            .open_session(&database, "session-a")
+            .resume("session-a")
             .await
             .expect("session should reopen");
 
         // Assert
-        let loaded = database
+        let loaded = Database::open(&database_path)
+            .await
+            .expect("database should open")
             .load_session("session-a")
             .await
             .expect("session should load");

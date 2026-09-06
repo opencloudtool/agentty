@@ -37,9 +37,9 @@ async fn inspect_manifest(model: Muse) -> Result<(), DynError> {
     let output = Harness::new(model)
         .repository(env!("CARGO_MANIFEST_DIR"))
         .allow(Tool::Read)
-        .run(PROMPT, schema)
+        .run_once(PROMPT, schema)
         .await?;
-    let output = serde_json::to_string_pretty(&output)?;
+    let output = serde_json::to_string_pretty(output.output())?;
 
     writeln!(io::stdout().lock(), "{output}")?;
 

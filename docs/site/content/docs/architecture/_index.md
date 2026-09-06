@@ -20,6 +20,6 @@ boundaries, orchestration, and change paths.
 - [Testability Boundaries](@/docs/architecture/testability-boundaries.md) documents
   trait boundaries and deterministic testing guidance for external integrations.
 - [`ag-harness` Design](@/docs/architecture/ag-harness-design.md) documents the model
-  contract, request-duration metric, and local observability workflow.
+  contract, durable session lifecycle, concurrency, and local observability workflow.
 - [Orchestrator Design](@/docs/architecture/orchestrator.md) documents the current
   campaign model and the target wave, dependency-graph, and board design.

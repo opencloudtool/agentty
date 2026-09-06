@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::error::Error;
+use std::ops::Deref;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -23,78 +24,14 @@ pub trait Model: Send + Sync {
         None
     }
 
-    /// Completes one model request.
+    /// Completes one model request with optional provider metadata and
+    /// continuation state.
     ///
     /// # Errors
     ///
     /// Returns [`ModelError`] when the provider request fails or its response
     /// cannot be converted to the provider-neutral response.
-    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError>;
-
-    /// Completes one model request and returns normalized metadata when
-    /// available.
-    ///
-    /// Response-only implementations inherit a default that returns `None`.
-    /// [`ModelWithMetadata`] implementations return `Some` automatically.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ModelError`] under the same conditions as [`Model::complete`].
-    async fn complete_with_optional_metadata(
-        &self,
-        request: ModelRequest,
-    ) -> Result<(ModelResponse, Option<CompletionMetadata>), ModelError> {
-        self.complete(request)
-            .await
-            .map(|response| (response, None))
-    }
-}
-
-/// Object-safe model boundary that guarantees normalized completion metadata.
-#[async_trait]
-pub trait ModelWithMetadata: Send + Sync {
-    /// Returns the configured model identity when the implementation exposes
-    /// it.
-    fn metadata(&self) -> Option<ModelMetadata> {
-        None
-    }
-
-    /// Completes one model request and returns normalized provider metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ModelError`] when the provider request fails or its response
-    /// cannot be converted to the provider-neutral response.
-    async fn complete_with_metadata(
-        &self,
-        request: ModelRequest,
-    ) -> Result<ModelCompletion, ModelError>;
-}
-
-#[async_trait]
-impl<ModelType> Model for ModelType
-where
-    ModelType: ModelWithMetadata + ?Sized,
-{
-    fn metadata(&self) -> Option<ModelMetadata> {
-        ModelWithMetadata::metadata(self)
-    }
-
-    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError> {
-        self.complete_with_metadata(request)
-            .await
-            .map(ModelCompletion::into_response)
-    }
-
-    async fn complete_with_optional_metadata(
-        &self,
-        request: ModelRequest,
-    ) -> Result<(ModelResponse, Option<CompletionMetadata>), ModelError> {
-        let completion = self.complete_with_metadata(request).await?;
-        let ModelCompletion { metadata, response } = completion;
-
-        Ok((response, Some(metadata)))
-    }
+    async fn complete(&self, request: ModelRequest) -> Result<ModelCompletion, ModelError>;
 }
 
 /// Application-facing client for provider-neutral model requests.
@@ -175,22 +112,7 @@ impl ModelClient {
     ///
     /// Returns [`ModelError`] when the provider request fails or its response
     /// cannot be converted to the provider-neutral response.
-    pub async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError> {
-        self.complete_with_metadata(request)
-            .await
-            .map(ModelCompletion::into_response)
-    }
-
-    /// Completes one model request and returns normalized provider metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ModelError`] when the provider request fails or its response
-    /// cannot be converted to the provider-neutral response.
-    pub async fn complete_with_metadata(
-        &self,
-        request: ModelRequest,
-    ) -> Result<ModelCompletion, ModelError> {
+    pub async fn complete(&self, request: ModelRequest) -> Result<ModelCompletion, ModelError> {
         let metrics = telemetry::RequestMetrics::start(self.metadata());
         let lifecycle = if request.lifecycle_observed() {
             None
@@ -237,14 +159,18 @@ impl ModelClient {
         };
 
         match &result {
-            Ok(completion) => metrics.completed(completion.metadata()),
+            Ok(completion) => {
+                if let Some(metadata) = completion.metadata() {
+                    metrics.completed(metadata);
+                }
+            }
             Err(error) => metrics.failed(error, failure_metadata.as_ref()),
         }
 
         if let Some(lifecycle) = lifecycle {
             match &result {
                 Ok(completion) => lifecycle.completed(
-                    Some(completion.metadata.clone()),
+                    completion.metadata.clone(),
                     completion.response.response_type(),
                 ),
                 Err(error) => lifecycle.failed(error.error_type(), error.http_status()),
@@ -273,16 +199,13 @@ impl ModelClient {
 }
 
 #[async_trait]
-impl ModelWithMetadata for ModelClient {
+impl Model for ModelClient {
     fn metadata(&self) -> Option<ModelMetadata> {
         Some(self.metadata.clone())
     }
 
-    async fn complete_with_metadata(
-        &self,
-        request: ModelRequest,
-    ) -> Result<ModelCompletion, ModelError> {
-        ModelClient::complete_with_metadata(self, request).await
+    async fn complete(&self, request: ModelRequest) -> Result<ModelCompletion, ModelError> {
+        ModelClient::complete(self, request).await
     }
 }
 
@@ -343,6 +266,7 @@ pub struct ModelRequest {
     lifecycle_observed: bool,
     messages: Vec<ModelMessage>,
     prompt: String,
+    provider_session_id: Option<String>,
     schema: OutputSchema,
     tools: Vec<tool::ToolDefinition>,
 }
@@ -356,6 +280,7 @@ impl ModelRequest {
             lifecycle_observed: false,
             messages: vec![ModelMessage::User(prompt.clone())],
             prompt,
+            provider_session_id: None,
             schema,
             tools: Vec::new(),
         }
@@ -374,6 +299,7 @@ impl ModelRequest {
             lifecycle_observed: false,
             messages,
             prompt,
+            provider_session_id: None,
             schema,
             tools: Vec::new(),
         }
@@ -392,6 +318,12 @@ impl ModelRequest {
     /// Returns the request prompt.
     pub fn prompt(&self) -> &str {
         &self.prompt
+    }
+
+    /// Returns the opaque provider conversation identifier to resume, when
+    /// native continuation is available.
+    pub fn provider_session_id(&self) -> Option<&str> {
+        self.provider_session_id.as_deref()
     }
 
     /// Returns the schema that the response must match.
@@ -423,6 +355,10 @@ impl ModelRequest {
 
     pub(crate) fn mark_lifecycle_observed(&mut self) {
         self.lifecycle_observed = true;
+    }
+
+    pub(crate) fn set_provider_session_id(&mut self, provider_session_id: Option<String>) {
+        self.provider_session_id = provider_session_id;
     }
 
     pub(crate) fn record_tool_result(&mut self, call: tool::ToolCall, content: String) {
@@ -540,19 +476,46 @@ impl ModelMessage {
 /// One model response paired with normalized provider completion metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelCompletion {
-    metadata: CompletionMetadata,
+    metadata: Option<CompletionMetadata>,
+    provider_session_id: Option<String>,
     response: ModelResponse,
 }
 
 impl ModelCompletion {
     /// Creates a completion from normalized metadata and a model response.
     pub fn new(metadata: CompletionMetadata, response: ModelResponse) -> Self {
-        Self { metadata, response }
+        Self {
+            metadata: Some(metadata),
+            provider_session_id: None,
+            response,
+        }
+    }
+
+    /// Creates a completion without provider-reported metadata.
+    pub fn from_response(response: ModelResponse) -> Self {
+        Self {
+            metadata: None,
+            provider_session_id: None,
+            response,
+        }
+    }
+
+    /// Attaches the opaque provider session identifier returned by this turn.
+    #[must_use]
+    pub fn with_provider_session_id(mut self, provider_session_id: impl Into<String>) -> Self {
+        self.provider_session_id = Some(provider_session_id.into());
+
+        self
     }
 
     /// Returns the normalized metadata reported by the provider.
-    pub fn metadata(&self) -> &CompletionMetadata {
-        &self.metadata
+    pub fn metadata(&self) -> Option<&CompletionMetadata> {
+        self.metadata.as_ref()
+    }
+
+    /// Returns the opaque provider session identifier for the next turn.
+    pub fn provider_session_id(&self) -> Option<&str> {
+        self.provider_session_id.as_deref()
     }
 
     /// Returns the provider-neutral model response.
@@ -563,6 +526,18 @@ impl ModelCompletion {
     /// Consumes the completion and returns its provider-neutral response.
     pub fn into_response(self) -> ModelResponse {
         self.response
+    }
+
+    pub(crate) fn into_parts(self) -> (ModelResponse, Option<CompletionMetadata>, Option<String>) {
+        (self.response, self.metadata, self.provider_session_id)
+    }
+}
+
+impl Deref for ModelCompletion {
+    type Target = ModelResponse;
+
+    fn deref(&self) -> &Self::Target {
+        &self.response
     }
 }
 
@@ -754,6 +729,9 @@ pub enum ModelError {
     /// The provider returned a successful response without assistant content.
     #[error("model returned no response content")]
     InvalidResponse,
+    /// The provider could not restore the requested native session.
+    #[error("provider session is unavailable")]
+    ResumeUnavailable,
     /// The provider stopped before completing the model response.
     #[error("model response is incomplete: {reason}")]
     IncompleteResponse {
@@ -905,6 +883,7 @@ impl ModelError {
             Self::InvalidResponse | Self::IncompleteResponse { .. } => {
                 ModelErrorType::InvalidResponse
             }
+            Self::ResumeUnavailable => ModelErrorType::Provider,
             Self::ResponseBodyTooLarge | Self::ResponseContentTooLarge => {
                 ModelErrorType::ResponseTooLarge
             }
@@ -997,19 +976,18 @@ mod tests {
 
     #[async_trait]
     impl Model for ResponseOnlyModel {
-        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelError> {
-            Ok(ModelResponse::Output(json!({ "name": "Ada" })))
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelCompletion, ModelError> {
+            Ok(ModelCompletion::from_response(ModelResponse::Output(
+                json!({ "name": "Ada" }),
+            )))
         }
     }
 
     struct MetadataModel;
 
     #[async_trait]
-    impl ModelWithMetadata for MetadataModel {
-        async fn complete_with_metadata(
-            &self,
-            _request: ModelRequest,
-        ) -> Result<ModelCompletion, ModelError> {
+    impl Model for MetadataModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelCompletion, ModelError> {
             Ok(ModelCompletion::new(
                 CompletionMetadata::new(
                     "stop".to_string(),
@@ -1031,44 +1009,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_only_model_defaults_optional_metadata_to_none() {
+    async fn response_only_model_returns_completion_without_metadata() {
         // Arrange
         let model = ResponseOnlyModel;
 
         // Act
         let model_metadata = Model::metadata(&model);
-        let (response, metadata) = model
-            .complete_with_optional_metadata(test_request())
+        let completion = model
+            .complete(test_request())
             .await
             .expect("response-only model should complete");
 
         // Assert
         assert!(model_metadata.is_none());
-        assert_eq!(response.output(), Some(&json!({ "name": "Ada" })));
-        assert!(metadata.is_none());
+        assert_eq!(
+            completion.response().output(),
+            Some(&json!({ "name": "Ada" }))
+        );
+        assert!(completion.metadata().is_none());
     }
 
     #[tokio::test]
-    async fn metadata_model_automatically_implements_model_paths() {
+    async fn model_completion_exposes_optional_metadata() {
         // Arrange
         let model = MetadataModel;
 
         // Act
-        let model_metadata = ModelWithMetadata::metadata(&model);
-        let response = Model::complete(&model, test_request())
+        let model_metadata = Model::metadata(&model);
+        let completion = Model::complete(&model, test_request())
             .await
             .expect("metadata model should complete through Model");
-        let (optional_response, metadata) =
-            Model::complete_with_optional_metadata(&model, test_request())
-                .await
-                .expect("metadata model should expose optional metadata");
 
         // Assert
         assert!(model_metadata.is_none());
-        assert_eq!(response.output(), Some(&json!({ "name": "Ada" })));
-        assert_eq!(optional_response.output(), Some(&json!({ "name": "Ada" })));
         assert_eq!(
-            metadata.as_ref().and_then(CompletionMetadata::response_id),
+            completion.response().output(),
+            Some(&json!({ "name": "Ada" }))
+        );
+        assert_eq!(
+            completion
+                .metadata()
+                .and_then(CompletionMetadata::response_id),
             Some("response-id")
         );
     }
@@ -1085,7 +1066,7 @@ mod tests {
 
         // Act
         let metadata = client.metadata();
-        let trait_metadata = ModelWithMetadata::metadata(&client)
+        let trait_metadata = Model::metadata(&client)
             .expect("model client should expose configured metadata through the trait");
 
         // Assert
@@ -1206,12 +1187,18 @@ mod tests {
 
         // Act
         let completion = client
-            .complete_with_metadata(request)
+            .complete(request)
             .await
             .expect("batched tool response should complete");
 
         // Assert
-        assert_eq!(completion.metadata().finish_reason(), "tool_calls");
+        assert_eq!(
+            completion
+                .metadata()
+                .expect("provider completion should include metadata")
+                .finish_reason(),
+            "tool_calls"
+        );
         assert_eq!(
             completion
                 .response()
@@ -1455,10 +1442,13 @@ mod tests {
             Some(usage),
         );
         let response = ModelResponse::from_output(json!({ "name": "Ada" }));
-        let completion = ModelCompletion::new(metadata, response.clone());
+        let completion = ModelCompletion::new(metadata, response.clone())
+            .with_provider_session_id("provider-session-1");
 
         // Act
-        let completion_metadata = completion.metadata();
+        let completion_metadata = completion
+            .metadata()
+            .expect("completion should include metadata");
         let completion_response = completion.response();
 
         // Assert
@@ -1470,6 +1460,7 @@ mod tests {
             Some("fingerprint-1")
         );
         assert_eq!(completion_metadata.usage(), Some(&usage));
+        assert_eq!(completion.provider_session_id(), Some("provider-session-1"));
         assert_eq!(usage.cache_hit_tokens(), Some(5));
         assert_eq!(usage.cache_miss_tokens(), Some(8));
         assert_eq!(usage.input_tokens(), Some(13));
@@ -1564,6 +1555,7 @@ mod tests {
                 },
                 ModelErrorType::InvalidResponse,
             ),
+            (ModelError::ResumeUnavailable, ModelErrorType::Provider),
             (
                 ModelError::ResponseBodyTooLarge,
                 ModelErrorType::ResponseTooLarge,
