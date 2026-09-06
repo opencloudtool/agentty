@@ -191,7 +191,7 @@ pub(crate) enum AutoCommitOutcome {
 pub(crate) struct RunAgentAssistTaskInput {
     /// App event sender used for progress and status updates.
     pub(crate) app_event_tx: mpsc::UnboundedSender<AppEvent>,
-    /// Shared process identifier slot used for cancellation.
+    /// Session PID slot for CLI cancellation or retained app-server accounting.
     pub(crate) child_pid: Arc<Mutex<Option<u32>>>,
     /// Repository bundle used for transcript and status persistence.
     pub(crate) db: AppRepositories,
@@ -1089,10 +1089,14 @@ impl SessionTaskService {
             session_update_versions,
             transcript,
         } = input;
+        // App-server utilities own a separate temporary runtime. Their PID
+        // cleanup must not clear the retained chat runtime's accounting root.
+        let assist_child_pid =
+            (!agent::transport_mode(session_agent.kind()).uses_app_server()).then_some(child_pid);
         let assist_submission = one_shot_client
             .submit(agent::OneShotRequest {
                 agent_kind: session_agent.kind(),
-                child_pid: Some(child_pid),
+                child_pid: assist_child_pid,
                 folder,
                 model: session_agent.model(),
                 permission_mode: ag_agent::PermissionMode::AutoEdit,
@@ -2775,47 +2779,59 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies auto-commit recovery submits the rendered failure prompt
-    /// through the context's injected one-shot client.
-    async fn test_run_commit_assist_for_error_uses_injected_one_shot_client() {
+    /// Auto-commit assistance preserves the retained runtime PID on success
+    /// and failure, even when a one-shot client clears its cancellation slot.
+    async fn test_commit_assist_preserves_retained_runtime_accounting() {
         // Arrange
-        let database = AppRepositories::in_memory().await.expect("db should open");
-        insert_review_session(&database, AgentModel::Gpt56Sol.as_str()).await;
-        let transcript = Arc::new(Mutex::new(SessionTranscript::default()));
-        let mut one_shot_client = MockOneShotClient::new();
-        one_shot_client
-            .expect_submit()
-            .times(1)
-            .returning(|request| {
-                assert!(request.prompt.contains("commit failed"));
+        for assist_fails in [false, true] {
+            let database = AppRepositories::in_memory().await.expect("db should open");
+            insert_review_session(&database, AgentModel::Gpt56Sol.as_str()).await;
+            let transcript = Arc::new(Mutex::new(SessionTranscript::default()));
+            let child_pid = Arc::new(Mutex::new(Some(4242)));
+            let mut one_shot_client = MockOneShotClient::new();
+            one_shot_client
+                .expect_submit()
+                .times(1)
+                .returning(move |request| {
+                    assert!(request.prompt.contains("commit failed"));
+                    assert!(
+                        request.child_pid.is_none(),
+                        "isolated runtime must not receive the session PID slot"
+                    );
+                    if assist_fails {
+                        Err(agent::OneShotError::new("assist failed"))
+                    } else {
+                        Ok(one_shot_submission("Fixed the commit failure", 0, 0))
+                    }
+                });
+            let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
+            let context = AssistContext {
+                app_event_tx,
+                child_pid: Arc::clone(&child_pid),
+                db: database,
+                folder: PathBuf::from("project"),
+                git_client: Arc::new(MockGitClient::new()),
+                id: "session-id".to_string(),
+                one_shot_client: Arc::new(one_shot_client),
+                session_agent: AgentSelection::new(AgentKind::Codex, AgentModel::Gpt56Sol),
+                session_update_versions: Arc::default(),
+                transcript: Arc::clone(&transcript),
+            };
 
-                Ok(one_shot_submission("Fixed the commit failure", 0, 0))
-            });
-        let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
-        let context = AssistContext {
-            app_event_tx,
-            child_pid: Arc::new(Mutex::new(None)),
-            db: database,
-            folder: PathBuf::from("/tmp/project"),
-            git_client: Arc::new(MockGitClient::new()),
-            id: "session-id".to_string(),
-            one_shot_client: Arc::new(one_shot_client),
-            session_agent: AgentSelection::new(AgentKind::Codex, AgentModel::Gpt56Sol),
-            session_update_versions: Arc::default(),
-            transcript: Arc::clone(&transcript),
-        };
+            // Act
+            let result =
+                SessionTaskService::run_commit_assist_for_error(&context, "commit failed").await;
 
-        // Act
-        let result =
-            SessionTaskService::run_commit_assist_for_error(&context, "commit failed").await;
-
-        // Assert
-        result.expect("commit assistance should succeed");
-        let replay_text = transcript
-            .lock()
-            .expect("transcript lock should succeed")
-            .replay_text();
-        assert_eq!(replay_text.as_deref(), Some("Fixed the commit failure\n\n"));
+            // Assert
+            assert_eq!(result.is_err(), assist_fails);
+            assert_eq!(*child_pid.lock().expect("retained runtime PID"), Some(4242));
+            let replay_text = transcript.lock().expect("transcript lock").replay_text();
+            if assist_fails {
+                assert!(replay_text.is_none());
+            } else {
+                assert_eq!(replay_text.as_deref(), Some("Fixed the commit failure\n\n"));
+            }
+        }
     }
 
     #[tokio::test]
@@ -3358,12 +3374,17 @@ mod tests {
         let transcript = Arc::new(Mutex::new(SessionTranscript::default()));
         let child_pid = Arc::new(Mutex::new(None));
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let expected_child_pid = Arc::clone(&child_pid);
         let mut one_shot_client = MockOneShotClient::new();
         one_shot_client
             .expect_submit()
             .times(1)
-            .returning(|request| {
+            .returning(move |request| {
                 assert_eq!(request.prompt, "Resolve conflict");
+                assert!(Arc::ptr_eq(
+                    request.child_pid.as_ref().expect("CLI cancellation slot"),
+                    &expected_child_pid,
+                ));
 
                 Ok(one_shot_submission("Resolved the rebase conflict.", 11, 7))
             });

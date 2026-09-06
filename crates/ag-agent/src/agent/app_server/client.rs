@@ -82,6 +82,7 @@ impl<Provider: RuntimeClientProvider> ProviderRuntimeClient<Provider> {
         stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
     ) -> Result<AppServerTurnResponse, AppServerError> {
         let stream_tx = stream_tx.clone();
+        let shutdown_stream_tx = stream_tx.clone();
         let reasoning_level = request.reasoning_level;
         let protocol_profile = request.request_kind.protocol_profile();
         let speed_mode = request.speed_mode;
@@ -104,6 +105,7 @@ impl<Provider: RuntimeClientProvider> ProviderRuntimeClient<Provider> {
             },
             move |runtime, prompt| {
                 let stream_tx = stream_tx.clone();
+                let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(runtime.pid()));
 
                 Provider::run_turn(
                     runtime,
@@ -114,7 +116,7 @@ impl<Provider: RuntimeClientProvider> ProviderRuntimeClient<Provider> {
                     stream_tx,
                 )
             },
-            RuntimeClientRuntime::shutdown_runtime,
+            move |runtime| Self::shutdown_runtime(runtime, &shutdown_stream_tx),
         )
         .await
     }
@@ -137,6 +139,17 @@ impl<Provider: RuntimeClientProvider> ProviderRuntimeClient<Provider> {
     /// Returns whether runtime startup restored provider-native context.
     fn restored_context(runtime: &Provider::Runtime) -> bool {
         runtime.restored_context()
+    }
+
+    /// Invalidates accounting before releasing a runtime PID, including while
+    /// replacement startup or replay is still pending.
+    fn shutdown_runtime<'scope>(
+        runtime: &'scope mut Provider::Runtime,
+        stream_tx: &mpsc::UnboundedSender<AppServerStreamEvent>,
+    ) -> BorrowedAppServerFuture<'scope, ()> {
+        let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(None));
+
+        runtime.shutdown_runtime()
     }
 }
 
@@ -213,6 +226,7 @@ mod tests {
                 Ok(TestRuntime {
                     folder: request.folder,
                     model: request.model,
+                    pid: 42,
                     provider_conversation_id: Some("conversation-1".to_string()),
                     restored_context: true,
                     shutdown_count: &SHUTDOWN_COUNT,
@@ -239,6 +253,7 @@ mod tests {
     struct TestRuntime {
         folder: PathBuf,
         model: String,
+        pid: u32,
         provider_conversation_id: Option<String>,
         restored_context: bool,
         shutdown_count: &'static AtomicUsize,
@@ -250,7 +265,7 @@ mod tests {
         }
 
         fn pid(&self) -> Option<u32> {
-            Some(42)
+            Some(self.pid)
         }
 
         fn provider_conversation_id(&self) -> Option<String> {
@@ -268,15 +283,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn runtime_client_stores_successful_runtime_until_session_shutdown() {
-        // Arrange
-        RUN_COUNT.store(0, Ordering::SeqCst);
-        SHUTDOWN_COUNT.store(0, Ordering::SeqCst);
-        START_COUNT.store(0, Ordering::SeqCst);
-
-        let client = ProviderRuntimeClient::<TestProvider>::new();
-        let request = AppServerTurnRequest {
+    fn make_request() -> AppServerTurnRequest {
+        AppServerTurnRequest {
             folder: std::env::temp_dir(),
             live_transcript: None,
             main_checkout_root: None,
@@ -291,14 +299,120 @@ mod tests {
             replay_transcript: None,
             session_id: "session-1".to_string(),
             speed_mode: SpeedMode::default(),
-        };
-        let (stream_tx, _stream_rx) = mpsc::unbounded_channel();
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_shutdown_clears_pid_before_delayed_replacement_startup() {
+        // Arrange
+        static RETRY_SHUTDOWN_COUNT: AtomicUsize = AtomicUsize::new(0);
+        let sessions = AppServerSessionRegistry::new("Test");
+        let request = make_request();
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let mut release_rx = Some(release_rx);
+        let starts = std::sync::Arc::new(AtomicUsize::new(0));
+        let start_count = std::sync::Arc::clone(&starts);
+        let shutdown_tx = stream_tx.clone();
+
+        // Act
+        let turn = tokio::spawn(async move {
+            app_server::run_turn_with_restart_retry(
+                &sessions,
+                request,
+                app_server::RuntimeInspector {
+                    matches_request: TestRuntime::matches_request,
+                    pid: TestRuntime::pid,
+                    provider_conversation_id: TestRuntime::provider_conversation_id,
+                    retain_runtime_after_turn: true,
+                    restored_context: TestRuntime::restored_context,
+                },
+                ProtocolSchemaInstructionMode::TransportSchema,
+                move |request| {
+                    let attempt = start_count.fetch_add(1, Ordering::SeqCst);
+                    let release = if attempt == 0 {
+                        None
+                    } else {
+                        release_rx.take()
+                    };
+                    let runtime = TestRuntime {
+                        folder: request.folder.clone(),
+                        model: request.model.clone(),
+                        pid: if attempt == 0 { 42 } else { 84 },
+                        provider_conversation_id: None,
+                        restored_context: true,
+                        shutdown_count: &RETRY_SHUTDOWN_COUNT,
+                    };
+
+                    Box::pin(async move {
+                        if let Some(release) = release {
+                            release.await.expect("release replacement startup");
+                        }
+
+                        Ok(runtime)
+                    })
+                },
+                move |runtime, _| {
+                    let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(runtime.pid()));
+                    let failed = runtime.pid == 42;
+
+                    Box::pin(async move {
+                        if failed {
+                            return Err(AppServerError::Provider(
+                                "first runtime exited".to_string(),
+                            ));
+                        }
+
+                        Ok(("recovered".to_string(), 1, 1))
+                    })
+                },
+                move |runtime| {
+                    ProviderRuntimeClient::<TestProvider>::shutdown_runtime(runtime, &shutdown_tx)
+                },
+            )
+            .await
+        });
+        let first_pid = stream_rx.recv().await.expect("first runtime published");
+        let cleared_pid = stream_rx.recv().await.expect("shutdown clears runtime");
+
+        // Assert
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+        assert_eq!(first_pid, AppServerStreamEvent::PidUpdate(Some(42)));
+        assert_eq!(cleared_pid, AppServerStreamEvent::PidUpdate(None));
+        assert!(!turn.is_finished());
+        assert!(stream_rx.try_recv().is_err());
+        release_tx.send(()).expect("finish replacement startup");
+        let response = turn.await.expect("join turn").expect("retry succeeds");
+        assert_eq!(
+            stream_rx.recv().await,
+            Some(AppServerStreamEvent::PidUpdate(Some(84)))
+        );
+        assert_eq!(response.pid, Some(84));
+    }
+
+    #[tokio::test]
+    async fn runtime_client_retains_and_replaces_runtime_with_pid_updates() {
+        // Arrange
+        RUN_COUNT.store(0, Ordering::SeqCst);
+        SHUTDOWN_COUNT.store(0, Ordering::SeqCst);
+        START_COUNT.store(0, Ordering::SeqCst);
+
+        let client = ProviderRuntimeClient::<TestProvider>::new();
+        let request = make_request();
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
 
         // Act
         let response = client
             .run_turn(request, stream_tx)
             .await
             .expect("turn should succeed");
+        let mut replacement_request = make_request();
+        replacement_request.model = "replacement-model".to_string();
+        let (replacement_tx, mut replacement_rx) = mpsc::unbounded_channel();
+        client
+            .run_turn(replacement_request, replacement_tx)
+            .await
+            .expect("replacement turn should succeed");
         client.shutdown_session("session-1".to_string()).await;
 
         // Assert
@@ -308,11 +422,25 @@ mod tests {
         assert_eq!(response.output_tokens, 12);
         assert_eq!(response.pid, Some(42));
         assert_eq!(
+            stream_rx.try_recv().expect("runtime PID before turn"),
+            AppServerStreamEvent::PidUpdate(Some(42))
+        );
+        assert_eq!(
             response.provider_conversation_id,
             Some("conversation-1".to_string())
         );
-        assert_eq!(START_COUNT.load(Ordering::SeqCst), 1);
-        assert_eq!(RUN_COUNT.load(Ordering::SeqCst), 1);
-        assert_eq!(SHUTDOWN_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            replacement_rx.try_recv().expect("retired PID cleared"),
+            AppServerStreamEvent::PidUpdate(None)
+        );
+        assert_eq!(
+            replacement_rx
+                .try_recv()
+                .expect("replacement PID published"),
+            AppServerStreamEvent::PidUpdate(Some(42))
+        );
+        assert_eq!(START_COUNT.load(Ordering::SeqCst), 2);
+        assert_eq!(RUN_COUNT.load(Ordering::SeqCst), 2);
+        assert_eq!(SHUTDOWN_COUNT.load(Ordering::SeqCst), 2);
     }
 }

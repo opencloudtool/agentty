@@ -143,6 +143,7 @@ mod tests {
         let input = SessionChatPageInput {
             active_prompt_output: None,
             active_progress: None,
+            resources: None,
             default_reasoning_level: ReasoningLevel::default(),
             frame_time: FrameTime::new(0, 0, 0),
             has_merge_conflict: false,

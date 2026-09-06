@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Borders;
 
 use crate::domain::agent::ReasoningLevel;
+use crate::domain::resource::SessionResources;
 use crate::domain::review;
 use crate::domain::session::{COMMITTING_PROGRESS_LABEL, Session, SessionId, Status};
 use crate::presentation::help_action::{self, ViewHelpState};
@@ -16,6 +17,32 @@ const REVIEW_PROJECT_IMPACT_HEADER: &str = "### Project Impact";
 const REVIEW_SUGGESTIONS_HEADER: &str = "### Suggestions";
 const REVIEW_SUGGESTIONS_HEADER_WITH_HINT: &str =
     "### Suggestions (type \"/apply\" to verify and apply)";
+
+/// Formats the bounded chat row for the tracked agent process tree.
+pub(crate) fn session_resources_line(
+    resources: Option<SessionResources>,
+    width: u16,
+) -> Line<'static> {
+    let text = resources.map_or_else(
+        || "Processes: --  CPU: --  Memory: --".to_string(),
+        |resources| {
+            let memory = resources.resident_memory_kib;
+
+            format!(
+                "Processes: {}  CPU: {:.1}%  Memory: {}.{} MiB",
+                resources.process_count,
+                resources.cpu_percent,
+                memory / 1024,
+                memory % 1024 * 10 / 1024,
+            )
+        },
+    );
+
+    Line::styled(
+        text_util::truncate_with_ellipsis(&text, usize::from(width)),
+        Style::default().fg(style::palette::text_muted()),
+    )
+}
 
 /// Formats the session title and metadata lines rendered above the output
 /// panel.
@@ -476,6 +503,38 @@ mod tests {
         ForgeKind, ReviewRequest, ReviewRequestState, ReviewRequestSummary, SessionRole,
     };
     use crate::test_support::SessionFixtureBuilder;
+
+    #[test]
+    fn resource_row_formats_values_unavailable_and_narrow_widths() {
+        // Arrange
+        let resources = SessionResources {
+            cpu_percent: 128.5,
+            process_count: 3,
+            resident_memory_kib: 3584,
+        };
+
+        // Act
+        let row = session_resources_line(Some(resources), 80);
+        let unavailable = session_resources_line(None, 80);
+        let narrow = session_resources_line(Some(resources), 15);
+
+        // Assert
+        assert_eq!(
+            row.to_string(),
+            "Processes: 3  CPU: 128.5%  Memory: 3.5 MiB"
+        );
+        assert_eq!(
+            unavailable.to_string(),
+            "Processes: --  CPU: --  Memory: --"
+        );
+        assert!(narrow.width() <= 15);
+        assert_eq!(session_resources_line(Some(resources), 0).width(), 0);
+        assert!(
+            session_resources_line(Some(SessionResources::default()), 80)
+                .to_string()
+                .contains("Processes: 0  CPU: 0.0%  Memory: 0.0 MiB")
+        );
+    }
 
     fn session_with_review_request(url: &str) -> Session {
         let mut session = SessionFixtureBuilder::new().build();

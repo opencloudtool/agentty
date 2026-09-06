@@ -126,6 +126,11 @@ For file-level detail, read the module docstrings directly.
 
 ## Layer Rules
 
+Session process accounting follows these boundaries: `infra` samples the host through
+`ResourceClient` and validates native process identities, `app` owns sampling and cache
+invalidation, `domain` defines resource totals, and `ui` formats the immutable snapshot
+for session chat.
+
 - Workflow and state transitions live in `app/`, not in UI rendering modules.
 - `App` does not render terminal frames or own concrete render caches; runtime passes
   its presentation cache into the UI projection boundary.

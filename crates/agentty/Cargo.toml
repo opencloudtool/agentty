@@ -46,6 +46,9 @@ tracing.workspace = true
 uuid.workspace = true
 unicode-width.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc.workspace = true
+
 [dev-dependencies]
 ag-agent = { workspace = true, features = ["test-utils"] }
 ag-forge = { workspace = true, features = ["test-utils"] }

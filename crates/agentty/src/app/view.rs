@@ -7,6 +7,7 @@ use crate::app::session_state::SessionGitStatus;
 use crate::app::{App, ProjectSyncStatus, Tab, UpdateStatus, session};
 use crate::domain::agent::{AgentCliInfo, ReasoningLevel};
 use crate::domain::project::ProjectListItem;
+use crate::domain::resource::SessionResources;
 use crate::domain::session::{DailyActivity, Session, SessionId};
 use crate::domain::theme::ColorTheme;
 use crate::infra::clock;
@@ -43,6 +44,8 @@ pub(crate) struct AppViewSnapshot<'a> {
     pub(crate) session_git_statuses: &'a HashMap<SessionId, SessionGitStatus>,
     pub(crate) session_index_by_id: &'a HashMap<SessionId, usize>,
     pub(crate) session_progress_messages: &'a HashMap<SessionId, String>,
+    /// Latest tracked process-tree totals.
+    pub(crate) session_resources: &'a HashMap<SessionId, SessionResources>,
     pub(crate) session_review: Option<SessionReviewView<'a>>,
     pub(crate) session_selected_index: Option<usize>,
     pub(crate) session_update_versions: &'a HashMap<SessionId, u64>,
@@ -102,6 +105,7 @@ impl App {
             session_branch_names: sessions.session_branch_names,
             session_git_statuses: sessions.session_git_statuses,
             session_index_by_id: sessions.session_index_by_id,
+            session_resources: sessions.session_resources,
             session_progress_messages: &self.session_progress_messages,
             session_review,
             session_selected_index: sessions.selected_index,

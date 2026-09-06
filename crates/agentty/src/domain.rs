@@ -11,6 +11,8 @@ pub mod personality;
 /// Persisted project entities and project-list ordering.
 pub mod project;
 pub mod question;
+/// Live process-accounting projections.
+pub mod resource;
 pub mod review;
 pub mod selection;
 /// Session lifecycle entities, statistics, and identifiers.

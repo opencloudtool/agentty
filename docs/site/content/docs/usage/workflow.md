@@ -60,6 +60,16 @@ no-line-context message instead of a synthetic code anchor. Each session stores 
 project's Smart reasoning default when it is created, so later default changes affect
 new sessions without relabeling existing ones.
 
+Session chat also shows `Processes`, `CPU`, and `Memory` for the tracked agent process
+and its descendants, refreshed about every two seconds. `CPU` sums the host's `ps`
+percentages and can exceed `100%`; it is host-reported accounting rather than an
+instantaneous utilization measurement. `Memory` is summed resident memory in `MiB`, so
+shared pages may be counted for each process. `--` means no agent PID is tracked, the
+tracked process has exited (including while idle), its PID now belongs to a different
+process, a retry replacement is starting, or accounting is unavailable. Detached
+processes, other Agentty instances, and Agentty's own resource use are outside these
+totals.
+
 The top status bar shows the current version, update status, and the latest explicit
 project-sync phase. Project-sync progress temporarily takes the place of the rotating
 page-scoped `FYI:` message without changing the current page or popup.

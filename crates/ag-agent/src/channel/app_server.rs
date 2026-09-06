@@ -36,6 +36,48 @@ impl AppServerAgentChannel {
     pub(crate) fn new(client: Arc<dyn AppServerClient>, kind: AgentKind) -> Self {
         Self { client, kind }
     }
+
+    /// Bridges normal-turn PID and transient loader updates until the runtime
+    /// drops its stream sender.
+    fn bridge_turn_stream(
+        kind: AgentKind,
+        mut stream_rx: mpsc::UnboundedReceiver<AppServerStreamEvent>,
+        events: mpsc::UnboundedSender<TurnEvent>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(event) = stream_rx.recv().await {
+                match event {
+                    AppServerStreamEvent::PidUpdate(pid) => {
+                        let _ = events.send(TurnEvent::PidUpdate(pid));
+                    }
+                    AppServerStreamEvent::AssistantMessage {
+                        message,
+                        phase,
+                        is_delta,
+                    } => {
+                        let trimmed = message.trim_end();
+                        if trimmed.trim().is_empty() {
+                            continue;
+                        }
+
+                        if agent::is_app_server_thought_chunk(kind, is_delta, phase.as_deref()) {
+                            // Fire-and-forget: receiver may be dropped during shutdown.
+                            let _ = events.send(TurnEvent::ThoughtDelta(trimmed.to_string()));
+                        }
+                    }
+                    AppServerStreamEvent::ProgressUpdate(progress) => {
+                        let trimmed = progress.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+
+                        // Fire-and-forget: receiver may be dropped during shutdown.
+                        let _ = events.send(TurnEvent::ThoughtDelta(trimmed.to_string()));
+                    }
+                }
+            }
+        })
+    }
 }
 
 impl AgentChannel for AppServerAgentChannel {
@@ -57,6 +99,7 @@ impl AgentChannel for AppServerAgentChannel {
     /// provider progress updates are bridged to [`TurnEvent::ThoughtDelta`] so
     /// the UI loader can reflect transient state while the final persisted
     /// output still comes only from the parsed [`TurnResult`].
+    /// Every terminal error clears the tracked PID, including failed repair.
     ///
     /// # Errors
     /// Returns [`AgentError`] when [`AppServerClient::run_turn`] fails.
@@ -68,7 +111,8 @@ impl AgentChannel for AppServerAgentChannel {
     ) -> AgentFuture<Result<TurnResult, AgentError>> {
         let client = Arc::clone(&self.client);
         let kind = self.kind;
-        Box::pin(async move {
+        let error_events = events.clone();
+        let turn = async move {
             let mut req = req;
             req.prompt = agent::apply_response_style_prompt(
                 req.prompt,
@@ -96,47 +140,9 @@ impl AgentChannel for AppServerAgentChannel {
             };
             let protocol_profile = request.request_kind.protocol_profile();
             let repair_request = request.clone();
-            let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<AppServerStreamEvent>();
+            let (stream_tx, stream_rx) = mpsc::unbounded_channel::<AppServerStreamEvent>();
 
-            let bridge_handle = {
-                let events = events.clone();
-
-                tokio::spawn(async move {
-                    while let Some(event) = stream_rx.recv().await {
-                        match event {
-                            AppServerStreamEvent::AssistantMessage {
-                                message,
-                                phase,
-                                is_delta,
-                            } => {
-                                let trimmed = message.trim_end();
-                                if trimmed.trim().is_empty() {
-                                    continue;
-                                }
-
-                                if agent::is_app_server_thought_chunk(
-                                    kind,
-                                    is_delta,
-                                    phase.as_deref(),
-                                ) {
-                                    // Fire-and-forget: receiver may be dropped during shutdown.
-                                    let _ =
-                                        events.send(TurnEvent::ThoughtDelta(trimmed.to_string()));
-                                }
-                            }
-                            AppServerStreamEvent::ProgressUpdate(progress) => {
-                                let trimmed = progress.trim();
-                                if trimmed.is_empty() {
-                                    continue;
-                                }
-
-                                // Fire-and-forget: receiver may be dropped during shutdown.
-                                let _ = events.send(TurnEvent::ThoughtDelta(trimmed.to_string()));
-                            }
-                        }
-                    }
-                })
-            };
+            let bridge_handle = Self::bridge_turn_stream(kind, stream_rx, events.clone());
 
             let turn_result = client.run_turn(request, stream_tx).await;
             // Task join: panic in the spawned task is not recoverable here.
@@ -166,6 +172,15 @@ impl AgentChannel for AppServerAgentChannel {
                 }
                 Err(error) => Err(AgentError::AppServer(error)),
             }
+        };
+
+        Box::pin(async move {
+            let result = turn.await;
+            if result.is_err() {
+                let _ = error_events.send(TurnEvent::PidUpdate(None));
+            }
+
+            result
         })
     }
 
@@ -210,6 +225,9 @@ struct AppServerParsedTurnResult {
 /// so the user can see that schema repair is in progress. The parse error is
 /// deliberately excluded: thought updates render as live loader lines, and the
 /// error carries provider diagnostics that must not reach the UI.
+/// Repair streams forward PID changes while withholding provider diagnostics;
+/// the final repair response replaces the tracked PID before parsing its
+/// output.
 async fn parse_or_repair_app_server_response(
     kind: AgentKind,
     response: &crate::app_server::AppServerTurnResponse,
@@ -262,15 +280,26 @@ async fn parse_or_repair_app_server_response(
         session_id: repair_request.session_id,
         speed_mode: repair_request.speed_mode,
     };
-    let (repair_stream_tx, _repair_stream_rx) = mpsc::unbounded_channel();
-    let repair_result = client
-        .run_turn(repair_turn_request, repair_stream_tx)
-        .await
-        .map_err(|error| {
-            AgentError::Backend(format!(
-                "{parse_error}\nprotocol repair transport failed: {error}"
-            ))
-        })?;
+    let (repair_stream_tx, mut repair_stream_rx) = mpsc::unbounded_channel();
+    let repair_bridge = {
+        let events = events.clone();
+
+        tokio::spawn(async move {
+            while let Some(event) = repair_stream_rx.recv().await {
+                if let AppServerStreamEvent::PidUpdate(pid) = event {
+                    let _ = events.send(TurnEvent::PidUpdate(pid));
+                }
+            }
+        })
+    };
+    let repair_result = client.run_turn(repair_turn_request, repair_stream_tx).await;
+    let _ = repair_bridge.await;
+    let repair_result = repair_result.map_err(|error| {
+        AgentError::Backend(format!(
+            "{parse_error}\nprotocol repair transport failed: {error}"
+        ))
+    })?;
+    let _ = events.send(TurnEvent::PidUpdate(repair_result.pid));
 
     let parsed =
         agent::parse_turn_response(kind, &repair_result.assistant_message, protocol_profile)
@@ -319,6 +348,48 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn forwards_runtime_pid_and_clears_it_after_non_retained_turn() {
+        // Arrange
+        let mut client = MockAppServerClient::new();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let mut finish_rx = Some(finish_rx);
+        client
+            .expect_run_turn()
+            .times(1)
+            .returning(move |_, stream_tx| {
+                let finish_rx = finish_rx.take().expect("single turn");
+                Box::pin(async move {
+                    let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(Some(123)));
+                    finish_rx.await.expect("release turn");
+
+                    Ok(make_ok_response(r#"{"answer":"ok","questions":[]}"#))
+                })
+            });
+        let channel = AppServerAgentChannel::new(Arc::new(client), AgentKind::Gemini);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let turn = tokio::spawn(async move {
+            channel
+                .run_turn("session".to_string(), make_turn_request(), events_tx)
+                .await
+        });
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events_rx.recv())
+            .await
+            .expect("PID arrives during turn");
+
+        // Assert
+        assert!(matches!(event, Some(TurnEvent::PidUpdate(Some(123)))));
+        assert!(!turn.is_finished());
+        finish_tx.send(()).expect("finish turn");
+        turn.await.expect("join turn").expect("successful turn");
+        assert!(matches!(
+            events_rx.recv().await,
+            Some(TurnEvent::PidUpdate(None))
+        ));
+    }
+
     fn make_ok_response(assistant_message: &str) -> AppServerTurnResponse {
         AppServerTurnResponse {
             assistant_message: assistant_message.to_string(),
@@ -328,6 +399,147 @@ mod tests {
             pid: None,
             provider_conversation_id: None,
         }
+    }
+
+    fn collect_pid_updates(events: &mut mpsc::UnboundedReceiver<TurnEvent>) -> Vec<Option<u32>> {
+        let mut pids = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let TurnEvent::PidUpdate(pid) = event {
+                pids.push(pid);
+            }
+        }
+
+        pids
+    }
+
+    #[tokio::test]
+    async fn repair_forwards_live_pid_and_publishes_retained_or_cleared_response_pid() {
+        for final_pid in [Some(456), None] {
+            // Arrange
+            let initial_pid = final_pid.map(|_| 123);
+            let mut client = MockAppServerClient::new();
+            let mut sequence = mockall::Sequence::new();
+            client
+                .expect_run_turn()
+                .times(1)
+                .in_sequence(&mut sequence)
+                .returning(move |_, _| {
+                    Box::pin(async move {
+                        let mut response = make_ok_response("invalid original response");
+                        response.pid = initial_pid;
+
+                        Ok(response)
+                    })
+                });
+            let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+            let mut finish_rx = Some(finish_rx);
+            client
+                .expect_run_turn()
+                .times(1)
+                .in_sequence(&mut sequence)
+                .returning(move |_, stream_tx| {
+                    let finish_rx = finish_rx.take().expect("single repair turn");
+                    Box::pin(async move {
+                        let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(Some(456)));
+                        let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(
+                            "private repair diagnostics".to_string(),
+                        ));
+                        finish_rx.await.expect("release repair");
+                        let mut response =
+                            make_ok_response(r#"{"answer":"repaired","questions":[]}"#);
+                        response.pid = final_pid;
+
+                        Ok(response)
+                    })
+                });
+            let channel = AppServerAgentChannel::new(Arc::new(client), AgentKind::Codex);
+            let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+            // Act
+            let turn = tokio::spawn(async move {
+                channel
+                    .run_turn("session".to_string(), make_turn_request(), events_tx)
+                    .await
+            });
+            let mut pids = Vec::new();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while let Some(event) = events_rx.recv().await {
+                    if let TurnEvent::PidUpdate(pid) = event {
+                        pids.push(pid);
+                        if pid == Some(456) {
+                            break;
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("repair PID arrives while turn is running");
+
+            // Assert
+            assert_eq!(pids, vec![initial_pid, Some(456)]);
+            assert!(!turn.is_finished());
+            finish_tx.send(()).expect("finish repair");
+            let result = turn
+                .await
+                .expect("join turn")
+                .expect("repaired turn succeeds");
+            assert_eq!(result.assistant_message.to_display_text(), "repaired");
+            assert!(
+                matches!(events_rx.recv().await, Some(TurnEvent::PidUpdate(pid)) if pid == final_pid)
+            );
+            assert!(events_rx.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn repair_transport_failure_clears_latest_runtime_pid() {
+        // Arrange
+        let mut client = MockAppServerClient::new();
+        let mut sequence = mockall::Sequence::new();
+        client
+            .expect_run_turn()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, _| {
+                Box::pin(async {
+                    let mut response = make_ok_response("invalid original response");
+                    response.pid = Some(123);
+
+                    Ok(response)
+                })
+            });
+        client
+            .expect_run_turn()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_, stream_tx| {
+                Box::pin(async move {
+                    let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(Some(456)));
+
+                    Err(crate::app_server::AppServerError::Provider(
+                        "repair runtime failed".to_string(),
+                    ))
+                })
+            });
+        let channel = AppServerAgentChannel::new(Arc::new(client), AgentKind::Codex);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        // Act
+        let error = channel
+            .run_turn("session".to_string(), make_turn_request(), events_tx)
+            .await
+            .expect_err("repair transport fails");
+
+        // Assert
+        assert!(
+            error
+                .to_string()
+                .contains("protocol repair transport failed")
+        );
+        assert_eq!(
+            collect_pid_updates(&mut events_rx),
+            vec![Some(123), Some(456), None]
+        );
     }
 
     #[tokio::test]
@@ -522,13 +734,15 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies `ProgressUpdate` events drive the transient thinking loader.
+    /// Verifies nonempty `ProgressUpdate` events drive the transient loader
+    /// while blank updates leave it unchanged.
     async fn test_run_turn_routes_progress_update_events_to_thought_delta() {
         // Arrange
         let mut mock_client = MockAppServerClient::new();
         mock_client
             .expect_run_turn()
             .returning(|_request, stream_tx| {
+                let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(" \n ".to_string()));
                 let _ = stream_tx.send(AppServerStreamEvent::ProgressUpdate(
                     "Running tool".to_string(),
                 ));
@@ -678,13 +892,19 @@ mod tests {
         mock_client
             .expect_run_turn()
             .times(2)
-            .returning(|request, _stream_tx| {
+            .returning(|request, stream_tx| {
                 assert_eq!(request.request_kind, AgentRequestKind::SessionStart);
+                let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(Some(42)));
 
-                Box::pin(async { Ok(make_ok_response("plain non-json response")) })
+                Box::pin(async {
+                    let mut response = make_ok_response("plain non-json response");
+                    response.pid = Some(42);
+
+                    Ok(response)
+                })
             });
         let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
-        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
 
         // Act
         let error = channel
@@ -696,6 +916,7 @@ mod tests {
         let error_message = error.to_string();
         assert!(error_message.contains("did not match the required JSON schema"));
         assert!(!error_message.contains("plain non-json response"));
+        assert_eq!(collect_pid_updates(&mut events_rx).last(), Some(&None));
     }
 
     #[tokio::test]
@@ -804,7 +1025,10 @@ mod tests {
         let mut mock_client = MockAppServerClient::new();
         mock_client
             .expect_run_turn()
-            .returning(|_request, _stream_tx| {
+            .returning(|_request, stream_tx| {
+                let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(Some(42)));
+                let _ = stream_tx.send(AppServerStreamEvent::PidUpdate(Some(43)));
+
                 Box::pin(async {
                     Err(crate::app_server::AppServerError::Provider(
                         "server timeout".to_string(),
@@ -812,7 +1036,7 @@ mod tests {
                 })
             });
         let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
-        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
 
         // Act
         let result = channel
@@ -824,6 +1048,10 @@ mod tests {
             .expect_err("expected Err on server timeout")
             .to_string();
         assert!(error_message.contains("server timeout"));
+        assert_eq!(
+            collect_pid_updates(&mut events_rx),
+            vec![Some(42), Some(43), None]
+        );
     }
 
     #[tokio::test]

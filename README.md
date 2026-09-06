@@ -58,6 +58,8 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/agentty-xyz/agentty/rel
 <details>
 <summary>Cargo</summary>
 
+macOS source builds require Xcode Command Line Tools for native process bindings.
+
 ```sh
 cargo install agentty
 ```

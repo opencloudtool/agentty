@@ -10,6 +10,7 @@ use crate::app::session_state::SessionGitStatus;
 use crate::app::{ProjectSyncStatus, Tab, UpdateStatus};
 use crate::domain::agent::{AgentCliInfo, ReasoningLevel};
 use crate::domain::project::ProjectListItem;
+use crate::domain::resource::SessionResources;
 use crate::domain::session::{DailyActivity, Session, SessionId};
 use crate::presentation::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
 use crate::presentation::frame_time::FrameTime;
@@ -87,6 +88,8 @@ pub struct RenderContext<'a> {
     pub session_index_by_id: &'a HashMap<SessionId, usize>,
     /// Background thinking messages keyed by session id.
     pub session_progress_messages: &'a HashMap<SessionId, String>,
+    /// Latest tracked process-tree totals.
+    pub session_resources: &'a HashMap<SessionId, SessionResources>,
     /// Latest observable update versions keyed by session id.
     pub session_update_versions: &'a HashMap<SessionId, u64>,
     /// Whether each rendered session currently has a materialized worktree on
