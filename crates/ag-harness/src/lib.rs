@@ -22,8 +22,8 @@ mod write;
 
 pub use file_system::{FileSystem, LocalFileSystem};
 pub use harness::{
-    ChatSession, Harness, ModelRequestActivity, PersistentChatSession, ToolActivity, TurnError,
-    TurnOutcome, TurnReport,
+    Harness, ModelRequestActivity, Session, SessionBuilder, ToolActivity, TurnError, TurnOutcome,
+    TurnReport,
 };
 pub use lifecycle::{
     LifecycleEvent, LifecycleEventKind, LifecycleId, LifecycleObserver, LifecycleObserverSet,
@@ -32,7 +32,6 @@ pub use lifecycle::{
 pub use model::{
     CompletionMetadata, CompletionUsage, Model, ModelClient, ModelCompletion, ModelError,
     ModelErrorType, ModelMessage, ModelMetadata, ModelMetadataError, ModelRequest, ModelResponse,
-    ModelWithMetadata,
 };
 pub use provider::{
     KIMI_K2_6, KimiConfig, MUSE_SPARK_1_3, MUSE_SPARK_1_3_CONTRIBUTOR, ModelConfiguration,
@@ -41,7 +40,7 @@ pub use provider::{
 };
 pub use read::{ReadError, ReadOutput};
 pub use schema_contract::{OutputSchema, OutputSchemaError};
-pub use session::{Database, SessionConfig, SessionError, TimestampSource};
+pub use session::{SessionError, SessionInfo};
 pub use telemetry::LifecycleMetrics;
 pub use tool::{
     ReadAction, ReadArguments, ReadSide, Tool, ToolCall, ToolCallArguments, ToolDefinition,

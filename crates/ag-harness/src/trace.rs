@@ -367,7 +367,8 @@ mod tests {
     use crate::harness::Harness;
     use crate::lifecycle::{LifecycleEmitter, ToolErrorType, TurnErrorType};
     use crate::model::{
-        CompletionUsage, Model, ModelError, ModelErrorType, ModelRequest, ModelResponse,
+        CompletionUsage, Model, ModelCompletion, ModelError, ModelErrorType, ModelRequest,
+        ModelResponse,
     };
     use crate::schema_contract::OutputSchema;
     use crate::tool::{ReadArguments, Tool, ToolCall};
@@ -388,7 +389,7 @@ mod tests {
             )
         }
 
-        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelError> {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelCompletion, ModelError> {
             record_baggage(&self.observed_baggage);
             nested_span("mock.model.child");
             if self.call_count.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -398,14 +399,16 @@ mod tests {
                 }))
                 .expect("read arguments should be valid");
 
-                return Ok(ModelResponse::ToolCall(ToolCall::read(
-                    "mock-call".to_string(),
-                    arguments,
-                    None,
+                return Ok(ModelCompletion::from_response(ModelResponse::ToolCall(
+                    ToolCall::read("mock-call".to_string(), arguments, None),
                 )));
             }
 
-            Ok(ModelResponse::Output(json!({ "summary": "workspace" })))
+            Ok(ModelCompletion::from_response(ModelResponse::Output(
+                json!({
+                    "summary": "workspace"
+                }),
+            )))
         }
     }
 
@@ -861,7 +864,7 @@ mod tests {
         let application_context =
             Context::current().with_baggage([KeyValue::new("workflow.id", "workflow-42")]);
         let output = harness
-            .run("inspect the manifest", schema)
+            .run_once("inspect the manifest", schema)
             .with_context(application_context)
             .await
             .expect("mock tool round trip should succeed");
@@ -873,7 +876,7 @@ mod tests {
             .expect("finished spans should be readable");
 
         // Assert
-        assert_eq!(output, json!({ "summary": "workspace" }));
+        assert_eq!(output.output(), &json!({ "summary": "workspace" }));
         let model_span_ids = spans
             .iter()
             .filter(|span| span.name == "chat nested-model")

@@ -6,11 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ag_harness::{
-    CompletionMetadata, CompletionUsage, Database, FileSystem, Harness, LifecycleEventKind,
-    LifecycleMetrics, LifecycleObserverSet, LifecycleTraceObserver, Model, ModelCompletion,
-    ModelConfiguration, ModelError, ModelMessage, ModelMetadata, ModelProvider, ModelRequest,
-    ModelResponse, ModelWithMetadata, OutputSchema, OutputSchemaError, SessionConfig, Tool,
-    ToolCall, TurnError,
+    CompletionMetadata, CompletionUsage, FileSystem, Harness, LifecycleEventKind, LifecycleMetrics,
+    LifecycleObserverSet, LifecycleTraceObserver, Model, ModelCompletion, ModelConfiguration,
+    ModelError, ModelMessage, ModelMetadata, ModelProvider, ModelRequest, ModelResponse,
+    OutputSchema, OutputSchemaError, SessionError, SessionInfo, Tool, ToolCall, TurnError,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -23,13 +22,13 @@ struct ExternalToolModel {
 
 #[async_trait]
 impl Model for ExternalToolModel {
-    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError> {
+    async fn complete(&self, request: ModelRequest) -> Result<ModelCompletion, ModelError> {
         self.requests
             .lock()
             .map_err(|_| ModelError::request(io::Error::other("request recorder poisoned")))?
             .push(request.messages().to_vec());
 
-        match request.messages().last() {
+        let response = match request.messages().last() {
             Some(ModelMessage::User(prompt)) if prompt == "Read the name" => {
                 let call = ToolCall::from_json(
                     "read-name".to_string(),
@@ -45,7 +44,9 @@ impl Model for ExternalToolModel {
                         None,
                     )?;
 
-                    return Ok(ModelResponse::ToolCalls(vec![call, second]));
+                    return Ok(ModelCompletion::from_response(ModelResponse::ToolCalls(
+                        vec![call, second],
+                    )));
                 }
 
                 Ok(ModelResponse::ToolCall(call))
@@ -78,7 +79,9 @@ impl Model for ExternalToolModel {
                 ))
             }
             _ => Err(ModelError::InvalidResponse),
-        }
+        }?;
+
+        Ok(ModelCompletion::from_response(response))
     }
 }
 
@@ -122,13 +125,17 @@ async fn external_model_reads_tool_results_and_retains_chat_history() -> Result<
             batched,
             requests: Arc::clone(&requests),
         };
+        let directory = tempfile::tempdir()?;
         let harness = Harness::new(model)
+            .database(directory.path().join("harness.db"))
             .repository("fixture")
             .file_system(NameFileSystem)
             .allow(Tool::Read);
         let mut chat = harness
-            .chat(request()?.schema().clone())
-            .with_system_prompt("Extract names");
+            .session(format!("external-{batched}"), request()?.schema().clone())
+            .system_prompt("Extract names")
+            .create()
+            .await?;
 
         // Act
         let first = chat.send("Read the name").await?;
@@ -257,7 +264,7 @@ async fn external_tool_call_still_requires_harness_permission() -> Result<(), Bo
 
     // Act
     let result = harness
-        .run("Read the name", request()?.schema().clone())
+        .run_once("Read the name", request()?.schema().clone())
         .await;
 
     // Assert
@@ -270,23 +277,24 @@ struct ExternalModel;
 
 #[async_trait]
 impl Model for ExternalModel {
-    async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelError> {
-        Ok(ModelResponse::Output(json!({ "name": "Ada" })))
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelCompletion, ModelError> {
+        Ok(ModelCompletion::from_response(ModelResponse::Output(
+            json!({
+                "name": "Ada"
+            }),
+        )))
     }
 }
 
 struct ExternalMetadataModel;
 
 #[async_trait]
-impl ModelWithMetadata for ExternalMetadataModel {
+impl Model for ExternalMetadataModel {
     fn metadata(&self) -> Option<ModelMetadata> {
         ModelMetadata::new("external_provider", "external-model").ok()
     }
 
-    async fn complete_with_metadata(
-        &self,
-        _request: ModelRequest,
-    ) -> Result<ModelCompletion, ModelError> {
+    async fn complete(&self, _request: ModelRequest) -> Result<ModelCompletion, ModelError> {
         let usage = CompletionUsage::new(None, None, Some(4), Some(2), None, Some(6));
         let metadata = CompletionMetadata::new(
             "stop".to_string(),
@@ -352,12 +360,12 @@ async fn external_response_only_provider_implements_model() -> Result<(), Box<dy
     let model = ExternalModel;
 
     // Act
-    let (response, metadata) = model.complete_with_optional_metadata(request()?).await?;
+    let completion = model.complete(request()?).await?;
 
     // Assert
     assert_model::<ExternalModel>();
-    assert_eq!(response.output(), Some(&json!({ "name": "Ada" })));
-    assert!(metadata.is_none());
+    assert_eq!(completion.output(), Some(&json!({ "name": "Ada" })));
+    assert!(completion.metadata().is_none());
 
     Ok(())
 }
@@ -365,16 +373,18 @@ async fn external_response_only_provider_implements_model() -> Result<(), Box<dy
 #[tokio::test]
 async fn external_consumer_creates_and_reopens_persistent_session() -> Result<(), Box<dyn Error>> {
     // Arrange
-    let database = Database::open_in_memory().await?;
-    let harness = Harness::new(ExternalModel);
-    let config = SessionConfig::new("external-session", request()?.schema().clone())
-        .with_system_prompt("Extract names");
+    let directory = tempfile::tempdir()?;
+    let harness = Harness::new(ExternalModel).database(directory.path().join("harness.db"));
 
     // Act
-    let mut session = harness.create_session(&database, config).await?;
+    let mut session = harness
+        .session("external-session", request()?.schema().clone())
+        .system_prompt("Extract names")
+        .create()
+        .await?;
     let first = session.send("Ada").await?;
     drop(session);
-    let reopened = harness.open_session(&database, "external-session").await?;
+    let reopened = harness.resume("external-session").await?;
 
     // Assert
     assert_eq!(first.output(), &json!({ "name": "Ada" }));
@@ -384,17 +394,58 @@ async fn external_consumer_creates_and_reopens_persistent_session() -> Result<()
 }
 
 #[tokio::test]
+async fn durable_session_requires_explicit_storage() -> Result<(), Box<dyn Error>> {
+    // Arrange
+    let harness = Harness::new(ExternalModel);
+
+    // Act
+    let error = harness
+        .session("external-session", request()?.schema().clone())
+        .create()
+        .await
+        .err()
+        .expect("missing storage should fail");
+
+    // Assert
+    assert!(matches!(error, SessionError::StorageRequired));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_info_exposes_stored_model_identity() -> Result<(), Box<dyn Error>> {
+    // Arrange
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("harness.db");
+    let harness = Harness::new(ExternalMetadataModel).database(&database);
+    let session = harness
+        .session("external-session", request()?.schema().clone())
+        .create()
+        .await?;
+    drop(session);
+
+    // Act
+    let info = SessionInfo::load(&database, "external-session").await?;
+
+    // Assert
+    assert_eq!(info.provider(), Some("external_provider"));
+    assert_eq!(info.model(), Some("external-model"));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn external_provider_constructs_metadata_completion_through_dynamic_dispatch()
 -> Result<(), Box<dyn Error>> {
     // Arrange
     fn assert_model<ModelType: Model>() {}
-    let model: Box<dyn ModelWithMetadata> = Box::new(ExternalMetadataModel);
+    let model: Box<dyn Model> = Box::new(ExternalMetadataModel);
 
     // Act
     let configured_metadata = model
         .metadata()
         .expect("external provider should expose configured identity");
-    let completion = model.complete_with_metadata(request()?).await?;
+    let completion = model.complete(request()?).await?;
 
     // Assert
     assert_model::<ExternalMetadataModel>();
@@ -405,12 +456,16 @@ async fn external_provider_constructs_metadata_completion_through_dynamic_dispat
         Some(&json!({ "name": "Ada" }))
     );
     assert_eq!(
-        completion.metadata().response_id(),
+        completion
+            .metadata()
+            .expect("completion should include metadata")
+            .response_id(),
         Some("external-response")
     );
     assert_eq!(
         completion
             .metadata()
+            .expect("completion should include metadata")
             .usage()
             .and_then(|usage| usage.total_tokens()),
         Some(6)
@@ -433,11 +488,11 @@ async fn external_metadata_provider_reaches_harness_lifecycle() -> Result<(), Bo
 
     // Act
     let output = harness
-        .run("extract the name", request()?.schema().clone())
+        .run_once("extract the name", request()?.schema().clone())
         .await?;
 
     // Assert
-    assert_eq!(output, json!({ "name": "Ada" }));
+    assert_eq!(output.output(), &json!({ "name": "Ada" }));
     let events = events
         .lock()
         .expect("event recorder should not be poisoned");
@@ -484,11 +539,11 @@ async fn external_observer_set_fans_out_lifecycle_events() -> Result<(), Box<dyn
 
     // Act
     let output = harness
-        .run("extract the name", request()?.schema().clone())
+        .run_once("extract the name", request()?.schema().clone())
         .await?;
 
     // Assert
-    assert_eq!(output, json!({ "name": "Ada" }));
+    assert_eq!(output.output(), &json!({ "name": "Ada" }));
     let first_events = first_events
         .lock()
         .expect("first event recorder should not be poisoned");

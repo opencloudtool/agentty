@@ -4,9 +4,7 @@ use async_trait::async_trait;
 
 use super::catalog::{ModelConfiguration, ModelConfigurationError, ModelProvider};
 use crate::lifecycle::LifecycleObserver;
-use crate::model::{
-    ModelClient, ModelCompletion, ModelError, ModelMetadata, ModelRequest, ModelWithMetadata,
-};
+use crate::model::{Model, ModelClient, ModelCompletion, ModelError, ModelMetadata, ModelRequest};
 use crate::{chat_completion, telemetry};
 
 pub(crate) const DEFAULT_BASE_URL: &str = "https://api.meta.ai/v1";
@@ -67,16 +65,13 @@ impl Muse {
 }
 
 #[async_trait]
-impl ModelWithMetadata for Muse {
+impl Model for Muse {
     fn metadata(&self) -> Option<ModelMetadata> {
         Some(self.client.metadata().clone())
     }
 
-    async fn complete_with_metadata(
-        &self,
-        request: ModelRequest,
-    ) -> Result<ModelCompletion, ModelError> {
-        self.client.complete_with_metadata(request).await
+    async fn complete(&self, request: ModelRequest) -> Result<ModelCompletion, ModelError> {
+        self.client.complete(request).await
     }
 }
 
@@ -181,8 +176,8 @@ mod tests {
         // Arrange and Act
         let muse = Muse::from_environment(MUSE_SPARK_1_3, default_environment)
             .expect("fixture environment should be valid");
-        let metadata = ModelWithMetadata::metadata(&muse)
-            .expect("Muse should expose its configured model identity");
+        let metadata =
+            Model::metadata(&muse).expect("Muse should expose its configured model identity");
 
         // Assert
         assert_eq!(metadata.provider(), "meta");
@@ -220,8 +215,8 @@ mod tests {
         // Arrange and Act
         let muse = Muse::from_env(MUSE_SPARK_1_3)
             .expect("isolated process environment should configure Muse");
-        let metadata = ModelWithMetadata::metadata(&muse)
-            .expect("Muse should expose its configured model identity");
+        let metadata =
+            Model::metadata(&muse).expect("Muse should expose its configured model identity");
 
         // Assert
         assert_eq!(metadata.provider(), "meta");
@@ -359,11 +354,11 @@ mod tests {
 
         // Act
         let completion = model
-            .complete_with_metadata(request("extract the name"))
+            .complete(request("extract the name"))
             .await
             .expect("Muse request should succeed");
-        let (response, optional_metadata) = model
-            .complete_with_optional_metadata(request("extract the name"))
+        let second_completion = model
+            .complete(request("extract the name"))
             .await
             .expect("Muse request with optional metadata should succeed");
 
@@ -372,11 +367,17 @@ mod tests {
             completion.response().output(),
             Some(&json!({ "name": "Ada" }))
         );
-        assert_eq!(completion.metadata().finish_reason(), "stop");
-        assert_eq!(response.output(), Some(&json!({ "name": "Ada" })));
         assert_eq!(
-            optional_metadata
-                .as_ref()
+            completion
+                .metadata()
+                .expect("Muse completion should include metadata")
+                .finish_reason(),
+            "stop"
+        );
+        assert_eq!(second_completion.output(), Some(&json!({ "name": "Ada" })));
+        assert_eq!(
+            second_completion
+                .metadata()
                 .map(CompletionMetadata::finish_reason),
             Some("stop")
         );

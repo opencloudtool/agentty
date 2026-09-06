@@ -20,7 +20,7 @@ use crate::model::{
 use crate::policy::Policy;
 use crate::read::{self, ReadError, ReadTool};
 use crate::schema_contract::OutputSchema;
-use crate::session::{Database, LoadedSession, SessionConfig, SessionError};
+use crate::session::{Database, LoadedSession, NewSession, SessionError};
 use crate::tool::{
     ReadAction, ReadArguments, Tool, ToolCall, ToolCallArguments, ToolDefinition, WriteArguments,
 };
@@ -273,93 +273,102 @@ impl fmt::Display for ToolActivity {
     }
 }
 
-/// In-memory sequence of model turns sharing conversation and tool history.
-pub struct ChatSession<'a> {
-    harness: &'a Harness,
-    history: ChatHistory,
-    schema: OutputSchema,
-    system_prompt: Option<String>,
-}
-
-/// Resumable chat that persists each successful complete turn in SQLite.
-pub struct PersistentChatSession<'a> {
+/// Durable, resumable sequence of model turns.
+pub struct Session<'a> {
     database: Database,
     harness: &'a Harness,
-    history: ChatHistory,
+    history: SessionHistory,
     id: String,
+    provider_session_id: Option<String>,
     schema: OutputSchema,
     system_prompt: Option<String>,
 }
 
-impl PersistentChatSession<'_> {
+impl Session<'_> {
     /// Returns the stable application-provided session identifier.
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// Sends one prompt and atomically persists the successful complete turn.
-    ///
-    /// A failed model or tool turn is not persisted. If persistence fails
-    /// after the model turn succeeds, the turn is not added to in-memory
-    /// history and the storage error is returned.
+    /// Sends one prompt and durably records its lifecycle and messages.
     ///
     /// # Errors
     ///
     /// Returns [`SessionError`] when the model turn or persistence operation
     /// fails.
     pub async fn send(&mut self, prompt: impl Into<String>) -> Result<TurnOutcome, SessionError> {
+        let prompt = prompt.into();
+        let turn_position = self.database.begin_turn(&self.id, &prompt).await?;
         let mut messages = self.history.messages();
         if let Some(system_prompt) = &self.system_prompt {
             messages.insert(0, ModelMessage::System(system_prompt.clone()));
         }
         let retained_messages = messages.len();
-        let request = ModelRequest::with_history(messages, prompt.into(), self.schema.clone());
-        let (outcome, mut messages) = self.harness.run_request(request).await?;
+        let mut request = ModelRequest::with_history(messages, prompt, self.schema.clone());
+        request.set_provider_session_id(self.provider_session_id.clone());
+        let result = self.harness.run_request(request).await;
+        let (outcome, mut messages, provider_session_id) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.provider_session_id = None;
+                self.database
+                    .fail_turn(&self.id, turn_position, &error)
+                    .await?;
+
+                return Err(error.into());
+            }
+        };
         let turn = messages.split_off(retained_messages);
-        self.database.append_turn(&self.id, &turn).await?;
+        self.database
+            .complete_turn(
+                &self.id,
+                turn_position,
+                &turn[1..],
+                provider_session_id.as_deref(),
+            )
+            .await?;
+        self.provider_session_id = provider_session_id;
         self.history.push(turn);
 
         Ok(outcome)
     }
 }
 
-impl ChatSession<'_> {
-    /// Adds a system prompt to every model request in this chat.
+/// Builder for one durable session.
+pub struct SessionBuilder<'a> {
+    harness: &'a Harness,
+    id: String,
+    schema: OutputSchema,
+    system_prompt: Option<String>,
+}
+
+impl<'a> SessionBuilder<'a> {
+    /// Adds a system prompt that is restored with the session.
     #[must_use]
-    pub fn with_system_prompt(mut self, system_prompt: impl Into<String>) -> Self {
+    pub fn system_prompt(mut self, system_prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(system_prompt.into());
 
         self
     }
 
-    /// Sends one prompt and retains the successful turn in session history.
+    /// Creates the session in the configured database.
     ///
     /// # Errors
     ///
-    /// Returns [`TurnError`] under the same conditions as [`Harness::run`]. A
-    /// failed turn is not added to the conversation history.
-    pub async fn send(&mut self, prompt: impl Into<String>) -> Result<TurnOutcome, TurnError> {
-        let mut messages = self.history.messages();
-        if let Some(system_prompt) = &self.system_prompt {
-            messages.insert(0, ModelMessage::System(system_prompt.clone()));
-        }
-        let retained_messages = messages.len();
-        let request = ModelRequest::with_history(messages, prompt.into(), self.schema.clone());
-        let (outcome, mut messages) = self.harness.run_request(request).await?;
-        let turn = messages.split_off(retained_messages);
-        self.history.push(turn);
-
-        Ok(outcome)
+    /// Returns [`SessionError`] when storage is not configured, the identifier
+    /// already exists, or SQLite cannot create the session.
+    pub async fn create(self) -> Result<Session<'a>, SessionError> {
+        self.harness.create_session(self).await
     }
 }
 
-pub(crate) struct ChatHistory {
+pub(crate) struct SessionHistory {
     bytes: usize,
     max_bytes: usize,
     turns: VecDeque<Vec<ModelMessage>>,
 }
 
-impl ChatHistory {
+impl SessionHistory {
     pub(crate) fn new(max_bytes: usize) -> Self {
         Self {
             bytes: 0,
@@ -401,6 +410,7 @@ fn retained_bytes(messages: &[ModelMessage]) -> usize {
 /// returns tool results to the model, and finishes with locally validated
 /// structured output.
 pub struct Harness {
+    database_path: Option<PathBuf>,
     file_system: Arc<dyn FileSystem>,
     lifecycle: LifecycleEmitter,
     max_history_bytes: usize,
@@ -414,6 +424,7 @@ impl Harness {
     /// Creates a deny-by-default harness backed by the local filesystem.
     pub fn new(model: impl Model + 'static) -> Self {
         Self {
+            database_path: None,
             file_system: Arc::new(LocalFileSystem),
             lifecycle: LifecycleEmitter::default(),
             max_history_bytes: DEFAULT_MAX_HISTORY_BYTES,
@@ -422,6 +433,14 @@ impl Harness {
             policy: Policy::default(),
             repository_root: None,
         }
+    }
+
+    /// Configures the SQLite database used by durable sessions.
+    #[must_use]
+    pub fn database(mut self, path: impl Into<PathBuf>) -> Self {
+        self.database_path = Some(path.into());
+
+        self
     }
 
     /// Roots repository-scoped tools at `repository_root`.
@@ -477,97 +496,88 @@ impl Harness {
         self
     }
 
-    /// Runs one prompt through tool execution to terminal structured output.
+    /// Runs one prompt without creating durable session history.
     ///
     /// # Errors
     ///
     /// Returns [`TurnError`] when the model fails, requests a denied tool,
     /// exceeds the call limit, or a requested repository operation fails.
-    pub async fn run(
-        &self,
-        prompt: impl Into<String>,
-        schema: OutputSchema,
-    ) -> Result<Value, TurnError> {
-        self.run_report(prompt, schema)
-            .await
-            .map(TurnOutcome::into_output)
-    }
-
-    /// Runs one prompt and returns validated output with sanitized activity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TurnError`] under the same conditions as [`Harness::run`].
-    pub async fn run_report(
+    pub async fn run_once(
         &self,
         prompt: impl Into<String>,
         schema: OutputSchema,
     ) -> Result<TurnOutcome, TurnError> {
         let request = ModelRequest::new(prompt, schema);
-        self.run_request(request).await.map(|(outcome, _)| outcome)
+        self.run_request(request)
+            .await
+            .map(|(outcome, _, _)| outcome)
     }
 
-    /// Starts an in-memory chat whose responses must match `schema`.
-    pub fn chat(&self, schema: OutputSchema) -> ChatSession<'_> {
-        ChatSession {
+    /// Builds a new durable session whose responses must match `schema`.
+    pub fn session(&self, id: impl Into<String>, schema: OutputSchema) -> SessionBuilder<'_> {
+        SessionBuilder {
             harness: self,
-            history: ChatHistory::new(self.max_history_bytes),
+            id: id.into(),
             schema,
             system_prompt: None,
         }
     }
 
-    /// Creates a persistent chat with no retained turns.
+    /// Resumes a durable session and restores its bounded completed history.
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError`] when the identifier is invalid or already
-    /// exists, or when SQLite cannot store the session.
-    pub async fn create_session<'a>(
+    /// Returns [`SessionError`] when storage is not configured, the session is
+    /// missing, its model differs, or SQLite cannot load it.
+    pub async fn resume(&self, id: &str) -> Result<Session<'_>, SessionError> {
+        let database = self.open_database().await?;
+        let loaded = database.load_session(id).await?;
+        self.validate_session_model(id, &loaded)?;
+        let mut history = SessionHistory::new(loaded.max_history_bytes);
+        for turn in loaded.turns {
+            history.push(turn);
+        }
+
+        Ok(Session {
+            database,
+            harness: self,
+            history,
+            id: id.to_string(),
+            provider_session_id: loaded.provider_session_id,
+            schema: loaded.schema,
+            system_prompt: loaded.system_prompt,
+        })
+    }
+
+    async fn create_session<'a>(
         &'a self,
-        database: &Database,
-        config: SessionConfig,
-    ) -> Result<PersistentChatSession<'a>, SessionError> {
+        builder: SessionBuilder<'a>,
+    ) -> Result<Session<'a>, SessionError> {
+        let database = self.open_database().await?;
+        let config = NewSession::new(builder.id, builder.schema)
+            .with_optional_system_prompt(builder.system_prompt);
         database
             .create_session(&config, self.model.metadata(), self.max_history_bytes)
             .await?;
 
-        Ok(PersistentChatSession {
-            database: database.clone(),
+        Ok(Session {
+            database,
             harness: self,
-            history: ChatHistory::new(self.max_history_bytes),
+            history: SessionHistory::new(self.max_history_bytes),
             id: config.id().to_string(),
+            provider_session_id: None,
             schema: config.schema().clone(),
             system_prompt: config.system_prompt().map(str::to_string),
         })
     }
 
-    /// Opens a persistent chat and restores its bounded completed-turn history.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SessionError`] when the session is missing or invalid, its
-    /// saved model differs from this harness, or SQLite cannot load it.
-    pub async fn open_session<'a>(
-        &'a self,
-        database: &Database,
-        id: &str,
-    ) -> Result<PersistentChatSession<'a>, SessionError> {
-        let loaded = database.load_session(id).await?;
-        self.validate_session_model(id, &loaded)?;
-        let mut history = ChatHistory::new(loaded.max_history_bytes);
-        for turn in loaded.turns {
-            history.push(turn);
-        }
+    async fn open_database(&self) -> Result<Database, SessionError> {
+        let path = self
+            .database_path
+            .as_deref()
+            .ok_or(SessionError::StorageRequired)?;
 
-        Ok(PersistentChatSession {
-            database: database.clone(),
-            harness: self,
-            history,
-            id: id.to_string(),
-            schema: loaded.schema,
-            system_prompt: loaded.system_prompt,
-        })
+        Database::open(path).await
     }
 
     fn validate_session_model(&self, id: &str, loaded: &LoadedSession) -> Result<(), SessionError> {
@@ -606,7 +616,7 @@ impl Harness {
     async fn run_request(
         &self,
         request: ModelRequest,
-    ) -> Result<(TurnOutcome, Vec<ModelMessage>), TurnError> {
+    ) -> Result<(TurnOutcome, Vec<ModelMessage>, Option<String>), TurnError> {
         let turn = self.lifecycle.start_turn();
         let turn_id = turn.as_ref().map(TurnLifecycle::id);
         let result = self.run_turn(request, turn_id).await;
@@ -625,7 +635,7 @@ impl Harness {
         &self,
         request: ModelRequest,
         turn_id: Option<LifecycleId>,
-    ) -> Result<(TurnOutcome, Vec<ModelMessage>), TurnError> {
+    ) -> Result<(TurnOutcome, Vec<ModelMessage>, Option<String>), TurnError> {
         let started_at = Instant::now();
         let (mut request, read_tool, write_tool) = self.prepare_request(request)?;
         let mut completed_tool_calls = 0_usize;
@@ -634,9 +644,14 @@ impl Harness {
         let mut tool_calls = Vec::new();
 
         loop {
-            let (response, activity) = self
+            let (response, activity, provider_session_id, native_resume_rejected) = self
                 .complete_model_request(&request, model_request_index, turn_id)
                 .await?;
+            if native_resume_rejected {
+                request.set_provider_session_id(None);
+            } else if provider_session_id.is_some() {
+                request.set_provider_session_id(provider_session_id);
+            }
             model_requests.push(activity);
             model_request_index += 1;
 
@@ -649,7 +664,13 @@ impl Harness {
                         tool_calls,
                     };
 
-                    return Ok((TurnOutcome { output, report }, request.into_messages()));
+                    let provider_session_id = request.provider_session_id().map(str::to_string);
+
+                    return Ok((
+                        TurnOutcome { output, report },
+                        request.into_messages(),
+                        provider_session_id,
+                    ));
                 }
                 ModelResponse::ToolCall(call) => {
                     let (result, activity) = self
@@ -729,18 +750,39 @@ impl Harness {
         request: &ModelRequest,
         model_request_index: u64,
         turn_id: Option<LifecycleId>,
-    ) -> Result<(ModelResponse, ModelRequestActivity), TurnError> {
+    ) -> Result<(ModelResponse, ModelRequestActivity, Option<String>, bool), TurnError> {
         let started_at = Instant::now();
         let model_lifecycle =
             self.lifecycle
                 .start_model_request(self.model.metadata(), model_request_index, turn_id);
-        let operation = self.model.complete_with_optional_metadata(request.clone());
+        let operation = async {
+            match self.model.complete(request.clone()).await {
+                Err(ModelError::ResumeUnavailable) if request.provider_session_id().is_some() => {
+                    let mut replay_request = request.clone();
+                    replay_request.set_provider_session_id(None);
+                    self.model
+                        .complete(replay_request)
+                        .await
+                        .map(|completion| (completion, true))
+                }
+                result => result.map(|completion| (completion, false)),
+            }
+        };
         let completion = match model_lifecycle.as_ref() {
             Some(model_lifecycle) => model_lifecycle.scope(operation).await,
             None => operation.await,
         };
-        let (response, completion) = match completion {
-            Ok(completion) => completion,
+        let (response, completion, provider_session_id, native_resume_rejected) = match completion {
+            Ok((completion, native_resume_rejected)) => {
+                let (response, completion, provider_session_id) = completion.into_parts();
+
+                (
+                    response,
+                    completion,
+                    provider_session_id,
+                    native_resume_rejected,
+                )
+            }
             Err(error) => {
                 if let Some(model_lifecycle) = model_lifecycle {
                     model_lifecycle.failed(error.error_type(), error.http_status());
@@ -769,7 +811,12 @@ impl Harness {
             model_lifecycle.completed(completion, response_type);
         }
 
-        Ok((response, activity))
+        Ok((
+            response,
+            activity,
+            provider_session_id,
+            native_resume_rejected,
+        ))
     }
 
     async fn execute_tool_call(
@@ -1111,8 +1158,10 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use async_trait::async_trait;
     use mockall::Sequence;
     use serde_json::json;
+    use tempfile::tempdir;
 
     use super::*;
     use crate::file_system::MockFileSystem;
@@ -1172,18 +1221,13 @@ mod tests {
         ToolCall::read(id.to_string(), arguments, None)
     }
 
-    fn response_without_metadata(
-        response: ModelResponse,
-    ) -> (ModelResponse, Option<crate::CompletionMetadata>) {
-        (response, None)
+    fn response_without_metadata(response: ModelResponse) -> crate::ModelCompletion {
+        crate::ModelCompletion::from_response(response)
     }
 
-    fn response_with_metadata(
-        response: ModelResponse,
-    ) -> (ModelResponse, Option<crate::CompletionMetadata>) {
-        (
-            response,
-            Some(crate::CompletionMetadata::new(
+    fn response_with_metadata(response: ModelResponse) -> crate::ModelCompletion {
+        crate::ModelCompletion::new(
+            crate::CompletionMetadata::new(
                 "stop\nforged".to_string(),
                 Some("response\u{1b}-1".to_string()),
                 Some("reported\nmodel".to_string()),
@@ -1196,8 +1240,25 @@ mod tests {
                     None,
                     Some(16),
                 )),
-            )),
+            ),
+            response,
         )
+    }
+
+    struct SlowModel;
+
+    #[async_trait]
+    impl Model for SlowModel {
+        async fn complete(
+            &self,
+            _request: ModelRequest,
+        ) -> Result<crate::ModelCompletion, ModelError> {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": "done"
+            }))))
+        }
     }
 
     fn write_call(id: &str, patch: &str) -> ToolCall {
@@ -1343,54 +1404,51 @@ mod tests {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                let call_index = call_count.fetch_add(1, Ordering::SeqCst);
-                if call_index == 0 {
-                    assert_eq!(request.tools(), &[ToolDefinition::read()]);
+        model.expect_complete().times(2).returning(move |request| {
+            let call_index = call_count.fetch_add(1, Ordering::SeqCst);
+            if call_index == 0 {
+                assert_eq!(request.tools(), &[ToolDefinition::read()]);
 
-                    return Ok(response_without_metadata(ModelResponse::ToolCall(
-                        read_call("call_read"),
-                    )));
+                return Ok(response_without_metadata(ModelResponse::ToolCall(
+                    read_call("call_read"),
+                )));
+            }
+            assert_eq!(request.messages().len(), 3);
+            assert!(matches!(
+                &request.messages()[0],
+                ModelMessage::User(prompt) if prompt == "inspect the manifest"
+            ));
+            assert!(matches!(
+                &request.messages()[1],
+                ModelMessage::AssistantToolCall(call) if call.id() == "call_read"
+            ));
+            assert!(matches!(
+                &request.messages()[2],
+                ModelMessage::ToolResult {
+                    call_id,
+                    content,
+                    name,
                 }
-                assert_eq!(request.messages().len(), 3);
-                assert!(matches!(
-                    &request.messages()[0],
-                    ModelMessage::User(prompt) if prompt == "inspect the manifest"
-                ));
-                assert!(matches!(
-                    &request.messages()[1],
-                    ModelMessage::AssistantToolCall(call) if call.id() == "call_read"
-                ));
-                assert!(matches!(
-                    &request.messages()[2],
-                    ModelMessage::ToolResult {
-                        call_id,
-                        content,
-                        name,
-                    }
-                        if call_id == "call_read"
-                            && name == "read"
-                            && serde_json::from_str::<Value>(content)
-                                .is_ok_and(|value| value["content"] == "[workspace]")
-                ));
+                    if call_id == "call_read"
+                        && name == "read"
+                        && serde_json::from_str::<Value>(content)
+                            .is_ok_and(|value| value["content"] == "[workspace]")
+            ));
 
-                Ok(response_without_metadata(ModelResponse::Output(
-                    json!({ "summary": "workspace" }),
-                )))
-            });
+            Ok(response_without_metadata(ModelResponse::Output(
+                json!({ "summary": "workspace" }),
+            )))
+        });
         let harness = read_harness(model, readable_file_system());
 
         // Act
         let output = harness
-            .run("inspect the manifest", object_schema())
+            .run_once("inspect the manifest", object_schema())
             .await
             .expect("tool round trip should succeed");
 
         // Assert
-        assert_eq!(output, json!({ "summary": "workspace" }));
+        assert_eq!(output.output(), &json!({ "summary": "workspace" }));
     }
 
     #[tokio::test]
@@ -1398,36 +1456,33 @@ mod tests {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return Ok(response_without_metadata(ModelResponse::ToolCall(
-                        inspection_call(
-                            "call_list",
-                            json!({ "action": "list", "path": "Cargo.toml" }),
-                        ),
-                    )));
-                }
-                assert!(matches!(
-                    &request.messages()[2],
-                    ModelMessage::ToolResult { content, .. }
-                        if serde_json::from_str::<Value>(content)
-                            .is_ok_and(|value| value["result"] == json!(["Cargo.toml"]))
-                ));
+        model.expect_complete().times(2).returning(move |request| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(response_without_metadata(ModelResponse::ToolCall(
+                    inspection_call(
+                        "call_list",
+                        json!({ "action": "list", "path": "Cargo.toml" }),
+                    ),
+                )));
+            }
+            assert!(matches!(
+                &request.messages()[2],
+                ModelMessage::ToolResult { content, .. }
+                    if serde_json::from_str::<Value>(content)
+                        .is_ok_and(|value| value["result"] == json!(["Cargo.toml"]))
+            ));
 
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": "listed"
-                }))))
-            });
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": "listed"
+            }))))
+        });
         let harness = Harness::new(model)
             .repository(env!("CARGO_MANIFEST_DIR"))
             .allow(Tool::Read);
 
         // Act
         let outcome = harness
-            .run_report("list the manifest", object_schema())
+            .run_once("list the manifest", object_schema())
             .await
             .expect("repository inspection should succeed");
 
@@ -1449,7 +1504,7 @@ mod tests {
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
         model
-            .expect_complete_with_optional_metadata()
+            .expect_complete()
             .times(2)
             .returning(move |request| {
                 if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -1479,7 +1534,7 @@ mod tests {
 
         // Act
         let outcome = harness
-            .run_report("read the manifest", object_schema())
+            .run_once("read the manifest", object_schema())
             .await
             .expect("model should recover from an encoded-size rejection");
 
@@ -1497,7 +1552,7 @@ mod tests {
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
         model
-            .expect_complete_with_optional_metadata()
+            .expect_complete()
             .times(2)
             .returning(move |request| {
                 if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -1535,7 +1590,7 @@ mod tests {
 
         // Act
         let outcome = harness
-            .run_report("read and search the repository", object_schema())
+            .run_once("read and search the repository", object_schema())
             .await
             .expect("model should recover from schema-portable argument rejection");
 
@@ -1560,40 +1615,37 @@ mod tests {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return Ok(response_without_metadata(ModelResponse::ToolCall(
-                        inspection_call(
-                            "call_show",
-                            json!({
-                                "action": "show",
-                                "path": "definitely-missing-review-file",
-                                "side": "head"
-                            }),
-                        ),
-                    )));
-                }
-                assert!(matches!(
-                    &request.messages()[2],
-                    ModelMessage::ToolResult { content, .. }
-                        if serde_json::from_str::<Value>(content)
-                            .is_ok_and(|value| value["status"] == "rejected")
-                ));
+        model.expect_complete().times(2).returning(move |request| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(response_without_metadata(ModelResponse::ToolCall(
+                    inspection_call(
+                        "call_show",
+                        json!({
+                            "action": "show",
+                            "path": "definitely-missing-review-file",
+                            "side": "head"
+                        }),
+                    ),
+                )));
+            }
+            assert!(matches!(
+                &request.messages()[2],
+                ModelMessage::ToolResult { content, .. }
+                    if serde_json::from_str::<Value>(content)
+                        .is_ok_and(|value| value["status"] == "rejected")
+            ));
 
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": "recovered"
-                }))))
-            });
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": "recovered"
+            }))))
+        });
         let harness = Harness::new(model)
             .repository(env!("CARGO_MANIFEST_DIR"))
             .allow(Tool::Read);
 
         // Act
         let outcome = harness
-            .run_report("show the missing file", object_schema())
+            .run_once("show the missing file", object_schema())
             .await
             .expect("model should recover from a rejected inspection");
 
@@ -1613,14 +1665,11 @@ mod tests {
     async fn returns_repository_inspection_boundary_failure() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::ToolCall(
-                    inspection_call("call_list", json!({ "action": "list" })),
-                )))
-            });
+        model.expect_complete().times(1).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::ToolCall(
+                inspection_call("call_list", json!({ "action": "list" })),
+            )))
+        });
         let mut file_system = MockFileSystem::new();
         file_system
             .expect_canonicalize()
@@ -1631,7 +1680,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("list files", object_schema())
+            .run_once("list files", object_schema())
             .await
             .expect_err("repository boundary failure should end the turn");
 
@@ -1647,35 +1696,32 @@ mod tests {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return Ok(response_without_metadata(ModelResponse::ToolCalls(vec![
-                        read_call("call_one"),
-                        read_call("call_two"),
-                    ])));
-                }
-                assert!(matches!(
-                    &request.messages()[1],
-                    ModelMessage::AssistantToolCalls(calls)
-                        if calls.iter().map(ToolCall::id).collect::<Vec<_>>()
-                            == ["call_one", "call_two"]
-                ));
-                assert!(matches!(
-                    &request.messages()[2],
-                    ModelMessage::ToolResult { call_id, .. } if call_id == "call_one"
-                ));
-                assert!(matches!(
-                    &request.messages()[3],
-                    ModelMessage::ToolResult { call_id, .. } if call_id == "call_two"
-                ));
+        model.expect_complete().times(2).returning(move |request| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(response_without_metadata(ModelResponse::ToolCalls(vec![
+                    read_call("call_one"),
+                    read_call("call_two"),
+                ])));
+            }
+            assert!(matches!(
+                &request.messages()[1],
+                ModelMessage::AssistantToolCalls(calls)
+                    if calls.iter().map(ToolCall::id).collect::<Vec<_>>()
+                        == ["call_one", "call_two"]
+            ));
+            assert!(matches!(
+                &request.messages()[2],
+                ModelMessage::ToolResult { call_id, .. } if call_id == "call_one"
+            ));
+            assert!(matches!(
+                &request.messages()[3],
+                ModelMessage::ToolResult { call_id, .. } if call_id == "call_two"
+            ));
 
-                Ok(response_without_metadata(ModelResponse::Output(
-                    json!({ "summary": "workspace" }),
-                )))
-            });
+            Ok(response_without_metadata(ModelResponse::Output(
+                json!({ "summary": "workspace" }),
+            )))
+        });
         let mut file_system = MockFileSystem::new();
         file_system
             .expect_canonicalize()
@@ -1699,7 +1745,7 @@ mod tests {
 
         // Act
         let outcome = harness
-            .run_report("inspect two files", object_schema())
+            .run_once("inspect two files", object_schema())
             .await
             .expect("parallel tool round trip should succeed");
 
@@ -1713,27 +1759,24 @@ mod tests {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return Ok(response_without_metadata(ModelResponse::ToolCall(
-                        read_call("call_read"),
-                    )));
-                }
-                assert!(matches!(
-                    &request.messages()[2],
-                    ModelMessage::ToolResult { content, .. }
-                        if serde_json::from_str::<Value>(content).is_ok_and(|value| {
-                            value["path"] == "Cargo.toml" && value["status"] == "rejected"
-                        })
-                ));
+        model.expect_complete().times(2).returning(move |request| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(response_without_metadata(ModelResponse::ToolCall(
+                    read_call("call_read"),
+                )));
+            }
+            assert!(matches!(
+                &request.messages()[2],
+                ModelMessage::ToolResult { content, .. }
+                    if serde_json::from_str::<Value>(content).is_ok_and(|value| {
+                        value["path"] == "Cargo.toml" && value["status"] == "rejected"
+                    })
+            ));
 
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": "recovered"
-                }))))
-            });
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": "recovered"
+            }))))
+        });
         let mut file_system = MockFileSystem::new();
         let mut sequence = Sequence::new();
         file_system
@@ -1758,7 +1801,7 @@ mod tests {
 
         // Act
         let outcome = harness
-            .run_report("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect("model should recover from a rejected read path");
 
@@ -1785,47 +1828,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_retains_successful_conversation_history() {
+    async fn session_retains_successful_conversation_history() {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                let call_index = call_count.fetch_add(1, Ordering::SeqCst);
-                if call_index == 0 {
-                    assert_eq!(
-                        request.messages(),
-                        &[ModelMessage::User("first question".to_string())]
-                    );
-
-                    return Ok(response_without_metadata(ModelResponse::Output(json!({
-                        "summary": "first answer"
-                    }))));
-                }
+        model.expect_complete().times(2).returning(move |request| {
+            let call_index = call_count.fetch_add(1, Ordering::SeqCst);
+            if call_index == 0 {
                 assert_eq!(
                     request.messages(),
-                    &[
-                        ModelMessage::User("first question".to_string()),
-                        ModelMessage::Assistant(r#"{"summary":"first answer"}"#.to_string()),
-                        ModelMessage::User("second question".to_string()),
-                    ]
+                    &[ModelMessage::User("first question".to_string())]
                 );
 
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": "second answer"
-                }))))
-            });
-        let harness = Harness::new(model);
-        let mut chat = harness.chat(object_schema());
+                return Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "first answer"
+                }))));
+            }
+            assert_eq!(
+                request.messages(),
+                &[
+                    ModelMessage::User("first question".to_string()),
+                    ModelMessage::Assistant(r#"{"summary":"first answer"}"#.to_string()),
+                    ModelMessage::User("second question".to_string()),
+                ]
+            );
+
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": "second answer"
+            }))))
+        });
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(model).database(directory.path().join("harness.db"));
+        let mut session = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("session should be created");
 
         // Act
-        let first = chat
+        let first = session
             .send("first question")
             .await
             .expect("first chat turn should succeed");
-        let second = chat
+        let second = session
             .send("second question")
             .await
             .expect("second chat turn should succeed");
@@ -1838,43 +1883,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_sends_the_system_prompt_on_every_turn() {
+    async fn session_sends_the_system_prompt_on_every_turn() {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                let expected = if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    vec![
-                        ModelMessage::System("read-only instructions".to_string()),
-                        ModelMessage::User("first".to_string()),
-                    ]
-                } else {
-                    vec![
-                        ModelMessage::System("read-only instructions".to_string()),
-                        ModelMessage::User("first".to_string()),
-                        ModelMessage::Assistant(r#"{"summary":"one"}"#.to_string()),
-                        ModelMessage::User("second".to_string()),
-                    ]
-                };
-                assert_eq!(request.messages(), expected);
+        model.expect_complete().times(2).returning(move |request| {
+            let expected = if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                vec![
+                    ModelMessage::System("read-only instructions".to_string()),
+                    ModelMessage::User("first".to_string()),
+                ]
+            } else {
+                vec![
+                    ModelMessage::System("read-only instructions".to_string()),
+                    ModelMessage::User("first".to_string()),
+                    ModelMessage::Assistant(r#"{"summary":"one"}"#.to_string()),
+                    ModelMessage::User("second".to_string()),
+                ]
+            };
+            assert_eq!(request.messages(), expected);
 
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": if expected.len() == 2 { "one" } else { "two" }
-                }))))
-            });
-        let harness = Harness::new(model);
-        let mut chat = harness
-            .chat(object_schema())
-            .with_system_prompt("read-only instructions");
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": if expected.len() == 2 { "one" } else { "two" }
+            }))))
+        });
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(model).database(directory.path().join("harness.db"));
+        let mut session = harness
+            .session("session-a", object_schema())
+            .system_prompt("read-only instructions")
+            .create()
+            .await
+            .expect("session should be created");
 
         // Act
-        chat.send("first")
+        session
+            .send("first")
             .await
             .expect("first chat turn should succeed");
-        let second = chat
+        let second = session
             .send("second")
             .await
             .expect("second chat turn should succeed");
@@ -1972,7 +2019,7 @@ mod tests {
             ModelMessage::Assistant(r#"{"summary":"new"}"#.to_string()),
         ];
         let max_bytes = retained_bytes(&tool_turn).max(retained_bytes(&latest_turn));
-        let mut history = ChatHistory::new(max_bytes);
+        let mut history = SessionHistory::new(max_bytes);
 
         // Act
         history.push(tool_turn);
@@ -1984,60 +2031,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_applies_the_configured_history_budget() {
+    async fn session_applies_the_configured_history_budget() {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(3)
-            .returning(
-                move |request| match call_count.fetch_add(1, Ordering::SeqCst) {
-                    0 => {
-                        assert_eq!(
-                            request.messages(),
-                            &[ModelMessage::User("first".to_string())]
-                        );
+        model.expect_complete().times(3).returning(move |request| {
+            match call_count.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert_eq!(
+                        request.messages(),
+                        &[ModelMessage::User("first".to_string())]
+                    );
 
-                        Ok(response_without_metadata(ModelResponse::Output(json!({
-                            "summary": "xxxxxxxxxxxxxxxxxxxx"
-                        }))))
-                    }
-                    1 => {
-                        assert_eq!(request.messages().len(), 3);
+                    Ok(response_without_metadata(ModelResponse::Output(json!({
+                        "summary": "xxxxxxxxxxxxxxxxxxxx"
+                    }))))
+                }
+                1 => {
+                    assert_eq!(request.messages().len(), 3);
 
-                        Ok(response_without_metadata(ModelResponse::Output(json!({
-                            "summary": "two"
-                        }))))
-                    }
-                    _ => {
-                        assert_eq!(
-                            request.messages(),
-                            &[
-                                ModelMessage::User("second".to_string()),
-                                ModelMessage::Assistant(r#"{"summary":"two"}"#.to_string()),
-                                ModelMessage::User("third".to_string()),
-                            ]
-                        );
+                    Ok(response_without_metadata(ModelResponse::Output(json!({
+                        "summary": "two"
+                    }))))
+                }
+                _ => {
+                    assert_eq!(
+                        request.messages(),
+                        &[
+                            ModelMessage::User("second".to_string()),
+                            ModelMessage::Assistant(r#"{"summary":"two"}"#.to_string()),
+                            ModelMessage::User("third".to_string()),
+                        ]
+                    );
 
-                        Ok(response_without_metadata(ModelResponse::Output(json!({
-                            "summary": "three"
-                        }))))
-                    }
-                },
-            );
+                    Ok(response_without_metadata(ModelResponse::Output(json!({
+                        "summary": "three"
+                    }))))
+                }
+            }
+        });
+        let directory = tempdir().expect("temporary directory should be created");
         let harness = Harness::new(model)
+            .database(directory.path().join("harness.db"))
             .max_history_bytes(NonZeroUsize::new(50).expect("history budget should be nonzero"));
-        let mut chat = harness.chat(object_schema());
+        let mut session = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("session should be created");
 
         // Act
-        chat.send("first")
+        session
+            .send("first")
             .await
             .expect("first chat turn should succeed");
-        chat.send("second")
+        session
+            .send("second")
             .await
             .expect("second chat turn should succeed");
-        let third = chat
+        let third = session
             .send("third")
             .await
             .expect("third chat turn should succeed");
@@ -2047,17 +2099,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_does_not_retain_a_failed_turn() {
+    async fn session_does_not_replay_a_failed_turn() {
         // Arrange
         let mut model = model();
         let mut sequence = Sequence::new();
         model
-            .expect_complete_with_optional_metadata()
+            .expect_complete()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|_| Err(ModelError::InvalidResponse));
         model
-            .expect_complete_with_optional_metadata()
+            .expect_complete()
             .times(1)
             .in_sequence(&mut sequence)
             .returning(|request| {
@@ -2070,15 +2122,20 @@ mod tests {
                     "summary": "recovered"
                 }))))
             });
-        let harness = Harness::new(model);
-        let mut chat = harness.chat(object_schema());
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(model).database(directory.path().join("harness.db"));
+        let mut session = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("session should be created");
 
         // Act
-        let error = chat
+        let error = session
             .send("failed question")
             .await
             .expect_err("the first turn should fail");
-        let recovered = chat
+        let recovered = session
             .send("retry")
             .await
             .expect("the next turn should start from clean history");
@@ -2086,23 +2143,218 @@ mod tests {
         // Assert
         assert!(matches!(
             error,
-            TurnError::Model(ModelError::InvalidResponse)
+            SessionError::Turn(TurnError::Model(ModelError::InvalidResponse))
         ));
         assert_eq!(recovered.output(), &json!({"summary": "recovered"}));
+    }
+
+    #[tokio::test]
+    async fn session_invalidates_provider_resume_state_after_a_failed_turn() {
+        // Arrange
+        let mut model = model();
+        let mut sequence = Sequence::new();
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id().is_none())
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "first"
+                })))
+                .with_provider_session_id("native-session"))
+            });
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id() == Some("native-session"))
+            .returning(|_| Err(ModelError::InvalidResponse));
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| {
+                request.provider_session_id().is_none()
+                    && request.messages()
+                        == [
+                            ModelMessage::User("first".to_string()),
+                            ModelMessage::Assistant(r#"{"summary":"first"}"#.to_string()),
+                            ModelMessage::User("retry".to_string()),
+                        ]
+            })
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "recovered"
+                }))))
+            });
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(model).database(directory.path().join("harness.db"));
+        let mut session = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("session should be created");
+        session
+            .send("first")
+            .await
+            .expect("first turn should succeed");
+
+        // Act
+        let error = session
+            .send("failed")
+            .await
+            .expect_err("second turn should fail");
+        drop(session);
+        let mut resumed = harness
+            .resume("session-a")
+            .await
+            .expect("session should reopen");
+        let recovered = resumed
+            .send("retry")
+            .await
+            .expect("replayed turn should succeed");
+
+        // Assert
+        assert!(matches!(
+            error,
+            SessionError::Turn(TurnError::Model(ModelError::InvalidResponse))
+        ));
+        assert_eq!(recovered.output(), &json!({"summary": "recovered"}));
+    }
+
+    #[tokio::test]
+    async fn session_replays_sqlite_history_when_native_resume_is_unavailable() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let mut model = model();
+        let mut sequence = Sequence::new();
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id().is_none())
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "first"
+                })))
+                .with_provider_session_id("native-session"))
+            });
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id() == Some("native-session"))
+            .returning(|_| Err(ModelError::ResumeUnavailable));
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| {
+                request.provider_session_id().is_none()
+                    && request.messages()
+                        == [
+                            ModelMessage::User("first".to_string()),
+                            ModelMessage::Assistant(r#"{"summary":"first"}"#.to_string()),
+                            ModelMessage::User("second".to_string()),
+                        ]
+            })
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "second"
+                }))))
+            });
+        let harness = Harness::new(model).database(directory.path().join("harness.db"));
+        let mut session = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("session should be created");
+        session
+            .send("first")
+            .await
+            .expect("first turn should succeed");
+        drop(session);
+        let mut session = harness
+            .resume("session-a")
+            .await
+            .expect("session should resume");
+
+        // Act
+        let outcome = session
+            .send("second")
+            .await
+            .expect("history replay should succeed");
+
+        // Assert
+        assert_eq!(outcome.output(), &json!({"summary": "second"}));
+    }
+
+    #[tokio::test]
+    async fn session_rejects_overlapping_turns_for_the_same_id() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(SlowModel).database(directory.path().join("harness.db"));
+        let mut first = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("session should be created");
+        let mut second = harness
+            .resume("session-a")
+            .await
+            .expect("session should resume");
+
+        // Act
+        let (first_result, second_result) =
+            tokio::join!(first.send("first"), second.send("second"));
+
+        // Assert
+        let results = [first_result, second_result];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(SessionError::Busy { .. })))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn different_sessions_run_concurrently() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(SlowModel).database(directory.path().join("harness.db"));
+        let mut first = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("first session should be created");
+        let mut second = harness
+            .session("session-b", object_schema())
+            .create()
+            .await
+            .expect("second session should be created");
+
+        // Act
+        let (first_result, second_result) =
+            tokio::join!(first.send("first"), second.send("second"));
+
+        // Assert
+        assert!(first_result.is_ok());
+        assert!(second_result.is_ok());
     }
 
     #[tokio::test]
     async fn rejects_schema_invalid_output_from_injected_model() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": 42
-                }))))
-            });
+        model.expect_complete().times(1).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": 42
+            }))))
+        });
         let events = Arc::new(Mutex::new(Vec::new()));
         let observed_events = Arc::clone(&events);
         let harness = Harness::new(model).with_lifecycle_observer(move |event| {
@@ -2114,7 +2366,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect_err("schema-invalid custom output should fail");
 
@@ -2148,25 +2400,22 @@ mod tests {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |_| {
-                if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return Ok(response_without_metadata(ModelResponse::ToolCall(
-                        read_call_with_path("call_read", "Cargo\n.toml\u{1b}"),
-                    )));
-                }
+        model.expect_complete().times(2).returning(move |_| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(response_without_metadata(ModelResponse::ToolCall(
+                    read_call_with_path("call_read", "Cargo\n.toml\u{1b}"),
+                )));
+            }
 
-                Ok(response_with_metadata(ModelResponse::Output(json!({
-                    "summary": "workspace"
-                }))))
-            });
+            Ok(response_with_metadata(ModelResponse::Output(json!({
+                "summary": "workspace"
+            }))))
+        });
         let harness = read_harness(model, readable_file_system());
 
         // Act
         let outcome = harness
-            .run_report("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect("reported turn should succeed");
 
@@ -2224,21 +2473,18 @@ mod tests {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                assert!(request.lifecycle_observed());
-                if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return Ok(response_without_metadata(ModelResponse::ToolCall(
-                        read_call("provider-call-id"),
-                    )));
-                }
+        model.expect_complete().times(2).returning(move |request| {
+            assert!(request.lifecycle_observed());
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(response_without_metadata(ModelResponse::ToolCall(
+                    read_call("provider-call-id"),
+                )));
+            }
 
-                Ok(response_without_metadata(ModelResponse::Output(
-                    json!({ "summary": "workspace" }),
-                )))
-            });
+            Ok(response_without_metadata(ModelResponse::Output(
+                json!({ "summary": "workspace" }),
+            )))
+        });
         let events = Arc::new(Mutex::new(Vec::new()));
         let observed_events = Arc::clone(&events);
         let harness =
@@ -2251,12 +2497,12 @@ mod tests {
 
         // Act
         let output = harness
-            .run("sensitive prompt", object_schema())
+            .run_once("sensitive prompt", object_schema())
             .await
             .expect("tool round trip should succeed");
 
         // Assert
-        assert_eq!(output, json!({ "summary": "workspace" }));
+        assert_eq!(output.output(), &json!({ "summary": "workspace" }));
         let events = events
             .lock()
             .expect("event recorder should not be poisoned");
@@ -2280,40 +2526,37 @@ mod tests {
         let patch = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                let call_index = call_count.fetch_add(1, Ordering::SeqCst);
-                if call_index == 0 {
-                    assert_eq!(request.tools(), &[ToolDefinition::write()]);
+        model.expect_complete().times(2).returning(move |request| {
+            let call_index = call_count.fetch_add(1, Ordering::SeqCst);
+            if call_index == 0 {
+                assert_eq!(request.tools(), &[ToolDefinition::write()]);
 
-                    return Ok(response_without_metadata(ModelResponse::ToolCall(
-                        write_call("call_write", patch),
-                    )));
+                return Ok(response_without_metadata(ModelResponse::ToolCall(
+                    write_call("call_write", patch),
+                )));
+            }
+            assert!(matches!(
+                &request.messages()[2],
+                ModelMessage::ToolResult {
+                    call_id,
+                    content,
+                    name,
                 }
-                assert!(matches!(
-                    &request.messages()[2],
-                    ModelMessage::ToolResult {
-                        call_id,
-                        content,
-                        name,
-                    }
-                        if call_id == "call_write"
-                            && name == "write"
-                            && serde_json::from_str::<Value>(content).is_ok_and(|value| {
-                                value == json!({
-                                    "bytes_written": 4,
-                                    "path": "src/lib.rs",
-                                    "status": "applied"
-                                })
+                    if call_id == "call_write"
+                        && name == "write"
+                        && serde_json::from_str::<Value>(content).is_ok_and(|value| {
+                            value == json!({
+                                "bytes_written": 4,
+                                "path": "src/lib.rs",
+                                "status": "applied"
                             })
-                ));
+                        })
+            ));
 
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": "updated"
-                }))))
-            });
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": "updated"
+            }))))
+        });
         let mut file_system = MockFileSystem::new();
         file_system
             .expect_canonicalize()
@@ -2334,12 +2577,12 @@ mod tests {
 
         // Act
         let output = harness
-            .run("update the file", object_schema())
+            .run_once("update the file", object_schema())
             .await
             .expect("write round trip should succeed");
 
         // Assert
-        assert_eq!(output, json!({ "summary": "updated" }));
+        assert_eq!(output.output(), &json!({ "summary": "updated" }));
     }
 
     #[tokio::test]
@@ -2347,26 +2590,23 @@ mod tests {
         // Arrange
         let mut model = model();
         let call_count = Arc::new(AtomicUsize::new(0));
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(move |request| {
-                if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return Ok(response_without_metadata(ModelResponse::ToolCall(
-                        write_call("call_write", "not a unified diff"),
-                    )));
-                }
-                assert!(matches!(
-                    &request.messages()[2],
-                    ModelMessage::ToolResult { content, .. }
-                        if serde_json::from_str::<Value>(content)
-                            .is_ok_and(|value| value["status"] == "rejected")
-                ));
+        model.expect_complete().times(2).returning(move |request| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(response_without_metadata(ModelResponse::ToolCall(
+                    write_call("call_write", "not a unified diff"),
+                )));
+            }
+            assert!(matches!(
+                &request.messages()[2],
+                ModelMessage::ToolResult { content, .. }
+                    if serde_json::from_str::<Value>(content)
+                        .is_ok_and(|value| value["status"] == "rejected")
+            ));
 
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": "recovered"
-                }))))
-            });
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": "recovered"
+            }))))
+        });
         let mut file_system = MockFileSystem::new();
         file_system
             .expect_canonicalize()
@@ -2381,29 +2621,26 @@ mod tests {
 
         // Act
         let output = harness
-            .run("update", object_schema())
+            .run_once("update", object_schema())
             .await
             .expect("model should recover from rejected patch");
 
         // Assert
-        assert_eq!(output, json!({ "summary": "recovered" }));
+        assert_eq!(output.output(), &json!({ "summary": "recovered" }));
     }
 
     #[tokio::test]
     async fn returns_terminal_write_boundary_failure() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::ToolCall(
-                    write_call(
-                        "call_write",
-                        "--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1 @@\n+new\n",
-                    ),
-                )))
-            });
+        model.expect_complete().times(1).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::ToolCall(
+                write_call(
+                    "call_write",
+                    "--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1 @@\n+new\n",
+                ),
+            )))
+        });
         let mut file_system = MockFileSystem::new();
         file_system
             .expect_canonicalize()
@@ -2413,7 +2650,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("update", object_schema())
+            .run_once("update", object_schema())
             .await
             .expect_err("write boundary failure should end turn");
 
@@ -2426,19 +2663,16 @@ mod tests {
     async fn rejects_disabled_write_call() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|request| {
-                assert_eq!(request.tools(), []);
+        model.expect_complete().times(1).returning(|request| {
+            assert_eq!(request.tools(), []);
 
-                Ok(response_without_metadata(ModelResponse::ToolCall(
-                    write_call(
-                        "call_denied",
-                        "--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1 @@\n+new\n",
-                    ),
-                )))
-            });
+            Ok(response_without_metadata(ModelResponse::ToolCall(
+                write_call(
+                    "call_denied",
+                    "--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1 @@\n+new\n",
+                ),
+            )))
+        });
         let mut file_system = MockFileSystem::new();
         file_system.expect_canonicalize().times(0);
         file_system.expect_open_beneath().times(0);
@@ -2447,7 +2681,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("update", object_schema())
+            .run_once("update", object_schema())
             .await
             .expect_err("denied write should fail");
 
@@ -2462,16 +2696,13 @@ mod tests {
     async fn rejects_disabled_read_call() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|request| {
-                assert_eq!(request.tools(), []);
+        model.expect_complete().times(1).returning(|request| {
+            assert_eq!(request.tools(), []);
 
-                Ok(response_without_metadata(ModelResponse::ToolCall(
-                    read_call("call_denied"),
-                )))
-            });
+            Ok(response_without_metadata(ModelResponse::ToolCall(
+                read_call("call_denied"),
+            )))
+        });
         let mut file_system = MockFileSystem::new();
         file_system.expect_canonicalize().times(0);
         file_system.expect_open_beneath().times(0);
@@ -2479,7 +2710,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect_err("denied tool should fail");
 
@@ -2495,21 +2726,18 @@ mod tests {
     async fn enforces_tool_call_limit() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(2)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::ToolCall(
-                    read_call("call_read"),
-                )))
-            });
+        model.expect_complete().times(2).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::ToolCall(
+                read_call("call_read"),
+            )))
+        });
         let harness = read_harness(model, readable_file_system())
             .max_tool_calls(NonZeroUsize::new(1).expect("limit should be non-zero"))
             .with_lifecycle_observer(|_| {});
 
         // Act
         let error = harness
-            .run("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect_err("second tool call should exceed the limit");
 
@@ -2522,15 +2750,12 @@ mod tests {
     async fn enforces_tool_call_limit_within_one_model_response() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::ToolCalls(vec![
-                    read_call("call_one"),
-                    read_call("call_two"),
-                ])))
-            });
+        model.expect_complete().times(1).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::ToolCalls(vec![
+                read_call("call_one"),
+                read_call("call_two"),
+            ])))
+        });
         let mut file_system = MockFileSystem::new();
         file_system.expect_canonicalize().times(0);
         file_system.expect_open_beneath().times(0);
@@ -2539,7 +2764,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect_err("second batched tool call should exceed the limit");
 
@@ -2551,21 +2776,18 @@ mod tests {
     async fn rejects_batched_writes_before_any_write_executes() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::ToolCalls(vec![
-                    write_call(
-                        "call_one",
-                        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+first\n",
-                    ),
-                    write_call(
-                        "call_two",
-                        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+second\n",
-                    ),
-                ])))
-            });
+        model.expect_complete().times(1).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::ToolCalls(vec![
+                write_call(
+                    "call_one",
+                    "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+first\n",
+                ),
+                write_call(
+                    "call_two",
+                    "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+second\n",
+                ),
+            ])))
+        });
         let mut file_system = MockFileSystem::new();
         file_system.expect_canonicalize().times(0);
         file_system.expect_open_beneath().times(0);
@@ -2575,7 +2797,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("update twice", object_schema())
+            .run_once("update twice", object_schema())
             .await
             .expect_err("oversized batch should fail before writing");
 
@@ -2588,21 +2810,18 @@ mod tests {
     async fn rejects_duplicate_batched_call_ids_before_any_write_executes() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::ToolCalls(vec![
-                    write_call(
-                        "duplicate_call",
-                        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+first\n",
-                    ),
-                    write_call(
-                        "duplicate_call",
-                        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+second\n",
-                    ),
-                ])))
-            });
+        model.expect_complete().times(1).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::ToolCalls(vec![
+                write_call(
+                    "duplicate_call",
+                    "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+first\n",
+                ),
+                write_call(
+                    "duplicate_call",
+                    "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+second\n",
+                ),
+            ])))
+        });
         let mut file_system = MockFileSystem::new();
         file_system.expect_canonicalize().times(0);
         file_system.expect_open_beneath().times(0);
@@ -2611,7 +2830,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("update twice", object_schema())
+            .run_once("update twice", object_schema())
             .await
             .expect_err("duplicate call identifiers should fail before writing");
 
@@ -2630,19 +2849,16 @@ mod tests {
     async fn rejects_empty_tool_call_batch() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::ToolCalls(
-                    Vec::new(),
-                )))
-            });
+        model.expect_complete().times(1).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::ToolCalls(
+                Vec::new(),
+            )))
+        });
         let harness = Harness::new(model);
 
         // Act
         let error = harness
-            .run("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect_err("empty tool batch should fail immediately");
 
@@ -2661,14 +2877,11 @@ mod tests {
     async fn returns_typed_read_failure() {
         // Arrange
         let mut model = model();
-        model
-            .expect_complete_with_optional_metadata()
-            .times(1)
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::ToolCall(
-                    read_call("call_read"),
-                )))
-            });
+        model.expect_complete().times(1).returning(|_| {
+            Ok(response_without_metadata(ModelResponse::ToolCall(
+                read_call("call_read"),
+            )))
+        });
         let mut file_system = MockFileSystem::new();
         file_system
             .expect_canonicalize()
@@ -2678,7 +2891,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect_err("filesystem failure should end the turn");
 
@@ -2692,7 +2905,7 @@ mod tests {
         // Arrange
         let mut model = model();
         model
-            .expect_complete_with_optional_metadata()
+            .expect_complete()
             .times(1)
             .returning(|_| Err(ModelError::request(io::Error::other("offline"))));
         let mut file_system = MockFileSystem::new();
@@ -2702,7 +2915,7 @@ mod tests {
 
         // Act
         let error = harness
-            .run("inspect", object_schema())
+            .run_once("inspect", object_schema())
             .await
             .expect_err("model failure should end the turn");
 

@@ -1,105 +1,63 @@
 # `ag-harness`
 
-Run a model with bounded repository tools and validated structured output.
+`ag-harness` runs structured LLM turns with explicit repository permissions and durable
+SQLite sessions.
 
-## Library
+## Durable sessions
 
 ```rust
-use ag_harness::{Harness, MUSE_SPARK_1_3, Muse, Tool};
+use ag_harness::{Harness, Muse, MUSE_SPARK_1_3, Tool};
 
 let harness = Harness::new(Muse::from_env(MUSE_SPARK_1_3)?)
-    .repository(&repository_root)
+    .database("harness.db")
+    .repository(".")
     .allow(Tool::Read)
     .allow(Tool::Write);
 
-let output = harness.run(prompt, output_schema).await?;
+let mut session = harness
+    .session("review-42", output_schema)
+    .system_prompt("Keep the review concise.")
+    .create()
+    .await?;
+
+let result = session.send("Review the current changes").await?;
+println!("{}", result.output());
 ```
 
-Provide `MODEL_API_KEY`, a repository root, explicitly allowed tools, a prompt, and an
-`OutputSchema`. Expect schema-validated JSON or a typed error.
-
-Tools are denied by default. Applications enable the closed built-in `Tool::Read` and
-`Tool::Write` capabilities; they cannot register arbitrary model tools. The `read` tool
-offers five bounded actions: `file` reads worktree text, `list` discovers repository
-paths, `search` finds literal text, `diff` compares against `main`, and `show` reads a
-file from `main` or `HEAD`. The fixed base keeps the v0 application API to
-`.repository(root).allow(Tool::Read)` and prevents the model from selecting a revision.
-
-`write` applies one bounded unified diff to one text file. File reads and writes use the
-injectable `FileSystem`; repository inspection runs fixed read-only Git operations
-behind a private command boundary. That boundary clears inherited Git configuration,
-uses an absolute Git executable outside the configured root, disables configured
-filesystem monitors, verifies that root against Git's canonical worktree, and drains
-command streams while retaining complete bounded records. When a provider returns
-multiple tool calls in one response, the harness validates the complete batch, executes
-it in provider order, and records one assistant message followed by every tool result.
-
-Use `Harness::chat()` for sequential in-memory turns and sanitized activity reports.
-Chat history retains complete recent turns within a 256 KiB payload budget; use
-`Harness::max_history_bytes()` to override it.
-
-Use `Harness::create_session()` and `Harness::open_session()` with `Database` for a
-resumable SQLite chat. Only successful complete turns are stored; failed or interrupted
-turns are not resumed. The saved output schema, optional system prompt, model identity,
-and complete tool-call/result groups are restored within the configured history budget.
+Resume the same session after restarting the application:
 
 ```rust
-use ag_harness::{Database, SessionConfig};
-
-let database = Database::open(&database_path).await?;
-let config = SessionConfig::new("session-1", output_schema)
-    .with_system_prompt("Keep answers concise.");
-let mut session = harness.create_session(&database, config).await?;
-let outcome = session.send(prompt).await?;
+let mut session = harness.resume("review-42").await?;
+let result = session.send("Now focus on error handling").await?;
 ```
 
-Use `ModelWithMetadata::complete_with_metadata()` for normalized completion metadata.
+SQLite is the source of truth. A completed turn retains the user prompt, assistant
+messages, tool calls, and tool results. Failed and interrupted turns remain visible in
+the database but are not replayed. Different sessions can run concurrently; one session
+accepts only one active turn at a time.
 
-External adapters implement `Model` or `ModelWithMetadata`. Translate the ordered
-`ModelRequest::messages()` entries, including system instructions, previous turns,
-assistant tool calls, and correlated tool results; `prompt()` alone is insufficient for
-chat. Construct built-in calls with `ToolCall::from_json()`, which applies the same
-bounded argument validation as built-in providers. Call IDs must contain non-whitespace
-text and fit within 1,024 UTF-8 bytes; accepted IDs are preserved exactly. Use
-`arguments_json()` and, when required by the provider, `reasoning_content()` to replay
-calls. The harness still owns history, tool permissions, execution limits, and terminal
-output validation.
+The library does not choose a database location. Configure it once with
+`Harness::database()`. The companion CLI defaults to `~/.ag-harness/db/harness.db`;
+override that with `AG_HARNESS_ROOT` or `--database`.
 
-Use `ModelProvider` and `ModelConfiguration` to discover built-in providers and
-construct a provider client from its standard environment variables. The catalog owns
-known model identifiers, credential variables, endpoint variables, and provider defaults
-so applications do not need provider-specific construction branches.
+## One turn
 
-Attach `with_lifecycle_observer()` to receive ordered metadata-only lifecycle events.
-After installing an OpenTelemetry meter provider, attach `LifecycleMetrics::new()` to
-project standard agent and client-side tool metrics. Use `LifecycleObserverSet` to send
-the same stream to multiple observers, such as metrics, traces, and a host-owned
-journal.
-
-`LifecycleTraceObserver` projects that stream to OpenTelemetry GenAI spans. Install a
-tracer provider in the application before starting an operation, then attach the
-observer to a client or harness:
+Use `run_once` when no resumable history is needed:
 
 ```rust
-use ag_harness::LifecycleTraceObserver;
-
-let harness = Harness::new(model)
-    .with_lifecycle_observer(LifecycleTraceObserver::new());
+let result = harness.run_once("Summarize Cargo.toml", output_schema).await?;
 ```
 
-## Telemetry
+## Permissions and models
 
-When the application installs an OpenTelemetry meter provider, `ModelClient` records
-request duration and provider-reported input and output tokens. `LifecycleMetrics`
-projects end-to-end harness-turn duration, per-turn model and tool call counts, and
-executed-tool duration. The trace observer emits correlated `invoke_agent`,
-`chat {model}`, and `execute_tool {tool}` spans. It propagates each model and tool
-context while the corresponding asynchronous operation is polled, so provider,
-HTTP-client, and tool instrumentation becomes a child of the projected span. Missing
-usage is not estimated, sensitive content is excluded, and the application owns export
-and shutdown. The emitted signals follow the pinned OpenTelemetry GenAI
-semantic-convention contract documented in the architecture guide.
+Tools are denied by default. `Tool::Read` provides bounded file, list, search, diff, and
+show operations. `Tool::Write` applies one bounded unified diff. Enabling either tool
+requires `Harness::repository()`.
 
-The companion `ag-harness-cli` package provides an interactive command-line chat powered
-by this library. The manual real-model compatibility benchmark and its latest recorded
-results live in `tests/benchmark/README.md`.
+External providers implement the single `Model` trait and return `ModelCompletion`. They
+receive the complete ordered history in `ModelRequest::messages()`. A provider may also
+return an opaque continuation identifier; if native resume is unavailable, the harness
+retries once using the SQLite history.
+
+Attach `Harness::with_lifecycle_observer()` for content-free turn, model, and tool
+events. `TurnOutcome::report()` contains the same sanitized activity summary.
