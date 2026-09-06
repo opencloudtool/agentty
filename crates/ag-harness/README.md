@@ -57,7 +57,9 @@ requires `Harness::repository()`.
 External providers implement the single `Model` trait and return `ModelCompletion`. They
 receive the complete ordered history in `ModelRequest::messages()`. A provider may also
 return an opaque continuation identifier; if native resume is unavailable, the harness
-retries once using the SQLite history.
+retries once using the SQLite history and retains any replacement continuation returned
+by that replay.
 
 Attach `Harness::with_lifecycle_observer()` for content-free turn, model, and tool
-events. `TurnOutcome::report()` contains the same sanitized activity summary.
+events. The rejected resume and replay are separate model attempts in lifecycle events
+and `TurnOutcome::report()`.

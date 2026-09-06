@@ -9,7 +9,8 @@ use ag_harness::{
     CompletionMetadata, CompletionUsage, FileSystem, Harness, LifecycleEventKind, LifecycleMetrics,
     LifecycleObserverSet, LifecycleTraceObserver, Model, ModelCompletion, ModelConfiguration,
     ModelError, ModelMessage, ModelMetadata, ModelProvider, ModelRequest, ModelResponse,
-    OutputSchema, OutputSchemaError, SessionError, SessionInfo, Tool, ToolCall, TurnError,
+    ModelResponseType, OutputSchema, OutputSchemaError, SessionError, SessionInfo, Tool, ToolCall,
+    TurnError,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -271,6 +272,18 @@ async fn external_tool_call_still_requires_harness_permission() -> Result<(), Bo
     assert!(matches!(result, Err(TurnError::ToolDenied { name }) if name == "read"));
 
     Ok(())
+}
+
+#[test]
+fn external_consumer_can_inspect_resume_fallback_outcome() {
+    // Arrange
+    let response_type = ModelResponseType::ResumeUnavailable;
+
+    // Act
+    let response_type = response_type.to_string();
+
+    // Assert
+    assert_eq!(response_type, "resume unavailable");
 }
 
 struct ExternalModel;

@@ -78,7 +78,7 @@ impl TurnReport {
     }
 }
 
-/// Observable facts about one successful provider request.
+/// Observable facts about one provider request in a successful turn.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelRequestActivity {
     completion: Option<CompletionMetadata>,
@@ -97,7 +97,8 @@ impl ModelRequestActivity {
         self.duration
     }
 
-    /// Returns whether the request produced output or a tool call.
+    /// Returns whether the request produced output, a tool call, or a rejected
+    /// native continuation that the harness replayed.
     pub fn response_type(&self) -> crate::lifecycle::ModelResponseType {
         self.response_type
     }
@@ -644,16 +645,15 @@ impl Harness {
         let mut tool_calls = Vec::new();
 
         loop {
-            let (response, activity, provider_session_id, native_resume_rejected) = self
+            let (response, activities, provider_session_id, native_resume_rejected) = self
                 .complete_model_request(&request, model_request_index, turn_id)
                 .await?;
-            if native_resume_rejected {
-                request.set_provider_session_id(None);
-            } else if provider_session_id.is_some() {
+            if native_resume_rejected || provider_session_id.is_some() {
                 request.set_provider_session_id(provider_session_id);
             }
-            model_requests.push(activity);
-            model_request_index += 1;
+            model_request_index = model_request_index
+                .saturating_add(u64::try_from(activities.len()).unwrap_or(u64::MAX));
+            model_requests.extend(activities);
 
             match response {
                 ModelResponse::Output(output) => {
@@ -750,45 +750,87 @@ impl Harness {
         request: &ModelRequest,
         model_request_index: u64,
         turn_id: Option<LifecycleId>,
-    ) -> Result<(ModelResponse, ModelRequestActivity, Option<String>, bool), TurnError> {
+    ) -> Result<
+        (
+            ModelResponse,
+            Vec<ModelRequestActivity>,
+            Option<String>,
+            bool,
+        ),
+        TurnError,
+    > {
+        let native_resume = request.provider_session_id().is_some();
+        match self
+            .complete_model_attempt(request.clone(), model_request_index, turn_id)
+            .await
+        {
+            Ok((response, activity, provider_session_id)) => {
+                Ok((response, vec![activity], provider_session_id, false))
+            }
+            Err(ModelAttemptError {
+                duration,
+                error: ModelError::ResumeUnavailable,
+            }) if native_resume => {
+                let rejected_activity = ModelRequestActivity {
+                    completion: None,
+                    duration,
+                    response_type: crate::lifecycle::ModelResponseType::ResumeUnavailable,
+                };
+                let mut replay_request = request.clone();
+                replay_request.set_provider_session_id(None);
+                let replay_index = model_request_index.saturating_add(1);
+                match self
+                    .complete_model_attempt(replay_request, replay_index, turn_id)
+                    .await
+                {
+                    Ok((response, replay_activity, provider_session_id)) => Ok((
+                        response,
+                        vec![rejected_activity, replay_activity],
+                        provider_session_id,
+                        true,
+                    )),
+                    Err(failure) => Err(ResumeFailure::Replay {
+                        source: failure.error,
+                    }
+                    .into_model_error()
+                    .into()),
+                }
+            }
+            Err(failure) if native_resume => Err(ResumeFailure::Native {
+                source: failure.error,
+            }
+            .into_model_error()
+            .into()),
+            Err(failure) => Err(failure.error.into()),
+        }
+    }
+
+    async fn complete_model_attempt(
+        &self,
+        request: ModelRequest,
+        model_request_index: u64,
+        turn_id: Option<LifecycleId>,
+    ) -> Result<(ModelResponse, ModelRequestActivity, Option<String>), ModelAttemptError> {
         let started_at = Instant::now();
         let model_lifecycle =
             self.lifecycle
                 .start_model_request(self.model.metadata(), model_request_index, turn_id);
-        let operation = async {
-            match self.model.complete(request.clone()).await {
-                Err(ModelError::ResumeUnavailable) if request.provider_session_id().is_some() => {
-                    let mut replay_request = request.clone();
-                    replay_request.set_provider_session_id(None);
-                    self.model
-                        .complete(replay_request)
-                        .await
-                        .map(|completion| (completion, true))
-                }
-                result => result.map(|completion| (completion, false)),
-            }
-        };
+        let operation = self.model.complete(request.clone());
         let completion = match model_lifecycle.as_ref() {
             Some(model_lifecycle) => model_lifecycle.scope(operation).await,
             None => operation.await,
         };
-        let (response, completion, provider_session_id, native_resume_rejected) = match completion {
-            Ok((completion, native_resume_rejected)) => {
-                let (response, completion, provider_session_id) = completion.into_parts();
-
-                (
-                    response,
-                    completion,
-                    provider_session_id,
-                    native_resume_rejected,
-                )
-            }
+        let (response, completion, provider_session_id) = match completion {
+            Ok(completion) => completion.into_parts(),
             Err(error) => {
                 if let Some(model_lifecycle) = model_lifecycle {
                     model_lifecycle.failed(error.error_type(), error.http_status());
                 }
 
-                return Err(error.into());
+                return Err(ModelAttemptError {
+                    duration: started_at.elapsed(),
+                    error,
+                });
             }
         };
         if let Some(output) = response.output()
@@ -799,7 +841,10 @@ impl Harness {
                 model_lifecycle.failed(error.error_type(), error.http_status());
             }
 
-            return Err(error.into());
+            return Err(ModelAttemptError {
+                duration: started_at.elapsed(),
+                error,
+            });
         }
         let response_type = response.response_type();
         let activity = ModelRequestActivity {
@@ -811,12 +856,7 @@ impl Harness {
             model_lifecycle.completed(completion, response_type);
         }
 
-        Ok((
-            response,
-            activity,
-            provider_session_id,
-            native_resume_rejected,
-        ))
+        Ok((response, activity, provider_session_id))
     }
 
     async fn execute_tool_call(
@@ -945,6 +985,42 @@ impl TurnError {
 enum ToolExecution<'a> {
     Read(&'a ReadTool, &'a ReadArguments),
     Write(&'a WriteTool, &'a WriteArguments),
+}
+
+struct ModelAttemptError {
+    duration: Duration,
+    error: ModelError,
+}
+
+#[derive(Debug, Error)]
+enum ResumeFailure {
+    #[error("native provider continuation failed: {source}")]
+    Native {
+        #[source]
+        source: ModelError,
+    },
+    #[error("native provider continuation was unavailable and history replay failed: {source}")]
+    Replay {
+        #[source]
+        source: ModelError,
+    },
+}
+
+impl ResumeFailure {
+    fn into_model_error(self) -> ModelError {
+        let source = match &self {
+            Self::Native { source } | Self::Replay { source } => source,
+        };
+        if !matches!(source, ModelError::Request(_)) {
+            return match self {
+                Self::Native { source } | Self::Replay { source } => source,
+            };
+        }
+        let error_type = source.error_type();
+        let http_status = source.http_status();
+
+        ModelError::classified_request(error_type, http_status, Box::new(self))
+    }
 }
 
 async fn execute_tool(execution: ToolExecution<'_>) -> Result<(String, ToolActivity), TurnError> {
@@ -1175,6 +1251,59 @@ mod tests {
         model
     }
 
+    fn resume_fallback_model() -> crate::model::MockModel {
+        let mut model = model();
+        let mut sequence = Sequence::new();
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id().is_none())
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "first"
+                })))
+                .with_provider_session_id("native-session"))
+            });
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id() == Some("native-session"))
+            .returning(|_| Err(ModelError::ResumeUnavailable));
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| {
+                request.provider_session_id().is_none()
+                    && request.messages()
+                        == [
+                            ModelMessage::User("first".to_string()),
+                            ModelMessage::Assistant(r#"{"summary":"first"}"#.to_string()),
+                            ModelMessage::User("second".to_string()),
+                        ]
+            })
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "second"
+                })))
+                .with_provider_session_id("replacement-session"))
+            });
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id() == Some("replacement-session"))
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "third"
+                }))))
+            });
+
+        model
+    }
+
     fn object_schema() -> OutputSchema {
         OutputSchema::new(json!({
             "type": "object",
@@ -1223,6 +1352,14 @@ mod tests {
 
     fn response_without_metadata(response: ModelResponse) -> crate::ModelCompletion {
         crate::ModelCompletion::from_response(response)
+    }
+
+    fn request_error_with_http_status(status: u16) -> ModelError {
+        ModelError::classified_request(
+            crate::ModelErrorType::Provider,
+            Some(status),
+            io::Error::other("provider request failed").into(),
+        )
     }
 
     fn response_with_metadata(response: ModelResponse) -> crate::ModelCompletion {
@@ -2169,7 +2306,12 @@ mod tests {
             .times(1)
             .in_sequence(&mut sequence)
             .withf(|request| request.provider_session_id() == Some("native-session"))
-            .returning(|_| Err(ModelError::InvalidResponse));
+            .returning(|_| {
+                Err(ModelError::SchemaViolation {
+                    path: "/summary".to_string(),
+                    reason: "required property is missing".to_string(),
+                })
+            });
         model
             .expect_complete()
             .times(1)
@@ -2217,54 +2359,27 @@ mod tests {
 
         // Assert
         assert!(matches!(
-            error,
-            SessionError::Turn(TurnError::Model(ModelError::InvalidResponse))
+            &error,
+            SessionError::Turn(TurnError::Model(ModelError::SchemaViolation { path, reason }))
+                if path == "/summary" && reason == "required property is missing"
         ));
         assert_eq!(recovered.output(), &json!({"summary": "recovered"}));
     }
 
     #[tokio::test]
-    async fn session_replays_sqlite_history_when_native_resume_is_unavailable() {
+    async fn session_accounts_for_resume_fallback_and_persists_its_continuation() {
         // Arrange
         let directory = tempdir().expect("temporary directory should be created");
-        let mut model = model();
-        let mut sequence = Sequence::new();
-        model
-            .expect_complete()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .withf(|request| request.provider_session_id().is_none())
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": "first"
-                })))
-                .with_provider_session_id("native-session"))
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed_events = Arc::clone(&events);
+        let harness = Harness::new(resume_fallback_model())
+            .database(directory.path().join("harness.db"))
+            .with_lifecycle_observer(move |event| {
+                observed_events
+                    .lock()
+                    .expect("event recorder should not be poisoned")
+                    .push(event);
             });
-        model
-            .expect_complete()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .withf(|request| request.provider_session_id() == Some("native-session"))
-            .returning(|_| Err(ModelError::ResumeUnavailable));
-        model
-            .expect_complete()
-            .times(1)
-            .in_sequence(&mut sequence)
-            .withf(|request| {
-                request.provider_session_id().is_none()
-                    && request.messages()
-                        == [
-                            ModelMessage::User("first".to_string()),
-                            ModelMessage::Assistant(r#"{"summary":"first"}"#.to_string()),
-                            ModelMessage::User("second".to_string()),
-                        ]
-            })
-            .returning(|_| {
-                Ok(response_without_metadata(ModelResponse::Output(json!({
-                    "summary": "second"
-                }))))
-            });
-        let harness = Harness::new(model).database(directory.path().join("harness.db"));
         let mut session = harness
             .session("session-a", object_schema())
             .create()
@@ -2285,9 +2400,140 @@ mod tests {
             .send("second")
             .await
             .expect("history replay should succeed");
+        drop(session);
+        let mut session = harness
+            .resume("session-a")
+            .await
+            .expect("session should resume with replacement continuation");
+        let third = session
+            .send("third")
+            .await
+            .expect("replacement continuation should succeed");
 
         // Assert
         assert_eq!(outcome.output(), &json!({"summary": "second"}));
+        assert_eq!(outcome.report().model_requests().len(), 2);
+        assert_eq!(
+            outcome.report().model_requests()[0].response_type(),
+            crate::ModelResponseType::ResumeUnavailable
+        );
+        assert_eq!(
+            outcome.report().model_requests()[1].response_type(),
+            crate::ModelResponseType::Output
+        );
+        assert_eq!(third.output(), &json!({"summary": "third"}));
+        let events = events
+            .lock()
+            .expect("event recorder should not be poisoned");
+        assert!(matches!(
+            events[5].kind(),
+            crate::LifecycleEventKind::ModelRequestStarted {
+                request_index: 0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[6].kind(),
+            crate::LifecycleEventKind::ModelRequestFailed {
+                error_type: crate::ModelErrorType::Provider,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[7].kind(),
+            crate::LifecycleEventKind::ModelRequestStarted {
+                request_index: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[8].kind(),
+            crate::LifecycleEventKind::ModelRequestCompleted {
+                response_type: crate::ModelResponseType::Output,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn resume_failure_preserves_request_context_and_http_status() {
+        // Arrange
+        let failures = [
+            ResumeFailure::Native {
+                source: request_error_with_http_status(429),
+            },
+            ResumeFailure::Replay {
+                source: request_error_with_http_status(503),
+            },
+        ];
+
+        // Act
+        let errors = failures.map(ResumeFailure::into_model_error);
+
+        // Assert
+        assert_eq!(errors[0].http_status(), Some(429));
+        assert_eq!(errors[1].http_status(), Some(503));
+        assert!(
+            errors[0]
+                .to_string()
+                .starts_with("model request failed: native provider continuation failed:")
+        );
+        assert!(errors[1].to_string().starts_with(
+            "model request failed: native provider continuation was unavailable and history \
+             replay failed:"
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_preserves_structured_failure_after_native_resume_fallback() {
+        // Arrange
+        let mut model = model();
+        let mut sequence = Sequence::new();
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "first"
+                })))
+                .with_provider_session_id("native-session"))
+            });
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id() == Some("native-session"))
+            .returning(|_| Err(ModelError::ResumeUnavailable));
+        model
+            .expect_complete()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .withf(|request| request.provider_session_id().is_none())
+            .returning(|_| Err(ModelError::ResponseBodyTooLarge));
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(model).database(directory.path().join("harness.db"));
+        let mut session = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("session should be created");
+        session
+            .send("first")
+            .await
+            .expect("first turn should succeed");
+
+        // Act
+        let error = session
+            .send("second")
+            .await
+            .expect_err("history replay should fail");
+
+        // Assert
+        assert!(matches!(
+            &error,
+            SessionError::Turn(TurnError::Model(ModelError::ResponseBodyTooLarge))
+        ));
     }
 
     #[tokio::test]

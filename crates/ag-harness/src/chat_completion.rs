@@ -334,12 +334,14 @@ impl ChatCompletionBackend {
             error @ ChatCompletionError::InvalidResponse(_) => {
                 model::ModelError::classified_request(
                     model::ModelErrorType::InvalidProviderResponse,
+                    None,
                     error.into(),
                 )
             }
             ChatCompletionError::ResponseBodyTooLarge => model::ModelError::ResponseBodyTooLarge,
             error @ ChatCompletionError::Transport(_) => model::ModelError::classified_request(
                 model::ModelErrorType::Transport,
+                None,
                 error.into(),
             ),
         }

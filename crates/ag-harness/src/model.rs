@@ -848,6 +848,7 @@ impl ModelErrorType {
 #[error("{source}")]
 struct ClassifiedRequestError {
     error_type: ModelErrorType,
+    http_status: Option<u16>,
     #[source]
     source: Box<dyn Error + Send + Sync>,
 }
@@ -908,7 +909,12 @@ impl ModelError {
         match self {
             Self::Request(source) => source
                 .downcast_ref::<ProviderRequestError>()
-                .map(|error| error.status.as_u16()),
+                .map(|error| error.status.as_u16())
+                .or_else(|| {
+                    source
+                        .downcast_ref::<ClassifiedRequestError>()
+                        .and_then(|error| error.http_status)
+                }),
             _ => None,
         }
     }
@@ -929,9 +935,14 @@ impl ModelError {
 
     pub(crate) fn classified_request(
         error_type: ModelErrorType,
+        http_status: Option<u16>,
         source: Box<dyn Error + Send + Sync>,
     ) -> Self {
-        Self::Request(Box::new(ClassifiedRequestError { error_type, source }))
+        Self::Request(Box::new(ClassifiedRequestError {
+            error_type,
+            http_status,
+            source,
+        }))
     }
 }
 
@@ -1661,10 +1672,11 @@ mod tests {
     }
 
     #[test]
-    fn classified_request_retains_source_and_type() {
+    fn classified_request_retains_source_type_and_status() {
         // Arrange
         let error = ModelError::classified_request(
             ModelErrorType::Transport,
+            Some(503),
             io::Error::other("connection reset").into(),
         );
 
@@ -1675,7 +1687,7 @@ mod tests {
 
         // Assert
         assert_eq!(error.error_type(), ModelErrorType::Transport);
-        assert_eq!(error.http_status(), None);
+        assert_eq!(error.http_status(), Some(503));
         assert_eq!(source.to_string(), "connection reset");
     }
 

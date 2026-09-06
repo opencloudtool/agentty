@@ -60,9 +60,12 @@ excluded from replay when the configured byte budget is exceeded.
 On resume, the harness validates the stored model identity and restores completed
 history. If a completion includes a provider session identifier, the next request also
 offers it to the adapter. `ModelError::ResumeUnavailable` causes one retry with the
-provider identifier removed and the same SQLite history retained. Any failed turn clears
-the stored provider identifier because the harness cannot know whether the remote
-conversation advanced before the failure.
+provider identifier removed and the same SQLite history retained. The rejected native
+resume and the replay are reported as separate provider attempts. A successful replay
+replaces the stored continuation identifier with the one it returns, or clears the
+identifier when it returns none. Any failed turn clears the stored provider identifier
+because the harness cannot know whether the remote conversation advanced before the
+failure.
 
 ## Concurrency
 
