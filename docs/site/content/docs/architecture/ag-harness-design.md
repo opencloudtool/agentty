@@ -63,7 +63,12 @@ keeps history canonical when multiple session handles were opened before the lat
 completed. Each active turn also has an opaque owner token. If cancellation races with a
 successful SQLite commit acknowledgment, cleanup scoped to the canonical database
 identity and owner token interrupts only that abandoned turn before another turn is
-reserved.
+reserved. The owner guard renews the lease while provider or tool work remains active;
+dropping the send future stops renewal and records the turn as interrupted by
+cancellation. A failed renewal or lost owner token cancels the in-flight request before
+it can continue model or tool work. If a turn fails and recording that failure also
+fails, `SessionError` retains both errors instead of replacing the original turn
+failure.
 
 ## Resume and provider fallback
 
