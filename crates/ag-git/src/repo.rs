@@ -432,8 +432,8 @@ where
     })
 }
 
-/// Applies non-interactive defaults so git failures return immediately instead
-/// of waiting for terminal credential prompts.
+/// Disables optional index writes and interactive prompts for Git subprocesses.
+/// Required locks for staging, commits, and other mutations remain enabled.
 fn apply_non_interactive_environment(command: &mut Command) {
     let git_ssh_command = std::env::var("GIT_SSH_COMMAND").map_or_else(
         |_| "ssh -o BatchMode=yes".to_string(),
@@ -441,12 +441,13 @@ fn apply_non_interactive_environment(command: &mut Command) {
     );
 
     command
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
         .env("GIT_SSH_COMMAND", git_ssh_command);
 }
 
-/// Applies non-interactive defaults to one async git subprocess.
+/// Disables optional index writes and interactive prompts for async Git.
 fn apply_non_interactive_environment_async(command: &mut AsyncCommand) {
     let git_ssh_command = std::env::var("GIT_SSH_COMMAND").map_or_else(
         |_| "ssh -o BatchMode=yes".to_string(),
@@ -454,6 +455,7 @@ fn apply_non_interactive_environment_async(command: &mut AsyncCommand) {
     );
 
     command
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
         .env("GIT_SSH_COMMAND", git_ssh_command);

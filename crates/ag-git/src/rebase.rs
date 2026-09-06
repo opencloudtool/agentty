@@ -13,8 +13,9 @@ use super::repo::{
 };
 use crate::{Sleeper, ThreadSleeper};
 
-pub(super) const GIT_INDEX_LOCK_RETRY_ATTEMPTS: usize = 5;
-pub(super) const GIT_INDEX_LOCK_RETRY_DELAY: Duration = Duration::from_millis(100);
+/// Allow five seconds of waiting for an in-flight index writer to finish.
+pub(super) const GIT_INDEX_LOCK_RETRY_ATTEMPTS: usize = 21;
+pub(super) const GIT_INDEX_LOCK_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Executes git commands for rebase operations.
 #[cfg_attr(test, mockall::automock)]

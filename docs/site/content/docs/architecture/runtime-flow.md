@@ -440,7 +440,10 @@ flowchart LR
    project's `Default Fast Model` and amend `HEAD`; an empty amend drops the reverted
    commit. After a successful normal commit, the app checks hook readiness again and
    persists the first copy of each distinct `[Commit Warning]` when configured
-   validation did not run, avoiding repeated identical notices across later turns.
+   validation did not run, avoiding repeated identical notices across later turns. Git
+   commands and agent subprocesses inherit `GIT_OPTIONAL_LOCKS=0` so read-only
+   inspection does not write the index or leave optional locks on interruption. Required
+   index writes retry with up to five seconds of waiting for an active writer to finish.
    Persistent index-lock failures stop after the Git layer's bounded retries and persist
    recovery guidance without invoking commit assistance or deleting the lock.
    Installed-hook failures continue through normal commit error handling. The session

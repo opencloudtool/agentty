@@ -787,10 +787,10 @@ impl GitClient for RealGitClient {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::Duration;
-    use std::{fs, thread};
 
     use tempfile::tempdir;
 
@@ -1141,10 +1141,10 @@ mod tests {
         let commit_message = "Session commit".to_string();
         fs::write(dir.path().join("work.txt"), "locked change").expect("failed to write file");
         let index_lock_path = dir.path().join(".git").join("index.lock");
-        fs::write(&index_lock_path, "stale lock").expect("failed to write lock file");
-        let lock_cleanup = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(250));
-            let _ = fs::remove_file(index_lock_path);
+        fs::write(&index_lock_path, "active writer").expect("failed to write lock file");
+        let lock_cleanup = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            fs::remove_file(index_lock_path).expect("writer should release its lock");
         });
 
         // Act
@@ -1156,8 +1156,8 @@ mod tests {
         )
         .await;
         lock_cleanup
-            .join()
-            .expect("failed to join lock cleanup thread");
+            .await
+            .expect("failed to join lock cleanup task");
         let head_message = run_git_command_stdout(dir.path(), &["log", "-1", "--pretty=%B"]);
 
         // Assert
@@ -1297,6 +1297,58 @@ mod tests {
         // Assert
         assert!(status.contains("README.md"));
         assert!(status.contains("new-file.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_status_reads_preserve_index_with_stale_file_metadata() {
+        // Arrange
+        let dir = tempdir().expect("failed to create temp dir");
+        setup_test_git_repo(dir.path());
+        let index_path = dir.path().join(".git/index");
+        let original_index = fs::read(&index_path).expect("failed to read index");
+        let readme = fs::File::options()
+            .write(true)
+            .open(dir.path().join("README.md"))
+            .expect("failed to open tracked file");
+        readme
+            .set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH))
+            .expect("failed to invalidate cached file metadata");
+
+        // Act
+        let status = worktree_status(dir.path().to_path_buf())
+            .await
+            .expect("failed to read worktree status");
+        let tracked_status = tracked_worktree_status(dir.path().to_path_buf())
+            .await
+            .expect("failed to read tracked status");
+        let sync_status = crate::repo::run_git_command_sync(
+            dir.path(),
+            &["status", "--porcelain"],
+            "Failed to read synchronous status",
+        )
+        .expect("failed to read synchronous status");
+
+        // Assert
+        assert_eq!(status, "");
+        assert_eq!(tracked_status, "");
+        assert_eq!(sync_status, "");
+        assert_eq!(
+            fs::read(&index_path).expect("failed to read index"),
+            original_index
+        );
+        // Prove the fixture actually needs an index refresh when optional
+        // writes are enabled, rather than merely reading an unchanged index.
+        let refresh = Command::new("git")
+            .args(["status", "--porcelain"])
+            .env("GIT_OPTIONAL_LOCKS", "1")
+            .current_dir(dir.path())
+            .output()
+            .expect("failed to refresh index");
+        assert!(refresh.status.success());
+        assert_ne!(
+            fs::read(index_path).expect("failed to read refreshed index"),
+            original_index
+        );
     }
 
     #[tokio::test]

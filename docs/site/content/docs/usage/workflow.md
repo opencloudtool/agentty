@@ -415,11 +415,12 @@ amends `HEAD`, and refreshes the session title from the commit text. If a later 
 reverts every change, the empty session commit is dropped. Commit and merge notices
 appear as transient status rows rather than persisted transcript messages.
 
-If an index lock still blocks auto-commit after brief retries, Agentty stops and records
-a `[Commit Error]` with recovery guidance instead of invoking commit assistance. Your
-changes and the lock remain intact. Wait for active Git operations to finish before
-retrying. If the lock persists, the repository owner must confirm it is stale before
-removing it; linked-worktree locks may live outside the session workspace.
+Auto-commit waits up to five seconds in total for a busy Git index to become available.
+If an index lock still blocks auto-commit, Agentty stops and records a `[Commit Error]`
+with recovery guidance instead of invoking commit assistance. Your changes and the lock
+remain intact. Wait for active Git operations to finish before retrying. If the lock
+persists, the repository owner must confirm it is stale before removing it;
+linked-worktree locks may live outside the session workspace.
 
 When a project contains `.pre-commit-config.yaml` or `.pre-commit-config.yml`, Agentty
 checks for an executable Git pre-commit hook when you press `a`. A missing hook opens a
