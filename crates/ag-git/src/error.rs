@@ -17,10 +17,10 @@ pub enum GitError {
         stderr: String,
     },
 
-    /// A git subprocess exceeded its configured runtime bound.
+    /// A git subprocess or index preparation exceeded its runtime bound.
     #[error("{command} timed out after {timeout:?}")]
     CommandTimedOut {
-        /// Git invocation that exceeded the timeout.
+        /// Git invocation or preparation step that exceeded the timeout.
         command: String,
         /// Configured command timeout.
         timeout: Duration,

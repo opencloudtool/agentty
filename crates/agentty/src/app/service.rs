@@ -55,6 +55,7 @@ pub(crate) struct AppServiceDeps {
 }
 
 /// Shared app dependencies used by managers and background workflows.
+#[derive(Clone)]
 pub struct AppServices {
     available_agent_clis: Arc<Mutex<Vec<AgentCliInfo>>>,
     available_agent_kinds: Arc<[AgentKind]>,

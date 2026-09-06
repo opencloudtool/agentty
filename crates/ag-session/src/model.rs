@@ -329,16 +329,19 @@ impl SessionStatus {
             (
                 SessionStatus::Draft,
                 SessionStatus::InProgress | SessionStatus::Canceled
-            ) | (
-                SessionStatus::Draft | SessionStatus::InProgress,
-                SessionStatus::Rebasing
-            ) | (
-                SessionStatus::InProgress
-                    | SessionStatus::Queued
-                    | SessionStatus::Rebasing
-                    | SessionStatus::Merging,
-                SessionStatus::Canceled
-            ) | (SessionStatus::Review, SessionStatus::AgentReview)
+            ) | (SessionStatus::InProgress, SessionStatus::Draft)
+                | (
+                    SessionStatus::Draft | SessionStatus::InProgress,
+                    SessionStatus::Rebasing
+                )
+                | (
+                    SessionStatus::InProgress
+                        | SessionStatus::Queued
+                        | SessionStatus::Rebasing
+                        | SessionStatus::Merging,
+                    SessionStatus::Canceled
+                )
+                | (SessionStatus::Review, SessionStatus::AgentReview)
                 | (SessionStatus::AgentReview, SessionStatus::Review)
                 | (
                     SessionStatus::Review | SessionStatus::AgentReview,
@@ -590,6 +593,22 @@ mod tests {
         assert!(status.can_transition_to(SessionStatus::Merged));
         assert!(status.can_transition_to(SessionStatus::Done));
         assert!(!status.can_transition_to(SessionStatus::Review));
+    }
+
+    #[test]
+    fn failed_start_can_return_to_draft_without_reviving_terminal_sessions() {
+        // Arrange
+        let statuses = [
+            SessionStatus::InProgress,
+            SessionStatus::Done,
+            SessionStatus::Canceled,
+        ];
+
+        // Act
+        let transitions = statuses.map(|status| status.can_transition_to(SessionStatus::Draft));
+
+        // Assert
+        assert_eq!(transitions, [true, false, false]);
     }
 
     #[test]

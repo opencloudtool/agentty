@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ pub(super) struct AsyncGitCommand {
     /// Git arguments excluding the executable name.
     pub(super) arguments: Vec<String>,
     /// Environment overrides applied after noninteractive defaults.
-    pub(super) environment: Vec<(String, String)>,
+    pub(super) environment: Vec<(OsString, OsString)>,
     /// Repository or worktree used as the process working directory.
     pub(super) repo_path: PathBuf,
 }
@@ -36,7 +37,7 @@ impl AsyncGitCommand {
     }
 
     /// Applies environment overrides to this command.
-    pub(super) fn with_environment(mut self, environment: Vec<(String, String)>) -> Self {
+    pub(super) fn with_environment(mut self, environment: Vec<(OsString, OsString)>) -> Self {
         self.environment = environment;
 
         self
@@ -271,6 +272,17 @@ pub(super) async fn run_git_command_with_runner(
     error_context: &str,
     command_runner: &dyn AsyncGitCommandRunner,
 ) -> Result<String, GitError> {
+    let stdout = run_git_command_bytes_with_runner(command, error_context, command_runner).await?;
+
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
+/// Runs a git command while preserving stdout bytes for native path consumers.
+pub(super) async fn run_git_command_bytes_with_runner(
+    command: AsyncGitCommand,
+    error_context: &str,
+    command_runner: &dyn AsyncGitCommandRunner,
+) -> Result<Vec<u8>, GitError> {
     let git_invocation = format_git_invocation_from_strings(&command.arguments);
     let output = command_runner.run(command).await?;
     if !output.success() {
@@ -282,7 +294,7 @@ pub(super) async fn run_git_command_with_runner(
         });
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
 /// Runs a cancellable git subprocess with an explicit runtime bound.

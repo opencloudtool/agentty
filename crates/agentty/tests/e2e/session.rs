@@ -9151,6 +9151,46 @@ fn test_worktree_open_reenables_diff_action() -> E2eResult {
     Ok(())
 }
 
+/// Slow checkout hooks must not hold the foreground input loop.
+#[test]
+fn test_slow_draft_start_keeps_navigation_responsive() -> E2eResult {
+    // Arrange, Act, Assert
+    FeatureTest::new("slow_draft_start_keeps_navigation_responsive")
+        .with_git()
+        .setup(|env| {
+            let hook = env.workdir.join(".git/hooks/post-checkout");
+            std::fs::write(&hook, "#!/bin/sh\nsleep 10\n")?;
+            std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o750))?;
+            Ok(())
+        })
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .press_key("a")
+                    .wait_for_text("Regular", 5000)
+                    .press_key("Down")
+                    .press_key("Enter")
+                    .wait_for_text("Enter: stage draft", 5000)
+                    .write_text("Slow worktree preparation")
+                    .press_key("Enter")
+                    .wait_for_text("s: start", 5000)
+                    .press_key("s")
+                    .press_key("q")
+                    .wait_for_text("new session", 2000)
+                    .press_key("?")
+                    .wait_for_text("Help", 2000)
+            },
+            |frame, _report| {
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "Help", &full);
+            },
+        )?;
+
+    Ok(())
+}
+
 /// Verify that a slow full diff leaves redraw and input handling responsive.
 #[test]
 fn test_slow_diff_loading_remains_cancelable() -> E2eResult {

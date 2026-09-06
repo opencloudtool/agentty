@@ -1460,6 +1460,28 @@ async fn create_and_start_session(app: &mut App, prompt: &str) {
         .await;
 }
 
+/// Waits for background draft preparation and projects its completed metadata.
+async fn wait_for_draft_preparation(app: &mut App, session_id: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let rows = app
+                .services
+                .db()
+                .sessions()
+                .load_sessions()
+                .await
+                .expect("load sessions");
+            if rows.iter().any(|row| row.id == session_id && !row.is_draft) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("draft preparation must complete");
+    app.refresh_sessions_now().await;
+}
+
 async fn wait_for_status(app: &mut App, session_id: &str, expected: Status) {
     wait_for_status_with_retries(app, session_id, expected, 2000, false).await;
 }
@@ -2577,6 +2599,8 @@ async fn test_start_staged_session_launches_bundle_and_clears_staged_drafts() {
         .await
         .expect("failed to start staged session");
 
+    wait_for_draft_preparation(&mut app, &session_id).await;
+
     // Assert
     assert_eq!(
         app.sessions.sessions()[0].prompt,
@@ -2620,6 +2644,8 @@ async fn test_start_staged_session_clears_draft_flag() {
     app.start_staged_session(&session_id)
         .await
         .expect("failed to start staged session");
+
+    wait_for_draft_preparation(&mut app, &session_id).await;
 
     // Assert
     let session = app
@@ -2710,6 +2736,8 @@ async fn test_start_staged_session_launches_stacked_draft_child() {
         .await
         .expect("failed to start stacked draft");
     app.sessions.sync_from_handles();
+
+    wait_for_draft_preparation(&mut app, &child_session_id).await;
 
     // Assert
     let child_session = app
@@ -4010,10 +4038,16 @@ async fn test_periodic_session_refresh_preserves_focused_review_states() {
     clock.advance(SESSION_REFRESH_INTERVAL);
 
     // Act
-    let refreshed = app.refresh_sessions_if_needed().await;
+    app.refresh_sessions_if_needed().await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !app.refresh_sessions_if_needed().await {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("background refresh must complete");
 
     // Assert
-    assert!(refreshed);
     let ready_message = review_message_body(&app, ready_session_id);
     assert_eq!(ready_message.text(), review_text);
 

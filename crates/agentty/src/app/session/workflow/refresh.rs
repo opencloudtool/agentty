@@ -4,14 +4,41 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use ag_forge as forge;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::warn;
 
 use super::SESSION_REFRESH_INTERVAL;
 use super::load::SessionLoadInput;
 use crate::app::session::SessionError;
 use crate::app::{AppServices, ProjectManager, SessionManager};
-use crate::domain::session::{ForgeKind, ReviewRequest, SessionId};
+use crate::domain::session::{
+    DailyActivity, ForgeKind, ReviewRequest, Session, SessionHandles, SessionId,
+};
+use crate::infra::db::DbError;
 use crate::presentation::app_mode::{AppMode, ConfirmationViewMode, HelpContext};
+
+/// One coalesced snapshot load, isolated from live handles until reduction.
+pub(in crate::app::session) struct BackgroundSessionRefresh {
+    detail_session_id: Option<SessionId>,
+    project_id: i64,
+    refresh_again: bool,
+    task: JoinHandle<Result<Option<SessionRefreshSnapshot>, DbError>>,
+}
+
+impl Drop for BackgroundSessionRefresh {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+struct SessionRefreshSnapshot {
+    branch_names: HashMap<SessionId, String>,
+    handles: HashMap<SessionId, SessionHandles>,
+    metadata: Option<(i64, i64)>,
+    sessions: Vec<Session>,
+    stats_activity: Vec<DailyActivity>,
+    worktree_availability: HashMap<SessionId, bool>,
+}
 
 impl SessionManager {
     /// Reloads session rows when the metadata cache indicates a change.
@@ -25,24 +52,210 @@ impl SessionManager {
         projects: &ProjectManager,
         services: &AppServices,
     ) -> bool {
-        if !self.is_session_refresh_due() {
-            return false;
+        let refreshed = self
+            .finish_background_refresh(mode, projects, services)
+            .await;
+        if self.is_session_refresh_due() && self.pending_refresh.is_none() {
+            self.start_session_refresh(mode, projects, services, false);
         }
 
-        self.state.refresh_deadline = self.next_refresh_deadline();
+        refreshed
+    }
 
-        let Ok(sessions_metadata) = services.db().sessions().load_sessions_metadata().await else {
+    /// Coalesces refresh requests without awaiting disk or repository work.
+    pub(crate) fn request_session_refresh(
+        &mut self,
+        mode: &AppMode,
+        projects: &ProjectManager,
+        services: &AppServices,
+    ) {
+        self.start_session_refresh(mode, projects, services, true);
+    }
+
+    fn start_session_refresh(
+        &mut self,
+        mode: &AppMode,
+        projects: &ProjectManager,
+        services: &AppServices,
+        force: bool,
+    ) {
+        if let Some(pending) = self.pending_refresh.as_mut()
+            && pending.project_id == projects.active_project_id()
+        {
+            pending.refresh_again = true;
+            return;
+        }
+        let project_id = projects.active_project_id();
+        let detail_session_id = Self::mode_session_id(mode).cloned().or_else(|| {
+            self.state
+                .table_state
+                .selected()
+                .and_then(|index| self.state.sessions.get(index))
+                .map(|session| session.id.clone())
+        });
+        let base = services.base_path().to_path_buf();
+        let working_dir = projects.working_dir().to_path_buf();
+        let repositories = services.db().clone();
+        let clock = services.clock();
+        let fs_client = services.fs_client();
+        let git_client = self.git_client.clone();
+        let task_detail_id = detail_session_id.clone();
+        let previous_metadata = (self.state.row_count, self.state.updated_at_max);
+        let mut handles = self
+            .state
+            .handles()
+            .iter()
+            .filter_map(|(id, handles)| {
+                handles
+                    .status
+                    .lock()
+                    .ok()
+                    .map(|status| (id.clone(), SessionHandles::new_unloaded(*status)))
+            })
+            .collect();
+        let task = tokio::spawn(async move {
+            let metadata = repositories.sessions().load_sessions_metadata().await.ok();
+            if !force && metadata == Some(previous_metadata) {
+                return Ok(None);
+            }
+            let (sessions, stats_activity, worktree_availability) =
+                Self::try_load_sessions_with_fs_client(
+                    SessionLoadInput {
+                        active_project_id: project_id,
+                        active_session_id: task_detail_id.as_deref(),
+                        base: &base,
+                        clock: clock.as_ref(),
+                        db: &repositories,
+                        fs_client: fs_client.as_ref(),
+                        working_dir: &working_dir,
+                    },
+                    &mut handles,
+                )
+                .await?;
+            let mut branch_names = HashMap::new();
+            let mut tasks = JoinSet::new();
+            for session in &sessions {
+                let git_client = git_client.clone();
+                let session_id = session.id.clone();
+                let folder = session.folder.clone();
+                tasks.spawn(async move {
+                    let name = git_client
+                        .detect_git_info(folder)
+                        .await
+                        .unwrap_or_else(|| super::session_branch(&session_id));
+                    (session_id, name)
+                });
+                if tasks.len() >= 8
+                    && let Some(Ok((session_id, name))) = tasks.join_next().await
+                {
+                    branch_names.insert(session_id, name);
+                }
+            }
+            while let Some(result) = tasks.join_next().await {
+                if let Ok((session_id, name)) = result {
+                    branch_names.insert(session_id, name);
+                }
+            }
+
+            Ok(Some(SessionRefreshSnapshot {
+                branch_names,
+                handles,
+                metadata,
+                sessions,
+                stats_activity,
+                worktree_availability,
+            }))
+        });
+        self.pending_refresh = Some(BackgroundSessionRefresh {
+            detail_session_id,
+            project_id,
+            refresh_again: false,
+            task,
+        });
+        self.state.refresh_deadline = self.next_refresh_deadline();
+    }
+
+    /// Applies completed I/O against current selection and live worker handles.
+    async fn finish_background_refresh(
+        &mut self,
+        mode: &mut AppMode,
+        projects: &ProjectManager,
+        services: &AppServices,
+    ) -> bool {
+        let Some(mut pending) = self
+            .pending_refresh
+            .take_if(|pending| pending.task.is_finished())
+        else {
             return false;
         };
-        let (sessions_row_count, sessions_updated_at_max) = sessions_metadata;
-        if sessions_row_count == self.state.row_count
-            && sessions_updated_at_max == self.state.updated_at_max
-        {
+        if pending.project_id != projects.active_project_id() {
             return false;
         }
-
-        self.reload_sessions(mode, projects, services, Some(sessions_metadata))
-            .await;
+        if pending.refresh_again
+            || Self::mode_session_id(mode)
+                .is_some_and(|id| pending.detail_session_id.as_ref() != Some(id))
+        {
+            self.request_session_refresh(mode, projects, services);
+            return false;
+        }
+        let Ok(Ok(Some(mut snapshot))) = (&mut pending.task).await else {
+            return false;
+        };
+        let selected_index = self.state.table_state.selected();
+        let selected_id = selected_index
+            .and_then(|index| self.state.sessions.get(index))
+            .map(|session| session.id.clone());
+        let live_progress = self
+            .state
+            .sessions
+            .iter()
+            .filter_map(|session| {
+                session
+                    .orchestration_progress
+                    .as_ref()
+                    .filter(|progress| progress.starts_with("Phase:"))
+                    .map(|progress| (session.id.clone(), progress.clone()))
+            })
+            .collect();
+        for session in &mut snapshot.sessions {
+            if let Some(handles) = self.state.handles().get(&session.id) {
+                session.status = super::load::merge_loaded_session_status(
+                    session.status,
+                    handles
+                        .status
+                        .lock()
+                        .map_or(session.status, |status| *status),
+                );
+                if let Ok(mut status) = handles.status.lock() {
+                    *status = session.status;
+                }
+                handles.transcript_snapshot_with_loaded(session.transcript.as_ref());
+            } else if let Some(handles) = snapshot.handles.remove(&session.id) {
+                self.state.handles_mut().insert(session.id.clone(), handles);
+            }
+        }
+        Self::preserve_live_orchestration_progress(&mut snapshot.sessions, &live_progress);
+        self.state.replace_sessions(snapshot.sessions);
+        self.state.sync_from_handles();
+        self.state
+            .replace_session_worktree_availability(snapshot.worktree_availability);
+        self.replace_session_branch_names(snapshot.branch_names);
+        self.stats_activity = snapshot.stats_activity;
+        self.restore_table_selection(selected_id.as_deref(), selected_index);
+        self.ensure_mode_session_exists(mode);
+        let active_session_ids = self
+            .state
+            .sessions
+            .iter()
+            .map(|session| session.id.clone())
+            .collect();
+        self.state
+            .retain_follow_up_task_positions(&active_session_ids);
+        self.state.retain_session_git_statuses(&active_session_ids);
+        if let Some((count, updated_at)) = snapshot.metadata {
+            self.state.row_count = count;
+            self.state.updated_at_max = updated_at;
+        }
 
         true
     }
@@ -54,6 +267,7 @@ impl SessionManager {
         projects: &ProjectManager,
         services: &AppServices,
     ) {
+        self.pending_refresh = None;
         let sessions_metadata = services.db().sessions().load_sessions_metadata().await.ok();
         self.reload_sessions(mode, projects, services, sessions_metadata)
             .await;
@@ -967,7 +1181,12 @@ mod tests {
 
     /// Builds a session manager with deterministic time and empty state.
     fn session_manager_fixture(clock: Arc<dyn Clock>) -> SessionManager {
-        let git_client: Arc<dyn git::GitClient> = Arc::new(git::MockGitClient::new());
+        let mut git_client = git::MockGitClient::new();
+        git_client
+            .expect_detect_git_info()
+            .times(0..)
+            .returning(|_| Box::pin(async { None }));
+        let git_client: Arc<dyn git::GitClient> = Arc::new(git_client);
 
         SessionManager::new(
             SessionDefaults {
@@ -1052,6 +1271,52 @@ mod tests {
             .refresh_sessions_if_needed(&mut mode, &projects, &services)
             .await;
 
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !session_manager
+                .pending_refresh
+                .as_ref()
+                .expect("pending refresh")
+                .task
+                .is_finished()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("metadata check completes");
+        assert!(
+            !session_manager
+                .refresh_sessions_if_needed(&mut mode, &projects, &services)
+                .await
+        );
+        session_manager.request_session_refresh(&mode, &projects, &services);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !session_manager
+                .pending_refresh
+                .as_ref()
+                .expect("pending refresh")
+                .task
+                .is_finished()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("forced snapshot completes");
+        let other_projects = ProjectManager::new(
+            2,
+            "other".into(),
+            None,
+            None,
+            Vec::new(),
+            temp_dir.path().to_path_buf(),
+        );
+        assert!(
+            !session_manager
+                .refresh_sessions_if_needed(&mut mode, &other_projects, &services)
+                .await
+        );
+
         // Assert
         assert!(session_manager.state.refresh_deadline > original_deadline);
         assert_eq!(session_manager.state.row_count, 0);
@@ -1063,6 +1328,19 @@ mod tests {
         // Arrange
         let session = test_session(PathBuf::from("/tmp/session"), None, Status::Done);
         let database = database_with_session(&session).await;
+        for index in 0..9 {
+            database
+                .sessions()
+                .insert_session(
+                    &format!("extra-{index}"),
+                    session.agent.model().as_str(),
+                    "main",
+                    "Done",
+                    1,
+                )
+                .await
+                .expect("extra session");
+        }
         let now = Instant::now();
         let fake_clock = Arc::new(FakeClock::new(now, SystemTime::UNIX_EPOCH));
         let clock: Arc<dyn Clock> = fake_clock.clone();
@@ -1082,10 +1360,119 @@ mod tests {
             .refresh_sessions_if_needed(&mut mode, &projects, &services)
             .await;
 
+        assert!(session_manager.state.sessions.is_empty());
+        session_manager.request_session_refresh(&mode, &projects, &services);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !session_manager
+                .refresh_sessions_if_needed(&mut mode, &projects, &services)
+                .await
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("background snapshot must complete");
+
         // Assert
-        assert_eq!(session_manager.state.row_count, 1);
-        assert_eq!(session_manager.state.sessions.len(), 1);
-        assert_eq!(session_manager.state.sessions[0].id, "session-id");
+        assert_eq!(session_manager.state.row_count, 10);
+        assert_eq!(session_manager.state.sessions.len(), 10);
+        assert!(
+            session_manager
+                .state
+                .sessions
+                .iter()
+                .any(|session| session.id == "session-id")
+        );
+    }
+
+    #[tokio::test]
+    async fn background_refresh_preserves_live_worker_updates() {
+        // Arrange
+        let session = test_session(PathBuf::from("/tmp/session"), None, Status::Review);
+        let database = database_with_session(&session).await;
+        let clock: Arc<dyn Clock> =
+            Arc::new(FakeClock::new(Instant::now(), SystemTime::UNIX_EPOCH));
+        let mut manager = session_manager_with_session(clock, session);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let mut git_client = git::MockGitClient::new();
+        git_client.expect_detect_git_info().once().returning({
+            let entered = Arc::clone(&entered);
+            let resume = Arc::clone(&resume);
+            move |_| {
+                let entered = Arc::clone(&entered);
+                let resume = Arc::clone(&resume);
+                Box::pin(async move {
+                    entered.notify_one();
+                    resume.notified().await;
+                    Some("wt/live".to_string())
+                })
+            }
+        });
+        manager.git_client = Arc::new(git_client);
+        let mut fs_client = create_passthrough_mock_fs_client();
+        fs_client.checkpoint();
+        fs_client.expect_is_dir().return_const(true);
+        fs_client.expect_read_file().never();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let services = AppServices::new_with_agent_clis(
+            PathBuf::from("/tmp/agentty-tests"),
+            Arc::new(crate::infra::clock::RealClock),
+            event_tx,
+            crate::app::service::AppServiceDeps {
+                app_server_client_override: Some(crate::test_support::mock_app_server()),
+                available_agent_kinds: AgentKind::ALL.to_vec(),
+                clipboard_image_client_override: None,
+                fs_client: Arc::new(fs_client),
+                git_client: manager.git_client.clone(),
+                one_shot_client_override: None,
+                personality_catalog_client_override: None,
+                repositories: database.clone(),
+                review_request_client: Arc::new(forge::MockReviewRequestClient::new()),
+            },
+            crate::domain::agent::AgentCliInfo::from_kinds(AgentKind::ALL),
+        );
+        let temp_dir = tempdir().expect("temporary directory");
+        let projects = empty_project_manager(temp_dir.path().to_path_buf());
+        let mut mode = AppMode::List;
+
+        manager.state.table_state.select(Some(0));
+
+        // Act
+        manager.request_session_refresh(&mode, &projects, &services);
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("background probe starts");
+        let handles = manager
+            .state
+            .handles()
+            .get("session-id")
+            .expect("live handles");
+        *handles.status.lock().expect("status") = Status::InProgress;
+        let live_transcript = crate::test_support::assistant_transcript("New streamed answer");
+        *handles.transcript.lock().expect("transcript") = live_transcript.clone();
+        mode = AppMode::View {
+            session_id: "session-id".into(),
+            scroll_offset: None,
+        };
+        resume.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !manager
+                .refresh_sessions_if_needed(&mut mode, &projects, &services)
+                .await
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("snapshot applied");
+
+        // Assert
+        assert_eq!(manager.state.sessions[0].status, Status::InProgress);
+        assert_eq!(
+            manager.state.sessions[0].transcript.as_ref(),
+            Some(&live_transcript)
+        );
     }
 
     /// Test clock implementation with mutable `Instant` and `SystemTime`.

@@ -1,11 +1,19 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+#[cfg(unix)]
+use std::ffi::OsString;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Output;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 #[cfg(unix)]
 use rustix::fs::{self as rustix_fs, Access};
+use tokio::sync::Semaphore;
 use tokio::task::spawn_blocking;
 use tokio::time;
 
@@ -16,8 +24,8 @@ use super::rebase::{
 };
 use super::repo::{
     AsyncGitCommand, AsyncGitCommandOutput, AsyncGitCommandRunner, ProcessAsyncGitCommandRunner,
-    command_output_detail, run_git_command, run_git_command_output_sync,
-    run_git_command_output_with_env_sync, run_git_command_sync, run_git_command_with_runner,
+    command_output_detail, run_git_command, run_git_command_bytes_with_runner,
+    run_git_command_output_sync, run_git_command_sync, run_git_command_with_runner,
 };
 
 /// Map of local branch names to their ahead/behind counts relative to their
@@ -25,6 +33,11 @@ use super::repo::{
 pub type BranchTrackingMap = HashMap<String, Option<(u32, u32)>>;
 
 const COMMIT_ALL_HOOK_RETRY_ATTEMPTS: usize = 5;
+const INDEX_COPY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Four path-hashed lanes bound blocking index copies across all requests.
+/// Repeated copies of the same path share a lane, including after cancellation.
+static INDEX_COPY_LANES: LazyLock<[Arc<Semaphore>; 4]> =
+    LazyLock::new(|| std::array::from_fn(|_| Arc::new(Semaphore::new(1))));
 const MAX_WORKTREE_FILE_BYTE_COUNT: usize = 1024 * 1024;
 const PRE_COMMIT_CONFIG_FILES: [&str; 2] = [".pre-commit-config.yaml", ".pre-commit-config.yml"];
 
@@ -345,75 +358,128 @@ async fn diff_output(
     base_branch: String,
     name_only: bool,
 ) -> Result<String, GitError> {
-    spawn_blocking(move || -> Result<String, GitError> {
-        let index_path = resolve_diff_index_path(&repo_path)?;
-        let index_path = PathBuf::from(index_path.trim());
-        let index_path = if index_path.is_absolute() {
-            index_path
-        } else {
-            repo_path.join(index_path)
-        };
+    let index_path = resolve_diff_index_path(&repo_path, &ProcessAsyncGitCommandRunner).await?;
+    let index_path = if index_path.is_absolute() {
+        index_path
+    } else {
+        repo_path.join(index_path)
+    };
 
-        diff_output_after_index_resolution(&repo_path, &base_branch, name_only, &index_path)
-    })
-    .await?
+    diff_output_after_index_resolution(&repo_path, &base_branch, name_only, &index_path).await
 }
 
-/// Generates diff output after the real index path has been resolved.
-fn diff_output_after_index_resolution(
+/// Generates diff output with cancellable, deadline-bound subprocesses. Only
+/// copying the isolated index runs on a bounded blocking lane.
+async fn diff_output_after_index_resolution(
     repo_path: &Path,
     base_branch: &str,
     name_only: bool,
     index_path: &Path,
 ) -> Result<String, GitError> {
-    let result = (|| -> Result<String, GitError> {
-        let temporary_index = copy_git_index_to_temp(index_path)?;
-
-        run_git_command_with_index_sync(
+    let result = async {
+        let temporary_index = copy_git_index_with_lane(
+            index_path.to_path_buf(),
+            index_copy_lane(index_path),
+            INDEX_COPY_TIMEOUT,
+            copy_git_index_to_temp,
+        )
+        .await?;
+        run_git_command_with_index(
             repo_path,
             &["add", "-A", "--intent-to-add"],
             &temporary_index,
             "Git add --intent-to-add failed",
-        )?;
+        )
+        .await?;
 
-        let merge_base_output =
-            run_git_command_output_sync(repo_path, &["merge-base", "HEAD", base_branch])?;
-
-        let diff_target = if merge_base_output.status.success() {
+        let merge_base_output = ProcessAsyncGitCommandRunner
+            .run(AsyncGitCommand::new(
+                repo_path.to_path_buf(),
+                vec!["merge-base".into(), "HEAD".into(), base_branch.into()],
+            ))
+            .await?;
+        let diff_target = if merge_base_output.success() {
             resolve_diff_target(
                 repo_path,
                 base_branch,
                 String::from_utf8_lossy(&merge_base_output.stdout).trim(),
-            )?
+            )
+            .await?
         } else {
             base_branch.to_string()
         };
-
         let args = if name_only {
             vec!["diff", "--name-only", diff_target.as_str()]
         } else {
             vec!["diff", diff_target.as_str()]
         };
 
-        run_git_command_with_index_sync(repo_path, &args, &temporary_index, "Git diff failed")
-    })();
+        run_git_command_with_index(repo_path, &args, &temporary_index, "Git diff failed").await
+    }
+    .await;
 
-    result.map_err(|error| classify_diff_repository_error(repo_path, error))
+    match result {
+        Ok(output) => Ok(output),
+        Err(error) => Err(classify_diff_repository_error(repo_path, error).await),
+    }
 }
 
-/// Resolves the real index path and classifies a reclaimed repository.
-fn resolve_diff_index_path(repo_path: &Path) -> Result<String, GitError> {
-    run_git_command_sync(
-        repo_path,
-        &["rev-parse", "--git-path", "index"],
+/// Resolves the native index path and classifies a reclaimed repository.
+async fn resolve_diff_index_path(
+    repo_path: &Path,
+    command_runner: &dyn AsyncGitCommandRunner,
+) -> Result<PathBuf, GitError> {
+    let result = run_git_command_bytes_with_runner(
+        AsyncGitCommand::new(
+            repo_path.to_path_buf(),
+            vec!["rev-parse".into(), "--git-path".into(), "index".into()],
+        ),
         "Git index path resolution failed",
+        command_runner,
     )
-    .map_err(|error| classify_diff_repository_error(repo_path, error))
+    .await
+    .and_then(parse_diff_index_path);
+
+    match result {
+        Ok(path) => Ok(path),
+        Err(error) => Err(classify_diff_repository_error(repo_path, error).await),
+    }
+}
+
+/// Removes only Git's output terminator, preserving native path bytes and
+/// whitespace that belongs to the filename. Non-Unix platforms reject invalid
+/// UTF-8 rather than silently substituting a different path.
+fn parse_diff_index_path(mut stdout: Vec<u8>) -> Result<PathBuf, GitError> {
+    if stdout.ends_with(b"\n") {
+        stdout.truncate(stdout.len() - 1);
+        #[cfg(not(unix))]
+        if stdout.ends_with(b"\r") {
+            stdout.truncate(stdout.len() - 1);
+        }
+    }
+    if stdout.is_empty() {
+        return Err(GitError::OutputParse("Git index path is empty".to_string()));
+    }
+
+    #[cfg(unix)]
+    let path = OsString::from_vec(stdout);
+    #[cfg(not(unix))]
+    let path = String::from_utf8(stdout)
+        .map_err(|error| GitError::OutputParse(format!("Invalid Git index path: {error}")))?;
+
+    Ok(PathBuf::from(path))
 }
 
 /// Preserves ordinary Git failures while typing unavailable repository paths.
-fn classify_diff_repository_error(repo_path: &Path, error: GitError) -> GitError {
-    if !diff_repository_is_unavailable(repo_path) {
+async fn classify_diff_repository_error(repo_path: &Path, error: GitError) -> GitError {
+    let probe = ProcessAsyncGitCommandRunner
+        .run(AsyncGitCommand::new(
+            repo_path.to_path_buf(),
+            vec!["rev-parse".into(), "--git-dir".into()],
+        ))
+        .await;
+    let missing_directory = !tokio::fs::try_exists(repo_path).await.unwrap_or(true);
+    if !missing_directory && !diff_repository_probe_is_unavailable(probe) {
         return error;
     }
 
@@ -422,24 +488,9 @@ fn classify_diff_repository_error(repo_path: &Path, error: GitError) -> GitError
     }
 }
 
-/// Probes repository discovery without interpreting localized Git output.
-fn diff_repository_is_unavailable(repo_path: &Path) -> bool {
-    if !repo_path.is_dir() {
-        return true;
-    }
-
-    diff_repository_probe_is_unavailable(run_git_command_output_sync(
-        repo_path,
-        &["rev-parse", "--git-dir"],
-    ))
-}
-
 /// Treats only a completed, unsuccessful discovery probe as unavailable.
-fn diff_repository_probe_is_unavailable(probe: Result<Output, GitError>) -> bool {
-    match probe {
-        Ok(output) => !output.status.success(),
-        Err(_) => false,
-    }
+fn diff_repository_probe_is_unavailable(probe: Result<AsyncGitCommandOutput, GitError>) -> bool {
+    probe.is_ok_and(|output| !output.success())
 }
 
 /// Reads one repository-relative worktree file with a fixed memory bound.
@@ -508,6 +559,46 @@ fn worktree_file_content(bytes: Vec<u8>) -> WorktreeFileContent {
     }
 }
 
+/// Selects a stable lane so the same index cannot accumulate blocking copies.
+/// Hash collisions serialize unrelated indexes, keeping the registry bounded.
+fn index_copy_lane(index_path: &Path) -> Arc<Semaphore> {
+    let mut hasher = DefaultHasher::new();
+    index_path.hash(&mut hasher);
+    let lane = usize::from(hasher.finish().to_le_bytes()[0]) % INDEX_COPY_LANES.len();
+
+    Arc::clone(&INDEX_COPY_LANES[lane])
+}
+
+/// Bounds both queueing and waiting for a copy. Blocking filesystem calls
+/// cannot be aborted, so the closure retains its lane after caller cancellation
+/// or timeout until the copy actually exits. Waiting requests remain async and
+/// cancelable without spawning more blocking work.
+async fn copy_git_index_with_lane(
+    index_path: PathBuf,
+    lane: Arc<Semaphore>,
+    timeout: Duration,
+    copy: impl FnOnce(&Path) -> Result<tempfile::TempPath, GitError> + Send + 'static,
+) -> Result<tempfile::TempPath, GitError> {
+    time::timeout(timeout, async {
+        let permit = lane
+            .acquire_owned()
+            .await
+            .map_err(|error| GitError::Io(std::io::Error::other(error)))?;
+
+        spawn_blocking(move || {
+            let _permit = permit;
+
+            copy(&index_path)
+        })
+        .await?
+    })
+    .await
+    .map_err(|_| GitError::CommandTimedOut {
+        command: "copy git index".to_string(),
+        timeout,
+    })?
+}
+
 /// Copies one repository index beside its source and returns the temporary
 /// path used by isolated read-only diff commands.
 fn copy_git_index_to_temp(index_path: &Path) -> Result<tempfile::TempPath, GitError> {
@@ -532,28 +623,25 @@ fn copy_git_index_to_temp(index_path: &Path) -> Result<tempfile::TempPath, GitEr
 
 /// Runs one git command against a temporary index without touching the real
 /// index.
-fn run_git_command_with_index_sync(
+async fn run_git_command_with_index(
     repo_path: &Path,
     args: &[&str],
     index_path: &Path,
     error_context: &str,
 ) -> Result<String, GitError> {
-    let output = run_git_command_output_with_env_sync(
-        repo_path,
-        args,
-        &[("GIT_INDEX_FILE", index_path.as_os_str())],
-    )?;
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: format!("git {}", args.join(" ")),
-            stderr: format!(
-                "{error_context}: {}",
-                command_output_detail(&output.stdout, &output.stderr)
-            ),
-        });
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    run_git_command_with_runner(
+        AsyncGitCommand::new(
+            repo_path.to_path_buf(),
+            args.iter().map(|arg| (*arg).to_string()).collect(),
+        )
+        .with_environment(vec![(
+            "GIT_INDEX_FILE".into(),
+            index_path.as_os_str().to_os_string(),
+        )]),
+        error_context,
+        &ProcessAsyncGitCommandRunner,
+    )
+    .await
 }
 
 /// Returns whether a repository or worktree has no uncommitted changes.
@@ -654,8 +742,8 @@ async fn pull_rebase_with_runner(
 ) -> Result<PullRebaseResult, GitError> {
     let pull_arguments = pull_rebase_arguments(&repo_path, command_runner).await?;
     let command = AsyncGitCommand::new(repo_path, pull_arguments).with_environment(vec![
-        ("GIT_EDITOR".to_string(), ":".to_string()),
-        ("GIT_SEQUENCE_EDITOR".to_string(), ":".to_string()),
+        ("GIT_EDITOR".into(), ":".into()),
+        ("GIT_SEQUENCE_EDITOR".into(), ":".into()),
     ]);
     let output =
         run_async_git_command_with_index_lock_retry(command, command_runner, retry_delay).await?;
@@ -1372,13 +1460,18 @@ fn parse_branch_tracking_counts(track: &str) -> Option<(u32, u32)> {
 /// Starts from the merge-base fallback and, when `git cherry` reports leading
 /// commits already applied to `base_branch`, advances the baseline to the last
 /// such commit so squash-merged session changes are not shown again.
-fn resolve_diff_target(
+async fn resolve_diff_target(
     repo_path: &Path,
     base_branch: &str,
     merge_base: &str,
 ) -> Result<String, GitError> {
-    let cherry_output = run_git_command_output_sync(repo_path, &["cherry", base_branch, "HEAD"])?;
-    if !cherry_output.status.success() {
+    let cherry_output = ProcessAsyncGitCommandRunner
+        .run(AsyncGitCommand::new(
+            repo_path.to_path_buf(),
+            vec!["cherry".into(), base_branch.into(), "HEAD".into()],
+        ))
+        .await?;
+    if !cherry_output.success() {
         return Ok(merge_base.to_string());
     }
 
@@ -1700,10 +1793,13 @@ pub(super) fn is_no_upstream_error(detail: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::future::{Future, poll_fn};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::{Command, Output};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::Poll;
 
     use mockall::Sequence;
     use mockall::predicate::function;
@@ -1839,6 +1935,312 @@ mod tests {
         assert_eq!(status_after, status_before);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn index_resolution_preserves_native_bytes_and_filename_whitespace() {
+        // Arrange
+        let path_bytes = b" /repo-\xff/.git/worktrees/topic/index \t\r";
+        let mut stdout = path_bytes.to_vec();
+        stdout.push(b'\n');
+        let mut runner = MockAsyncGitCommandRunner::new();
+        runner
+            .expect_run()
+            .once()
+            .with(function(|command: &AsyncGitCommand| {
+                command.arguments == ["rev-parse", "--git-path", "index"]
+            }))
+            .return_once(move |_| {
+                Box::pin(async move { Ok(async_git_output(0, stdout, Vec::new())) })
+            });
+
+        // Act
+        let path = resolve_diff_index_path(Path::new("worktree"), &runner).await;
+
+        // Assert
+        assert_eq!(
+            path.expect("native index path"),
+            PathBuf::from(OsString::from_vec(path_bytes.to_vec()))
+        );
+    }
+
+    #[test]
+    fn index_path_parser_preserves_paths_with_and_without_output_terminators() {
+        // Arrange
+        let cases = [
+            (b"relative index\n".to_vec(), "relative index"),
+            (b"relative index".to_vec(), "relative index"),
+            (b" index \t\n".to_vec(), " index \t"),
+            (b"index\n\n".to_vec(), "index\n"),
+        ];
+
+        for (stdout, expected) in cases {
+            // Act
+            let path = parse_diff_index_path(stdout);
+
+            // Assert
+            assert_eq!(path.expect("index path"), PathBuf::from(expected));
+        }
+    }
+
+    #[test]
+    fn index_path_parser_rejects_empty_output() {
+        // Arrange
+        for stdout in [Vec::new(), b"\n".to_vec()] {
+            // Act
+            let result = parse_diff_index_path(stdout);
+
+            // Assert
+            assert!(matches!(result, Err(GitError::OutputParse(_))));
+        }
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn index_path_parser_handles_crlf_and_rejects_invalid_utf8() {
+        // Arrange
+        let valid = b"index\r\n".to_vec();
+        let invalid = b"index-\xff\n".to_vec();
+
+        // Act
+        let path = parse_diff_index_path(valid);
+        let error = parse_diff_index_path(invalid);
+
+        // Assert
+        assert_eq!(path.expect("CRLF-terminated path"), PathBuf::from("index"));
+        assert!(matches!(error, Err(GitError::OutputParse(_))));
+    }
+
+    #[tokio::test]
+    async fn diff_in_linked_worktree_preserves_native_repository_paths() {
+        // Arrange
+        let temp_dir = tempdir().expect("temporary directory");
+        let initial_repo_path = temp_dir.path().join("initial-repo");
+        fs::create_dir(&initial_repo_path).expect("initial repository directory");
+        setup_test_git_repo(&initial_repo_path);
+
+        // Linux exercises a real non-UTF-8 repository name. APFS cannot create
+        // such names; other platforms exercise the same linked-worktree flow
+        // with spaces, while the Unix runner test checks arbitrary path bytes.
+        #[cfg(target_os = "linux")]
+        let repo_path = temp_dir
+            .path()
+            .join(OsString::from_vec(b"repo-\xff".to_vec()));
+        #[cfg(not(target_os = "linux"))]
+        let repo_path = temp_dir.path().join("repo with spaces");
+        fs::rename(initial_repo_path, &repo_path).expect("native repository directory");
+        let worktree_path = temp_dir.path().join("linked-worktree");
+        crate::create_worktree(
+            repo_path.clone(),
+            worktree_path.clone(),
+            "topic".to_string(),
+            "main".to_string(),
+        )
+        .await
+        .expect("linked worktree");
+        fs::write(worktree_path.join("README.md"), "staged change\n").expect("staged content");
+        run_git_command(&worktree_path, &["add", "README.md"]);
+        fs::write(
+            worktree_path.join("README.md"),
+            "staged change\nunstaged change\n",
+        )
+        .expect("unstaged content");
+        fs::write(worktree_path.join("new.txt"), "untracked change\n").expect("untracked content");
+        let main_index = repo_path.join(".git/index");
+        let linked_index = repo_path.join(".git/worktrees/linked-worktree/index");
+        let main_index_before = fs::read(&main_index).expect("main index");
+        let linked_index_before = fs::read(&linked_index).expect("linked index");
+
+        // Act
+        let patch = diff(worktree_path.clone(), "main".to_string()).await;
+        let paths = diff_changed_files(worktree_path, "main".to_string()).await;
+
+        // Assert
+        let patch = patch.expect("linked-worktree diff");
+        assert!(patch.contains("staged change"));
+        assert!(patch.contains("unstaged change"));
+        assert!(patch.contains("untracked change"));
+        assert_eq!(paths.expect("changed paths"), ["README.md", "new.txt"]);
+        assert_eq!(fs::read(main_index).expect("main index"), main_index_before);
+        assert_eq!(
+            fs::read(linked_index).expect("linked index"),
+            linked_index_before
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn diff_preserves_non_utf8_index_paths_and_the_real_index() {
+        // Arrange
+        let temp_dir = tempdir().expect("temporary directory");
+        setup_test_git_repo(temp_dir.path());
+        let index_path = PathBuf::from(std::ffi::OsString::from_vec(b"repo-\xff/index".to_vec()));
+        let index_before = fs::read(temp_dir.path().join(".git/index")).expect("real index");
+        // Inspect the path bytes inside a real Git child. This also works on
+        // filesystems that cannot create non-UTF-8 filenames, including APFS.
+        let arguments = [
+            "-c",
+            r#"alias.check-index=!test "$GIT_INDEX_FILE" = "$(printf 'repo-\377/index')""#,
+            "check-index",
+        ];
+
+        // Act
+        let result = run_git_command_with_index(
+            temp_dir.path(),
+            &arguments,
+            &index_path,
+            "Git index path bytes changed",
+        )
+        .await;
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            fs::read(temp_dir.path().join(".git/index")).expect("real index"),
+            index_before,
+        );
+    }
+
+    /// Builds a copy callback that records when blocking work begins.
+    fn recording_index_copy(
+        started: Arc<AtomicBool>,
+    ) -> impl FnOnce(&Path) -> Result<tempfile::TempPath, GitError> {
+        move |path| {
+            started.store(true, Ordering::SeqCst);
+
+            copy_git_index_to_temp(path)
+        }
+    }
+
+    #[tokio::test]
+    async fn canceled_index_copy_retains_its_lane_and_discards_waiting_copies() {
+        // Arrange
+        let temp_dir = tempdir().expect("temporary directory");
+        let index_path = temp_dir.path().join("index");
+        fs::write(&index_path, "index content").expect("index fixture");
+        let lane = index_copy_lane(&index_path);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let request = tokio::spawn(copy_git_index_with_lane(
+            index_path.clone(),
+            Arc::clone(&lane),
+            INDEX_COPY_TIMEOUT,
+            move |path| {
+                started_tx.send(()).expect("copy started");
+                release_rx.recv().expect("release copy");
+
+                copy_git_index_to_temp(path)
+            },
+        ));
+        started_rx.await.expect("blocking copy started");
+        let duplicate_started = Arc::new(AtomicBool::new(false));
+        let resumed_copy_started = Arc::new(AtomicBool::new(false));
+
+        // Act
+        request.abort();
+        let cancellation = request.await;
+        let mut duplicate = Box::pin(copy_git_index_with_lane(
+            index_path.clone(),
+            index_copy_lane(&index_path),
+            INDEX_COPY_TIMEOUT,
+            recording_index_copy(Arc::clone(&duplicate_started)),
+        ));
+        poll_fn(|context| {
+            assert!(duplicate.as_mut().poll(context).is_pending());
+
+            Poll::Ready(())
+        })
+        .await;
+        drop(duplicate);
+        let lane_was_held = lane.try_acquire().is_err();
+        release_tx.send(()).expect("release original copy");
+        let next_copy = copy_git_index_with_lane(
+            index_path,
+            lane,
+            Duration::from_secs(1),
+            recording_index_copy(Arc::clone(&resumed_copy_started)),
+        )
+        .await;
+
+        // Assert
+        assert!(resumed_copy_started.load(Ordering::SeqCst));
+        assert!(cancellation.expect_err("request canceled").is_cancelled());
+        assert!(lane_was_held);
+        assert!(!duplicate_started.load(Ordering::SeqCst));
+        assert_eq!(
+            fs::read(next_copy.expect("lane reusable")).expect("copied index"),
+            b"index content"
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_index_copy_lane_returns_an_error_without_copying() {
+        // Arrange
+        let lane = Arc::new(Semaphore::new(1));
+        lane.close();
+
+        // Act
+        let result = copy_git_index_with_lane(
+            PathBuf::from("index"),
+            lane,
+            INDEX_COPY_TIMEOUT,
+            copy_git_index_to_temp,
+        )
+        .await;
+
+        // Assert
+        assert!(matches!(result, Err(GitError::Io(_))));
+    }
+
+    #[tokio::test]
+    async fn index_copy_deadline_bounds_running_and_queued_requests() {
+        // Arrange
+        let temp_dir = tempdir().expect("temporary directory");
+        let index_path = temp_dir.path().join("index");
+        fs::write(&index_path, "index content").expect("index fixture");
+        let lane = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let request = tokio::spawn(copy_git_index_with_lane(
+            index_path.clone(),
+            Arc::clone(&lane),
+            Duration::from_millis(25),
+            move |path| {
+                started_tx.send(()).expect("copy started");
+                release_rx.recv().expect("release copy");
+
+                copy_git_index_to_temp(path)
+            },
+        ));
+        started_rx.await.expect("blocking copy started");
+        let duplicate_started = Arc::new(AtomicBool::new(false));
+
+        // Act
+        let running_result = request.await.expect("copy request joined");
+        let queued_result = copy_git_index_with_lane(
+            index_path,
+            Arc::clone(&lane),
+            Duration::from_millis(25),
+            recording_index_copy(Arc::clone(&duplicate_started)),
+        )
+        .await;
+        let lane_was_held = lane.try_acquire().is_err();
+        release_tx.send(()).expect("release timed-out copy");
+        let released = time::timeout(Duration::from_secs(1), lane.acquire()).await;
+
+        // Assert
+        assert!(matches!(
+            running_result,
+            Err(GitError::CommandTimedOut { .. })
+        ));
+        assert!(matches!(
+            queued_result,
+            Err(GitError::CommandTimedOut { .. })
+        ));
+        assert!(lane_was_held);
+        assert!(!duplicate_started.load(Ordering::SeqCst));
+        assert!(released.is_ok());
+    }
+
     #[tokio::test]
     async fn diff_reports_repository_unavailable_outside_git_repository() {
         // Arrange
@@ -1855,15 +2257,15 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn diff_reports_repository_unavailable_when_removed_after_index_resolution() {
+    #[tokio::test]
+    async fn diff_reports_repository_unavailable_when_removed_after_index_resolution() {
         // Arrange
         let temp_dir = tempdir().expect("failed to create temp dir");
         let preserved_index_dir = tempdir().expect("failed to create preserved index dir");
         setup_test_git_repo(temp_dir.path());
-        let index_path =
-            resolve_diff_index_path(temp_dir.path()).expect("index path should resolve");
-        let index_path = PathBuf::from(index_path.trim());
+        let index_path = resolve_diff_index_path(temp_dir.path(), &ProcessAsyncGitCommandRunner)
+            .await
+            .expect("index path should resolve");
         let index_path = temp_dir.path().join(index_path);
         let preserved_index_path = preserved_index_dir.path().join("index");
         fs::copy(index_path, &preserved_index_path).expect("index copy should succeed");
@@ -1875,7 +2277,8 @@ mod tests {
             "main",
             false,
             &preserved_index_path,
-        );
+        )
+        .await;
 
         // Assert
         assert!(matches!(
@@ -1907,8 +2310,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn diff_repository_error_classification_preserves_unrelated_failures() {
+    #[tokio::test]
+    async fn diff_repository_error_classification_preserves_unrelated_failures() {
         // Arrange
         let temp_dir = tempdir().expect("failed to create temp dir");
         setup_test_git_repo(temp_dir.path());
@@ -1918,7 +2321,7 @@ mod tests {
         };
 
         // Act
-        let classified = classify_diff_repository_error(temp_dir.path(), error);
+        let classified = classify_diff_repository_error(temp_dir.path(), error).await;
 
         // Assert
         assert!(matches!(
@@ -1929,8 +2332,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn diff_repository_error_classification_ignores_localized_diagnostic() {
+    #[tokio::test]
+    async fn diff_repository_error_classification_ignores_localized_diagnostic() {
         // Arrange
         let temp_dir = tempdir().expect("failed to create temp dir");
         let error = GitError::CommandFailed {
@@ -1939,7 +2342,7 @@ mod tests {
         };
 
         // Act
-        let classified = classify_diff_repository_error(temp_dir.path(), error);
+        let classified = classify_diff_repository_error(temp_dir.path(), error).await;
 
         // Assert
         assert!(matches!(
@@ -1964,8 +2367,8 @@ mod tests {
         assert!(!unavailable);
     }
 
-    #[test]
-    fn diff_repository_error_classification_types_missing_directory() {
+    #[tokio::test]
+    async fn diff_repository_error_classification_types_missing_directory() {
         // Arrange
         let temp_dir = tempdir().expect("failed to create temp dir");
         let missing_path = temp_dir.path().join("removed-worktree");
@@ -1975,7 +2378,7 @@ mod tests {
         ));
 
         // Act
-        let classified = classify_diff_repository_error(&missing_path, error);
+        let classified = classify_diff_repository_error(&missing_path, error).await;
 
         // Assert
         assert!(matches!(
@@ -2124,8 +2527,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn run_git_command_with_index_sync_maps_process_and_command_failures() {
+    #[tokio::test]
+    async fn run_git_command_with_index_maps_process_and_command_failures() {
         // Arrange
         let temp_dir = tempdir().expect("failed to create temp dir");
         let index_path = temp_dir.path().join("index");
@@ -2133,18 +2536,20 @@ mod tests {
         fs::write(&index_path, []).expect("failed to create temporary index");
 
         // Act
-        let process_error = run_git_command_with_index_sync(
+        let process_error = run_git_command_with_index(
             &missing_repo_path,
             &["status"],
             &index_path,
             "Expected process failure",
-        );
-        let command_error = run_git_command_with_index_sync(
+        )
+        .await;
+        let command_error = run_git_command_with_index(
             temp_dir.path(),
             &["definitely-not-a-git-command"],
             &index_path,
             "Expected git failure",
-        );
+        )
+        .await;
 
         // Assert
         assert!(matches!(
@@ -2541,8 +2946,8 @@ mod tests {
                     command.arguments == ["pull", "--rebase", "origin", "main"]
                         && command.environment
                             == [
-                                ("GIT_EDITOR".to_string(), ":".to_string()),
-                                ("GIT_SEQUENCE_EDITOR".to_string(), ":".to_string()),
+                                ("GIT_EDITOR".into(), ":".into()),
+                                ("GIT_SEQUENCE_EDITOR".into(), ":".into()),
                             ]
                 }))
                 .times(1)

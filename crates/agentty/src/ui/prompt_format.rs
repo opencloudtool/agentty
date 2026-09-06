@@ -3,7 +3,6 @@
 use ratatui::text::Line;
 
 use crate::domain::agent::AgentKind;
-use crate::domain::file_entry::filter_entries;
 use crate::presentation::app_mode::ChatFocus;
 use crate::presentation::help_action;
 use crate::presentation::prompt::{
@@ -147,7 +146,7 @@ pub(crate) fn file_lookup_suggestion_list(
     max_visible: usize,
 ) -> Option<SuggestionList> {
     let (_, query) = crate::domain::input::extract_at_mention_query(input_text, cursor)?;
-    let filtered = filter_entries(&at_mention_state.all_entries, &query);
+    let filtered = at_mention_state.filtered_entries(&query);
 
     if filtered.is_empty() {
         return None;

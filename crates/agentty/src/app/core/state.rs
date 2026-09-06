@@ -712,6 +712,7 @@ impl App {
     /// session.
     async fn finish_session_creation(&mut self, session_id: &str) {
         self.process_pending_app_events().await;
+        self.refresh_sessions_now().await;
         self.reload_projects().await;
 
         let index = self
@@ -1788,6 +1789,7 @@ impl App {
             .refresh_sessions_if_needed(&mut self.mode, &self.projects, &self.services)
             .await;
         if refreshed {
+            self.publish_sync_context();
             app::review::prune_review_cache(
                 &mut self.review_cache,
                 &self.pending_focused_review_persistence,

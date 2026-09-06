@@ -1396,7 +1396,11 @@ impl App {
     async fn apply_app_event_effects(&mut self, effects: Vec<AppEventEffect>) {
         for effect in effects {
             match effect {
-                AppEventEffect::ReloadSessions => self.refresh_sessions_now().await,
+                AppEventEffect::ReloadSessions => self.sessions.request_session_refresh(
+                    &self.mode,
+                    &self.projects,
+                    &self.services,
+                ),
                 AppEventEffect::ReloadProjects => self.reload_projects().await,
                 AppEventEffect::RefreshGitStatus => self.restart_git_status_task(),
                 AppEventEffect::ApplyReviewUpdates(review_updates) => {
@@ -1911,8 +1915,7 @@ impl App {
         }
 
         if let Some(state) = at_mention_state.as_mut() {
-            state.all_entries = entries;
-            state.selected_index = 0;
+            state.replace_entries(entries);
 
             return;
         }
@@ -2612,6 +2615,44 @@ mod tests {
         ForgeKind, ReviewRequest, ReviewRequestState, ReviewRequestSummary,
     };
     use crate::presentation::app_mode::{DiffFocus, DiffLineComments};
+    use crate::presentation::prompt::{
+        PromptAttachmentState, PromptHistoryState, PromptSlashState,
+    };
+
+    #[tokio::test]
+    async fn new_mention_index_invalidates_the_visible_ranking_cache() {
+        // Arrange
+        let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+        let old_entries = vec![FileEntry {
+            path: "old.rs".into(),
+            is_dir: false,
+        }];
+        let state = PromptAtMentionState::new(old_entries);
+        let _ = state.filtered_entries("");
+        app.mode = AppMode::Prompt {
+            at_mention_state: Some(state),
+            attachment_state: PromptAttachmentState::default(),
+            focus: ChatFocus::Input,
+            history_state: PromptHistoryState::default(),
+            slash_state: PromptSlashState::default(),
+            session_id: "session-id".into(),
+            input: InputState::with_text("@".into()),
+            scroll_offset: None,
+        };
+        let entries = vec![FileEntry {
+            path: "new.rs".into(),
+            is_dir: false,
+        }];
+
+        // Act
+        app.apply_prompt_at_mention_entries("session-id", entries.clone());
+
+        // Assert
+        assert!(
+            matches!(&app.mode, AppMode::Prompt { at_mention_state: Some(state), .. }
+            if &*state.filtered_entries("") == entries.as_slice() && state.selected_index == 0)
+        );
+    }
 
     #[tokio::test]
     async fn merged_branch_eligibility_rejects_incomplete_session_context() {

@@ -223,6 +223,13 @@ impl SessionState {
 
         let session = self.sessions.remove(session_index);
         self.rebuild_session_index_by_id();
+        let selected = self.table_state.selected().and_then(|selected| {
+            self.sessions
+                .len()
+                .checked_sub(1)
+                .map(|last| selected.min(last))
+        });
+        self.table_state.select(selected);
 
         Some(session)
     }
@@ -395,6 +402,7 @@ impl SessionState {
 
     /// Updates cached worktree availability for one session after a lifecycle
     /// transition materializes or removes its worktree.
+    #[cfg(test)]
     pub(crate) fn set_session_worktree_available(&mut self, session_id: &str, is_available: bool) {
         self.session_worktree_availability
             .insert(SessionId::from(session_id), is_available);

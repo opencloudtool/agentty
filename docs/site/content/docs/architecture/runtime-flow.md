@@ -51,9 +51,9 @@ flowchart TD
   db["ag-store Database::open()<br/>WAL + keys + migrations"]
   app_new["App::new()"]
   model_migration["Migrate active retired models<br/>across saved projects"]
-  scan["Startup-only home-directory project scan<br/>then project/session snapshot load"]
+  scan["Saved project/session snapshot load"]
   fail_ops["Fail unfinished operations from previous run"]
-  background["Spawn app background tasks"]
+  background["Spawn app background tasks<br/>including project discovery"]
   runtime["runtime::run(&mut app)"]
   terminal["terminal::setup_terminal()"]
   event_reader["event::spawn_event_reader()<br/>dedicated OS thread"]
@@ -115,6 +115,23 @@ instead of returning an ambiguous error that could prompt duplicate creation.
   lag.
 - Tick interval is `50ms`; metadata-based session reload fallback is `5s`.
 
+Draft worktree preparation runs inside the serialized session worker before its first
+agent turn. The foreground can continue handling input while checkout runs. Preparation
+shares the turn cancellation token and reports failures through the turn finalizer. The
+first prompt enters the transcript only after draft preparation succeeds, so failed
+attempts can retry the staged bundle without duplicating provider replay history. The
+worker renews the turn token before operation preflight and retains it through setup and
+provider execution. Preparation checks cancellation again after acquiring the branch
+lock. Cancellation signals use live session handles even before the render snapshot
+refreshes. Terminal cancellation cleanup waits for branch work to release its lock, then
+checks for a worktree so a checkout created during cancellation is also removed.
+
+File-mention ranking caches one query per dropdown. Input selection and rendering share
+the ranked result; replacing the file index or changing the query invalidates it.
+
+Background sync probes run with bounded concurrency. Manual sync interrupts an active
+read-only refresh pass; mutating sync operations remain serialized.
+
 ## Data Channels
 
 <a id="architecture-runtime-flow-channels"></a> Agentty uses five primary runtime data
@@ -147,26 +164,35 @@ ordered effects that must run before cached snapshot updates from effects that c
 the resulting snapshot afterward. Reload effects currently run before snapshot updates;
 focused-review state application and persistence run afterward. Key behaviors:
 
-- Refresh events set reload flags instead of reloading inline; the expensive
-  home-directory project discovery runs only during `App::new()`.
+- Refresh events set reload flags instead of reloading inline; home-directory project
+  discovery runs once in the background after loading the saved catalog. Recurring
+  session refreshes coalesce into one background snapshot load; the foreground applies
+  completed snapshots only for the current project and detail view, preserving live
+  handles and selection. Session creation retains immediate snapshot visibility before
+  returning its identifier.
 - Git-status and review-request events carry a sync-context generation so stale
   completions are discarded after the active project or session changes.
 - Diff markdown preview reads carry the selected session, path, and request generation
   in `AppEvent::DiffPreviewLoaded`; the reducer applies them only to the matching
   loading diff or help-overlay snapshot.
 - Full session diffs used by Diff view, focused-review preparation, and `/apply`
-  validation run in background tasks. `AppEvent::SessionDiffLoaded` carries the session
-  and request generation; the reducer discards canceled or superseded completions, so
-  Git work never blocks terminal redraw or input handling. Automatic review checks start
-  only from completed-turn and session-status events, not unrelated per-session updates.
-  A completed turn supersedes pending review and `/apply` diff continuations before
-  queued diff results are reduced, and repeated `/apply` checks are deduplicated per
-  session. Clearing or regenerating focused review also invalidates pending `/apply`
-  continuations, whose completions revalidate the current review-ready cache generation
-  before submitting an agent turn. Sessions in `Auto Edit + Auto Address Comments` reuse
-  this continuation automatically when a ready review has actionable suggestions. Each
-  resulting turn re-enters focused review, and an in-memory per-user-prompt counter
-  stops automatic application after three turns.
+  validation run in background tasks. Dropping a pending request cancels its task and
+  active Git subprocess; repeated requests for the open loading view reuse its request.
+  Index discovery and temporary-index commands preserve native path bytes. Index copies
+  have bounded concurrency and serialize repeated copies of the same path. A canceled
+  blocking copy retains its slot until filesystem I/O finishes; queued callers remain
+  cancelable, and waiting for a copy has a deadline. `AppEvent::SessionDiffLoaded`
+  carries the session and request generation; the reducer discards canceled or
+  superseded completions, so Git work never blocks terminal redraw or input handling.
+  Automatic review checks start only from completed-turn and session-status events, not
+  unrelated per-session updates. A completed turn supersedes pending review and `/apply`
+  diff continuations before queued diff results are reduced, and repeated `/apply`
+  checks are deduplicated per session. Clearing or regenerating focused review also
+  invalidates pending `/apply` continuations, whose completions revalidate the current
+  review-ready cache generation before submitting an agent turn. Sessions in
+  `Auto Edit + Auto Address Comments` reuse this continuation automatically when a ready
+  review has actionable suggestions. Each resulting turn re-enters focused review, and
+  an in-memory per-user-prompt counter stops automatic application after three turns.
 - Externally merged review requests transition sessions to read-only `Merged`; only a
   successful user-triggered sync of the request's local target advances them to `Done`.
   Closed requests transition editable sessions to `Canceled`.

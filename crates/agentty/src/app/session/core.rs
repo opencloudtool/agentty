@@ -173,6 +173,7 @@ pub struct SessionManager {
     pub(super) git_client: Arc<dyn git::GitClient>,
     pub(super) merge_service: SessionMergeService,
     pub(super) resources: super::resource::ResourceMonitor,
+    pub(super) pending_refresh: Option<super::workflow::refresh::BackgroundSessionRefresh>,
     pub(super) state: SessionState,
     pub(super) stats_activity: Vec<DailyActivity>,
     pub(super) workflow_state: SessionWorkflowState,
@@ -215,6 +216,7 @@ impl SessionManager {
 
         Self {
             active_prompt_outputs: HashMap::new(),
+            pending_refresh: None,
             resources: super::resource::ResourceMonitor::new(Arc::new(
                 crate::infra::resource::RealResourceClient,
             )),
@@ -1078,6 +1080,7 @@ impl SessionManager {
 
     /// Updates cached worktree availability for one session after its
     /// lifecycle materializes or removes the worktree.
+    #[cfg(test)]
     pub(crate) fn set_session_worktree_available(&mut self, session_id: &str, is_available: bool) {
         self.state
             .set_session_worktree_available(session_id, is_available);

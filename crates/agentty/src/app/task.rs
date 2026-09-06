@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::app::error::AppError;
@@ -136,6 +137,7 @@ pub(super) enum SessionDiffTaskSource {
 
 /// Inputs needed to load one session diff without blocking the foreground UI.
 pub(super) struct SessionDiffTaskInput {
+    pub(super) cancellation: CancellationToken,
     pub(super) app_event_tx: mpsc::UnboundedSender<AppEvent>,
     pub(super) folder: PathBuf,
     pub(super) session_id: SessionId,
@@ -175,7 +177,9 @@ impl TaskService {
     pub(super) fn spawn_session_diff_task(input: SessionDiffTaskInput) -> u64 {
         let request_id = NEXT_SESSION_DIFF_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
-            let result = match input.source {
+            let result = tokio::select! {
+            () = input.cancellation.cancelled() => return,
+                result = async { match input.source {
                 SessionDiffTaskSource::Archived { repositories } => repositories
                     .sessions()
                     .load_session_archived_diff(&input.session_id)
@@ -205,6 +209,7 @@ impl TaskService {
                     }
                     Err(error) => Err(format!("Failed to run git diff: {error}")),
                 },
+            } } => result,
             };
             let _ = input.app_event_tx.send(AppEvent::SessionDiffLoaded {
                 request_id,
@@ -813,6 +818,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_session_diff_drops_running_git_future() {
+        // Arrange
+        let cancellation = CancellationToken::new();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut signals = Some((entered_tx, dropped_tx));
+        let mut git_client = MockGitClient::new();
+        git_client.expect_diff().once().returning(move |_, _| {
+            let (entered, dropped) = signals.take().expect("one diff invocation");
+            let mut entered = Some(entered);
+            Box::pin(std::future::poll_fn(move |_| {
+                let _dropped = &dropped;
+                if let Some(entered) = entered.take() {
+                    let _ = entered.send(());
+                }
+                std::task::Poll::Pending
+            }))
+        });
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let input = SessionDiffTaskInput {
+            cancellation: cancellation.clone(),
+            app_event_tx,
+            folder: PathBuf::from("worktree"),
+            session_id: "session".into(),
+            source: SessionDiffTaskSource::Worktree {
+                archived_fallback: None,
+                base_branch: "main".into(),
+                git_client: Arc::new(git_client),
+            },
+        };
+
+        // Act
+        TaskService::spawn_session_diff_task(input);
+        entered_rx.await.expect("diff started");
+        cancellation.cancel();
+        let dropped = tokio::time::timeout(Duration::from_secs(1), dropped_rx).await;
+
+        // Assert
+        assert!(
+            dropped
+                .expect("cancellation must drop Git promptly")
+                .is_err()
+        );
+        assert!(app_event_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
     async fn session_diff_task_falls_back_to_archived_managed_merge_diff() {
         // Arrange
         let archived_diff = "diff --git a/file.rs b/file.rs\n+archived\n";
@@ -827,6 +879,7 @@ mod tests {
         });
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
         let input = SessionDiffTaskInput {
+            cancellation: CancellationToken::new(),
             app_event_tx,
             folder: PathBuf::from("/tmp/removed-worktree"),
             session_id: "session-id".into(),
@@ -871,6 +924,7 @@ mod tests {
         });
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
         let input = SessionDiffTaskInput {
+            cancellation: CancellationToken::new(),
             app_event_tx,
             folder: PathBuf::from("/tmp/removed-worktree"),
             session_id: "session-id".into(),
@@ -915,6 +969,7 @@ mod tests {
         });
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
         let input = SessionDiffTaskInput {
+            cancellation: CancellationToken::new(),
             app_event_tx,
             folder: PathBuf::from("/tmp/removed-worktree"),
             session_id: "session-id".into(),
@@ -958,6 +1013,7 @@ mod tests {
         });
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
         let input = SessionDiffTaskInput {
+            cancellation: CancellationToken::new(),
             app_event_tx,
             folder: PathBuf::from("/tmp/live-worktree"),
             session_id: "session-id".into(),

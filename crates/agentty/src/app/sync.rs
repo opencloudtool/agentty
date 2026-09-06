@@ -20,6 +20,7 @@ use std::time::Duration;
 use ag_forge::ReviewRequestClient;
 use ag_git::GitClient;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 
 use crate::app::core::SyncReviewRequestTaskResult;
@@ -408,7 +409,6 @@ fn review_target_polling_keys(
 /// the periodic passes through the same queue.
 pub(crate) struct SyncOrchestrator {
     app_event_tx: mpsc::UnboundedSender<AppEvent>,
-    command_rx: mpsc::UnboundedReceiver<SyncCommand>,
     context_rx: watch::Receiver<SyncContext>,
     review_pass_index: u64,
     review_sync_failures: HashMap<SessionId, ReviewSyncFailureState>,
@@ -427,14 +427,13 @@ impl SyncOrchestrator {
     ) {
         let orchestrator = Self {
             app_event_tx,
-            command_rx,
             context_rx,
             review_pass_index: 0,
             review_sync_failures: HashMap::new(),
             tick_index: 0,
         };
 
-        tokio::spawn(orchestrator.run());
+        tokio::spawn(orchestrator.run(command_rx));
     }
 
     /// Runs the command/tick loop until the command channel closes.
@@ -442,30 +441,43 @@ impl SyncOrchestrator {
     /// Commands take priority over ticks, and every command-triggered pass
     /// resets the tick timer so one refresh is never immediately duplicated
     /// by the periodic cadence.
-    async fn run(mut self) {
+    async fn run(mut self, mut command_rx: mpsc::UnboundedReceiver<SyncCommand>) {
         let mut tick = tokio::time::interval(Duration::from_secs(SYNC_TICK_INTERVAL_SECONDS));
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
+        let mut pending_command = None;
         loop {
-            tokio::select! {
-                biased;
-                command = self.command_rx.recv() => {
-                    let Some(command) = command else {
-                        break;
-                    };
-
-                    match command {
-                        SyncCommand::RefreshNow => self.run_refresh_pass(true).await,
-                        SyncCommand::SyncMain(request) => self.run_sync_main(*request).await,
+            let command = if let Some(command) = pending_command.take() {
+                Some(command)
+            } else {
+                tokio::select! {
+                    biased;
+                    command = command_rx.recv() => {
+                        let Some(command) = command else { break; };
+                        Some(command)
                     }
+                    _ = tick.tick() => None,
+                }
+            };
+            let include_review_pass = match command {
+                Some(SyncCommand::SyncMain(request)) => {
+                    self.run_sync_main(*request).await;
                     tick.reset();
+                    continue;
                 }
-                _ = tick.tick() => {
-                    let include_review_pass = self.tick_index.is_multiple_of(REVIEW_REQUEST_PASS_TICKS);
+                Some(SyncCommand::RefreshNow) => true,
+                None => {
+                    let include = self.tick_index.is_multiple_of(REVIEW_REQUEST_PASS_TICKS);
                     self.tick_index = self.tick_index.wrapping_add(1);
-                    self.run_refresh_pass(include_review_pass).await;
+                    include
                 }
-            }
+            };
+            // Interrupt only read-only passes. Mutating manual sync stays serialized.
+            pending_command = tokio::select! {
+                biased;
+                command = command_rx.recv() => command,
+                () = self.run_refresh_pass(include_review_pass) => None,
+            };
+            tick.reset();
         }
     }
 
@@ -517,7 +529,7 @@ impl SyncOrchestrator {
             &branch_tracking_statuses,
             &repo_root,
             &context.session_git_status_targets,
-            context.git_client.as_ref(),
+            Arc::clone(&context.git_client),
         )
         .await;
 
@@ -560,36 +572,51 @@ impl SyncOrchestrator {
     ) -> Vec<ReviewRequestPassUpdate> {
         let review_pass_index = self.review_pass_index;
         self.review_pass_index = self.review_pass_index.wrapping_add(1);
-        let mut updates = Vec::new();
-
-        for review_request_sync_target in &context.review_request_sync_targets {
+        let mut tasks = JoinSet::new();
+        let mut completed = Vec::new();
+        for (index, target) in context.review_request_sync_targets.iter().enumerate() {
             if reject_stale_context && self.context_is_stale(context) {
-                return updates;
+                return Vec::new();
             }
-            if self.is_target_backed_off(&review_request_sync_target.session_id, review_pass_index)
-            {
+            if self.is_target_backed_off(&target.session_id, review_pass_index) {
                 continue;
             }
-
-            let result = sync_review_request_status(
-                review_request_sync_target.folder.clone(),
-                context.git_client.as_ref(),
-                review_request_sync_target.linked_review_request.clone(),
-                review_request_sync_target.published_upstream_ref.clone(),
-                context.review_request_client.as_ref(),
-            )
-            .await;
-
-            if reject_stale_context && self.context_is_stale(context) {
-                return updates;
-            }
-
-            self.record_review_sync_outcome(review_request_sync_target, &result, review_pass_index);
-            updates.push(ReviewRequestPassUpdate {
-                result,
-                target: review_request_sync_target.clone(),
+            let target = target.clone();
+            let git_client = Arc::clone(&context.git_client);
+            let review_client = Arc::clone(&context.review_request_client);
+            tasks.spawn(async move {
+                let result = sync_review_request_status(
+                    target.folder.clone(),
+                    git_client.as_ref(),
+                    target.linked_review_request.clone(),
+                    target.published_upstream_ref.clone(),
+                    review_client.as_ref(),
+                )
+                .await;
+                (index, ReviewRequestPassUpdate { result, target })
             });
+            if tasks.len() >= 4
+                && let Some(Ok(result)) = tasks.join_next().await
+            {
+                completed.push(result);
+            }
         }
+        while let Some(result) = tasks.join_next().await {
+            if let Ok(result) = result {
+                completed.push(result);
+            }
+        }
+        if reject_stale_context && self.context_is_stale(context) {
+            return Vec::new();
+        }
+        completed.sort_by_key(|(index, _)| *index);
+        let updates = completed
+            .into_iter()
+            .map(|(_, update)| {
+                self.record_review_sync_outcome(&update.target, &update.result, review_pass_index);
+                update
+            })
+            .collect();
 
         self.retain_active_failure_states(&context.review_request_sync_targets);
 
@@ -778,46 +805,61 @@ async fn session_git_statuses(
     branch_tracking_statuses: &HashMap<String, Option<(u32, u32)>>,
     repo_root: &Path,
     session_git_status_targets: &[SessionGitStatusTarget],
-    git_client: &dyn GitClient,
+    git_client: Arc<dyn GitClient>,
 ) -> HashMap<SessionId, SessionGitStatus> {
-    let mut session_git_statuses = HashMap::with_capacity(session_git_status_targets.len());
-
+    let mut statuses = HashMap::with_capacity(session_git_status_targets.len());
+    let mut tasks = JoinSet::new();
     for session_git_status_target in session_git_status_targets {
-        let base_status = git_client
-            .get_ref_ahead_behind(
-                repo_root.to_path_buf(),
-                session_git_status_target.branch_name.clone(),
-                session_git_status_target.base_branch.clone(),
-            )
-            .await
-            .ok();
-        let has_merge_conflict = match base_status {
-            Some((ahead, behind)) if ahead > 0 && behind > 0 => git_client
-                .has_merge_conflicts(
-                    repo_root.to_path_buf(),
-                    session_git_status_target.branch_name.clone(),
-                    session_git_status_target.base_branch.clone(),
-                )
-                .await
-                .ok(),
-            Some(_) => Some(false),
-            None => None,
-        };
+        let session_git_status_target = session_git_status_target.clone();
         let remote_status = branch_tracking_statuses
             .get(&session_git_status_target.branch_name)
             .copied()
             .flatten();
-        session_git_statuses.insert(
-            session_git_status_target.session_id.clone(),
-            SessionGitStatus {
-                base_status,
-                has_merge_conflict,
-                remote_status,
-            },
-        );
+        let repo_root = repo_root.to_path_buf();
+        let git_client = Arc::clone(&git_client);
+        tasks.spawn(async move {
+            let base_status = git_client
+                .get_ref_ahead_behind(
+                    repo_root.clone(),
+                    session_git_status_target.branch_name.clone(),
+                    session_git_status_target.base_branch.clone(),
+                )
+                .await
+                .ok();
+            let has_merge_conflict = match base_status {
+                Some((ahead, behind)) if ahead > 0 && behind > 0 => git_client
+                    .has_merge_conflicts(
+                        repo_root.clone(),
+                        session_git_status_target.branch_name.clone(),
+                        session_git_status_target.base_branch.clone(),
+                    )
+                    .await
+                    .ok(),
+                Some(_) => Some(false),
+                None => None,
+            };
+            (
+                session_git_status_target.session_id,
+                SessionGitStatus {
+                    base_status,
+                    has_merge_conflict,
+                    remote_status,
+                },
+            )
+        });
+        if tasks.len() >= 4
+            && let Some(Ok((session_id, status))) = tasks.join_next().await
+        {
+            statuses.insert(session_id, status);
+        }
+    }
+    while let Some(result) = tasks.join_next().await {
+        if let Ok((session_id, status)) = result {
+            statuses.insert(session_id, status);
+        }
     }
 
-    session_git_statuses
+    statuses
 }
 
 /// Runs one review-request sync against the forge.
@@ -1115,6 +1157,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manual_sync_preempts_a_stalled_background_fetch() {
+        // Arrange
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut git_client = MockGitClient::new();
+        git_client
+            .expect_find_git_repo_root()
+            .returning(|path| Box::pin(async move { Some(path) }));
+        git_client.expect_fetch_remote().once().return_once({
+            let entered = Arc::clone(&entered);
+            move |_| {
+                Box::pin(std::future::poll_fn(move |_| {
+                    let _guard = &dropped_tx;
+                    entered.notify_one();
+                    std::task::Poll::Pending
+                }))
+            }
+        });
+        let mut context = sync_context_fixture(0, Vec::new());
+        context.git_client = Arc::new(git_client);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let handle = SyncHandle::spawn(event_tx.clone(), context.clone());
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("fetch starts");
+        context.project_branch_name = None;
+
+        // Act
+        handle.sync_main_runner().start_sync_main(
+            event_tx,
+            project_sync_context(),
+            AgentModel::Gemini38Flash,
+            context,
+        );
+        let event = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("manual request preempts fetch")
+            .expect("completion");
+
+        // Assert
+        assert!(matches!(event, AppEvent::SyncMainCompleted { .. }));
+        assert!(
+            dropped_rx.await.is_err(),
+            "background fetch future was dropped"
+        );
+    }
+
+    #[tokio::test]
     /// Successful manual syncs preserve their captured review results and
     /// emit them only with the matching project operation.
     async fn run_sync_main_emits_captured_review_updates_after_success() {
@@ -1179,11 +1269,9 @@ mod tests {
             ..sync_context_fixture(0, Vec::new())
         };
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
-        let (_command_tx, command_rx) = mpsc::unbounded_channel();
         let (_context_tx, context_rx) = watch::channel(sync_context.clone());
         let mut orchestrator = SyncOrchestrator {
             app_event_tx: app_event_tx.clone(),
-            command_rx,
             context_rx,
             review_pass_index: 0,
             review_sync_failures: HashMap::new(),
@@ -1321,10 +1409,8 @@ mod tests {
         // Arrange
         let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
         let (_context_tx, context_rx) = watch::channel(sync_context_fixture(0, Vec::new()));
-        let (_command_tx, command_rx) = mpsc::unbounded_channel();
         let mut orchestrator = SyncOrchestrator {
             app_event_tx,
-            command_rx,
             context_rx,
             review_pass_index: 0,
             review_sync_failures: HashMap::new(),
@@ -1366,10 +1452,8 @@ mod tests {
         // Arrange
         let (app_event_tx, _app_event_rx) = mpsc::unbounded_channel();
         let (_context_tx, context_rx) = watch::channel(sync_context_fixture(0, Vec::new()));
-        let (_command_tx, command_rx) = mpsc::unbounded_channel();
         let mut orchestrator = SyncOrchestrator {
             app_event_tx,
-            command_rx,
             context_rx,
             review_pass_index: 0,
             review_sync_failures: HashMap::new(),
@@ -1390,6 +1474,151 @@ mod tests {
         // Assert
         assert!(!orchestrator.is_target_backed_off(&target.session_id, 5));
         assert!(orchestrator.review_sync_failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_status_probes_run_concurrently_with_a_four_task_limit() {
+        // Arrange
+        let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let permits = Arc::new(tokio::sync::Semaphore::new(0));
+        let targets = (0..9)
+            .map(|index| SessionGitStatusTarget {
+                base_branch: "main".to_string(),
+                branch_name: format!("wt/session-{index}"),
+                session_id: format!("session-{index}").into(),
+            })
+            .collect::<Vec<_>>();
+        let mut git_client = MockGitClient::new();
+        git_client
+            .expect_get_ref_ahead_behind()
+            .times(9)
+            .returning({
+                let started = Arc::clone(&started);
+                let permits = Arc::clone(&permits);
+                move |_, _, _| {
+                    let started = Arc::clone(&started);
+                    let permits = Arc::clone(&permits);
+                    Box::pin(async move {
+                        started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        permits.acquire().await.expect("permit").forget();
+                        Ok((1, 0))
+                    })
+                }
+            });
+
+        // Act
+        let task = tokio::spawn(async move {
+            session_git_statuses(
+                &HashMap::new(),
+                Path::new("/tmp/project"),
+                &targets,
+                Arc::new(git_client),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while started.load(std::sync::atomic::Ordering::SeqCst) < 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("four probes start without serial waiting");
+        tokio::task::yield_now().await;
+        let initial_count = started.load(std::sync::atomic::Ordering::SeqCst);
+        permits.add_permits(9);
+        let statuses = task.await.expect("status task");
+
+        // Assert
+        assert_eq!(initial_count, 4, "queued probes remain bounded");
+        assert_eq!(statuses.len(), 9);
+        assert!(
+            statuses
+                .values()
+                .all(|status| status.base_status == Some((1, 0)))
+        );
+    }
+
+    #[tokio::test]
+    async fn review_pass_discards_results_after_project_context_changes() {
+        // Arrange
+        let mut context =
+            sync_context_fixture(0, vec![review_request_sync_target("session-id", None)]);
+        let (context_tx, context_rx) = watch::channel(context.clone());
+        let mut git_client = MockGitClient::new();
+        git_client.expect_repo_url().once().return_once(move |_| {
+            Box::pin(async move {
+                context_tx.send_modify(|context| context.generation += 1);
+                Err(GitError::OutputParse("remote unavailable".into()))
+            })
+        });
+        context.git_client = Arc::new(git_client);
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let mut orchestrator = SyncOrchestrator {
+            app_event_tx: event_tx,
+            context_rx,
+            review_pass_index: 0,
+            review_sync_failures: HashMap::new(),
+            tick_index: 0,
+        };
+
+        // Act
+        let changed_during_pass = orchestrator
+            .collect_review_request_pass_updates(&context, true)
+            .await;
+        let already_stale = orchestrator
+            .collect_review_request_pass_updates(&context, true)
+            .await;
+
+        // Assert
+        assert!(changed_during_pass.is_empty());
+        assert!(already_stale.is_empty());
+        assert!(orchestrator.review_sync_failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parallel_review_pass_preserves_target_order_and_backoff() {
+        // Arrange
+        let targets = (0..6)
+            .map(|index| review_request_sync_target(&format!("session-{index}"), None))
+            .collect::<Vec<_>>();
+        let expected_ids = targets
+            .iter()
+            .map(|target| target.session_id.clone())
+            .collect::<Vec<_>>();
+        let mut context = sync_context_fixture(0, targets);
+        let mut git_client = MockGitClient::new();
+        git_client.expect_repo_url().times(6).returning(|_| {
+            Box::pin(async {
+                tokio::task::yield_now().await;
+                Err(GitError::OutputParse("remote unavailable".to_string()))
+            })
+        });
+        context.git_client = Arc::new(git_client);
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (_context_tx, context_rx) = watch::channel(context.clone());
+        let mut orchestrator = SyncOrchestrator {
+            app_event_tx: event_tx,
+            context_rx,
+            review_pass_index: 0,
+            review_sync_failures: HashMap::new(),
+            tick_index: 0,
+        };
+
+        // Act
+        let updates = orchestrator
+            .collect_review_request_pass_updates(&context, true)
+            .await;
+
+        // Assert
+        assert_eq!(
+            updates
+                .iter()
+                .map(|update| update.target.session_id.clone())
+                .collect::<Vec<_>>(),
+            expected_ids
+        );
+        assert!(updates.iter().all(|update| update.result.is_err()));
+        assert_eq!(orchestrator.review_sync_failures.len(), 6);
     }
 
     #[tokio::test]
@@ -1442,7 +1671,7 @@ mod tests {
             &branch_tracking_statuses,
             repo_root,
             &session_git_status_targets,
-            &mock_git_client,
+            Arc::new(mock_git_client),
         )
         .await;
 
@@ -1494,7 +1723,7 @@ mod tests {
             &branch_tracking_statuses,
             repo_root,
             &session_git_status_targets,
-            &mock_git_client,
+            Arc::new(mock_git_client),
         )
         .await;
 
@@ -1541,7 +1770,7 @@ mod tests {
             &HashMap::new(),
             repo_root,
             &session_git_status_targets,
-            &mock_git_client,
+            Arc::new(mock_git_client),
         )
         .await;
 

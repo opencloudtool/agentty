@@ -322,8 +322,11 @@ impl SessionManager {
         let session_agent =
             migrate_session_off_retired_model(db, &row.id, &row.agent, &row.model, session_status)
                 .await;
-        let draft_attachments =
-            draft::load_staged_draft_attachments(*fs_client, base, &session_id).await;
+        let draft_attachments = if row.is_draft {
+            draft::load_staged_draft_attachments(*fs_client, base, &session_id).await
+        } else {
+            Vec::new()
+        };
         let questions = Self::loaded_session_questions(session_detail.as_ref());
         let reasoning_level_override = row
             .reasoning_level_override
@@ -679,7 +682,7 @@ fn should_skip_missing_folder_session(
         return false;
     }
 
-    if is_draft_session && persisted_status == Status::Draft {
+    if is_draft_session {
         return false;
     }
 
@@ -695,7 +698,10 @@ fn should_skip_missing_folder_session(
 /// snapshots from clobbering in-memory updates. Persisted read-only and
 /// terminal statuses (`Merged`, `Done`, `Canceled`) take precedence so remote
 /// merge truth and explicit terminal transitions still appear after refresh.
-fn merge_loaded_session_status(status_from_db: Status, status_from_handle: Status) -> Status {
+pub(super) fn merge_loaded_session_status(
+    status_from_db: Status,
+    status_from_handle: Status,
+) -> Status {
     if matches!(
         status_from_db,
         Status::Merged | Status::Done | Status::Canceled
@@ -2085,19 +2091,21 @@ WHERE id = ?
     fn should_skip_missing_folder_session_keeps_new_draft_session() {
         // Arrange
         let has_session_folder = false;
-        let persisted_status = Status::Draft;
+        let statuses = [Status::Draft, Status::InProgress];
         let live_handle_status = None;
 
         // Act
-        let should_skip = should_skip_missing_folder_session(
-            has_session_folder,
-            true,
-            persisted_status,
-            live_handle_status,
-        );
+        let skipped = statuses.map(|persisted_status| {
+            should_skip_missing_folder_session(
+                has_session_folder,
+                true,
+                persisted_status,
+                live_handle_status,
+            )
+        });
 
         // Assert
-        assert!(!should_skip);
+        assert_eq!(skipped, [false, false]);
     }
 
     #[test]

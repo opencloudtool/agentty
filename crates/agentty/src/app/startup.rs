@@ -110,7 +110,6 @@ impl AppStartup {
         db: &AppRepositories,
         fs_client: &dyn FsClient,
         git_client: &Arc<dyn GitClient>,
-        project_discovery_client: &dyn ProjectDiscoveryClient,
         working_dir: &Path,
         git_branch: Option<String>,
         current_project_id: i64,
@@ -176,9 +175,6 @@ impl AppStartup {
                     startup_working_dir.display()
                 ))
             })?;
-        Self::refresh_project_catalog_on_startup(db, git_client.as_ref(), project_discovery_client)
-            .await;
-
         let project_items = Self::load_project_items(db, fs_client).await;
         let active_project_name =
             Self::project_title_for_id(&project_items, active_project_id, &startup_working_dir);
@@ -340,7 +336,7 @@ impl AppStartup {
         db: &AppRepositories,
         git_client: &dyn GitClient,
         project_discovery_client: &dyn ProjectDiscoveryClient,
-    ) {
+    ) -> bool {
         let session_worktree_root = super::core::agentty_home().join(AGENTTY_WT_DIR);
         let home_directory = env::home_dir();
 
@@ -351,7 +347,7 @@ impl AppStartup {
             session_worktree_root.as_path(),
             home_directory.as_deref(),
         )
-        .await;
+        .await
     }
 
     /// Discovers git repositories under the user home directory through the
@@ -362,18 +358,19 @@ impl AppStartup {
         project_discovery_client: &dyn ProjectDiscoveryClient,
         session_worktree_root: &Path,
         home_directory: Option<&Path>,
-    ) {
+    ) -> bool {
         let Some(home_directory) = home_directory.map(Path::to_path_buf) else {
-            return;
+            return false;
         };
 
         let Ok(discovered_project_paths) = project_discovery_client
             .discover_home_project_paths(home_directory, session_worktree_root.to_path_buf())
             .await
         else {
-            return;
+            return false;
         };
 
+        let discovered_any = !discovered_project_paths.is_empty();
         for project_path in discovered_project_paths {
             let git_branch = git_client.detect_git_info(project_path.clone()).await;
             let project_path = project_path.to_string_lossy().to_string();
@@ -383,6 +380,8 @@ impl AppStartup {
                 .upsert_project(project_path.as_str(), git_branch)
                 .await;
         }
+
+        discovered_any
     }
 
     /// Returns git repository roots discovered under the user home directory.

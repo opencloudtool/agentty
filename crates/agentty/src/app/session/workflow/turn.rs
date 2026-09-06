@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::lifecycle::SessionTitleGenerationTaskInput;
+use super::task::SessionTranscriptMessageAppend;
 use super::worker::{SessionWorkerContext, TurnMetadata};
 use super::{SessionTaskService, StatusTransition, isolation, post_turn};
 use crate::app::session::SessionError;
@@ -21,7 +22,7 @@ use crate::app::{AppEvent, SessionManager, setting};
 use crate::domain::agent::{AgentKind, AgentSelection, ReasoningLevel, ResponseStyle};
 use crate::domain::permission::PermissionMode;
 use crate::domain::session::{SessionId, SessionRole, Status};
-use crate::domain::session_message::SessionTranscript;
+use crate::domain::session_message::{SessionMessageKind, SessionTranscript};
 use crate::domain::setting::SettingName;
 use crate::domain::transcript_notice::TranscriptNotice;
 use crate::domain::turn_prompt::{TurnPrompt, TurnPromptTextSource};
@@ -146,11 +147,8 @@ impl MainCheckoutSnapshot {
 /// user-stopped turns skip that fallback so the UI cancellation path can
 /// finalize `Canceled`.
 ///
-/// A fresh [`CancellationToken`] is swapped into the shared mutex at
-/// the top of this function so stale cancellations from previous
-/// turns cannot affect new work. A `Ctrl+c` arriving during setup
-/// cancels the new token, which is detected by the early-exit check
-/// in [`run_turn_with_cancellation`].
+/// Uses the token renewed by worker preflight without replacing it. A cancel
+/// after preflight therefore remains visible before setup and provider work.
 pub(super) async fn run_channel_turn(
     context: &SessionWorkerContext,
     one_shot_client: Arc<dyn OneShotClient>,
@@ -158,14 +156,18 @@ pub(super) async fn run_channel_turn(
     request_kind: AgentRequestKind,
     replay_transcript: Option<String>,
     prompt: TurnPrompt,
+    preparation: Option<Box<super::lifecycle::SessionWorktreePreparation>>,
 ) -> Result<(), SessionError> {
-    // Discard stale cancellations, then keep the new token for this turn.
-    let turn_cancel_token = fresh_turn_cancel_token(context)?;
+    let turn_cancel_token = current_turn_cancel_token(context)?;
+    ensure_turn_active(&turn_cancel_token)?;
 
     prepare_resume_turn(context, &request_kind).await;
 
     let post_turn_context =
         post_turn::PostTurnContext::from_worker(context, Arc::clone(&one_shot_client));
+    if let Some(preparation) = preparation {
+        prepare_draft_turn(context, preparation, &turn_cancel_token, &prompt).await?;
+    }
     let main_checkout_snapshot = match MainCheckoutSnapshot::capture(context).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -297,6 +299,69 @@ fn apply_read_only_chat_prompt(
         text: format!("{READ_ONLY_CHAT_PROMPT}\n\n{agent_prompt}"),
         text_source: TurnPromptTextSource::AgentData,
     }
+}
+
+/// Prepares a draft and records its first prompt only on success, leaving the
+/// staged bundle available for retry on failure.
+/// Cancellation leaves terminal status ownership with the explicit user action.
+async fn prepare_draft_turn(
+    context: &SessionWorkerContext,
+    preparation: Box<super::lifecycle::SessionWorktreePreparation>,
+    cancellation: &CancellationToken,
+    prompt: &TurnPrompt,
+) -> Result<(), SessionError> {
+    let result = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => {
+            return Err(SessionError::StoppedByUser("Session preparation canceled".into()));
+        }
+        result = async {
+            let _guard = context.branch_operation_lock.lock().await;
+            ensure_turn_active(cancellation)?;
+            preparation.prepare().await
+        } => result,
+    };
+    if let Err(error) = &result
+        && !matches!(error, SessionError::StoppedByUser(_))
+    {
+        let message: String = error.to_string().chars().take(800).collect();
+        SessionTaskService::append_workflow_notice(
+            &context.transcript,
+            &context.db,
+            &context.app_event_tx,
+            &context.session_update_versions,
+            &context.session_id,
+            &message,
+        )
+        .await;
+        let transition = StatusTransition::from_parts(
+            context.app_event_tx.clone(),
+            Arc::clone(&context.clock),
+            context.db.clone(),
+            context.session_id.clone(),
+            Arc::clone(&context.session_update_versions),
+            Arc::clone(&context.status),
+        );
+        let _ = transition.apply(Status::Draft).await;
+    }
+
+    result?;
+
+    let prompt_transcript_text = prompt.transcript_text();
+    SessionTaskService::append_session_transcript_message(
+        &context.transcript,
+        &context.db,
+        &context.app_event_tx,
+        &context.session_update_versions,
+        &context.session_id,
+        SessionTranscriptMessageAppend {
+            kind: SessionMessageKind::UserPrompt,
+            raw_content: &prompt_transcript_text,
+        },
+    )
+    .await;
+
+    Ok(())
 }
 
 /// Cleans up and reports a failure that occurs after turn setup has started
@@ -525,9 +590,7 @@ async fn prepare_resume_turn(context: &SessionWorkerContext, request_kind: &Agen
 /// targets: their runtime owners handle cancellation through
 /// `shutdown_session`, including when a retained PID has been recycled.
 ///
-/// Each turn receives its own fresh token, created at the start of
-/// [`run_channel_turn`]. This eliminates the stale-permit problem that
-/// required the previous `Notify` + `AtomicBool` flag-check pattern.
+/// Each turn retains the token renewed before worker preflight.
 pub(super) async fn run_turn_with_cancellation(
     context: &SessionWorkerContext,
     cancel_token: CancellationToken,
@@ -535,9 +598,7 @@ pub(super) async fn run_turn_with_cancellation(
     event_tx: mpsc::UnboundedSender<TurnEvent>,
 ) -> Result<TurnResult, AgentError> {
     // Honour a cancel that arrived during pre-turn setup, before the
-    // select had a chance to observe it. The token was freshly created
-    // at the top of `run_channel_turn`, so a cancelled state here is a
-    // real `Ctrl+c`, not a stale leftover.
+    // select had a chance to observe it, using the same token as preflight.
     if cancel_token.is_cancelled() {
         terminate_child_process(&context.child_pid, context.session_agent.kind());
         let _ = context
@@ -787,20 +848,27 @@ pub(super) fn terminate_child_process(child_pid: &Mutex<Option<u32>>, kind: Agen
     }
 }
 
-/// Replaces the shared cancellation token for a new turn and returns the
-/// token used by the running channel future.
-fn fresh_turn_cancel_token(
+/// Captures the token selected before worker preflight without resetting it.
+fn current_turn_cancel_token(
     context: &SessionWorkerContext,
 ) -> Result<CancellationToken, SessionError> {
-    // Sync critical section (assignment + clone, no `.await`); `std::sync::Mutex`
-    // is the correct choice per CLAUDE.md §"Mutex Selection".
-    let mut guard = context
+    let guard = context
         .cancel_token
         .lock()
         .map_err(|_| SessionError::Workflow("cancel token lock poisoned".to_string()))?;
-    *guard = CancellationToken::new();
 
     Ok(guard.clone())
+}
+
+/// Stops canceled work before setup and after acquiring branch ownership.
+fn ensure_turn_active(cancellation: &CancellationToken) -> Result<(), SessionError> {
+    if cancellation.is_cancelled() {
+        return Err(SessionError::StoppedByUser(
+            "Session turn canceled".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Appends one main-checkout warning to the live and persisted transcript.
@@ -892,6 +960,21 @@ fn normalize_thinking_stream_text(text: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::infra::db::{DbError, PersistedSessionCreation};
+
+    #[test]
+    fn turn_guard_preserves_cancellation() {
+        // Arrange
+        let cancellation = CancellationToken::new();
+
+        // Act
+        let active = ensure_turn_active(&cancellation);
+        cancellation.cancel();
+        let canceled = ensure_turn_active(&cancellation);
+
+        // Assert
+        assert!(active.is_ok());
+        assert!(matches!(canceled, Err(SessionError::StoppedByUser(_))));
+    }
 
     #[test]
     fn read_only_chat_prompt_redirects_write_access_requests_to_mode_shortcut() {

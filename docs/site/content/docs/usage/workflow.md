@@ -11,6 +11,11 @@ For keyboard shortcuts by view, see [Keybindings](@/docs/usage/keybindings.md).
 
 <!-- more -->
 
+Starting a staged session prepares its worktree in the background. You can continue
+navigating while preparation runs. Preparation errors appear in the session output and
+return the session to `Draft`, preserving its staged prompt and attachments for retry.
+Retrying adds the prompt to the conversation once preparation succeeds.
+
 ## Interface Layout
 
 <a id="usage-interface-layout"></a> Agentty organizes its interface into six primary

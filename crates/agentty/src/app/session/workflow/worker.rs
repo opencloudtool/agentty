@@ -106,6 +106,8 @@ pub(super) enum SessionCommand {
     },
     /// Executes one agent turn with the given request kind and prompt.
     Run {
+        /// Optional draft materialization executed before the first turn.
+        preparation: Option<Box<super::lifecycle::SessionWorktreePreparation>>,
         /// Persisted operation identifier.
         operation_id: String,
         /// Whether this is a first-message start or a follow-up resume.
@@ -246,8 +248,8 @@ pub(super) struct SessionWorkerContext {
     /// Serializes post-turn publish ownership with queued branch operations.
     pub(super) branch_operation_lock: Arc<tokio::sync::Mutex<()>>,
     /// Per-turn cancellation token shared with the UI through
-    /// [`SessionHandles`]. The worker swaps in a fresh token at the start
-    /// of each turn; the UI calls `cancel()` on the current token to
+    /// [`SessionHandles`]. The worker renews it before command preflight;
+    /// the UI calls `cancel()` on the current token to
     /// interrupt a running turn.
     pub(super) cancel_token: Arc<Mutex<CancellationToken>>,
     /// Provider-agnostic agent channel for this session's worker.
@@ -1040,19 +1042,7 @@ impl SessionWorkerService {
         command: SessionCommand,
     ) -> Option<Result<(), SessionError>> {
         let operation_id = command.operation_id().to_string();
-        let should_skip = if Self::should_skip_worker_command(context, &operation_id).await {
-            true
-        } else {
-            // Best-effort: operation tracking metadata is non-critical.
-            let _ = context
-                .db
-                .operations()
-                .mark_session_operation_running(&operation_id)
-                .await;
-
-            Self::should_skip_worker_command(context, &operation_id).await
-        };
-        if should_skip {
+        if !Self::prepare_session_command(context, &command).await {
             Self::complete_skipped_session_command(context, &command);
 
             return None;
@@ -1091,6 +1081,34 @@ impl SessionWorkerService {
         }
 
         Some(result)
+    }
+
+    /// Renews turn cancellation before checking whether this operation may run.
+    /// The selected token remains shared through execution, so cancellation
+    /// after the final preflight check cannot be erased by turn startup.
+    pub(super) async fn prepare_session_command(
+        context: &SessionWorkerContext,
+        command: &SessionCommand,
+    ) -> bool {
+        if matches!(command, SessionCommand::Run { .. })
+            && let Ok(mut token) = context.cancel_token.lock()
+        {
+            *token = CancellationToken::new();
+        }
+
+        let operation_id = command.operation_id();
+        if Self::should_skip_worker_command(context, operation_id).await {
+            return false;
+        }
+
+        // Best-effort: operation tracking metadata is non-critical.
+        let _ = context
+            .db
+            .operations()
+            .mark_session_operation_running(operation_id)
+            .await;
+
+        !Self::should_skip_worker_command(context, operation_id).await
     }
 
     /// Resolves external observers when a queued command is canceled or
@@ -1152,6 +1170,7 @@ impl SessionWorkerService {
         let published_upstream_ref = context.load_published_upstream_ref().await;
         append_drained_prompt_to_transcript(context, &prompt).await;
         let command = SessionCommand::Run {
+            preparation: None,
             operation_id,
             request_kind: AgentRequestKind::SessionResume,
             replay_transcript: None,
@@ -1181,7 +1200,7 @@ impl SessionWorkerService {
     }
 
     /// Executes the queued command through the session's agent channel.
-    async fn execute_session_command(
+    pub(super) async fn execute_session_command(
         context: &SessionWorkerContext,
         one_shot_client: &Arc<dyn OneShotClient>,
         command: SessionCommand,
@@ -1205,6 +1224,7 @@ impl SessionWorkerService {
                 Self::run_rebase_command(context, Arc::clone(one_shot_client), base_branch).await
             }
             SessionCommand::Run {
+                preparation,
                 request_kind,
                 replay_transcript,
                 prompt,
@@ -1218,6 +1238,7 @@ impl SessionWorkerService {
                     request_kind,
                     replay_transcript,
                     prompt,
+                    preparation,
                 )
                 .await
             }
@@ -1736,6 +1757,7 @@ mod tests {
 
     fn resume_command(operation_id: &str) -> SessionCommand {
         SessionCommand::Run {
+            preparation: None,
             operation_id: operation_id.to_string(),
             request_kind: AgentRequestKind::SessionResume,
             replay_transcript: None,
@@ -1912,6 +1934,7 @@ mod tests {
             response: None,
         };
         let start_command = SessionCommand::Run {
+            preparation: None,
             operation_id: "op-start".to_string(),
             request_kind: AgentRequestKind::SessionStart,
             replay_transcript: None,
@@ -1926,6 +1949,7 @@ mod tests {
             },
         };
         let resume_command = SessionCommand::Run {
+            preparation: None,
             operation_id: "op-resume".to_string(),
             request_kind: AgentRequestKind::SessionResume,
             replay_transcript: None,
@@ -1940,6 +1964,7 @@ mod tests {
             },
         };
         let account_read_command = SessionCommand::Run {
+            preparation: None,
             operation_id: "op-account-read".to_string(),
             request_kind: AgentRequestKind::AccountRead,
             replay_transcript: None,
@@ -1954,6 +1979,7 @@ mod tests {
             },
         };
         let focused_review_command = SessionCommand::Run {
+            preparation: None,
             operation_id: "op-focused-review".to_string(),
             request_kind: AgentRequestKind::FocusedReview,
             replay_transcript: None,
@@ -2413,6 +2439,7 @@ mod tests {
             AgentRequestKind::SessionResume,
             None,
             prompt,
+            None,
         )
         .await;
         let persisted_session = db
@@ -2535,6 +2562,7 @@ mod tests {
             AgentRequestKind::SessionStart,
             None,
             "test prompt".into(),
+            None,
         )
         .await;
 
@@ -2571,12 +2599,11 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies a read-only chat turn carries its persisted permission after a
-    /// previous turn's cancelled token is replaced.
-    async fn test_run_channel_turn_proceeds_read_only_after_previous_cancellation() {
+    /// Verifies worker preflight renews a previous turn's cancelled token while
+    /// preserving the persisted read-only permission for the new operation.
+    async fn test_worker_proceeds_read_only_after_previous_cancellation() {
         // Arrange — pre-cancel the token to simulate a previous turn's
-        // cancellation. `run_channel_turn` swaps in a fresh token so the
-        // stale cancellation is discarded.
+        // cancellation. Worker preflight renews it for this new operation.
         let base_dir = tempdir().expect("failed to create temp dir");
         let db = AppRepositories::in_memory().await.expect("db should open");
         let project_id = db
@@ -2608,21 +2635,7 @@ mod tests {
                     && request.prompt.text.contains("# Read Only Mode")
             })
             .returning(|_session_id, _req, _events| {
-                Box::pin(async {
-                    Ok(TurnResult {
-                        assistant_message: AgentResponse {
-                            answer: "done".to_string(),
-                            questions: Vec::new(),
-                            review_comment_outcomes: Vec::new(),
-                            subtasks: Vec::new(),
-                            verification_verdicts: Vec::new(),
-                        },
-                        context_reset: false,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        provider_conversation_id: None,
-                    })
-                })
+                Box::pin(async { Ok(successful_turn_result("done")) })
             });
 
         let mut mock_git_client = mock_git_client_detecting_main_repo(base_dir.path().join("main"));
@@ -2664,17 +2677,27 @@ mod tests {
             status: Arc::new(Mutex::new(Status::InProgress)),
         };
 
-        // Act — the turn should complete normally because
-        // `run_channel_turn` swaps in a fresh token.
-        let result = run_channel_turn(
+        db.operations()
+            .insert_session_operation("new-turn", "sess1", "start_prompt")
+            .await
+            .expect("new operation");
+        let command = SessionCommand::Run {
+            operation_id: "new-turn".to_string(),
+            preparation: None,
+            prompt: "test prompt".into(),
+            replay_transcript: None,
+            request_kind: AgentRequestKind::SessionStart,
+            turn_metadata: default_turn_metadata(),
+        };
+
+        // Act
+        let result = SessionWorkerService::process_session_command(
             &context,
-            auto_commit_one_shot_client(),
-            default_turn_metadata(),
-            AgentRequestKind::SessionStart,
-            None,
-            "test prompt".into(),
+            &auto_commit_one_shot_client(),
+            command,
         )
-        .await;
+        .await
+        .expect("new operation runs");
 
         // Assert — turn succeeded despite the stale cancellation.
         assert!(
@@ -2774,6 +2797,7 @@ mod tests {
             AgentRequestKind::SessionStart,
             None,
             "test prompt".into(),
+            None,
         )
         .await;
 
@@ -2877,6 +2901,7 @@ mod tests {
             AgentRequestKind::SessionStart,
             None,
             "test prompt".into(),
+            None,
         )
         .await;
 
@@ -2967,6 +2992,7 @@ mod tests {
             AgentRequestKind::SessionStart,
             None,
             "test prompt".into(),
+            None,
         )
         .await;
 
@@ -3063,6 +3089,7 @@ mod tests {
             AgentRequestKind::SessionStart,
             None,
             "test prompt".into(),
+            None,
         )
         .await;
 
@@ -3110,6 +3137,7 @@ mod tests {
             AgentRequestKind::SessionStart,
             None,
             "test prompt".into(),
+            None,
         )
         .await;
 

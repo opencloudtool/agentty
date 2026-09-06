@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tokio::task::spawn_blocking;
 
 use super::error::GitError;
-use super::repo::{main_repo_root, resolve_git_dir, run_git_command, run_git_command_sync};
+use super::repo::{main_repo_root, resolve_git_dir, run_git_command};
 
 /// Detects git repository information for the given directory.
 /// Returns the current branch name if in a git repository, None otherwise.
@@ -45,24 +45,21 @@ pub(crate) async fn create_worktree(
     branch_name: String,
     start_ref: String,
 ) -> Result<(), GitError> {
-    spawn_blocking(move || {
-        let worktree_path = worktree_path.to_string_lossy().to_string();
-        run_git_command_sync(
-            &repo_path,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                branch_name.as_str(),
-                worktree_path.as_str(),
-                start_ref.as_str(),
-            ],
-            "Git worktree command failed",
-        )?;
+    run_git_command(
+        repo_path,
+        vec![
+            "worktree".into(),
+            "add".into(),
+            "-b".into(),
+            branch_name,
+            worktree_path.to_string_lossy().into_owned(),
+            start_ref,
+        ],
+        "Git worktree command failed".into(),
+    )
+    .await?;
 
-        Ok(())
-    })
-    .await?
+    Ok(())
 }
 
 /// Removes a git worktree at the specified path.
@@ -182,12 +179,14 @@ mod tests {
     #[test]
     fn find_git_repo_root_sync_returns_none_when_no_git_dir() {
         // Arrange
-        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        // TMPDIR may itself be inside a checkout. The filesystem root has no
+        // parent checkout and exercises the search exhaustion boundary.
+        let root = Path::new(std::path::MAIN_SEPARATOR_STR);
 
         // Act
-        let result = find_git_repo_root_sync(temp_dir.path());
+        let result = find_git_repo_root_sync(root);
 
-        // Assert — walks up to filesystem root and returns None
+        // Assert
         assert!(result.is_none());
     }
 
@@ -266,10 +265,10 @@ mod tests {
     #[test]
     fn detect_git_info_sync_returns_none_for_non_repo() {
         // Arrange
-        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        let root = Path::new(std::path::MAIN_SEPARATOR_STR);
 
         // Act
-        let result = detect_git_info_sync(temp_dir.path());
+        let result = detect_git_info_sync(root);
 
         // Assert
         assert!(result.is_none());

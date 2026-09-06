@@ -1297,9 +1297,10 @@ mod tests {
         slash_state.selected_index = 2;
 
         PromptModeSnapshot {
-            at_mention_state: Some(PromptAtMentionState {
-                all_entries: vec![prompt_mention_entry()],
-                selected_index: 1,
+            at_mention_state: Some({
+                let mut state = PromptAtMentionState::new(vec![prompt_mention_entry()]);
+                state.selected_index = 1;
+                state
             }),
             attachment_state,
             history_state,
@@ -1352,7 +1353,10 @@ mod tests {
             .as_ref()
             .expect("at-mention state must survive leaving diff");
         assert_eq!(at_mention_state.selected_index, 1);
-        assert_eq!(at_mention_state.all_entries, vec![prompt_mention_entry()]);
+        assert_eq!(
+            at_mention_state.filtered_entries("").as_ref(),
+            &[prompt_mention_entry()]
+        );
     }
 
     #[tokio::test]

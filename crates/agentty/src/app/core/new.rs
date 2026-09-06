@@ -343,6 +343,22 @@ impl App {
         services: &AppServices,
         clients: &AppClients,
     ) {
+        let repositories = services.db().clone();
+        let git_client = services.git_client();
+        let discovery_client = Arc::clone(&clients.project_discovery_client);
+        let event_tx_for_discovery = event_tx.clone();
+        tokio::spawn(async move {
+            if AppStartup::refresh_project_catalog_on_startup(
+                &repositories,
+                git_client.as_ref(),
+                discovery_client.as_ref(),
+            )
+            .await
+            {
+                let _ = event_tx_for_discovery.send(AppEvent::RefreshProjects);
+            }
+        });
+
         let agent_cli_version_probe = Self::startup_agent_cli_version_probe(clients);
         AppStartup::spawn_background_tasks(
             auto_update,
@@ -372,7 +388,6 @@ impl App {
             repositories,
             clients.fs_client.as_ref(),
             &clients.git_client,
-            clients.project_discovery_client.as_ref(),
             working_dir,
             git_branch,
             current_project_id,
@@ -667,6 +682,116 @@ mod tests {
 
         // Assert
         assert!(child_status.success());
+    }
+
+    #[tokio::test]
+    async fn startup_returns_before_home_discovery_completes() {
+        // Arrange
+        let base_dir = tempdir().expect("temp directory");
+        let database = AppRepositories::in_memory().await.expect("database");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let discovered = base_dir.path().join("discovered");
+        let mut discovery = crate::infra::project_discovery::MockProjectDiscoveryClient::new();
+        discovery
+            .expect_discover_home_project_paths()
+            .once()
+            .return_once({
+                let resume = Arc::clone(&resume);
+                let discovered = discovered.clone();
+                let entered = Arc::clone(&entered);
+                move |_, _| {
+                    let entered = Arc::clone(&entered);
+                    Box::pin(async move {
+                        entered.notify_one();
+                        resume.notified().await;
+                        Ok(vec![discovered])
+                    })
+                }
+            });
+        let mut clients = crate::test_support::test_app_clients();
+        clients.project_discovery_client = Arc::new(discovery);
+
+        // Act
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            App::new_with_clients(
+                base_dir.path().to_path_buf(),
+                base_dir.path().to_path_buf(),
+                None,
+                database.clone(),
+                clients,
+            ),
+        )
+        .await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+            .await
+            .expect("discovery starts");
+
+        // Assert
+        let mut app = result
+            .expect("startup must not wait for discovery")
+            .expect("app starts");
+
+        // Act
+        resume.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !matches!(app.event_rx.recv().await, Some(AppEvent::RefreshProjects)) {}
+        })
+        .await
+        .expect("discovery notifies the foreground");
+
+        // Assert
+        assert!(
+            database
+                .projects()
+                .load_projects_with_stats()
+                .await
+                .expect("projects")
+                .iter()
+                .any(|project| project.path == discovered.to_string_lossy())
+        );
+    }
+
+    #[tokio::test]
+    async fn home_catalog_handles_missing_home_and_discovery_failure() {
+        // Arrange
+        let database = AppRepositories::in_memory().await.expect("database");
+        let git_client = ag_git::MockGitClient::new();
+        let task = tokio::spawn(std::future::pending::<()>());
+        task.abort();
+        let error = task.await.expect_err("aborted discovery");
+        let mut discovery = crate::infra::project_discovery::MockProjectDiscoveryClient::new();
+        discovery
+            .expect_discover_home_project_paths()
+            .once()
+            .return_once(move |_, _| {
+                Box::pin(async move {
+                    Err(crate::infra::project_discovery::ProjectDiscoveryError::TaskJoin(error))
+                })
+            });
+
+        // Act
+        let no_home = AppStartup::load_projects_from_home_directory(
+            &database,
+            &git_client,
+            &discovery,
+            Path::new("worktrees"),
+            None,
+        )
+        .await;
+        let failed_scan = AppStartup::load_projects_from_home_directory(
+            &database,
+            &git_client,
+            &discovery,
+            Path::new("worktrees"),
+            Some(Path::new("home")),
+        )
+        .await;
+
+        // Assert
+        assert!(!no_home);
+        assert!(!failed_scan);
     }
 
     #[tokio::test]

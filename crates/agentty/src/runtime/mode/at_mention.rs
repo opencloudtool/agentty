@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[cfg(test)]
 use at_mention_task::clear_pending_load;
@@ -8,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::app::at_mention_task;
 use crate::app::session::SessionManager;
 use crate::app::{AppEvent, TaskService};
-use crate::domain::file_entry::{FileEntry, filter_entries};
+use crate::domain::file_entry::FileEntry;
 use crate::domain::input::InputState;
 use crate::domain::session::SessionId;
 use crate::presentation::prompt::PromptAtMentionState;
@@ -98,7 +99,7 @@ pub(crate) fn selected_replacement(
     at_mention_state: &PromptAtMentionState,
 ) -> Option<AtMentionSelection> {
     let (at_start, query) = input.at_mention_query()?;
-    let filtered = filter_entries(&at_mention_state.all_entries, &query);
+    let filtered = at_mention_state.filtered_entries(&query);
     let clamped_index = at_mention_state
         .selected_index
         .min(filtered.len().saturating_sub(1));
@@ -111,13 +112,13 @@ pub(crate) fn selected_replacement(
 }
 
 /// Returns the filtered `@`-mention entries for the current input query.
-fn filtered_entries<'a>(
+fn filtered_entries(
     input: &InputState,
-    at_mention_state: &'a PromptAtMentionState,
-) -> Option<Vec<&'a FileEntry>> {
+    at_mention_state: &PromptAtMentionState,
+) -> Option<Arc<[FileEntry]>> {
     let (_, query) = input.at_mention_query()?;
 
-    Some(filter_entries(&at_mention_state.all_entries, &query))
+    Some(at_mention_state.filtered_entries(&query))
 }
 
 /// Formats one selected file or directory entry for insertion into the input.

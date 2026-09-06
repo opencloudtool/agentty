@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::warn;
 
 use crate::app::review::{self, FocusedReviewPersistence, ReviewAgent, ReviewCacheEntry};
@@ -63,6 +64,7 @@ pub(crate) struct SessionDiffUpdate {
 
 /// Foreground continuation waiting on one background diff result.
 pub(crate) struct PendingSessionDiffRequest {
+    _cancellation: DropGuard,
     purpose: SessionDiffPurpose,
     session_id: SessionId,
 }
@@ -113,6 +115,12 @@ impl App {
         sidebar_focus: DiffSidebarFocus,
         allow_empty: bool,
     ) -> bool {
+        if matches!(&self.mode, AppMode::DiffLoading { session_id: loading_session_id, .. }
+            if loading_session_id == session_id)
+        {
+            return true;
+        }
+
         let fallback_view_scroll_offset = match &self.mode {
             AppMode::View {
                 scroll_offset,
@@ -142,7 +150,7 @@ impl App {
     }
 
     /// Cancels a still-current interactive diff load and restores its source
-    /// page. The detached Git task may finish, but its event is then stale.
+    /// page. Dropping the request cancels its Git task and active subprocess.
     pub(crate) fn cancel_diff_view_load(&mut self) {
         let mode = std::mem::replace(&mut self.mode, AppMode::List);
         let AppMode::DiffLoading {
@@ -686,7 +694,9 @@ impl App {
         folder: PathBuf,
         source: SessionDiffTaskSource,
     ) -> u64 {
+        let cancellation = CancellationToken::new();
         let input = SessionDiffTaskInput {
+            cancellation: cancellation.clone(),
             app_event_tx: self.services.event_sender(),
             folder,
             session_id: session_id.clone(),
@@ -696,6 +706,7 @@ impl App {
         self.pending_session_diff_requests.insert(
             request_id,
             PendingSessionDiffRequest {
+                _cancellation: cancellation.drop_guard(),
                 purpose,
                 session_id: session_id.clone(),
             },
@@ -1033,6 +1044,9 @@ mod tests {
         assert_eq!(loading_request_id(&app), None);
         assert!(app.start_diff_view_load(&session_id, None, DiffSidebarFocus::Files, false,));
         let request_id = loading_request_id(&app).expect("diff loading mode should have a request");
+        assert!(app.start_diff_view_load(&session_id, None, DiffSidebarFocus::Files, false));
+        assert_eq!(loading_request_id(&app), Some(request_id));
+        assert_eq!(app.pending_session_diff_requests.len(), 1);
 
         // Act
         app.cancel_diff_view_load();
@@ -1287,6 +1301,7 @@ mod tests {
         app.pending_session_diff_requests.insert(
             42,
             PendingSessionDiffRequest {
+                _cancellation: CancellationToken::new().drop_guard(),
                 purpose: SessionDiffPurpose::Review {
                     cached_diff_hash: None,
                     is_manual: false,
@@ -1579,6 +1594,7 @@ mod tests {
         app.pending_session_diff_requests.insert(
             request_id,
             PendingSessionDiffRequest {
+                _cancellation: CancellationToken::new().drop_guard(),
                 purpose: SessionDiffPurpose::Review {
                     cached_diff_hash: None,
                     is_manual: false,
@@ -1611,6 +1627,7 @@ mod tests {
         app.pending_session_diff_requests.insert(
             42,
             PendingSessionDiffRequest {
+                _cancellation: CancellationToken::new().drop_guard(),
                 purpose: SessionDiffPurpose::Review {
                     cached_diff_hash: None,
                     is_manual: false,
