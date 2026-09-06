@@ -2509,7 +2509,8 @@ mod tests {
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         );
 
-        // Assert — restored to prompt mode with the draft intact and input focus.
+        // Assert — restored to prompt mode with the draft intact and input
+        // focus.
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(
             &app.mode,
@@ -2556,7 +2557,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_prompt_then_help_then_exit_preserves_composer_context() {
-        // Arrange — diff opened from prompt mode, then the user opens help with `?`.
+        // Arrange — diff opened from prompt mode, then the user opens help with
+        // `?`.
         let (mut app, _base_dir) = crate::test_support::new_test_app().await;
         app.mode = AppMode::Diff {
             session_id: "session-p".into(),
@@ -2621,7 +2623,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_question_then_help_then_exit_preserves_restore_question() {
-        // Arrange — diff opened from question mode, then user opens help with `?`.
+        // Arrange — diff opened from question mode, then user opens help with
+        // `?`.
         use crate::domain::input::InputState;
         use crate::domain::question::QuestionItem;
         use crate::presentation::app_mode::QuestionModeSnapshot;
@@ -2775,7 +2778,8 @@ mod tests {
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
         );
 
-        // Assert — an unhandled key leaves the diff selection and scroll intact.
+        // Assert — an unhandled key leaves the diff selection and scroll
+        // intact.
         assert!(matches!(event_result, EventResult::Continue));
         assert!(matches!(
             app.mode,
@@ -3011,8 +3015,8 @@ mod tests {
             line_comments.clear_comment_selection();
         }
 
-        // Act — move from the source row to its comment, back, and onto the comment
-        // again.
+        // Act — move from the source row to its comment, back, and onto the
+        // comment again.
         handle(
             &mut app,
             TEST_TERMINAL_SIZE,
@@ -3087,7 +3091,8 @@ mod tests {
         ])
         .expect("first two changed rows should create a range target");
 
-        // Act — start downward selection, then cancel without leaving content focus.
+        // Act — start downward selection, then cancel without leaving content
+        // focus.
         handle(
             &mut app,
             TEST_TERMINAL_SIZE,
@@ -3937,8 +3942,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "expected AppMode::Prompt after leaving diff")]
     fn test_assert_restored_prompt_composer_rejects_non_prompt_mode() {
-        // Arrange, Act & Assert — the helper rejects modes that are not a restored
-        // composer.
+        // Arrange, Act & Assert — the helper rejects modes that are not a
+        // restored composer.
         assert_restored_prompt_composer(&AppMode::List);
     }
 }

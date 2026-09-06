@@ -253,8 +253,8 @@ fn compile_tape(
 ) -> String {
     let mut tape = String::new();
 
-    // Infallible: all `writeln!` calls below write to a String, which cannot fail.
-    // Header settings.
+    // Infallible: all `writeln!` calls below write to a String, which cannot
+    // fail. Header settings.
     let _ = writeln!(tape, "Set Shell \"bash\"");
     let _ = writeln!(tape, "Set FontSize {}", settings.font_size);
     let _ = writeln!(tape, "Set Width {}", settings.width);
@@ -327,7 +327,8 @@ fn compile_tape(
 
 /// Compile a single step into VHS tape commands.
 fn compile_step(tape: &mut String, step: &Step, screenshot_path: &Path) {
-    // Infallible: all `writeln!` calls below write to a String, which cannot fail.
+    // Infallible: all `writeln!` calls below write to a String, which cannot
+    // fail.
     match step {
         Step::WriteText(text) => {
             let _ = writeln!(tape, "Type \"{}\"", escape_vhs_double_quote(text));

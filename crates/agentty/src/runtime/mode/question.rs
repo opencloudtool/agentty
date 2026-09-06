@@ -1578,7 +1578,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_enter_on_last_question_restores_answer_when_reply_is_not_enqueued() {
-        // Arrange — free-text mode on last question with no matching session handle.
+        // Arrange — free-text mode on last question with no matching session
+        // handle.
         let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
         app.mode = AppMode::Question {
             at_mention_state: None,
@@ -1623,7 +1624,8 @@ mod tests {
 
     #[tokio::test]
     async fn mark_session_in_progress_advances_snapshot_and_handle_status() {
-        // Arrange — a session sits in `Question` with a matching runtime handle.
+        // Arrange — a session sits in `Question` with a matching runtime
+        // handle.
         use crate::domain::session::SessionHandles;
 
         let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
@@ -1795,12 +1797,14 @@ mod tests {
             selected_option_index: None,
         };
 
-        // Act — answer the final question so `submit_response` attempts the reply.
+        // Act — answer the final question so `submit_response` attempts the
+        // reply.
         submit_response(&mut app, "Unit and integration tests".to_string()).await;
 
         // Assert — the failed reply leaves the session on `Question` instead of
-        // stranding it behind an optimistic `InProgress` no worker will advance,
-        // and restores the panel with the completed answers ready to retry.
+        // stranding it behind an optimistic `InProgress` no worker will
+        // advance, and restores the panel with the completed answers
+        // ready to retry.
         let session = app
             .sessions
             .sessions()

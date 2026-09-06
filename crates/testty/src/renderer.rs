@@ -705,7 +705,8 @@ mod tests {
         let glyph_a = lookup_glyph('A');
         let glyph_space = lookup_glyph(' ');
 
-        // Assert — 'A' glyph should have non-zero bytes, space should be all zeros.
+        // Assert — 'A' glyph should have non-zero bytes, space should be all
+        // zeros.
         assert!(glyph_a.iter().any(|&byte| byte != 0));
         assert!(glyph_space.iter().all(|&byte| byte == 0));
     }

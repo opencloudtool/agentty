@@ -1357,8 +1357,8 @@ mod tests {
         let mut permissions = std::fs::metadata(&npm_path)
             .expect("failed to load fake npm metadata")
             .permissions();
-        // The isolated child retains the test process's UID, so owner execution is
-        // sufficient.
+        // The isolated child retains the test process's UID, so owner execution
+        // is sufficient.
         permissions.set_mode(0o700);
         std::fs::set_permissions(&npm_path, permissions)
             .expect("failed to make fake npm executable");

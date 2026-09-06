@@ -122,6 +122,9 @@ fn projects_page_shows_cwd() {
             |scenario| {
                 scenario
                     .compose(&common::wait_for_agentty_startup())
+                    .wait_for_text("gemini 0.0.1-updated", 10000)
+                    .wait_for_text("claude 0.0.1-updated", 10000)
+                    .wait_for_text("codex 0.0.1-updated", 10000)
                     .viewing_pause_ms(3000)
                     .capture_labeled("projects", "Projects page with registered project")
             },

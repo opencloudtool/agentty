@@ -318,7 +318,8 @@ mod tests {
         // Act
         let diff = FrameDiff::compute(&frame_a, &frame_b);
 
-        // Assert — first 5 cols unchanged, cols 5-9 are "out of bounds" = changed.
+        // Assert — first 5 cols unchanged, cols 5-9 are "out of bounds" =
+        // changed.
         assert_eq!(diff.cell_change(0, 0), Some(CellChange::Unchanged));
         assert_eq!(diff.cell_change(0, 5), Some(CellChange::BothChanged));
     }

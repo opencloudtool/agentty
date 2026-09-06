@@ -1675,7 +1675,8 @@ impl App {
             return;
         }
         if self.merge_queue.has_work() {
-            // Best-effort: merge queue progression failures are surfaced in session output.
+            // Best-effort: merge queue progression failures are surfaced in
+            // session output.
             let _ = self.start_next_merge_from_queue(false).await;
         }
 

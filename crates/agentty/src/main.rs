@@ -29,7 +29,6 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            // Best-effort: stderr may be unavailable if the terminal is detached.
             let _ = writeln!(io::stderr().lock(), "{error}");
 
             ExitCode::FAILURE

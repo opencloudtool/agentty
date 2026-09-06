@@ -423,7 +423,8 @@ mod tests {
         // Act
         let failure = match_selected_tab(&frame, "Projects").expect_err("should be Err");
 
-        // Assert — composition stops at the region check before reaching highlight.
+        // Assert — composition stops at the region check before reaching
+        // highlight.
         assert!(matches!(
             &failure.expected,
             crate::assertion::Expected::TextInRegion { needle, .. } if needle == "Projects"

@@ -355,11 +355,12 @@ impl LocalFileSystem {
         flags: CopyfileFlags,
     ) -> io::Result<()> {
         let state = rustix::fs::copyfile_state_alloc().map_err(io::Error::from)?;
-        // SAFETY: `state` was allocated immediately above and remains live until
-        // the matching `copyfile_state_free` call below.
+        // SAFETY: `state` was allocated immediately above and remains live
+        // until the matching `copyfile_state_free` call below.
         let copy_result = unsafe { rustix::fs::fcopyfile(source, destination, state, flags) }
             .map_err(io::Error::from);
-        // SAFETY: This is the one matching free for the live state allocated above.
+        // SAFETY: This is the one matching free for the live state allocated
+        // above.
         let free_result =
             unsafe { rustix::fs::copyfile_state_free(state) }.map_err(io::Error::from);
 

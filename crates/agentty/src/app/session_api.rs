@@ -265,7 +265,8 @@ impl App {
         };
         let branch_operation_lock = Arc::clone(&branch_publish_context.branch_operation_lock);
         // Reserve an idle branch before persistence. An existing owner
-        // already serializes worker execution, so the runtime actor never waits here.
+        // already serializes worker execution, so the runtime actor never waits
+        // here.
         let _branch_operation_guard = branch_operation_lock.try_lock_owned().ok();
         let enqueue_result = self
             .sessions

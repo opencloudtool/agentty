@@ -495,7 +495,8 @@ mod tests {
     fn run_scenario_warns_when_proof_requested() {
         use std::os::unix::fs::PermissionsExt;
 
-        // Arrange — a passing fixture scenario plus a requested proof directory.
+        // Arrange — a passing fixture scenario plus a requested proof
+        // directory.
         let temp = tempfile::tempdir().expect("temp dir");
         let script = temp.path().join("greet.sh");
         std::fs::write(&script, "#!/bin/sh\nprintf 'Hello World'\nsleep 60\n").expect("write");
