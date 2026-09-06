@@ -194,8 +194,14 @@ if [ "$1" = "update" ]; then exit 0; fi
 if [ "$1" = "--version" ]; then printf 'claude 0.0.0-test\n'; exit 0; fi
 prompt=$(cat)
 response='{"answer":"Preserve pending worktree change","questions":[],"review_comment_outcomes":[],"subtasks":[],"verification_verdicts":[]}'
+printf '%s\n' "$GIT_OPTIONAL_LOCKS" > "$AGENTTY_TEST_EVIDENCE/optional-locks"
 case "$prompt" in
-  *"Generate the canonical session commit message"*) ;;
+  *"Generate the canonical session commit message"*)
+    if [ "$AGENTTY_TEST_RELEASE_LOCK" = "1" ]; then
+      lock_path=$(cat "$AGENTTY_TEST_EVIDENCE/lock-path") || exit 93
+      (sleep 2; rm "$lock_path") </dev/null >/dev/null 2>&1 &
+    fi
+    ;;
   *"Review the Git diff for display in a terminal UI."*)
     response='{"project_impact":[],"suggestions":[]}'
     ;;
@@ -4321,6 +4327,63 @@ fn test_session_commit_index_lock() -> E2eResult {
                         .expect("auto-commit should preserve the fixture");
                     assert_eq!(content, expected);
                 }
+            },
+        )?;
+
+    Ok(())
+}
+
+/// Verify that auto-commit waits for a short-lived writer without assistance.
+#[test]
+fn test_session_commit_index_lock_recovers() -> E2eResult {
+    // Arrange
+    let evidence = tempfile::tempdir()?;
+
+    // Act / Assert
+    FeatureTest::new("session_commit_index_lock_recovers")
+        .with_git()
+        .with_terminal_size(100, 40)
+        .env("AGENTTY_TEST_EVIDENCE", evidence.path().to_string_lossy())
+        .env("AGENTTY_TEST_RELEASE_LOCK", "1")
+        .env("GIT_OPTIONAL_LOCKS", "1")
+        .setup(seed_commit_index_lock_project)
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .press_key("a")
+                    .wait_for_text("Select session type", 5000)
+                    .press_key("Enter")
+                    .wait_for_stable_frame(300, 5000)
+                    .write_text("Create a pending change")
+                    .press_key("Enter")
+                    .wait_for_text("Enter: reply", 30000)
+                    .write_text("g")
+                    .wait_for_stable_frame(300, 5000)
+                    .capture_labeled("commit_recovered", "Auto-commit waits for the index writer")
+            },
+            |frame, _report| {
+                assertion::assert_not_visible(frame, "[Commit Error]");
+                assertion::assert_not_visible(frame, "[Commit Assist]");
+                assert!(!evidence.path().join("assist").exists());
+                assert_eq!(
+                    std::fs::read_to_string(evidence.path().join("optional-locks"))
+                        .expect("agent should record the inherited Git environment"),
+                    "0\n"
+                );
+                let change_path = std::fs::read_to_string(evidence.path().join("change-path"))
+                    .expect("agent should record its changed file");
+                let worktree = Path::new(change_path.trim())
+                    .parent()
+                    .expect("changed file should have a worktree");
+                let committed = Command::new("git")
+                    .args(["show", "HEAD:generated.txt"])
+                    .current_dir(worktree)
+                    .output()
+                    .expect("committed file should be readable");
+                assert!(committed.status.success());
+                assert_eq!(committed.stdout, b"pending change\n");
             },
         )?;
 

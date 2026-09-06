@@ -252,7 +252,10 @@ pub(crate) fn spawn_runtime_command(
     let mut command = command;
     command.process_group(0);
     let mut command = tokio::process::Command::from(command);
+    // Descendant Git reads must not compete with Agentty's index writers or
+    // leave optional index locks behind when the runtime is terminated.
     command
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -306,6 +309,29 @@ mod tests {
 
         // Act / Assert
         assert!(response_id_matches(&response_value, "init-123"));
+    }
+
+    #[tokio::test]
+    async fn runtime_disables_optional_git_locks_for_tools() {
+        // Arrange
+        let mut command = std::process::Command::new("sh");
+        command
+            .args(["-c", "sh -c 'printf \"%s\\n\" \"$GIT_OPTIONAL_LOCKS\"'"])
+            .env("GIT_OPTIONAL_LOCKS", "1");
+
+        // Act
+        let (mut child, stdin, stdout) =
+            spawn_runtime_command(command, "test").expect("runtime should start");
+        drop(stdin);
+        let line = BufReader::new(stdout)
+            .lines()
+            .next_line()
+            .await
+            .expect("stdout should be readable");
+        shutdown_child(&mut child).await;
+
+        // Assert
+        assert_eq!(line.as_deref(), Some("0"));
     }
 
     #[test]

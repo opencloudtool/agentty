@@ -107,7 +107,9 @@ pub(crate) async fn execute_cli_command(
     let stdin_payload = agent::build_command_stdin_payload(kind, build_request)
         .map_err(CliExecutionError::StdinBuild)?;
     let mut tokio_command = tokio::process::Command::from(command);
+    // Agent tools must not refresh Git's index during read-only inspection.
     tokio_command
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(if stdin_payload.is_some() {
             std::process::Stdio::piped()
         } else {
@@ -496,6 +498,35 @@ mod tests {
             .expect("PID update lock should be available");
         assert!(pid_updates.first().is_some_and(Option::is_some));
         assert_eq!(pid_updates.last(), Some(&None));
+    }
+
+    #[tokio::test]
+    async fn test_execute_cli_command_disables_optional_git_locks_for_tools() {
+        // Arrange
+        let folder = tempdir().expect("temporary folder should be created");
+        let request_kind = AgentRequestKind::UtilityPrompt;
+        let mut backend = MockAgentBackend::new();
+        backend.expect_build_command().once().returning(|_| {
+            let mut command = shell_command("sh -c 'printf %s \"$GIT_OPTIONAL_LOCKS\"'");
+            command.env("GIT_OPTIONAL_LOCKS", "1");
+
+            Ok(command)
+        });
+
+        // Act
+        let output = execute_cli_command(
+            &backend,
+            AgentKind::Codex,
+            build_request(&[], folder.path(), "prompt", &request_kind),
+            &CollectingCliObserver,
+            None,
+        )
+        .await
+        .expect("process should complete");
+
+        // Assert
+        assert_eq!(output.exit_status, CliExitStatus::Success);
+        assert_eq!(output.stdout, "0");
     }
 
     #[tokio::test]
