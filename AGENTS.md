@@ -15,102 +15,42 @@ Agentty is a Rust workspace for an agent-management TUI and reusable support cra
   committed, uncommitted, and untracked changes, before deciding what changed.
 - Before editing, identify affected tests, documentation, dependencies, dependents, and
   repository hooks.
+- Follow `crates/AGENTS.md` for Rust conventions, including workspace dependency rules
+  when editing the root `Cargo.toml`.
 
 ## Product vs Repository Scope
 
-Prompts about branches, worktrees, commits, reviews, sessions, or agent behavior usually
-describe Agentty product requirements, not instructions to mutate this checkout.
-
-- Apply workflow requirements to projects managed by Agentty unless the user explicitly
-  names this repository, worktree, branch, or session.
-- If local mutation still appears necessary after that interpretation, clarify the scope
-  before acting.
+- Resolve scope from the request and conversation context. Requests to review or fix
+  this checkout authorize that work without requiring an explicit repository name.
+- Apply requirements about Agentty-managed projects to the product. Ask for
+  clarification only when product versus checkout scope remains ambiguous and would
+  change the action; continue independent work while awaiting the answer.
 
 ## Non-Negotiable Gates
 
 - Preserve unrelated user changes.
-- Every user-visible feature requires an E2E test in `crates/agentty/tests/e2e/` built
-  with `FeatureTest`. Use `skills/feature-test/SKILL.md`; if infrastructure blocks
-  coverage, report the exact gap.
-- Every code change requires automated tests that cover 100% of its coverable changed
-  lines. Before handoff, run
-  `prek run test-agentty-e2e --all-files --hook-stage manual`,
-  `prek run diff-coverage --all-files --hook-stage manual`, and
-  `prek run coverage --all-files --hook-stage manual`.
+- Agentty UI features demonstrable in a PTY scenario require `FeatureTest` E2E coverage
+  under `crates/agentty/tests/e2e/`; follow `skills/feature-test/SKILL.md`. For behavior
+  requiring live backends or unavailable infrastructure, report the exact coverage gap
+  and test the supported boundaries deterministically.
+- Use integration tests appropriate to the public surface for other CLI, library, or
+  backend features.
+- Every code change requires automated tests covering 100% of its coverable changed
+  lines. Before handoff, run `prek run diff-coverage --all-files --hook-stage manual`
+  and `prek run coverage --all-files --hook-stage manual`.
 - Never bypass `prek`-managed hooks with `--no-verify`, `--no-gpg-sign`, or an
   equivalent flag. Fix the failure.
-- Prefer removing legacy behavior. Obtain explicit user approval before retaining it.
-
-## Rust Conventions
-
-### Workspace and Modules
-
-- Define all dependencies, including development and build dependencies, under
-  `[workspace.dependencies]` in the root `Cargo.toml`. Member manifests use
-  `workspace = true` for shared package metadata and dependencies.
-- Use singular Rust file names. For nested modules, prefer `module.rs` plus `module/`;
-  do not add `mod.rs`.
-- A `module.rs` paired with `module/` is router-only: declarations and re-exports, with
-  no runtime types, constants, functions, or implementations.
-
-### Readability
-
-- Order code for top-to-bottom reading: public before restricted before private, with
-  callees ordered by first use.
-- Keep imports at file scope. Prefer module-oriented internal imports, use direct item
-  imports only when clearer, and do not mix imported-module and fully qualified styles.
-  In tests, prefer `use super::*;`.
-- Add `new()` or `Default` only for meaningful initialization. Prefer associated
-  constructors over free construction helpers.
-- Put an inherent `impl` directly below its struct and trait implementations after it.
-  Keep helpers used by one type inside that type's `impl`.
-- Put public struct fields before private fields and alphabetize within each group.
-- Use descriptive names; avoid single-letter names and near-identical names in one
-  scope.
-- Separate logical blocks with blank lines, including before explicit or implicit
-  returns except in a one-expression block.
-- Introduce abstractions only for reuse, reduced complexity, or testability. Inline
-  pass-through wrappers that add no behavior or boundary.
-- Do not silence Clippy with `#[allow(...)]`; resolve the underlying issue.
-
-### Tests and Boundaries
-
-- Give every touched test explicit `// Arrange`, `// Act`, and `// Assert` sections;
-  combine labels only when that improves a very small test.
-- Keep test-only code inside `#[cfg(test)] mod tests` unless it belongs to an
-  established shared test-support surface. Mockable traits may use
-  `#[cfg_attr(test, mockall::automock)]`.
-- Keep a real test for an isolated external command. For flows with multiple external
-  calls, inject a trait boundary and use deterministic mocks.
-- Reuse named fixtures, builders, and expectation helpers instead of duplicating test
-  setup. Do not expose production APIs solely to share test fixtures.
-- Route process, filesystem, network, terminal, and time access through injected
-  boundaries in orchestration code.
-- When removing behavior, test the remaining supported path rather than only asserting
-  that the old path is absent.
-
-## Tokio
-
-- Keep the codebase async; do not create a runtime merely to call `block_on()`.
-- Enable only required Tokio features, never `full`.
-- Use `tokio::process::Command` for streamed subprocesses and
-  `tokio::task::spawn_blocking` for blocking synchronous work.
-- Prefer variable shadowing or a scoped block when cloning values into spawned `move`
-  closures.
-- Use `#[tokio::test]` for async tests and `tokio::time::sleep` for async delays.
-
-### Mutex Selection
-
-- Default to `std::sync::Mutex`; use `tokio::sync::Mutex` only when the protected
-  critical section itself awaits.
-- Never hold an async mutex merely to perform synchronous work such as writing to a
-  `std::fs::File`.
+- Prefer removing obsolete behavior within the requested scope. Ask only when choosing
+  between preserving an existing public contract and making a breaking change that the
+  user has not already authorized; leave unrelated compatibility behavior alone.
 
 ## Quality Gates
 
 `.pre-commit-config.yaml` is the executable source of truth for hook IDs and commands.
-Invoke its hooks through `prek`; do not copy their underlying commands into other
-workflows.
+Invoke cataloged checks through `prek`. The focused E2E validation and container
+recording commands in `skills/feature-test/SKILL.md` are explicit exceptions because the
+E2E hook runs the complete suite. Keep those commands in the skill; do not duplicate
+hook implementations elsewhere.
 
 - While iterating, run the relevant formatter or fixer on touched paths.
 - Before handoff, run one impact-based validation rung covering every touched file and
@@ -125,7 +65,10 @@ workflows.
 - For cross-cutting changes or uncertain impact, run `prek run --all-files`, then
   `prek run test-workspace --all-files --hook-stage manual`.
 - Run mutating fixers one at a time and inspect their diffs before continuing.
-- Run focused Agentty E2E tests locally; CI owns the complete E2E suite.
+- Run affected Agentty E2E tests locally using the focused workflow in
+  `skills/feature-test/SKILL.md`. CI runs the complete suite through
+  `prek run test-agentty-e2e --all-files --hook-stage manual`. Run that hook locally
+  when requested or when focused tests cannot cover the impact.
 - Kill and report any test that produces no output for five minutes. After three failed
   repair attempts, stop and report the test, output, and attempted fixes; never skip,
   ignore, or delete the test.
@@ -137,8 +80,8 @@ Apply the smallest documentation update matching the change:
 - Keep documentation short and conceptual unless detailed implementation documentation
   is explicitly requested.
 - Keep Rust doc comments current for touched public APIs and related elements.
-- Update `docs/site/content/docs/` for user-visible behavior and
-  `docs/site/content/docs/architecture/` for ownership, boundaries, or runtime flow.
+- Update `docs/site/content/docs/` for user-visible behavior; route architecture changes
+  using the canonical references below.
 - Update `README.md` for public prerequisites, usage, features, or crate information.
 - Update `CHANGELOG.md` for shipped behavior during release work.
 - In prose, wrap code identifiers, file names, key bindings, and configuration literals
@@ -169,9 +112,13 @@ Follow the nearest documentation guide for exact routing and integrity rules.
 
 ## Canonical References
 
+Update these architecture pages when their subject changes; keep file-level detail in
+source routers and doc comments:
+
 - `docs/site/content/docs/architecture/module-map.md`: ownership and layer boundaries.
 - `docs/site/content/docs/architecture/runtime-flow.md`: orchestration and channels.
 - `docs/site/content/docs/architecture/testability-boundaries.md`: external boundaries.
-- `docs/site/content/docs/architecture/change-recipes.md`: safe change paths.
-- Agent prompt templates live under `crates/ag-agent/src/agent/template/`,
-  `crates/agentty/src/app/template/`, and `crates/ag-protocol/src/template/`.
+- `docs/site/content/docs/architecture/change-recipes.md`: contributor change paths.
+
+Agent prompt templates live under `crates/ag-agent/src/agent/template/`,
+`crates/agentty/src/app/template/`, and `crates/ag-protocol/src/template/`.
