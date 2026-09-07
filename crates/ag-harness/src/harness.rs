@@ -19,6 +19,7 @@ use crate::model::{
 };
 use crate::policy::Policy;
 use crate::read::{self, ReadError, ReadTool};
+use crate::repository::Repository;
 use crate::schema_contract::OutputSchema;
 use crate::session::{AcquiredTurn, Database, LoadedSession, NewSession, SessionError};
 use crate::tool::{
@@ -432,7 +433,7 @@ pub struct Harness {
     max_tool_calls: usize,
     model: Arc<dyn Model>,
     policy: Policy,
-    repository_root: Option<PathBuf>,
+    repository: Option<Repository>,
 }
 
 impl Harness {
@@ -446,7 +447,7 @@ impl Harness {
             max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
             model: Arc::new(model),
             policy: Policy::default(),
-            repository_root: None,
+            repository: None,
         }
     }
 
@@ -458,10 +459,11 @@ impl Harness {
         self
     }
 
-    /// Roots repository-scoped tools at `repository_root`.
+    /// Configures the validated repository root and Git executable used by
+    /// tools.
     #[must_use]
-    pub fn repository(mut self, repository_root: impl Into<PathBuf>) -> Self {
-        self.repository_root = Some(repository_root.into());
+    pub fn repository(mut self, repository: Repository) -> Self {
+        self.repository = Some(repository);
 
         self
     }
@@ -743,17 +745,21 @@ impl Harness {
         if !read_allowed && !write_allowed {
             return Ok((request, None, None));
         }
-        let repository_root = self
-            .repository_root
+        let repository = self
+            .repository
             .as_ref()
             .ok_or(TurnError::RepositoryRequired)?;
         let read_tool = read_allowed.then(|| {
             request = request.clone().with_tool(ToolDefinition::read());
-            ReadTool::new(self.file_system.clone(), repository_root.clone())
+            ReadTool::with_git(
+                self.file_system.clone(),
+                repository.root().to_path_buf(),
+                repository.git_executable().to_path_buf(),
+            )
         });
         let write_tool = write_allowed.then(|| {
             request = request.clone().with_tool(ToolDefinition::write());
-            WriteTool::new(self.file_system.clone(), repository_root.clone())
+            WriteTool::new(self.file_system.clone(), repository.root().to_path_buf())
         });
 
         Ok((request, read_tool, write_tool))
@@ -1330,14 +1336,14 @@ mod tests {
 
     fn read_harness(model: impl Model + 'static, file_system: MockFileSystem) -> Harness {
         Harness::new(model)
-            .repository("repo")
+            .repository(Repository::fixture("repo"))
             .allow(Tool::Read)
             .file_system(file_system)
     }
 
     fn write_harness(model: impl Model + 'static, file_system: MockFileSystem) -> Harness {
         Harness::new(model)
-            .repository("repo")
+            .repository(Repository::fixture("repo"))
             .allow(Tool::Write)
             .file_system(file_system)
     }
@@ -1628,7 +1634,7 @@ mod tests {
             }))))
         });
         let harness = Harness::new(model)
-            .repository(env!("CARGO_MANIFEST_DIR"))
+            .repository(Repository::fixture(env!("CARGO_MANIFEST_DIR")))
             .allow(Tool::Read);
 
         // Act
@@ -1791,7 +1797,7 @@ mod tests {
             }))))
         });
         let harness = Harness::new(model)
-            .repository(env!("CARGO_MANIFEST_DIR"))
+            .repository(Repository::fixture(env!("CARGO_MANIFEST_DIR")))
             .allow(Tool::Read);
 
         // Act

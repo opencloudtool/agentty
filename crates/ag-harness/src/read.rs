@@ -1,4 +1,3 @@
-use std::ffi::OsStr;
 use std::fmt;
 use std::future::Future;
 use std::io::{self, Cursor};
@@ -14,6 +13,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
 use tokio::process::Command;
 
 use crate::file_system::FileSystem;
+#[cfg(test)]
+use crate::repository::test_git_executable;
 use crate::schema_contract;
 use crate::tool::{MAX_TOOL_RESULT_BYTES, ReadAction, ReadArguments, ReadSide};
 
@@ -67,7 +68,15 @@ trait RepositoryCommandRunner: Send + Sync {
     ) -> io::Result<RepositoryCommandOutput>;
 }
 
-struct LocalRepositoryCommandRunner;
+struct LocalRepositoryCommandRunner {
+    git_executable: PathBuf,
+}
+
+impl LocalRepositoryCommandRunner {
+    fn new(git_executable: PathBuf) -> Self {
+        Self { git_executable }
+    }
+}
 
 #[async_trait]
 impl RepositoryCommandRunner for LocalRepositoryCommandRunner {
@@ -91,10 +100,9 @@ impl LocalRepositoryCommandRunner {
         arguments: &[String],
         stdout_limit: usize,
     ) -> io::Result<RepositoryCommandOutput> {
-        let git_executable = Self::resolve_git_executable(root).await?;
         let verification = self
             .run_git_bounded(
-                &git_executable,
+                &self.git_executable,
                 root,
                 &["rev-parse".to_string(), "--show-toplevel".to_string()],
                 MAX_COMMAND_DIAGNOSTIC_BYTES,
@@ -102,7 +110,7 @@ impl LocalRepositoryCommandRunner {
             .await?;
         Self::verify_repository_root(root, verification).await?;
 
-        self.run_git_bounded(&git_executable, root, arguments, stdout_limit)
+        self.run_git_bounded(&self.git_executable, root, arguments, stdout_limit)
             .await
     }
 
@@ -153,39 +161,6 @@ impl LocalRepositoryCommandRunner {
         };
 
         Self::with_timeout(REPOSITORY_COMMAND_TIMEOUT, operation).await
-    }
-
-    async fn resolve_git_executable(root: &Path) -> io::Result<PathBuf> {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-
-        Self::resolve_git_executable_in_path(root, &path).await
-    }
-
-    async fn resolve_git_executable_in_path(root: &Path, path: &OsStr) -> io::Result<PathBuf> {
-        let root = tokio::fs::canonicalize(root).await?;
-        let executable_name = format!("git{}", std::env::consts::EXE_SUFFIX);
-        for directory in std::env::split_paths(path).filter(|directory| directory.is_absolute()) {
-            let candidate = directory.join(&executable_name);
-            let Ok(candidate) = tokio::fs::canonicalize(candidate).await else {
-                continue;
-            };
-            if candidate.starts_with(&root) {
-                continue;
-            }
-            let is_file = tokio::fs::metadata(&candidate)
-                .await
-                .is_ok_and(|metadata| metadata.is_file());
-            if !is_file {
-                continue;
-            }
-
-            return Ok(candidate);
-        }
-
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "trusted Git executable was not found in absolute PATH entries",
-        ))
     }
 
     async fn with_timeout<T>(
@@ -505,12 +480,21 @@ pub(crate) struct ReadTool {
 
 impl ReadTool {
     /// Creates a repository reader backed by an injected filesystem.
-    pub(crate) fn new(file_system: Arc<dyn FileSystem>, repository_root: PathBuf) -> Self {
+    pub(crate) fn with_git(
+        file_system: Arc<dyn FileSystem>,
+        repository_root: PathBuf,
+        git_executable: PathBuf,
+    ) -> Self {
         Self {
-            command_runner: Arc::new(LocalRepositoryCommandRunner),
+            command_runner: Arc::new(LocalRepositoryCommandRunner::new(git_executable)),
             file_system,
             repository_root,
         }
+    }
+
+    #[cfg(test)]
+    fn new(file_system: Arc<dyn FileSystem>, repository_root: PathBuf) -> Self {
+        Self::with_git(file_system, repository_root, test_git_executable())
     }
 
     #[cfg(test)]
@@ -2200,7 +2184,7 @@ mod tests {
         ];
 
         // Act
-        let output = LocalRepositoryCommandRunner
+        let output = LocalRepositoryCommandRunner::new(test_git_executable())
             .run(root, &arguments)
             .await
             .expect("read-only Git command should run");
@@ -2232,6 +2216,7 @@ mod tests {
         std::fs::set_permissions(&fake_git, permissions)
             .expect("fake Git executable permissions should be installed");
         let inherited_path = std::env::var_os("PATH").expect("test PATH should be configured");
+        let git_executable = test_git_executable();
         let path = std::env::join_paths(
             [PathBuf::from("."), fake_directory.path().to_path_buf()]
                 .into_iter()
@@ -2249,6 +2234,7 @@ mod tests {
             .env("GIT_DIR", "missing-git-dir")
             .env("GIT_WORK_TREE", "/")
             .env("GIT_INDEX_FILE", "missing-index")
+            .env("AG_HARNESS_TEST_GIT", git_executable)
             .env("PATH", path)
             .output()
             .expect("isolated Git environment test should run");
@@ -2267,9 +2253,12 @@ mod tests {
         // Arrange
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let arguments = ["rev-parse".to_string(), "--show-prefix".to_string()];
+        let git_executable = std::env::var_os("AG_HARNESS_TEST_GIT")
+            .map(PathBuf::from)
+            .expect("trusted test Git executable should be configured");
 
         // Act
-        let output = LocalRepositoryCommandRunner
+        let output = LocalRepositoryCommandRunner::new(git_executable)
             .run(root, &arguments)
             .await
             .expect("sanitized Git inspection should run");
@@ -2314,33 +2303,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn git_resolver_rejects_non_file_candidate() {
-        // Arrange
-        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let root = crate_root
-            .parent()
-            .expect("crate directory should have a parent")
-            .join("ag-agent");
-        let search_directory = tempfile::Builder::new()
-            .prefix("ag-harness-non-file-git-")
-            .tempdir_in(crate_root)
-            .expect("search directory should be created inside the workspace");
-        std::fs::create_dir(search_directory.path().join("git"))
-            .expect("non-file Git candidate should be created");
-
-        // Act
-        let error = LocalRepositoryCommandRunner::resolve_git_executable_in_path(
-            &root,
-            search_directory.path().as_os_str(),
-        )
-        .await
-        .expect_err("a Git directory should not be selected as an executable");
-
-        // Assert
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
-    }
-
-    #[tokio::test]
     async fn treats_repository_path_filters_as_literal() {
         // Arrange
         let tool = ReadTool::new(
@@ -2376,7 +2338,7 @@ mod tests {
         ];
 
         // Act
-        let output = LocalRepositoryCommandRunner
+        let output = LocalRepositoryCommandRunner::new(test_git_executable())
             .run(root, &arguments)
             .await
             .expect("large read-only Git command should be bounded");

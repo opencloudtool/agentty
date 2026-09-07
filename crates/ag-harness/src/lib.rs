@@ -13,6 +13,7 @@ mod model;
 mod policy;
 mod provider;
 mod read;
+mod repository;
 mod schema_contract;
 mod session;
 mod telemetry;
@@ -39,6 +40,7 @@ pub use provider::{
     QwenConfig,
 };
 pub use read::{ReadError, ReadOutput};
+pub use repository::{Repository, RepositoryError};
 pub use schema_contract::{OutputSchema, OutputSchemaError};
 pub use session::{SessionError, SessionInfo};
 pub use telemetry::LifecycleMetrics;

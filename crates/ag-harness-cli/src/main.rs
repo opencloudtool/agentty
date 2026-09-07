@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::{env, io};
 
 use ag_harness::{
-    Harness, ModelConfiguration, ModelConfigurationError, ModelProvider, OutputSchema, Session,
-    SessionInfo, Tool, TurnOutcome,
+    Harness, ModelConfiguration, ModelConfigurationError, ModelProvider, OutputSchema, Repository,
+    Session, SessionInfo, Tool, TurnOutcome,
 };
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
@@ -42,12 +42,16 @@ const READ_WRITE_SYSTEM_PROMPT: &str = concat!(
     name = "ag-harness",
     version,
     about = "Chats with models through a repository harness",
-    after_help = provider_help()
+    after_help = provider_help(),
+    group(clap::ArgGroup::new("repository").required(true).args(["git_executable"]))
 )]
 struct Cli {
     /// SQLite database used for durable session history.
     #[arg(long, global = true, value_name = "FILE")]
     database: Option<PathBuf>,
+    /// Absolute path to the host-controlled Git executable.
+    #[arg(long, global = true, value_name = "FILE")]
+    git_executable: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -223,6 +227,7 @@ where
     Output: AsyncWrite + Unpin,
 {
     let database = database_path(cli.database, &mut environment)?;
+    let git_executable = cli.git_executable;
     match cli.command {
         Command::Run(args) => {
             let session_id = args
@@ -234,8 +239,14 @@ where
                 args.base_url.as_deref(),
                 &mut environment,
             )?;
-            let (harness, system_prompt) =
-                configured_harness(client, database, args.read_dir, args.allow_write);
+            let git_executable = git_executable.ok_or(CliError::GitExecutableRequired)?;
+            let (harness, system_prompt) = configured_harness(
+                client,
+                database,
+                args.read_dir,
+                git_executable,
+                args.allow_write,
+            )?;
             let mut session = harness
                 .session(&session_id, chat_schema()?)
                 .system_prompt(system_prompt)
@@ -251,8 +262,14 @@ where
             let (provider, model) = stored_model_identity(&info)?;
             let client =
                 model_client(provider, &model, args.base_url.as_deref(), &mut environment)?;
-            let (harness, _) =
-                configured_harness(client, database, args.read_dir, args.allow_write);
+            let git_executable = git_executable.ok_or(CliError::GitExecutableRequired)?;
+            let (harness, _) = configured_harness(
+                client,
+                database,
+                args.read_dir,
+                git_executable,
+                args.allow_write,
+            )?;
             let mut session = harness.resume(&args.session).await?;
             let mut output = output;
             announce_session(&mut output, &args.session).await?;
@@ -313,9 +330,11 @@ fn model_client(
 fn configured_harness(
     client: ag_harness::ModelClient,
     database: PathBuf,
-    repository: PathBuf,
+    repository_root: PathBuf,
+    git_executable: PathBuf,
     allow_write: bool,
-) -> (Harness, &'static str) {
+) -> Result<(Harness, &'static str), CliError> {
+    let repository = Repository::new(repository_root, git_executable)?;
     let mut harness = Harness::new(client)
         .database(database)
         .repository(repository)
@@ -323,9 +342,9 @@ fn configured_harness(
     if allow_write {
         harness = harness.allow(Tool::Write);
 
-        (harness, READ_WRITE_SYSTEM_PROMPT)
+        Ok((harness, READ_WRITE_SYSTEM_PROMPT))
     } else {
-        (harness, READ_ONLY_SYSTEM_PROMPT)
+        Ok((harness, READ_ONLY_SYSTEM_PROMPT))
     }
 }
 
@@ -609,6 +628,8 @@ enum CliError {
     ChatTurnsFailed,
     #[error("--database, AG_HARNESS_ROOT, or HOME is required for durable session storage")]
     DatabaseLocation,
+    #[error("--git-executable is required for repository tools")]
+    GitExecutableRequired,
     #[error("model output did not contain a message")]
     MissingMessage,
     #[error("stored session does not identify a supported built-in model")]
@@ -619,6 +640,8 @@ enum CliError {
     ModelConfiguration(ModelConfigurationError),
     #[error(transparent)]
     OutputSchema(#[from] ag_harness::OutputSchemaError),
+    #[error(transparent)]
+    Repository(#[from] ag_harness::RepositoryError),
     #[error(transparent)]
     Session(#[from] ag_harness::SessionError),
     #[error(transparent)]
@@ -636,6 +659,8 @@ impl From<ModelConfigurationError> for CliError {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
@@ -702,12 +727,64 @@ mod tests {
         }
     }
 
+    fn with_repository_controlled_git(mut cli: Cli) -> Result<Cli, io::Error> {
+        let git_executable = std::env::current_exe()?;
+        let repository_root = git_executable
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| io::Error::other("test executable should have a parent"))?;
+        cli.git_executable = Some(git_executable);
+        match &mut cli.command {
+            Command::Run(arguments) => arguments.read_dir = repository_root,
+            Command::Resume(arguments) => arguments.read_dir = repository_root,
+        }
+
+        Ok(cli)
+    }
+
+    fn parse_cli<I, T>(arguments: I) -> Result<Cli, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString>,
+    {
+        let mut arguments = arguments.into_iter().map(Into::into).collect::<Vec<_>>();
+        arguments.splice(
+            1..1,
+            [
+                OsString::from("--git-executable"),
+                test_git_executable().into_os_string(),
+            ],
+        );
+
+        Cli::try_parse_from(arguments)
+    }
+
+    fn test_git_executable() -> PathBuf {
+        let executable_name = format!("git{}", std::env::consts::EXE_SUFFIX);
+        let path = std::env::var_os("PATH");
+        assert!(path.is_some(), "test PATH should be configured");
+        let executables = path
+            .iter()
+            .flat_map(|path| std::env::split_paths(path))
+            .filter(|directory| directory.is_absolute())
+            .map(|directory| directory.join(&executable_name))
+            .filter_map(|candidate| candidate.canonicalize().ok())
+            .filter(|path| path.is_file())
+            .collect::<Vec<_>>();
+        assert!(
+            !executables.is_empty(),
+            "trusted Git executable should be available on PATH"
+        );
+
+        executables[0].clone()
+    }
+
     #[test]
     fn cli_accepts_chat_with_or_without_an_initial_prompt() {
         // Arrange and Act
-        let without_prompt = Cli::try_parse_from(["ag-harness", "run", "muse-custom"])
-            .expect("chat arguments should parse");
-        let with_prompt = Cli::try_parse_from([
+        let without_prompt =
+            parse_cli(["ag-harness", "run", "muse-custom"]).expect("chat arguments should parse");
+        let with_prompt = parse_cli([
             "ag-harness",
             "run",
             "muse-custom",
@@ -721,10 +798,10 @@ mod tests {
             "--allow-write",
         ])
         .expect("an initial prompt should parse");
-        let blank_prompt = Cli::try_parse_from(["ag-harness", "run", "muse-custom", "  "])
+        let blank_prompt = parse_cli(["ag-harness", "run", "muse-custom", "  "])
             .expect_err("a blank initial prompt should be rejected");
         let unknown_provider =
-            Cli::try_parse_from(["ag-harness", "run", "muse-custom", "--provider", "unknown"])
+            parse_cli(["ag-harness", "run", "muse-custom", "--provider", "unknown"])
                 .expect_err("an unknown provider should be rejected");
 
         // Assert
@@ -763,7 +840,7 @@ mod tests {
         let providers = ModelProvider::all()
             .iter()
             .map(|provider| {
-                Cli::try_parse_from([
+                parse_cli([
                     "ag-harness",
                     "run",
                     "model-id",
@@ -784,7 +861,7 @@ mod tests {
     #[test]
     fn cli_accepts_resume_and_database_override() {
         // Arrange and Act
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli([
             "ag-harness",
             "--database",
             "state.db",
@@ -802,10 +879,10 @@ mod tests {
         assert_eq!(args.prompt.as_deref(), Some("continue"));
         assert!(args.allow_write);
 
-        let resume_probe = Cli::try_parse_from(["ag-harness", "resume", "session-b"])
+        let resume_probe = parse_cli(["ag-harness", "resume", "session-b"])
             .expect("resume arguments should parse");
-        let run_probe = Cli::try_parse_from(["ag-harness", "run", "model"])
-            .expect("run arguments should parse");
+        let run_probe =
+            parse_cli(["ag-harness", "run", "model"]).expect("run arguments should parse");
         assert!(run_arguments(resume_probe.command).is_none());
         assert!(resume_arguments(run_probe.command).is_none());
     }
@@ -867,11 +944,11 @@ mod tests {
     #[test]
     fn chat_mode_accounts_for_both_terminal_streams_and_initial_prompt() {
         // Arrange
-        let with_prompt = Cli::try_parse_from(["ag-harness", "run", "muse", "hello"])
-            .expect("chat arguments should parse");
-        let without_prompt = Cli::try_parse_from(["ag-harness", "run", "muse"])
-            .expect("chat arguments should parse");
-        let resume = Cli::try_parse_from(["ag-harness", "resume", "session-a", "continue"])
+        let with_prompt =
+            parse_cli(["ag-harness", "run", "muse", "hello"]).expect("chat arguments should parse");
+        let without_prompt =
+            parse_cli(["ag-harness", "run", "muse"]).expect("chat arguments should parse");
+        let resume = parse_cli(["ag-harness", "resume", "session-a", "continue"])
             .expect("resume arguments should parse");
 
         // Act and Assert
@@ -948,7 +1025,7 @@ mod tests {
             .await;
         let storage = tempfile::tempdir().expect("temporary storage should exist");
         let database = storage.path().join("harness.db");
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli([
             "ag-harness",
             "run",
             "muse-test",
@@ -1004,7 +1081,7 @@ mod tests {
             .await;
         let storage = tempfile::tempdir().expect("temporary storage should exist");
         let database = storage.path().join("harness.db");
-        let run = Cli::try_parse_from([
+        let run = parse_cli([
             "ag-harness",
             "--database",
             &database.to_string_lossy(),
@@ -1017,7 +1094,7 @@ mod tests {
             &server.uri(),
         ])
         .expect("run arguments should parse");
-        let resume = Cli::try_parse_from([
+        let resume = parse_cli([
             "ag-harness",
             "--database",
             &database.to_string_lossy(),
@@ -1028,6 +1105,20 @@ mod tests {
             &server.uri(),
         ])
         .expect("resume arguments should parse");
+        let invalid_resume = with_repository_controlled_git(
+            parse_cli([
+                "ag-harness",
+                "--database",
+                &database.to_string_lossy(),
+                "resume",
+                "session-a",
+                "third",
+                "--base-url",
+                &server.uri(),
+            ])
+            .expect("invalid resume fixture should parse"),
+        )
+        .expect("repository-controlled Git fixture should resolve");
         let mut first_output = Vec::new();
         let mut second_output = Vec::new();
 
@@ -1050,6 +1141,15 @@ mod tests {
         )
         .await
         .expect("second process should resume the session");
+        let invalid_error = execute(
+            invalid_resume,
+            |_| Ok("test-key".to_string()),
+            BufReader::new(&b""[..]),
+            Vec::new(),
+            ChatMode::OneShot,
+        )
+        .await
+        .expect_err("repository-controlled Git should reject resume");
 
         // Assert
         let first_output = String::from_utf8(first_output).expect("output should be UTF-8");
@@ -1058,12 +1158,16 @@ mod tests {
         assert!(first_output.contains("assistant> first answer\n"));
         assert!(second_output.contains("session: session-a\n"));
         assert!(second_output.contains("assistant> second answer\n"));
+        assert!(matches!(
+            invalid_error,
+            CliError::Repository(ag_harness::RepositoryError::GitExecutableInsideRepository { .. })
+        ));
     }
 
     #[tokio::test]
     async fn execute_reports_missing_provider_credentials_before_creating_a_session() {
         // Arrange
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli([
             "ag-harness",
             "--database",
             "unused.db",
@@ -1093,6 +1197,64 @@ mod tests {
         assert_eq!(output, [] as [u8; 0]);
     }
 
+    #[test]
+    fn cli_requires_an_explicit_git_executable() {
+        // Arrange
+        let arguments = [
+            "ag-harness",
+            "--database",
+            "unused.db",
+            "run",
+            "muse-test",
+            "Hello",
+        ];
+
+        // Act
+        let error = Cli::try_parse_from(arguments)
+            .expect_err("missing Git executable should fail during argument parsing");
+
+        // Assert
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--git-executable <FILE>"));
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_repository_controlled_git_for_new_sessions() {
+        // Arrange
+        let cli = with_repository_controlled_git(
+            parse_cli([
+                "ag-harness",
+                "--database",
+                "unused.db",
+                "run",
+                "muse-test",
+                "Hello",
+            ])
+            .expect("run arguments should parse"),
+        )
+        .expect("repository-controlled Git fixture should resolve");
+
+        // Act
+        let error = execute(
+            cli,
+            |_| Ok("test-key".to_string()),
+            BufReader::new(&b""[..]),
+            Vec::new(),
+            ChatMode::OneShot,
+        )
+        .await
+        .expect_err("repository-controlled Git should reject a new session");
+
+        // Assert
+        assert!(matches!(
+            error,
+            CliError::Repository(ag_harness::RepositoryError::GitExecutableInsideRepository { .. })
+        ));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_advertises_writes_only_when_explicitly_enabled() {
         // Arrange
@@ -1108,7 +1270,7 @@ mod tests {
             .await;
         let storage = tempfile::tempdir().expect("temporary storage should exist");
         let database = storage.path().join("harness.db");
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli([
             "ag-harness",
             "run",
             "muse-test",
@@ -1182,7 +1344,7 @@ mod tests {
         let database = repository.path().join("harness.db");
         std::fs::write(repository.path().join("input.txt"), "contents")
             .expect("read fixture should be written");
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli([
             "ag-harness",
             "run",
             "muse-test",
@@ -1280,9 +1442,11 @@ mod tests {
     async fn interactive_chat_prints_prompts_and_handles_blank_input() {
         // Arrange
         let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let repository = Repository::new(env!("CARGO_MANIFEST_DIR"), test_git_executable())
+            .expect("repository fixture should be valid");
         let harness = Harness::new(FixedModel(json!({"message": "hello"})))
             .database(directory.path().join("harness.db"))
-            .repository(".")
+            .repository(repository)
             .allow(Tool::Read);
         let mut session = harness
             .session(

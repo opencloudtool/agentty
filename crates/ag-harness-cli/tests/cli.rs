@@ -82,9 +82,32 @@ fn response(message: &str, input_tokens: u64, output_tokens: u64) -> ResponseTem
 fn harness_command() -> std::io::Result<(tempfile::TempDir, Command)> {
     let storage = tempfile::tempdir()?;
     let mut command = Command::new(cargo_bin!("ag-harness"));
-    command.env("AG_HARNESS_ROOT", storage.path());
+    command
+        .arg("--git-executable")
+        .arg(test_git_executable())
+        .env("AG_HARNESS_ROOT", storage.path());
 
     Ok((storage, command))
+}
+
+fn test_git_executable() -> std::path::PathBuf {
+    let executable_name = format!("git{}", std::env::consts::EXE_SUFFIX);
+    let path = std::env::var_os("PATH");
+    assert!(path.is_some(), "test PATH should be configured");
+    let executables = path
+        .iter()
+        .flat_map(|path| std::env::split_paths(path))
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(&executable_name))
+        .filter_map(|candidate| candidate.canonicalize().ok())
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    assert!(
+        !executables.is_empty(),
+        "trusted Git executable should be available on PATH"
+    );
+
+    executables[0].clone()
 }
 
 #[test]
@@ -99,7 +122,8 @@ fn help_describes_the_chat_interface() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help should be UTF-8");
     assert!(stdout.contains("Chats with models through a repository harness"));
-    assert!(stdout.contains("Usage: ag-harness [OPTIONS] <COMMAND>"));
+    assert!(stdout.contains("Usage: ag-harness [OPTIONS] <--git-executable <FILE>> <COMMAND>"));
+    assert!(stdout.contains("--git-executable <FILE>"));
     assert!(stdout.contains("Commands:"));
     assert!(stdout.contains("Starts a new durable session"));
     assert!(stdout.contains("Resumes a durable session"));
@@ -119,6 +143,24 @@ fn help_describes_the_chat_interface() {
 }
 
 #[test]
+fn missing_git_executable_is_a_clap_error() {
+    // Arrange
+    let mut command = Command::new(cargo_bin!("ag-harness"));
+
+    // Act
+    let output = command
+        .args(["run", "muse-custom"])
+        .output()
+        .expect("CLI argument validation should run");
+
+    // Assert
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("argument error should be UTF-8");
+    assert!(stderr.contains("required arguments were not provided"));
+    assert!(stderr.contains("--git-executable <FILE>"));
+}
+
+#[test]
 fn run_help_describes_optional_initial_prompt() {
     // Arrange
     let (_storage, mut command) = harness_command().expect("temporary storage should exist");
@@ -132,7 +174,10 @@ fn run_help_describes_optional_initial_prompt() {
     // Assert
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help should be UTF-8");
-    assert!(stdout.contains("Usage: ag-harness run [OPTIONS] <MODEL> [PROMPT]"));
+    assert!(
+        stdout
+            .contains("Usage: ag-harness <--git-executable <FILE>> run [OPTIONS] <MODEL> [PROMPT]")
+    );
     assert!(stdout.contains("Optional first prompt"));
     assert!(stdout.contains("--base-url <URL>"));
     for provider in ModelProvider::all() {
@@ -343,6 +388,8 @@ async fn stdin_prompts_share_conversation_history() {
         .await;
     let storage = tempfile::tempdir().expect("temporary storage should exist");
     let mut child = Command::new(cargo_bin!("ag-harness"))
+        .arg("--git-executable")
+        .arg(test_git_executable())
         .args([
             "run",
             "muse-test",
@@ -408,6 +455,8 @@ async fn resume_restores_history_from_the_default_database() {
     let storage = tempfile::tempdir().expect("temporary storage should exist");
     let mut first = Command::new(cargo_bin!("ag-harness"));
     first
+        .arg("--git-executable")
+        .arg(test_git_executable())
         .args([
             "run",
             "muse-test",
@@ -424,6 +473,8 @@ async fn resume_restores_history_from_the_default_database() {
     let first_output = first.output().expect("first CLI request should run");
     let mut second = Command::new(cargo_bin!("ag-harness"));
     let second_output = second
+        .arg("--git-executable")
+        .arg(test_git_executable())
         .args([
             "resume",
             "cli-resume",
@@ -484,6 +535,8 @@ async fn stdin_chat_emits_failure_before_retry_and_exits_unsuccessfully() {
         .await;
     let storage = tempfile::tempdir().expect("temporary storage should exist");
     let mut child = Command::new(cargo_bin!("ag-harness"))
+        .arg("--git-executable")
+        .arg(test_git_executable())
         .args(["run", "muse-test", "--base-url", &server.uri()])
         .env("MODEL_API_KEY", "test-key")
         .env("AG_HARNESS_ROOT", storage.path())
@@ -713,12 +766,16 @@ async fn redirected_output_with_terminal_stdin_is_one_shot() {
         .await;
     let temp_dir = tempfile::TempDir::new().expect("temporary directory should be created");
     let output_path = temp_dir.path().join("stdout.txt");
-    let command = r#"exec "$AG_HARNESS_BIN" run muse-test Hello --base-url "$MODEL_BASE_URL" > "$MODEL_OUTPUT_PATH""#;
+    let command = r#"exec "$AG_HARNESS_BIN" --git-executable "$AG_HARNESS_GIT" run muse-test Hello --base-url "$MODEL_BASE_URL" > "$MODEL_OUTPUT_PATH""#;
     let mut session = PtySessionBuilder::new("/bin/sh")
         .args(["-c", command])
         .env(
             "AG_HARNESS_BIN",
             cargo_bin!("ag-harness").to_string_lossy().into_owned(),
+        )
+        .env(
+            "AG_HARNESS_GIT",
+            test_git_executable().to_string_lossy().into_owned(),
         )
         .env("MODEL_API_KEY", "test-key")
         .env("MODEL_BASE_URL", server.uri())

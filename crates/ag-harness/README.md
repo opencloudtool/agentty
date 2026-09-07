@@ -6,11 +6,12 @@ SQLite sessions.
 ## Durable sessions
 
 ```rust
-use ag_harness::{Harness, Muse, MUSE_SPARK_1_3, Tool};
+use ag_harness::{Harness, Muse, MUSE_SPARK_1_3, Repository, Tool};
 
+let repository = Repository::new(".", git_executable)?;
 let harness = Harness::new(Muse::from_env(MUSE_SPARK_1_3)?)
     .database("harness.db")
-    .repository(".")
+    .repository(repository)
     .allow(Tool::Read)
     .allow(Tool::Write);
 
@@ -52,7 +53,9 @@ let result = harness.run_once("Summarize Cargo.toml", output_schema).await?;
 
 Tools are denied by default. `Tool::Read` provides bounded file, list, search, diff, and
 show operations. `Tool::Write` applies one bounded unified diff. Enabling either tool
-requires `Harness::repository()`.
+requires a `Repository` built from the repository root and an absolute, host-controlled
+Git executable. Construction canonicalizes both paths and rejects an executable inside
+the containing worktree before any model request.
 
 External providers implement the single `Model` trait and return `ModelCompletion`. They
 receive the complete ordered history in `ModelRequest::messages()`. A provider may also
