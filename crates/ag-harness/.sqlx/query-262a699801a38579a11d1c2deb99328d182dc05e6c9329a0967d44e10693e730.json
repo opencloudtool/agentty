@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT session.created_at AS \"session_created_at!: i64\",\n       session.updated_at AS \"session_updated_at!: i64\",\n       session_message.created_at AS \"message_timestamp!: i64\"\nFROM session\nINNER JOIN session_message ON session_message.session_id = session.id\nWHERE session.id = ?\nLIMIT 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "session_created_at!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "session",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "session_updated_at!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "session",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "name": "message_timestamp!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "session_message",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "262a699801a38579a11d1c2deb99328d182dc05e6c9329a0967d44e10693e730"
+}

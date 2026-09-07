@@ -75,9 +75,20 @@ the query. Persistence queries normally live in `crates/ag-store/`:
 )
 ```
 
+Harness persistence uses its own migrations and metadata cache:
+
+```sh
+(
+  cd crates/ag-harness
+  DATABASE_URL=sqlite:///tmp/ag_harness.sqlite cargo sqlx database reset -y
+  DATABASE_URL=sqlite:///tmp/ag_harness.sqlite cargo sqlx prepare -- --all-targets
+)
+```
+
 This repository expects generated `.sqlx/` metadata in every crate containing SQLx
-checked queries. Both `crates/ag-store/.sqlx/` and `crates/agentty/.sqlx/` are committed
-so their macros compile in offline mode (for example, with `SQLX_OFFLINE=true`).
+checked queries. The `crates/ag-harness/.sqlx/`, `crates/ag-store/.sqlx/`, and
+`crates/agentty/.sqlx/` directories are committed so their macros compile in offline
+mode (for example, with `SQLX_OFFLINE=true`).
 
 ## TUI E2E Tests
 

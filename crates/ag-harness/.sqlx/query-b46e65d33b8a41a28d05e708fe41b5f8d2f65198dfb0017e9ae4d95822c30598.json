@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT COUNT(message.id) AS \"message_count!: i64\",\n       turn.status AS \"status!: String\"\nFROM session_turn AS turn\nLEFT JOIN session_message AS message\n  ON message.session_id = turn.session_id\n AND message.turn_position = turn.turn_position\nWHERE turn.session_id = ?\nGROUP BY turn.status\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_count!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "status!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session_turn",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "b46e65d33b8a41a28d05e708fe41b5f8d2f65198dfb0017e9ae4d95822c30598"
+}

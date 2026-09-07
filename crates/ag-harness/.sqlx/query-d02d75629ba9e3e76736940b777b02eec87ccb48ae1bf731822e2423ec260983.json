@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT message.turn_position AS \"turn_position!: i64\",\n       SUM(message.retained_bytes) AS \"retained_bytes!: i64\"\nFROM session_message AS message\nJOIN session_turn AS turn\n  ON turn.session_id = message.session_id\n AND turn.turn_position = message.turn_position\nWHERE message.session_id = ?\n  AND message.turn_position <= ?\n  AND turn.status = 'completed'\nGROUP BY message.turn_position\nORDER BY message.turn_position DESC\nLIMIT ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "turn_position!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "session_message",
+            "name": "turn_position"
+          }
+        }
+      },
+      {
+        "name": "retained_bytes!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d02d75629ba9e3e76736940b777b02eec87ccb48ae1bf731822e2423ec260983"
+}

@@ -20,14 +20,31 @@ const DB_POOL_MAX_CONNECTIONS: u32 = 4;
 const DB_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const TURN_LEASE_SECONDS: i64 = 300;
 const TURN_SIZE_PAGE_SIZE: i64 = 64;
-type SessionRow = (
-    Option<String>,
-    Option<String>,
-    String,
-    Option<String>,
-    i64,
-    Option<String>,
-);
+
+struct ModelIdentityRow {
+    model: Option<String>,
+    provider: Option<String>,
+}
+
+struct SessionMessageRow {
+    kind: String,
+    payload: String,
+    turn_position: i64,
+}
+
+struct SessionRow {
+    max_history_bytes: i64,
+    model: Option<String>,
+    output_schema: String,
+    provider: Option<String>,
+    provider_session_id: Option<String>,
+    system_prompt: Option<String>,
+}
+
+struct TurnSizeRow {
+    retained_bytes: i64,
+    turn_position: i64,
+}
 
 /// Stored identity needed to reconstruct a built-in model client.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -296,22 +313,26 @@ ON CONFLICT(id) DO NOTHING
 
     pub(crate) async fn load_session(&self, id: &str) -> Result<LoadedSession, SessionError> {
         self.recover_stale_turns(id).await?;
-        let row = sqlx::query_as::<_, SessionRow>(
-            r"
-SELECT provider, model, output_schema, system_prompt, max_history_bytes, provider_session_id
+        let row = sqlx::query_as!(
+            SessionRow,
+            r#"
+SELECT provider,
+       model,
+       output_schema,
+       system_prompt,
+       max_history_bytes AS "max_history_bytes!: i64",
+       provider_session_id
 FROM session
 WHERE id = ?
-",
+"#,
+            id
         )
-        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .session_context("load persistent session")?
         .ok_or_else(|| SessionError::NotFound { id: id.to_string() })?;
-        let (provider, model, output_schema, system_prompt, max_history_bytes, provider_session_id) =
-            row;
-        let max_history_bytes = decode_max_history_bytes(id, max_history_bytes)?;
-        let output_schema = serde_json::from_str::<Value>(&output_schema).map_err(|error| {
+        let max_history_bytes = decode_max_history_bytes(id, row.max_history_bytes)?;
+        let output_schema = serde_json::from_str::<Value>(&row.output_schema).map_err(|error| {
             SessionError::InvalidData {
                 reason: format!("session `{id}` has invalid output-schema JSON: {error}"),
             }
@@ -321,11 +342,11 @@ WHERE id = ?
 
         Ok(LoadedSession {
             max_history_bytes,
-            model,
-            provider,
-            provider_session_id,
+            model: row.model,
+            provider: row.provider,
+            provider_session_id: row.provider_session_id,
             schema,
-            system_prompt,
+            system_prompt: row.system_prompt,
             turns,
         })
     }
@@ -334,14 +355,17 @@ WHERE id = ?
         &self,
         id: &str,
     ) -> Result<(Option<String>, Option<String>), SessionError> {
-        sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        let row = sqlx::query_as!(
+            ModelIdentityRow,
             "SELECT provider, model FROM session WHERE id = ?",
+            id
         )
-        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .session_context("load persistent session model identity")?
-        .ok_or_else(|| SessionError::NotFound { id: id.to_string() })
+        .ok_or_else(|| SessionError::NotFound { id: id.to_string() })?;
+
+        Ok((row.provider, row.model))
     }
 
     pub(crate) async fn begin_turn(
@@ -1132,9 +1156,12 @@ async fn load_turns_from(
     else {
         return Ok(Vec::new());
     };
-    let rows = sqlx::query_as::<_, (i64, String, String)>(
-        r"
-SELECT message.turn_position, message.kind, message.payload
+    let rows = sqlx::query_as!(
+        SessionMessageRow,
+        r#"
+SELECT message.turn_position AS "turn_position!: i64",
+       message.kind AS "kind!: String",
+       message.payload AS "payload!: String"
 FROM session_message AS message
 JOIN session_turn AS turn
   ON turn.session_id = message.session_id
@@ -1143,22 +1170,22 @@ WHERE message.session_id = ?
   AND message.turn_position >= ?
   AND turn.status = 'completed'
 ORDER BY message.turn_position, message.message_position
-",
+"#,
+        session_id,
+        oldest_turn
     )
-    .bind(session_id)
-    .bind(oldest_turn)
     .fetch_all(&mut *connection)
     .await
     .session_context("load persistent session history")?;
     let mut turns = Vec::<Vec<ModelMessage>>::new();
     let mut current_position = None;
 
-    for (turn_position, kind, payload) in rows {
-        if current_position != Some(turn_position) {
+    for row in rows {
+        if current_position != Some(row.turn_position) {
             turns.push(Vec::new());
-            current_position = Some(turn_position);
+            current_position = Some(row.turn_position);
         }
-        let message = EncodedMessage::into_message(&kind, &payload)?;
+        let message = EncodedMessage::into_message(&row.kind, &row.payload)?;
         if let Some(turn) = turns.last_mut() {
             turn.push(message);
         }
@@ -1211,46 +1238,39 @@ async fn load_turn_size_page(
     session_id: &str,
     before_turn: Option<i64>,
 ) -> Result<Vec<(i64, i64)>, SessionError> {
-    let query = if let Some(before_turn) = before_turn {
-        sqlx::query_as::<_, (i64, i64)>(
-            r"
-SELECT message.turn_position, SUM(message.retained_bytes)
+    let Some(inclusive_end) =
+        before_turn.map_or(Some(i64::MAX), |position| position.checked_sub(1))
+    else {
+        return Ok(Vec::new());
+    };
+    let rows = sqlx::query_as!(
+        TurnSizeRow,
+        r#"
+SELECT message.turn_position AS "turn_position!: i64",
+       SUM(message.retained_bytes) AS "retained_bytes!: i64"
 FROM session_message AS message
 JOIN session_turn AS turn
   ON turn.session_id = message.session_id
  AND turn.turn_position = message.turn_position
 WHERE message.session_id = ?
-  AND message.turn_position < ?
+  AND message.turn_position <= ?
   AND turn.status = 'completed'
 GROUP BY message.turn_position
 ORDER BY message.turn_position DESC
 LIMIT ?
-",
-        )
-        .bind(session_id)
-        .bind(before_turn)
-    } else {
-        sqlx::query_as::<_, (i64, i64)>(
-            r"
-SELECT message.turn_position, SUM(message.retained_bytes)
-FROM session_message AS message
-JOIN session_turn AS turn
-  ON turn.session_id = message.session_id
- AND turn.turn_position = message.turn_position
-WHERE message.session_id = ? AND turn.status = 'completed'
-GROUP BY message.turn_position
-ORDER BY message.turn_position DESC
-LIMIT ?
-",
-        )
-        .bind(session_id)
-    };
+"#,
+        session_id,
+        inclusive_end,
+        TURN_SIZE_PAGE_SIZE
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .session_context("load persistent session history")?;
 
-    query
-        .bind(TURN_SIZE_PAGE_SIZE)
-        .fetch_all(connection)
-        .await
-        .session_context("load persistent session history")
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.turn_position, row.retained_bytes))
+        .collect())
 }
 
 fn decode_max_history_bytes(id: &str, max_history_bytes: i64) -> Result<usize, SessionError> {
@@ -1413,6 +1433,17 @@ mod tests {
 
     use super::*;
     use crate::model::{MockModel, ModelResponse};
+
+    struct SessionTimestampsRow {
+        message_timestamp: i64,
+        session_created_at: i64,
+        session_updated_at: i64,
+    }
+
+    struct TurnStatusRow {
+        message_count: i64,
+        status: String,
+    }
 
     fn schema() -> OutputSchema {
         OutputSchema::new(json!({
@@ -1677,16 +1708,19 @@ VALUES ('session-a', 0, 'running', NULL, 310, 10, 10)
             .load_session("session-a")
             .await
             .expect("session should load");
-        let timestamps = sqlx::query_as::<_, (i64, i64, i64)>(
-            r"
-SELECT session.created_at, session.updated_at, session_message.created_at
+        let timestamps = sqlx::query_as!(
+            SessionTimestampsRow,
+            r#"
+SELECT session.created_at AS "session_created_at!: i64",
+       session.updated_at AS "session_updated_at!: i64",
+       session_message.created_at AS "message_timestamp!: i64"
 FROM session
 INNER JOIN session_message ON session_message.session_id = session.id
 WHERE session.id = ?
 LIMIT 1
-",
+"#,
+            "session-a"
         )
-        .bind("session-a")
         .fetch_one(&database.pool)
         .await
         .expect("timestamps should load");
@@ -1700,7 +1734,9 @@ LIMIT 1
             Some("persistent instructions")
         );
         assert_eq!(loaded.turns, vec![messages]);
-        assert_eq!(timestamps, (456, 456, 456));
+        assert_eq!(timestamps.message_timestamp, 456);
+        assert_eq!(timestamps.session_created_at, 456);
+        assert_eq!(timestamps.session_updated_at, 456);
     }
 
     #[tokio::test]
@@ -2293,6 +2329,68 @@ ORDER BY turn_position
     }
 
     #[tokio::test]
+    async fn history_size_page_preserves_integer_boundary_turns() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        for (turn_position, retained_bytes) in [(i64::MIN, 1_i64), (i64::MAX, 2_i64)] {
+            sqlx::query(
+                r"
+INSERT INTO session_turn (
+    session_id, turn_position, status, error_type, lease_expires_at, created_at, updated_at
+)
+VALUES (?, ?, 'completed', NULL, NULL, 1, 1)
+",
+            )
+            .bind("session-a")
+            .bind(turn_position)
+            .execute(&database.pool)
+            .await
+            .expect("boundary turn should be inserted");
+            sqlx::query(
+                r#"
+INSERT INTO session_message (
+    session_id, turn_position, message_position, kind, payload, retained_bytes, created_at
+)
+VALUES (?, ?, 0, 'user', '"boundary"', ?, 1)
+"#,
+            )
+            .bind("session-a")
+            .bind(turn_position)
+            .bind(retained_bytes)
+            .execute(&database.pool)
+            .await
+            .expect("boundary message should be inserted");
+        }
+
+        // Act
+        let mut connection = database
+            .pool
+            .acquire()
+            .await
+            .expect("database connection should be acquired");
+        let initial_page = load_turn_size_page(&mut connection, "session-a", None)
+            .await
+            .expect("initial page should load");
+        let before_maximum = load_turn_size_page(&mut connection, "session-a", Some(i64::MAX))
+            .await
+            .expect("page before maximum should load");
+        let before_minimum = load_turn_size_page(&mut connection, "session-a", Some(i64::MIN))
+            .await
+            .expect("page before minimum should load");
+
+        // Assert
+        assert_eq!(initial_page, [(i64::MAX, 2), (i64::MIN, 1)]);
+        assert_eq!(before_maximum, [(i64::MIN, 1)]);
+        assert_eq!(before_minimum, [] as [(i64, i64); 0]);
+    }
+
+    #[tokio::test]
     async fn database_excludes_a_newest_turn_larger_than_the_budget() {
         // Arrange
         let database = Database::open_in_memory()
@@ -2671,26 +2769,28 @@ END
         let database = Database::open(&database_path)
             .await
             .expect("database should open");
-        let (message_count, status) = sqlx::query_as::<_, (i64, String)>(
-            r"
-SELECT COUNT(message.id), turn.status
+        let row = sqlx::query_as!(
+            TurnStatusRow,
+            r#"
+SELECT COUNT(message.id) AS "message_count!: i64",
+       turn.status AS "status!: String"
 FROM session_turn AS turn
 LEFT JOIN session_message AS message
   ON message.session_id = turn.session_id
  AND message.turn_position = turn.turn_position
 WHERE turn.session_id = ?
 GROUP BY turn.status
-",
+"#,
+            "session-a"
         )
-        .bind("session-a")
         .fetch_one(&database.pool)
         .await
         .expect("message count should load");
 
         // Assert
         assert!(matches!(error, SessionError::Turn(_)));
-        assert_eq!(message_count, 1);
-        assert_eq!(status, "failed");
+        assert_eq!(row.message_count, 1);
+        assert_eq!(row.status, "failed");
     }
 
     #[tokio::test]
