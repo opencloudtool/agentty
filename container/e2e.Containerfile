@@ -62,19 +62,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         exit 1 \
         ;; \
     esac \
-    && curl --fail --location --silent --show-error \
+    && curl --proto '=https' --proto-redir '=https' --fail --location --silent --show-error \
         --output /rustup-init \
         "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${rust_target}/rustup-init" \
-    && curl --fail --location --silent --show-error \
+    && curl --proto '=https' --proto-redir '=https' --fail --location --silent --show-error \
         --output /nextest.tar.gz \
         "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-${rust_target}.tar.gz" \
-    && curl --fail --location --silent --show-error \
+    && curl --proto '=https' --proto-redir '=https' --fail --location --silent --show-error \
         --output /prek.tar.gz \
         "https://github.com/j178/prek/releases/download/v${PREK_VERSION}/prek-${rust_target}.tar.gz" \
-    && curl --fail --location --silent --show-error \
+    && curl --proto '=https' --proto-redir '=https' --fail --location --silent --show-error \
         --output /ttyd \
         "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${ttyd_arch}" \
-    && curl --fail --location --silent --show-error \
+    && curl --proto '=https' --proto-redir '=https' --fail --location --silent --show-error \
         --output /vhs.tar.gz \
         "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_${vhs_arch}.tar.gz" \
     && echo "${rustup_init_sha256} */rustup-init" | sha256sum -c - \
