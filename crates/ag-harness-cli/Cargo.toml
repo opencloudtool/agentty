@@ -6,8 +6,6 @@ edition.workspace = true
 license.workspace = true
 description.workspace = true
 repository.workspace = true
-homepage.workspace = true
-readme = "README.md"
 
 [package.metadata.dist]
 # Publish this package only through the crates.io workflow.
