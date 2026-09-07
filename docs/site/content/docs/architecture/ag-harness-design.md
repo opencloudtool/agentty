@@ -55,6 +55,16 @@ The database stores the output schema, system prompt, model identity, history bu
 provider continuation identifier, messages, and turn state. Oldest complete turns are
 excluded from replay when the configured byte budget is exceeded.
 
+Starting a turn loads bounded completed history in a read-only snapshot, then opens a
+short writer transaction. The writer revalidates the snapshot and commits the turn as
+`running` with a fresh lease. If the snapshot changed, acquisition retries before
+persisting the prompt. This keeps cancellation before the commit side-effect free and
+keeps history canonical when multiple session handles were opened before the latest turn
+completed. Each active turn also has an opaque owner token. If cancellation races with a
+successful SQLite commit acknowledgment, cleanup scoped to the canonical database
+identity and owner token interrupts only that abandoned turn before another turn is
+reserved.
+
 ## Resume and provider fallback
 
 On resume, the harness validates the stored model identity and restores completed

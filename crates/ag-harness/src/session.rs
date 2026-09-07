@@ -1,13 +1,15 @@
 //! Completed-turn persistence for resumable harness chats.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{SqlitePool, Transaction};
+use sqlx::{SqliteConnection, SqlitePool, Transaction};
 use thiserror::Error;
 
 use crate::model::{ModelMessage, ModelMetadata};
@@ -124,10 +126,36 @@ where
     }
 }
 
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum DatabaseIdentity {
+    File(PathBuf),
+    Temporary(u64),
+}
+
+impl DatabaseIdentity {
+    async fn for_path(path: &Path) -> Result<Self, std::io::Error> {
+        if path.as_os_str().is_empty() || path == Path::new(":memory:") {
+            return Ok(Self::temporary());
+        }
+
+        tokio::fs::canonicalize(path).await.map(Self::File)
+    }
+
+    fn temporary() -> Self {
+        static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(0);
+
+        Self::Temporary(NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// SQLite database used by persistent harness sessions.
 #[derive(Clone)]
 pub(crate) struct Database {
+    abandoned_turns: Arc<AbandonedTurnRegistry>,
+    identity: DatabaseIdentity,
     pool: SqlitePool,
+    #[cfg(test)]
+    reservation_commit_control: Option<Arc<ReservationCommitControl>>,
     timestamp_source: Arc<dyn TimestampSource>,
 }
 
@@ -164,9 +192,14 @@ impl Database {
             .session_context("open persistent session database")?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
+        let identity = DatabaseIdentity::for_path(path).await?;
 
         Ok(Self {
+            abandoned_turns: shared_abandoned_turn_registry(),
+            identity,
             pool,
+            #[cfg(test)]
+            reservation_commit_control: None,
             timestamp_source,
         })
     }
@@ -202,7 +235,10 @@ impl Database {
         sqlx::migrate!("./migrations").run(&pool).await?;
 
         Ok(Self {
+            abandoned_turns: shared_abandoned_turn_registry(),
+            identity: DatabaseIdentity::temporary(),
             pool,
+            reservation_commit_control: None,
             timestamp_source,
         })
     }
@@ -274,10 +310,7 @@ WHERE id = ?
         .ok_or_else(|| SessionError::NotFound { id: id.to_string() })?;
         let (provider, model, output_schema, system_prompt, max_history_bytes, provider_session_id) =
             row;
-        let max_history_bytes =
-            usize::try_from(max_history_bytes).map_err(|_| SessionError::InvalidData {
-                reason: format!("session `{id}` has an invalid history byte limit"),
-            })?;
+        let max_history_bytes = decode_max_history_bytes(id, max_history_bytes)?;
         let output_schema = serde_json::from_str::<Value>(&output_schema).map_err(|error| {
             SessionError::InvalidData {
                 reason: format!("session `{id}` has invalid output-schema JSON: {error}"),
@@ -315,80 +348,166 @@ WHERE id = ?
         &self,
         session_id: &str,
         prompt: &str,
-    ) -> Result<i64, SessionError> {
+    ) -> Result<AcquiredTurn, SessionError> {
         let message = EncodedMessage::from_message(&ModelMessage::User(prompt.to_string()))?;
-        let now = self.timestamp_source.now_timestamp_seconds();
-        let lease_expires_at = now.saturating_add(TURN_LEASE_SECONDS);
+
+        loop {
+            let acquisition = self.load_turn_acquisition(session_id).await?;
+            if self
+                .reserve_turn(session_id, &message, &acquisition)
+                .await?
+            {
+                return Ok(AcquiredTurn {
+                    provider_session_id: acquisition.provider_session_id,
+                    turn_position: acquisition.turn_position,
+                    turns: acquisition.turns,
+                });
+            }
+        }
+    }
+
+    async fn load_turn_acquisition(
+        &self,
+        session_id: &str,
+    ) -> Result<TurnAcquisition, SessionError> {
         let mut transaction = self
             .pool
             .begin()
             .await
-            .session_context("begin persistent session turn")?;
-        recover_stale_turns(&mut transaction, session_id, now).await?;
-        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM session WHERE id = ?")
-            .bind(session_id)
-            .fetch_one(&mut *transaction)
-            .await
-            .session_context("begin persistent session turn")?;
-        if exists == 0 {
-            return Err(SessionError::NotFound {
-                id: session_id.to_string(),
-            });
-        }
-        let turn_position = next_turn_position(&mut transaction, session_id).await?;
-        let result = sqlx::query(
-            r"
-INSERT INTO session_turn (
-    session_id, turn_position, status, error_type, lease_expires_at, created_at, updated_at
-)
-VALUES (?, ?, 'pending', NULL, ?, ?, ?)
-",
+            .session_context("load persistent session turn acquisition")?;
+        let session = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT max_history_bytes, provider_session_id FROM session WHERE id = ?",
         )
         .bind(session_id)
-        .bind(turn_position)
-        .bind(lease_expires_at)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await;
-        if let Err(error) = result {
-            if is_unique_violation(&error) {
-                return Err(SessionError::Busy {
-                    id: session_id.to_string(),
-                });
-            }
-
-            return Err(error).session_context("begin persistent session turn");
-        }
-        insert_message(
-            &mut transaction,
-            session_id,
-            turn_position,
-            0,
-            &message,
-            now,
-            "begin persistent session turn",
-        )
-        .await?;
-        sqlx::query(
-            r"
-UPDATE session_turn
-SET status = 'running', updated_at = ?
-WHERE session_id = ? AND turn_position = ?
-",
-        )
-        .bind(now)
-        .bind(session_id)
-        .bind(turn_position)
-        .execute(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await
-        .session_context("begin persistent session turn")?;
+        .session_context("load persistent session turn acquisition")?
+        .ok_or_else(|| SessionError::NotFound {
+            id: session_id.to_string(),
+        })?;
+        let (max_history_bytes, provider_session_id) = session;
+        let max_history_bytes = decode_max_history_bytes(session_id, max_history_bytes)?;
+        let turn_position = next_turn_position(&mut transaction, session_id).await?;
+        let latest_completed_turn = latest_completed_turn(&mut transaction, session_id).await?;
+        let turns = load_turns_from(&mut transaction, session_id, max_history_bytes).await?;
         transaction
             .commit()
             .await
-            .session_context("begin persistent session turn")?;
+            .session_context("load persistent session turn acquisition")?;
 
-        Ok(turn_position)
+        Ok(TurnAcquisition {
+            latest_completed_turn,
+            max_history_bytes,
+            provider_session_id,
+            turn_position,
+            turns,
+        })
+    }
+
+    async fn reserve_turn(
+        &self,
+        session_id: &str,
+        message: &EncodedMessage,
+        acquisition: &TurnAcquisition,
+    ) -> Result<bool, SessionError> {
+        let recovery_now = self.timestamp_source.now_timestamp_seconds();
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .session_context("reserve persistent session turn")?;
+        recover_stale_turns(&mut transaction, session_id, recovery_now).await?;
+        let abandoned_turns = self.abandoned_turns.for_session(&self.identity, session_id);
+        for owner in &abandoned_turns {
+            interrupt_abandoned_turn(&mut transaction, owner, recovery_now)
+                .await
+                .session_context("recover abandoned persistent session turn")?;
+        }
+        let session = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT max_history_bytes, provider_session_id FROM session WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .session_context("reserve persistent session turn")?
+        .ok_or_else(|| SessionError::NotFound {
+            id: session_id.to_string(),
+        })?;
+        let (max_history_bytes, provider_session_id) = session;
+        let max_history_bytes = decode_max_history_bytes(session_id, max_history_bytes)?;
+        let turn_position = next_turn_position(&mut transaction, session_id).await?;
+        let latest_completed_turn = latest_completed_turn(&mut transaction, session_id).await?;
+        if max_history_bytes != acquisition.max_history_bytes
+            || provider_session_id != acquisition.provider_session_id
+            || turn_position != acquisition.turn_position
+            || latest_completed_turn != acquisition.latest_completed_turn
+        {
+            return Ok(false);
+        }
+        let reservation_now = self.timestamp_source.now_timestamp_seconds();
+        let lease_expires_at = reservation_now.saturating_add(TURN_LEASE_SECONDS);
+        let result = sqlx::query_scalar::<_, Vec<u8>>(
+            r"
+INSERT INTO session_turn (
+    session_id, turn_position, status, error_type, lease_expires_at, created_at, updated_at,
+    owner_token
+)
+VALUES (?, ?, 'running', NULL, ?, ?, ?, randomblob(16))
+RETURNING owner_token
+",
+        )
+        .bind(session_id)
+        .bind(acquisition.turn_position)
+        .bind(lease_expires_at)
+        .bind(reservation_now)
+        .bind(reservation_now)
+        .fetch_one(&mut *transaction)
+        .await;
+        let owner_token = result.map_err(|error| {
+            if is_unique_violation(&error) {
+                SessionError::Busy {
+                    id: session_id.to_string(),
+                }
+            } else {
+                SessionError::QueryContext {
+                    operation: "begin persistent session turn",
+                    source: error,
+                }
+            }
+        })?;
+        let owner = TurnOwner {
+            database: self.identity.clone(),
+            session_id: session_id.to_string(),
+            token: owner_token,
+            turn_position: acquisition.turn_position,
+        };
+        let mut reservation_guard = TurnReservationGuard::new(self, owner);
+        insert_message(
+            &mut transaction,
+            session_id,
+            acquisition.turn_position,
+            0,
+            message,
+            reservation_now,
+            "reserve persistent session turn",
+        )
+        .await?;
+        transaction
+            .commit()
+            .await
+            .session_context("reserve persistent session turn")?;
+        #[cfg(test)]
+        if self
+            .reservation_commit_control
+            .as_ref()
+            .is_some_and(|control| control.pause_after_commit())
+        {
+            std::future::pending::<()>().await;
+        }
+        self.abandoned_turns.remove(&abandoned_turns);
+        reservation_guard.disarm();
+
+        Ok(true)
     }
 
     pub(crate) async fn complete_turn(
@@ -618,86 +737,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
         session_id: &str,
         max_history_bytes: usize,
     ) -> Result<Vec<Vec<ModelMessage>>, SessionError> {
-        let Some(oldest_turn) = self
-            .oldest_turn_within_budget(session_id, max_history_bytes)
-            .await?
-        else {
-            return Ok(Vec::new());
-        };
-        let rows = sqlx::query_as::<_, (i64, String, String)>(
-            r"
-SELECT message.turn_position, message.kind, message.payload
-FROM session_message AS message
-JOIN session_turn AS turn
-  ON turn.session_id = message.session_id
- AND turn.turn_position = message.turn_position
-WHERE message.session_id = ?
-  AND message.turn_position >= ?
-  AND turn.status = 'completed'
-ORDER BY message.turn_position, message.message_position
-",
-        )
-        .bind(session_id)
-        .bind(oldest_turn)
-        .fetch_all(&self.pool)
-        .await
-        .session_context("load persistent session history")?;
-        let mut turns = Vec::<Vec<ModelMessage>>::new();
-        let mut current_position = None;
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .session_context("load persistent session history")?;
 
-        for (turn_position, kind, payload) in rows {
-            if current_position != Some(turn_position) {
-                turns.push(Vec::new());
-                current_position = Some(turn_position);
-            }
-            let message = EncodedMessage::into_message(&kind, &payload)?;
-            if let Some(turn) = turns.last_mut() {
-                turn.push(message);
-            }
-        }
-
-        Ok(turns)
-    }
-
-    async fn oldest_turn_within_budget(
-        &self,
-        session_id: &str,
-        max_history_bytes: usize,
-    ) -> Result<Option<i64>, SessionError> {
-        let mut retained_bytes = 0_usize;
-        let mut oldest_turn = None;
-        let mut before_turn = None;
-
-        'pages: loop {
-            let turn_sizes = load_turn_size_page(&self.pool, session_id, before_turn).await?;
-            if turn_sizes.is_empty() {
-                break;
-            }
-            let page_is_full =
-                turn_sizes.len() == usize::try_from(TURN_SIZE_PAGE_SIZE).unwrap_or(usize::MAX);
-
-            for (turn_position, turn_bytes) in turn_sizes {
-                let turn_bytes =
-                    usize::try_from(turn_bytes).map_err(|_| SessionError::InvalidData {
-                        reason: format!(
-                            "session `{session_id}` has an invalid retained byte count"
-                        ),
-                    })?;
-                let next_retained_bytes = retained_bytes.saturating_add(turn_bytes);
-                if next_retained_bytes > max_history_bytes {
-                    break 'pages;
-                }
-                retained_bytes = next_retained_bytes;
-                oldest_turn = Some(turn_position);
-                before_turn = Some(turn_position);
-            }
-
-            if !page_is_full {
-                break;
-            }
-        }
-
-        Ok(oldest_turn)
+        load_turns_from(&mut connection, session_id, max_history_bytes).await
     }
 }
 
@@ -771,6 +817,12 @@ pub enum SessionError {
     Turn(#[from] TurnError),
 }
 
+pub(crate) struct AcquiredTurn {
+    pub(crate) provider_session_id: Option<String>,
+    pub(crate) turn_position: i64,
+    pub(crate) turns: Vec<Vec<ModelMessage>>,
+}
+
 pub(crate) struct LoadedSession {
     pub(crate) max_history_bytes: usize,
     pub(crate) model: Option<String>,
@@ -779,6 +831,144 @@ pub(crate) struct LoadedSession {
     pub(crate) schema: OutputSchema,
     pub(crate) system_prompt: Option<String>,
     pub(crate) turns: Vec<Vec<ModelMessage>>,
+}
+
+struct TurnAcquisition {
+    latest_completed_turn: Option<i64>,
+    max_history_bytes: usize,
+    provider_session_id: Option<String>,
+    turn_position: i64,
+    turns: Vec<Vec<ModelMessage>>,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct TurnOwner {
+    database: DatabaseIdentity,
+    session_id: String,
+    token: Vec<u8>,
+    turn_position: i64,
+}
+
+#[derive(Default)]
+struct AbandonedTurnRegistry {
+    owners: Mutex<HashSet<TurnOwner>>,
+}
+
+impl AbandonedTurnRegistry {
+    fn for_session(&self, database: &DatabaseIdentity, session_id: &str) -> Vec<TurnOwner> {
+        self.owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|owner| &owner.database == database && owner.session_id == session_id)
+            .cloned()
+            .collect()
+    }
+
+    fn register(&self, owner: TurnOwner) {
+        self.owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owner);
+    }
+
+    fn remove(&self, owners: &[TurnOwner]) {
+        let mut registered = self
+            .owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for owner in owners {
+            registered.remove(owner);
+        }
+    }
+}
+
+fn shared_abandoned_turn_registry() -> Arc<AbandonedTurnRegistry> {
+    static REGISTRY: OnceLock<Arc<AbandonedTurnRegistry>> = OnceLock::new();
+
+    Arc::clone(REGISTRY.get_or_init(Arc::default))
+}
+
+struct TurnReservationGuard {
+    owner: Option<TurnOwner>,
+    pool: SqlitePool,
+    registry: Arc<AbandonedTurnRegistry>,
+    runtime: tokio::runtime::Handle,
+    timestamp_source: Arc<dyn TimestampSource>,
+}
+
+impl TurnReservationGuard {
+    fn new(database: &Database, owner: TurnOwner) -> Self {
+        Self {
+            owner: Some(owner),
+            pool: database.pool.clone(),
+            registry: Arc::clone(&database.abandoned_turns),
+            runtime: tokio::runtime::Handle::current(),
+            timestamp_source: Arc::clone(&database.timestamp_source),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.owner = None;
+    }
+}
+
+impl Drop for TurnReservationGuard {
+    fn drop(&mut self) {
+        let Some(owner) = self.owner.take() else {
+            return;
+        };
+        self.registry.register(owner.clone());
+
+        let pool = self.pool.clone();
+        let registry = Arc::clone(&self.registry);
+        let timestamp_source = Arc::clone(&self.timestamp_source);
+        std::mem::drop(self.runtime.spawn(async move {
+            let result = async {
+                let mut connection = pool.acquire().await?;
+                interrupt_abandoned_turn(
+                    &mut connection,
+                    &owner,
+                    timestamp_source.now_timestamp_seconds(),
+                )
+                .await
+            }
+            .await;
+            if result.is_ok() {
+                registry.remove(std::slice::from_ref(&owner));
+            }
+        }));
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct ReservationCommitControl {
+    commit_seen: std::sync::atomic::AtomicBool,
+    pause_once: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+impl ReservationCommitControl {
+    fn paused() -> Self {
+        Self {
+            commit_seen: std::sync::atomic::AtomicBool::new(false),
+            pause_once: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    fn pause_after_commit(&self) -> bool {
+        if !self
+            .pause_once
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
+        self.commit_seen
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        true
+    }
 }
 
 struct EncodedMessage {
@@ -932,8 +1122,92 @@ fn connect_options(path: &Path) -> SqliteConnectOptions {
         .foreign_keys(true)
 }
 
+async fn load_turns_from(
+    connection: &mut SqliteConnection,
+    session_id: &str,
+    max_history_bytes: usize,
+) -> Result<Vec<Vec<ModelMessage>>, SessionError> {
+    let Some(oldest_turn) =
+        oldest_turn_within_budget(connection, session_id, max_history_bytes).await?
+    else {
+        return Ok(Vec::new());
+    };
+    let rows = sqlx::query_as::<_, (i64, String, String)>(
+        r"
+SELECT message.turn_position, message.kind, message.payload
+FROM session_message AS message
+JOIN session_turn AS turn
+  ON turn.session_id = message.session_id
+ AND turn.turn_position = message.turn_position
+WHERE message.session_id = ?
+  AND message.turn_position >= ?
+  AND turn.status = 'completed'
+ORDER BY message.turn_position, message.message_position
+",
+    )
+    .bind(session_id)
+    .bind(oldest_turn)
+    .fetch_all(&mut *connection)
+    .await
+    .session_context("load persistent session history")?;
+    let mut turns = Vec::<Vec<ModelMessage>>::new();
+    let mut current_position = None;
+
+    for (turn_position, kind, payload) in rows {
+        if current_position != Some(turn_position) {
+            turns.push(Vec::new());
+            current_position = Some(turn_position);
+        }
+        let message = EncodedMessage::into_message(&kind, &payload)?;
+        if let Some(turn) = turns.last_mut() {
+            turn.push(message);
+        }
+    }
+
+    Ok(turns)
+}
+
+async fn oldest_turn_within_budget(
+    connection: &mut SqliteConnection,
+    session_id: &str,
+    max_history_bytes: usize,
+) -> Result<Option<i64>, SessionError> {
+    let mut retained_bytes = 0_usize;
+    let mut oldest_turn = None;
+    let mut before_turn = None;
+
+    'pages: loop {
+        let turn_sizes = load_turn_size_page(connection, session_id, before_turn).await?;
+        if turn_sizes.is_empty() {
+            break;
+        }
+        let page_is_full =
+            turn_sizes.len() == usize::try_from(TURN_SIZE_PAGE_SIZE).unwrap_or(usize::MAX);
+
+        for (turn_position, turn_bytes) in turn_sizes {
+            let turn_bytes =
+                usize::try_from(turn_bytes).map_err(|_| SessionError::InvalidData {
+                    reason: format!("session `{session_id}` has an invalid retained byte count"),
+                })?;
+            let next_retained_bytes = retained_bytes.saturating_add(turn_bytes);
+            if next_retained_bytes > max_history_bytes {
+                break 'pages;
+            }
+            retained_bytes = next_retained_bytes;
+            oldest_turn = Some(turn_position);
+            before_turn = Some(turn_position);
+        }
+
+        if !page_is_full {
+            break;
+        }
+    }
+
+    Ok(oldest_turn)
+}
+
 async fn load_turn_size_page(
-    pool: &SqlitePool,
+    connection: &mut SqliteConnection,
     session_id: &str,
     before_turn: Option<i64>,
 ) -> Result<Vec<(i64, i64)>, SessionError> {
@@ -974,9 +1248,15 @@ LIMIT ?
 
     query
         .bind(TURN_SIZE_PAGE_SIZE)
-        .fetch_all(pool)
+        .fetch_all(connection)
         .await
         .session_context("load persistent session history")
+}
+
+fn decode_max_history_bytes(id: &str, max_history_bytes: i64) -> Result<usize, SessionError> {
+    usize::try_from(max_history_bytes).map_err(|_| SessionError::InvalidData {
+        reason: format!("session `{id}` has an invalid history byte limit"),
+    })
 }
 
 async fn next_turn_position(
@@ -994,6 +1274,23 @@ WHERE session_id = ?
     .fetch_one(&mut **transaction)
     .await
     .session_context("append persistent session turn")
+}
+
+async fn latest_completed_turn(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    session_id: &str,
+) -> Result<Option<i64>, SessionError> {
+    sqlx::query_scalar::<_, Option<i64>>(
+        r"
+SELECT MAX(turn_position)
+FROM session_turn
+WHERE session_id = ? AND status = 'completed'
+",
+    )
+    .bind(session_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .session_context("load persistent session history position")
 }
 
 async fn insert_message(
@@ -1047,6 +1344,31 @@ WHERE session_id = ?
     .execute(&mut **transaction)
     .await
     .session_context("recover stale persistent session turns")?;
+
+    Ok(())
+}
+
+async fn interrupt_abandoned_turn(
+    connection: &mut SqliteConnection,
+    owner: &TurnOwner,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r"
+UPDATE session_turn
+SET status = 'interrupted', error_type = 'interrupted', lease_expires_at = NULL, updated_at = ?
+WHERE session_id = ?
+  AND turn_position = ?
+  AND owner_token = ?
+  AND status IN ('pending', 'running')
+",
+    )
+    .bind(now)
+    .bind(&owner.session_id)
+    .bind(owner.turn_position)
+    .bind(&owner.token)
+    .execute(connection)
+    .await?;
 
     Ok(())
 }
@@ -1149,6 +1471,28 @@ mod tests {
         ]
     }
 
+    async fn active_turn_owner(
+        database: &Database,
+        session_id: &str,
+        turn_position: i64,
+    ) -> TurnOwner {
+        let token = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT owner_token FROM session_turn WHERE session_id = ? AND turn_position = ?",
+        )
+        .bind(session_id)
+        .bind(turn_position)
+        .fetch_one(&database.pool)
+        .await
+        .expect("owner token should load");
+
+        TurnOwner {
+            database: database.identity.clone(),
+            session_id: session_id.to_string(),
+            token,
+            turn_position,
+        }
+    }
+
     #[test]
     fn session_config_exposes_values_and_system_prompt() {
         // Arrange
@@ -1205,6 +1549,57 @@ mod tests {
         assert_eq!(journal_mode, "wal");
         assert_eq!(foreign_keys, 1);
         assert_eq!(synchronous, 1);
+    }
+
+    #[tokio::test]
+    async fn owner_token_migration_preserves_existing_turns() {
+        // Arrange
+        let temp_dir = tempdir().expect("temporary directory should be created");
+        let database_path = temp_dir.path().join("harness.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_options(&database_path))
+            .await
+            .expect("legacy database should open");
+        sqlx::migrate!("./migrations")
+            .run_to(2, &pool)
+            .await
+            .expect("legacy migrations should run");
+        sqlx::query(
+            r"
+INSERT INTO session (id, output_schema, max_history_bytes, created_at, updated_at)
+VALUES ('session-a', '{}', 100000, 10, 10)
+",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy session should be inserted");
+        sqlx::query(
+            r"
+INSERT INTO session_turn (
+    session_id, turn_position, status, error_type, lease_expires_at, created_at, updated_at
+)
+VALUES ('session-a', 0, 'running', NULL, 310, 10, 10)
+",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy turn should be inserted");
+        pool.close().await;
+
+        // Act
+        let database = Database::open(&database_path)
+            .await
+            .expect("upgraded database should open");
+        let turn = sqlx::query_as::<_, (String, Option<Vec<u8>>)>(
+            "SELECT status, owner_token FROM session_turn WHERE session_id = 'session-a'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .expect("upgraded turn should load");
+
+        // Assert
+        assert_eq!(turn, ("running".to_string(), None));
     }
 
     #[tokio::test]
@@ -1351,7 +1746,8 @@ LIMIT 1
         let error = database
             .begin_turn("missing", "prompt")
             .await
-            .expect_err("missing session should fail");
+            .err()
+            .expect("missing session should fail");
 
         // Assert
         assert!(matches!(error, SessionError::NotFound { .. }));
@@ -1384,10 +1780,348 @@ END
         let error = database
             .begin_turn("session-a", "prompt")
             .await
-            .expect_err("database failure should be preserved");
+            .err()
+            .expect("database failure should be preserved");
 
         // Assert
         assert!(matches!(error, SessionError::QueryContext { .. }));
+    }
+
+    #[tokio::test]
+    async fn beginning_a_turn_does_not_reserve_when_history_loading_fails() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        database
+            .append_turn("session-a", &turn("question", "answer"))
+            .await
+            .expect("turn should be appended");
+        sqlx::query("UPDATE session_message SET kind = 'unknown' WHERE session_id = 'session-a'")
+            .execute(&database.pool)
+            .await
+            .expect("history should be corrupted");
+
+        // Act
+        let error = database
+            .begin_turn("session-a", "new prompt")
+            .await
+            .err()
+            .expect("invalid history should fail acquisition");
+        let active_turns = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM session_turn WHERE status IN ('pending', 'running')",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .expect("active turn count should load");
+        let message_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM session_message WHERE session_id = 'session-a'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .expect("message count should load");
+
+        // Assert
+        assert!(matches!(error, SessionError::InvalidData { .. }));
+        assert_eq!(active_turns, 0);
+        assert_eq!(message_count, 2);
+    }
+
+    #[tokio::test]
+    async fn beginning_a_turn_calculates_the_lease_when_reserving() {
+        // Arrange
+        let now = Arc::new(AtomicI64::new(10));
+        let timestamp_source: Arc<dyn TimestampSource> = {
+            let now = Arc::clone(&now);
+
+            Arc::new(move || now.fetch_add(10, Ordering::SeqCst))
+        };
+        let database = Database::open_in_memory_with_timestamp_source(timestamp_source)
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+
+        // Act
+        let acquired = database
+            .begin_turn("session-a", "prompt")
+            .await
+            .expect("turn should begin");
+        let row = sqlx::query_as::<_, (String, i64, i64, i64)>(
+            r"
+SELECT status, lease_expires_at, created_at, updated_at
+FROM session_turn
+WHERE session_id = ? AND turn_position = ?
+",
+        )
+        .bind("session-a")
+        .bind(acquired.turn_position)
+        .fetch_one(&database.pool)
+        .await
+        .expect("turn lifecycle should load");
+
+        // Assert
+        assert_eq!(row, ("running".to_string(), 330, 30, 30));
+    }
+
+    #[tokio::test]
+    async fn reserving_a_turn_rejects_a_stale_acquisition_snapshot() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        let acquisition = database
+            .load_turn_acquisition("session-a")
+            .await
+            .expect("turn acquisition should load");
+        database
+            .append_turn("session-a", &turn("question", "answer"))
+            .await
+            .expect("turn should be appended");
+        let message = EncodedMessage::from_message(&ModelMessage::User("prompt".to_string()))
+            .expect("message should encode");
+
+        // Act
+        let reserved = database
+            .reserve_turn("session-a", &message, &acquisition)
+            .await
+            .expect("reservation should be checked");
+        let active_turns = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM session_turn WHERE status IN ('pending', 'running')",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .expect("active turn count should load");
+
+        // Assert
+        assert!(!reserved);
+        assert_eq!(active_turns, 0);
+    }
+
+    #[tokio::test]
+    async fn reserving_a_turn_for_a_removed_session_reports_not_found() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        let acquisition = database
+            .load_turn_acquisition("session-a")
+            .await
+            .expect("turn acquisition should load");
+        sqlx::query("DELETE FROM session WHERE id = 'session-a'")
+            .execute(&database.pool)
+            .await
+            .expect("session should be removed");
+        let message = EncodedMessage::from_message(&ModelMessage::User("prompt".to_string()))
+            .expect("message should encode");
+
+        // Act
+        let error = database
+            .reserve_turn("session-a", &message, &acquisition)
+            .await
+            .expect_err("missing session should fail reservation");
+
+        // Assert
+        assert!(matches!(error, SessionError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn cancelling_turn_acquisition_leaves_no_active_turn() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let database = Database::open(&directory.path().join("harness.db"))
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        let mut blocker = database
+            .pool
+            .begin()
+            .await
+            .expect("blocking transaction should begin");
+        sqlx::query("UPDATE session SET updated_at = updated_at WHERE id = 'session-a'")
+            .execute(&mut *blocker)
+            .await
+            .expect("blocking transaction should hold the writer lock");
+
+        // Act
+        let cancellation = tokio::time::timeout(
+            Duration::from_millis(50),
+            database.begin_turn("session-a", "cancelled"),
+        )
+        .await;
+        blocker
+            .rollback()
+            .await
+            .expect("blocking transaction should roll back");
+        let acquired = database
+            .begin_turn("session-a", "replacement")
+            .await
+            .expect("replacement turn should begin immediately");
+
+        // Assert
+        assert!(cancellation.is_err());
+        assert_eq!(acquired.turn_position, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_after_commit_recovers_the_owned_turn_immediately() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
+        let mut database = Database::open(&database_path)
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        let mut replacement_database = Database::open(&database_path)
+            .await
+            .expect("replacement database should open");
+        let commit_control = Arc::new(ReservationCommitControl::paused());
+        database.reservation_commit_control = Some(Arc::clone(&commit_control));
+        replacement_database.reservation_commit_control = Some(Arc::clone(&commit_control));
+
+        // Act
+        let cancellation = tokio::time::timeout(
+            Duration::from_secs(1),
+            database.begin_turn("session-a", "cancelled"),
+        )
+        .await;
+        let commit_seen = commit_control.commit_seen.load(Ordering::SeqCst);
+        let acquired = replacement_database
+            .begin_turn("session-a", "replacement")
+            .await
+            .expect("replacement turn should begin immediately");
+        let turns = sqlx::query_as::<_, (i64, String)>(
+            r"
+SELECT turn_position, status
+FROM session_turn
+WHERE session_id = 'session-a'
+ORDER BY turn_position
+",
+        )
+        .fetch_all(&replacement_database.pool)
+        .await
+        .expect("turn states should load");
+
+        // Assert
+        assert!(cancellation.is_err());
+        assert!(commit_seen);
+        assert_eq!(acquired.turn_position, 1);
+        assert_eq!(
+            turns,
+            vec![(0, "interrupted".to_string()), (1, "running".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn registered_abandoned_owner_is_recovered_before_reservation() {
+        // Arrange
+        let database = Database::open_in_memory()
+            .await
+            .expect("database should open");
+        database
+            .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+            .await
+            .expect("session should be created");
+        let abandoned = database
+            .begin_turn("session-a", "abandoned")
+            .await
+            .expect("turn should begin");
+        let owner = active_turn_owner(&database, "session-a", abandoned.turn_position).await;
+        database.abandoned_turns.register(owner);
+
+        // Act
+        let replacement = database
+            .begin_turn("session-a", "replacement")
+            .await
+            .expect("replacement turn should begin");
+        let turns = sqlx::query_as::<_, (i64, String)>(
+            r"
+SELECT turn_position, status
+FROM session_turn
+WHERE session_id = 'session-a'
+ORDER BY turn_position
+",
+        )
+        .fetch_all(&database.pool)
+        .await
+        .expect("turn states should load");
+
+        // Assert
+        assert_eq!(replacement.turn_position, 1);
+        assert_eq!(
+            turns,
+            vec![(0, "interrupted".to_string()), (1, "running".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn abandoned_owners_are_scoped_to_their_database() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let first_database = Database::open(&directory.path().join("first.db"))
+            .await
+            .expect("first database should open");
+        let second_database = Database::open(&directory.path().join("second.db"))
+            .await
+            .expect("second database should open");
+        for database in [&first_database, &second_database] {
+            database
+                .create_session(&NewSession::new("session-a", schema()), None, 100_000)
+                .await
+                .expect("session should be created");
+        }
+        let first_turn = first_database
+            .begin_turn("session-a", "first abandoned")
+            .await
+            .expect("first turn should begin");
+        let second_turn = second_database
+            .begin_turn("session-a", "second abandoned")
+            .await
+            .expect("second turn should begin");
+        let first_owner =
+            active_turn_owner(&first_database, "session-a", first_turn.turn_position).await;
+        let second_owner =
+            active_turn_owner(&second_database, "session-a", second_turn.turn_position).await;
+        first_database.abandoned_turns.register(first_owner);
+        second_database.abandoned_turns.register(second_owner);
+
+        // Act
+        let second_replacement = second_database
+            .begin_turn("session-a", "second replacement")
+            .await
+            .expect("second replacement should begin");
+        let first_owners = first_database
+            .abandoned_turns
+            .for_session(&first_database.identity, "session-a");
+        let first_replacement = first_database
+            .begin_turn("session-a", "first replacement")
+            .await
+            .expect("first replacement should begin");
+
+        // Assert
+        assert_eq!(second_replacement.turn_position, 1);
+        assert_eq!(first_owners.len(), 1);
+        assert_eq!(first_replacement.turn_position, 1);
     }
 
     #[tokio::test]
@@ -1403,7 +2137,8 @@ END
         let turn_position = database
             .begin_turn("session-a", "prompt")
             .await
-            .expect("turn should begin");
+            .expect("turn should begin")
+            .turn_position;
         database
             .fail_turn(
                 "session-a",
@@ -1451,7 +2186,8 @@ END
         let abandoned = database
             .begin_turn("session-a", "abandoned")
             .await
-            .expect("turn should begin");
+            .expect("turn should begin")
+            .turn_position;
         now.store(10 + TURN_LEASE_SECONDS + 1, Ordering::SeqCst);
 
         // Act
@@ -1462,7 +2198,8 @@ END
         let replacement = database
             .begin_turn("session-a", "replacement")
             .await
-            .expect("replacement turn should begin");
+            .expect("replacement turn should begin")
+            .turn_position;
         let status = sqlx::query_scalar::<_, String>(
             "SELECT status FROM session_turn WHERE session_id = ? AND turn_position = ?",
         )

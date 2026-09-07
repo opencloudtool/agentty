@@ -20,7 +20,7 @@ use crate::model::{
 use crate::policy::Policy;
 use crate::read::{self, ReadError, ReadTool};
 use crate::schema_contract::OutputSchema;
-use crate::session::{Database, LoadedSession, NewSession, SessionError};
+use crate::session::{AcquiredTurn, Database, LoadedSession, NewSession, SessionError};
 use crate::tool::{
     ReadAction, ReadArguments, Tool, ToolCall, ToolCallArguments, ToolDefinition, WriteArguments,
 };
@@ -299,7 +299,13 @@ impl Session<'_> {
     /// fails.
     pub async fn send(&mut self, prompt: impl Into<String>) -> Result<TurnOutcome, SessionError> {
         let prompt = prompt.into();
-        let turn_position = self.database.begin_turn(&self.id, &prompt).await?;
+        let AcquiredTurn {
+            provider_session_id,
+            turn_position,
+            turns,
+        } = self.database.begin_turn(&self.id, &prompt).await?;
+        self.history.replace(turns);
+        self.provider_session_id = provider_session_id;
         let mut messages = self.history.messages();
         if let Some(system_prompt) = &self.system_prompt {
             messages.insert(0, ModelMessage::System(system_prompt.clone()));
@@ -395,6 +401,14 @@ impl SessionHistory {
                 .pop_front()
                 .map_or(self.bytes, |evicted| retained_bytes(&evicted));
             self.bytes = self.bytes.saturating_sub(evicted_bytes);
+        }
+    }
+
+    fn replace(&mut self, turns: Vec<Vec<ModelMessage>>) {
+        self.bytes = 0;
+        self.turns.clear();
+        for turn in turns {
+            self.push(turn);
         }
     }
 }
@@ -2017,6 +2031,64 @@ mod tests {
         assert_eq!(second.output(), &json!({"summary": "second answer"}));
         assert_eq!(second.report().model_requests().len(), 1);
         assert!(second.report().duration() >= second.report().model_requests()[0].duration());
+    }
+
+    #[tokio::test]
+    async fn stale_session_handles_acquire_current_canonical_state() {
+        // Arrange
+        let mut model = model();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        model.expect_complete().times(2).returning(move |request| {
+            if call_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                assert_eq!(
+                    request.messages(),
+                    &[ModelMessage::User("first question".to_string())]
+                );
+                assert_eq!(request.provider_session_id(), None);
+
+                return Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "first answer"
+                })))
+                .with_provider_session_id("native-session"));
+            }
+            assert_eq!(
+                request.messages(),
+                &[
+                    ModelMessage::User("first question".to_string()),
+                    ModelMessage::Assistant(r#"{"summary":"first answer"}"#.to_string()),
+                    ModelMessage::User("second question".to_string()),
+                ]
+            );
+            assert_eq!(request.provider_session_id(), Some("native-session"));
+
+            Ok(response_without_metadata(ModelResponse::Output(json!({
+                "summary": "second answer"
+            }))))
+        });
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(model).database(directory.path().join("harness.db"));
+        let mut first = harness
+            .session("session-a", object_schema())
+            .create()
+            .await
+            .expect("session should be created");
+        let mut stale = harness
+            .resume("session-a")
+            .await
+            .expect("second handle should resume before the first turn");
+
+        // Act
+        first
+            .send("first question")
+            .await
+            .expect("first handle should complete its turn");
+        let outcome = stale
+            .send("second question")
+            .await
+            .expect("stale handle should refresh before its turn");
+
+        // Assert
+        assert_eq!(outcome.output(), &json!({ "summary": "second answer" }));
     }
 
     #[tokio::test]
