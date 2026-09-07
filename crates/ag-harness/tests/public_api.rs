@@ -445,6 +445,42 @@ async fn durable_session_requires_explicit_storage() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+#[test]
+fn compound_session_error_exposes_turn_and_persistence_failures() {
+    // Arrange
+    let error = SessionError::TurnPersistence {
+        turn: TurnError::Model(ModelError::InvalidResponse),
+        persistence: Box::new(SessionError::StorageRequired),
+    };
+
+    // Act and Assert
+    assert!(matches!(
+        error,
+        SessionError::TurnPersistence {
+            turn: TurnError::Model(ModelError::InvalidResponse),
+            persistence,
+        } if matches!(*persistence, SessionError::StorageRequired)
+    ));
+}
+
+#[test]
+fn ownership_lost_session_error_exposes_the_turn_identity() {
+    // Arrange
+    let error = SessionError::OwnershipLost {
+        id: "session-a".to_string(),
+        turn_position: 2,
+    };
+
+    // Act and Assert
+    assert!(matches!(
+        error,
+        SessionError::OwnershipLost {
+            ref id,
+            turn_position: 2,
+        } if id == "session-a"
+    ));
+}
+
 #[tokio::test]
 async fn session_info_exposes_stored_model_identity() -> Result<(), Box<dyn Error>> {
     // Arrange
