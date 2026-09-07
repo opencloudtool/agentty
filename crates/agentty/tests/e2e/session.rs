@@ -9467,7 +9467,8 @@ fn assert_diff_line_comments(frame: &TerminalFrame, report: &ProofReport) {
 /// Verify that `Shift+V` selects a changed-row range for one inline comment.
 #[test]
 fn test_diff_row_selection_comments() -> E2eResult {
-    // Arrange — Ctrl+M emits Enter's carriage return consistently in PTY and VHS.
+    // Arrange — Ctrl+M emits Enter's carriage return consistently in PTY and
+    // VHS.
     const ENTER_KEY: &str = "Ctrl+m";
 
     // Act, Assert
@@ -9655,6 +9656,7 @@ fn test_session_review_comments() -> E2eResult {
                     .compose(&common::wait_for_agentty_startup())
                     .compose(&common::open_selected_session_view())
                     .press_key("d")
+                    .wait_for_text("j/k: select file", 5000)
                     .wait_for_text("c: comments", 5000)
                     .press_key("c")
                     .wait_for_text("Please explain why this review output is needed.", 5000)
@@ -9739,6 +9741,7 @@ fn test_review_comments_escape_focuses_files() -> E2eResult {
                     .compose(&common::wait_for_agentty_startup())
                     .compose(&common::open_selected_session_view())
                     .press_key("d")
+                    .wait_for_text("j/k: select file", 5000)
                     .wait_for_text("c: comments", 5000)
                     .press_key("c")
                     .wait_for_text("Space: select", 5000)
@@ -9775,6 +9778,7 @@ fn test_review_comment_addressed_guard() -> E2eResult {
                     .compose(&common::wait_for_agentty_startup())
                     .compose(&common::open_selected_session_view())
                     .press_key("d")
+                    .wait_for_text("j/k: select file", 5000)
                     .wait_for_text("c: comments", 5000)
                     .press_key("c")
                     .wait_for_text("addressed", 5000)
@@ -10022,6 +10026,7 @@ fn session_review_comment_agent_resolution() -> E2eResult {
                     .compose(&common::switch_to_tab("Sessions"))
                     .compose(&common::open_selected_session_view())
                     .press_key("d")
+                    .wait_for_text("j/k: select file", 5000)
                     .wait_for_text("c: comments", 5000)
                     .press_key("c")
                     .wait_for_text("Space: select", 5000)
@@ -10096,6 +10101,7 @@ fn test_review_comment_incomplete_outcomes() -> E2eResult {
                     .compose(&common::switch_to_tab("Sessions"))
                     .compose(&common::open_selected_session_view())
                     .press_key("d")
+                    .wait_for_text("j/k: select file", 5000)
                     .wait_for_text("c: comments", 5000)
                     .press_key("c")
                     .wait_for_text("Space: select", 5000)

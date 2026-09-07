@@ -215,7 +215,8 @@ pub(crate) async fn shutdown_child(child: &mut AppServerRuntimeChild) {
         .is_err()
     {
         child.signal_process_group(Signal::KILL);
-        // Best-effort fallback for a runtime that failed to enter its process group.
+        // Best-effort fallback for a runtime that failed to enter its process
+        // group.
         let _ = child.child.kill().await;
         // Best-effort: process may have already exited.
         let _ = child.child.wait().await;

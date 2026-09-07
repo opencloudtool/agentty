@@ -682,7 +682,8 @@ mod tests {
             Span::styled("efgh".to_string(), red),
         ];
 
-        // Act — width 7 means 4 visible + "...", cutting exactly at first span boundary
+        // Act — width 7 means 4 visible + "...", cutting exactly at first span
+        // boundary
         let result = truncate_spans_with_ellipsis(spans, 7);
 
         // Assert
@@ -751,8 +752,8 @@ mod tests {
 
     #[test]
     fn test_truncate_spans_with_ellipsis_handles_combining_characters() {
-        // Arrange — combining accent has 0 display width, so "e\u{0301}" = 1 column.
-        // "e\u{0301}abcdef" = 7 columns total.
+        // Arrange — combining accent has 0 display width, so "e\u{0301}" = 1
+        // column. "e\u{0301}abcdef" = 7 columns total.
         let spans = vec![Span::raw("e\u{0301}abcdef".to_string())];
 
         // Act — max_width 7 means all 7 columns fit.

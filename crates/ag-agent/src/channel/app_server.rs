@@ -61,7 +61,8 @@ impl AppServerAgentChannel {
                         }
 
                         if agent::is_app_server_thought_chunk(kind, is_delta, phase.as_deref()) {
-                            // Fire-and-forget: receiver may be dropped during shutdown.
+                            // Fire-and-forget: receiver may be dropped during
+                            // shutdown.
                             let _ = events.send(TurnEvent::ThoughtDelta(trimmed.to_string()));
                         }
                     }
@@ -71,7 +72,8 @@ impl AppServerAgentChannel {
                             continue;
                         }
 
-                        // Fire-and-forget: receiver may be dropped during shutdown.
+                        // Fire-and-forget: receiver may be dropped during
+                        // shutdown.
                         let _ = events.send(TurnEvent::ThoughtDelta(trimmed.to_string()));
                     }
                 }

@@ -15,9 +15,8 @@ pub(crate) async fn detect_git_info(dir: PathBuf) -> Option<String> {
         .flatten()
 }
 
-/// Walks up the directory tree to find a .git directory.
-/// Returns the directory containing .git (the repository root) if found, None
-/// otherwise.
+/// Walks upward to find a `.git` directory or a file pointing to one.
+/// Invalid `.git` files stop discovery without selecting a parent checkout.
 pub(crate) async fn find_git_repo_root(dir: PathBuf) -> Option<PathBuf> {
     spawn_blocking(move || find_git_repo_root_sync(&dir))
         .await
@@ -110,13 +109,16 @@ fn find_git_repo(dir: &Path) -> Option<PathBuf> {
     find_git_repo_root_sync(dir)
 }
 
-/// Returns the repository root by searching upward for `.git`.
+/// Returns the repository root by searching upward for resolvable `.git`
+/// metadata, stopping at invalid entries instead of selecting a parent repo.
 fn find_git_repo_root_sync(dir: &Path) -> Option<PathBuf> {
     let mut current = dir.to_path_buf();
     loop {
         let git_dir = current.join(".git");
         if git_dir.exists() {
-            return Some(current);
+            let resolved_git_dir = resolve_git_dir(&current)?;
+
+            return resolved_git_dir.is_dir().then_some(current);
         }
 
         if !current.pop() {
@@ -182,13 +184,68 @@ mod tests {
     #[test]
     fn find_git_repo_root_sync_returns_none_when_no_git_dir() {
         // Arrange
-        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        // A custom temporary directory may itself be inside a checkout.
+        let non_repository_path = Path::new(std::path::MAIN_SEPARATOR_STR);
 
         // Act
-        let result = find_git_repo_root_sync(temp_dir.path());
+        let result = find_git_repo_root_sync(non_repository_path);
 
         // Assert — walks up to filesystem root and returns None
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_git_repo_root_sync_stops_at_invalid_git_file() {
+        for contents in [
+            "not a gitdir file\n",
+            "gitdir: missing\n",
+            "gitdir: ordinary-file\n",
+        ] {
+            // Arrange
+            let temp_dir = tempfile::tempdir().expect("should create temp dir");
+            fs::create_dir(temp_dir.path().join(".git")).expect("should create parent repo");
+            let boundary = temp_dir.path().join("fixture");
+            let nested = boundary.join("project");
+            fs::create_dir_all(&nested).expect("should create nested fixture");
+            fs::write(boundary.join(".git"), contents).expect("should write invalid git file");
+            fs::write(boundary.join("ordinary-file"), "not a directory")
+                .expect("should create non-directory target");
+
+            // Act
+            let result = find_git_repo_root_sync(&nested);
+
+            // Assert
+            assert_eq!(result, None, "invalid git file: {contents}");
+        }
+    }
+
+    #[test]
+    fn find_git_repo_root_sync_accepts_relative_and_absolute_git_files() {
+        for absolute_target in [false, true] {
+            // Arrange
+            let temp_dir = tempfile::tempdir().expect("should create temp dir");
+            let metadata = temp_dir.path().join("metadata");
+            let nested = temp_dir.path().join("src");
+            fs::create_dir(&metadata).expect("should create metadata directory");
+            fs::create_dir(&nested).expect("should create nested directory");
+            fs::write(metadata.join("HEAD"), "ref: refs/heads/main\n").expect("should write HEAD");
+            let target = if absolute_target {
+                metadata
+            } else {
+                PathBuf::from("metadata")
+            };
+            fs::write(
+                temp_dir.path().join(".git"),
+                format!("gitdir: {}\n", target.display()),
+            )
+            .expect("should write git file");
+
+            // Act
+            let result = find_git_repo_root_sync(&nested);
+
+            // Assert
+            assert_eq!(result.as_deref(), Some(temp_dir.path()));
+        }
     }
 
     #[test]
@@ -266,10 +323,11 @@ mod tests {
     #[test]
     fn detect_git_info_sync_returns_none_for_non_repo() {
         // Arrange
-        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        // A custom temporary directory may itself be inside a checkout.
+        let non_repository_path = Path::new(std::path::MAIN_SEPARATOR_STR);
 
         // Act
-        let result = detect_git_info_sync(temp_dir.path());
+        let result = detect_git_info_sync(non_repository_path);
 
         // Assert
         assert!(result.is_none());

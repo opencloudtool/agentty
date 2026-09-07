@@ -466,7 +466,8 @@ mod tests {
             },
         ];
 
-        // Act — "smr" matches "src/main.rs" (s...m...r) and "src/model.rs" (s...m...r)
+        // Act — "smr" matches "src/main.rs" (s...m...r) and "src/model.rs"
+        // (s...m...r)
         let filtered = filter_entries(&entries, "smr");
 
         // Assert
@@ -487,7 +488,8 @@ mod tests {
             },
         ];
 
-        // Act — "main" is consecutive in "src/main.rs" but scattered in the other
+        // Act — "main" is consecutive in "src/main.rs" but scattered in the
+        // other
         let filtered = filter_entries(&entries, "main");
 
         // Assert — consecutive match ranked first
@@ -556,11 +558,12 @@ mod tests {
             },
         ];
 
-        // Act — "d" matches segment start in "src/db.rs" (after /) and mid-word in
-        // "docs"
+        // Act — "d" matches segment start in "src/db.rs" (after /) and mid-word
+        // in "docs"
         let filtered = filter_entries(&entries, "d");
 
-        // Assert — both match, segment-start bonus means "docs" and "db" both have it
+        // Assert — both match, segment-start bonus means "docs" and "db" both
+        // have it
         assert_eq!(filtered.len(), 2);
     }
 

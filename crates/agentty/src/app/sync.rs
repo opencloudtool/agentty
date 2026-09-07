@@ -610,7 +610,7 @@ impl SyncOrchestrator {
                 .send(AppEvent::ReviewRequestStatusUpdated {
                     generation: context.generation,
                     result,
-                    session_id: target.session_id.clone(),
+                    session_id: target.session_id,
                 });
         }
     }
@@ -1219,6 +1219,63 @@ mod tests {
                 && review_request_updates[0].session_id.as_str() == "session-1"
                 && review_request_updates[0].result.is_err()
         ));
+    }
+
+    #[test]
+    /// Each collected update keeps its session, generation, and result when
+    /// forwarded to the foreground event queue.
+    fn emit_review_request_pass_updates_preserves_batch_routing() {
+        // Arrange
+        let context = sync_context_fixture(7, Vec::new());
+        let (app_event_tx, mut app_event_rx) = mpsc::unbounded_channel();
+        let (_context_tx, context_rx) = watch::channel(context.clone());
+        let (_command_tx, command_rx) = mpsc::unbounded_channel();
+        let orchestrator = SyncOrchestrator {
+            app_event_tx,
+            command_rx,
+            context_rx,
+            review_pass_index: 0,
+            review_sync_failures: HashMap::new(),
+            tick_index: 0,
+        };
+        let updates = vec![
+            ReviewRequestPassUpdate {
+                result: Ok(SyncReviewRequestTaskResult {
+                    outcome: session::SyncReviewRequestOutcome::NoReviewRequest,
+                    summary: None,
+                }),
+                target: review_request_sync_target("session-1", None),
+            },
+            ReviewRequestPassUpdate {
+                result: Err("forge unavailable".to_string()),
+                target: review_request_sync_target("session-2", None),
+            },
+        ];
+
+        // Act
+        orchestrator.emit_review_request_pass_updates(&context, updates);
+
+        // Assert
+        assert!(matches!(
+            app_event_rx.try_recv().expect("first update should be emitted"),
+            AppEvent::ReviewRequestStatusUpdated {
+                generation: 7,
+                result: Ok(SyncReviewRequestTaskResult {
+                    outcome: session::SyncReviewRequestOutcome::NoReviewRequest,
+                    summary: None,
+                }),
+                session_id,
+            } if session_id.as_str() == "session-1"
+        ));
+        assert!(matches!(
+            app_event_rx.try_recv().expect("second update should be emitted"),
+            AppEvent::ReviewRequestStatusUpdated {
+                generation: 7,
+                result: Err(error),
+                session_id,
+            } if session_id.as_str() == "session-2" && error == "forge unavailable"
+        ));
+        assert!(app_event_rx.try_recv().is_err());
     }
 
     #[test]

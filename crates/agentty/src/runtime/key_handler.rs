@@ -2293,8 +2293,8 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(120, 30);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
 
-        // Act — submit from Diff while another turn runs, then retract the queued
-        // prompt.
+        // Act — submit from Diff while another turn runs, then retract the
+        // queued prompt.
         handle_key_event(
             &mut app,
             &PresentationState::default(),
@@ -3465,7 +3465,8 @@ mod tests {
         let event_result =
             handle_confirmation_decision(&mut app, ConfirmationDecision::Confirm).await;
 
-        // Assert — view is restored with loading state, cache shows new Loading entry
+        // Assert — view is restored with loading state, cache shows new Loading
+        // entry
         assert!(matches!(event_result, Ok(EventResult::Continue)));
         assert!(matches!(app.mode, AppMode::View { .. }));
         assert!(matches!(

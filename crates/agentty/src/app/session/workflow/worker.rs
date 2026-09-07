@@ -440,8 +440,9 @@ impl SessionWorkerRebaseAssistClient {
 
     /// Replaces the shared cancellation token for one rebase-assist turn.
     fn fresh_turn_cancel_token(&self) -> Result<CancellationToken, SessionError> {
-        // Sync critical section (assignment + clone, no `.await`); `std::sync::Mutex`
-        // is the correct choice per CLAUDE.md §"Mutex Selection".
+        // Sync critical section (assignment + clone, no `.await`);
+        // `std::sync::Mutex` is the correct choice per CLAUDE.md
+        // §"Mutex Selection".
         let mut guard = self
             .cancel_token
             .lock()
@@ -3510,7 +3511,8 @@ mod tests {
                     .await
             };
 
-            // Assert — cancellation cannot signal a retained runtime's recycled PID.
+            // Assert — cancellation cannot signal a retained runtime's recycled
+            // PID.
             assert!(
                 unrelated_child
                     .try_wait()

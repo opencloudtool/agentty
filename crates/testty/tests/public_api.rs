@@ -169,9 +169,10 @@ fn public_surface_is_stable() {
     );
     let _: FramePredicate = Arc::new(|_frame: &TerminalFrame| Ok(()));
 
-    // Declarative YAML scenario surface (the language-agnostic `run` front end).
-    // Pin the load/lower/run entry points and the spec types so the published
-    // shape the CLI and external tooling depend on cannot drift silently.
+    // Declarative YAML scenario surface (the language-agnostic `run` front
+    // end). Pin the load/lower/run entry points and the spec types so the
+    // published shape the CLI and external tooling depend on cannot drift
+    // silently.
     let _: fn(&str) -> Result<ScenarioSpec, SpecError> = ScenarioSpec::from_yaml;
     let _: fn(&ScenarioSpec) -> LoweredScenario = ScenarioSpec::lower;
     let _: fn(&LoweredScenario, &TerminalFrame) -> Vec<AssertionFailure> = LoweredScenario::check;
@@ -188,8 +189,8 @@ fn public_surface_is_stable() {
 /// public surface and are documented as part of the public contract.
 #[test]
 fn auxiliary_surface_is_stable() {
-    // Arrange, Act, Assert: compile-time references exercise documented auxiliary
-    // APIs.
+    // Arrange, Act, Assert: compile-time references exercise documented
+    // auxiliary APIs.
     let _: &str = testty::snapshot::DEFAULT_UPDATE_ENV_VAR;
 
     let config = SnapshotConfig::new("/baselines", "/artifacts")

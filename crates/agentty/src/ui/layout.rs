@@ -1867,7 +1867,8 @@ mod tests {
         let input = "ab\ncd";
         let width = 20;
 
-        // Act — cursor at char index 3 = 'a','b','\n' -> position 0 of second line
+        // Act — cursor at char index 3 = 'a','b','\n' -> position 0 of second
+        // line
         let (_, cursor_x, cursor_y) = compute_input_layout(input, width, 3);
 
         // Assert

@@ -153,8 +153,9 @@ impl App {
         }
         self.clear_diff_comment_progress(session_id);
 
-        // Reply enqueueing cannot reorder the exclusively borrowed session state,
-        // so the validated index remains stable across the awaited operation.
+        // Reply enqueueing cannot reorder the exclusively borrowed session
+        // state, so the validated index remains stable across the
+        // awaited operation.
         let session = &mut self.sessions.sessions_mut()[session_index];
         session.transient_messages.upsert(TransientMessage {
             anchor: TransientMessageAnchor::Tail,

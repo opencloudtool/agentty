@@ -4,6 +4,7 @@
 //! [`FeatureTest`] for declarative feature demo tests with optional Zola
 //! page generation.
 
+use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -50,7 +51,7 @@ pub(crate) struct BuilderEnv {
 }
 
 impl BuilderEnv {
-    /// Create a new isolated environment under `temp_root`.
+    /// Create a new isolated environment under an existing, empty `temp_root`.
     ///
     /// Creates `agentty_root` and `test-project` subdirectories so each test
     /// gets a fresh database and deterministic project name.
@@ -66,9 +67,21 @@ impl BuilderEnv {
     ///
     /// # Errors
     ///
-    /// Returns an error if directory creation fails.
+    /// Returns an error if the root is not empty or filesystem setup fails.
     pub(crate) fn new(temp_root: &Path) -> std::io::Result<Self> {
         let temp_root = temp_root.canonicalize()?;
+        if temp_root.read_dir()?.next().transpose()?.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "fixture root must be empty",
+            ));
+        }
+
+        // Stop placeholder session folders from discovering a host checkout
+        // above the fixture. Exclusive creation also protects Git metadata
+        // created after the empty-directory check.
+        std::fs::File::create_new(temp_root.join(".git"))?
+            .write_all(b"gitdir: .nonexistent-fixture-repository\n")?;
         let home_dir = temp_root.join("home");
         let agentty_root = home_dir.join(".agentty");
         let workdir = home_dir.join("test-project");
@@ -186,7 +199,8 @@ impl BuilderEnv {
     ///
     /// This keeps feature tests able to choose between inheriting system
     /// commands, using only deterministic stub agent executables, and
-    /// exercising responsive layouts at their intended widths.
+    /// exercising responsive layouts at their intended widths. Clear inherited
+    /// tmux state so host shortcuts cannot change captured frames.
     fn builder_with_path_and_size(
         &self,
         path_env: String,
@@ -199,6 +213,7 @@ impl BuilderEnv {
             .env("HOME", self.home_dir.to_string_lossy())
             .env(NO_COLOR_ENV_VAR, NO_COLOR_ENV_VALUE)
             .env("PATH", path_env)
+            .env("TMUX", "")
             .workdir(&self.workdir)
     }
 
@@ -243,6 +258,7 @@ impl BuilderEnv {
             ),
             (NO_COLOR_ENV_VAR.to_string(), NO_COLOR_ENV_VALUE.to_string()),
             ("PATH".to_string(), path_env),
+            ("TMUX".to_string(), String::new()),
         ]
     }
 
@@ -1476,6 +1492,8 @@ pub(crate) fn create_session_with_prompt_and_return_to_list(prompt: &str) -> Jou
 
 #[cfg(test)]
 mod tests {
+    use ag_git::{GitClient, RealGitClient};
+
     use super::*;
 
     #[test]
@@ -1589,7 +1607,109 @@ mod tests {
     }
 
     #[test]
-    fn builder_env_exports_no_color_to_vhs_recording() {
+    fn builder_env_preserves_existing_git_file() {
+        // Arrange
+        let temp = tempfile::TempDir::new().expect("failed to create temporary directory");
+        let git_path = temp.path().join(".git");
+        let git_contents = "gitdir: linked-worktree-metadata\n";
+        std::fs::write(&git_path, git_contents).expect("failed to write worktree pointer");
+
+        // Act
+        let error = BuilderEnv::new(temp.path())
+            .err()
+            .expect("existing worktree root should be rejected");
+
+        // Assert
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(&git_path).expect("failed to read worktree pointer"),
+            git_contents,
+        );
+        assert_eq!(
+            temp.path()
+                .read_dir()
+                .expect("failed to read fixture root")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn builder_env_preserves_nonempty_directories() {
+        for directory_name in [".git", "home"] {
+            // Arrange
+            let temp = tempfile::TempDir::new().expect("failed to create temporary directory");
+            let existing_dir = temp.path().join(directory_name);
+            std::fs::create_dir(&existing_dir).expect("failed to create existing directory");
+            let existing_file = existing_dir.join("keep.txt");
+            std::fs::write(&existing_file, "preserve this data")
+                .expect("failed to write existing data");
+
+            // Act
+            let error = BuilderEnv::new(temp.path())
+                .err()
+                .expect("nonempty fixture root should be rejected");
+
+            // Assert
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            assert_eq!(
+                std::fs::read_to_string(&existing_file).expect("failed to read existing data"),
+                "preserve this data",
+            );
+            assert_eq!(
+                temp.path()
+                    .read_dir()
+                    .expect("failed to read fixture root")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn builder_env_isolates_parent_git_repositories() {
+        // Arrange
+        let temp = tempfile::TempDir::new().expect("failed to create temporary directory");
+        let parent_git_dir = temp.path().join(".git");
+        std::fs::create_dir(&parent_git_dir).expect("failed to create parent Git marker");
+        std::fs::write(parent_git_dir.join("HEAD"), "ref: refs/heads/host-only\n")
+            .expect("failed to seed parent branch");
+        let fixture_root = temp.path().join("fixture");
+        std::fs::create_dir(&fixture_root).expect("failed to create fixture root");
+        let env = BuilderEnv::new(&fixture_root).expect("failed to create builder environment");
+        env.init_git()
+            .expect("failed to initialize fixture project");
+
+        // Act
+        let placeholder_root = RealGitClient
+            .find_git_repo_root(env.agentty_root.clone())
+            .await;
+        let project_root = RealGitClient.find_git_repo_root(env.workdir.clone()).await;
+        let placeholder_branch = RealGitClient.detect_git_info(env.agentty_root).await;
+        let project_branch = RealGitClient.detect_git_info(env.workdir.clone()).await;
+
+        // Assert
+        assert_eq!(placeholder_root, None);
+        assert_eq!(project_root, Some(env.workdir));
+        assert_eq!(placeholder_branch, None);
+        assert_eq!(project_branch.as_deref(), Some("main"));
+    }
+
+    #[tokio::test]
+    async fn builder_env_without_git_has_no_repository_root() {
+        // Arrange
+        let temp = tempfile::TempDir::new().expect("failed to create temporary directory");
+        let env = BuilderEnv::new(temp.path()).expect("failed to create builder environment");
+
+        // Act
+        let repository_root = RealGitClient.find_git_repo_root(env.workdir).await;
+
+        // Assert
+        assert_eq!(repository_root, None);
+    }
+
+    #[test]
+    fn builder_env_pins_vhs_terminal_environment() {
         // Arrange
         let temp = tempfile::TempDir::new().expect("failed to create temporary directory");
         let env = BuilderEnv::new(temp.path()).expect("failed to create builder environment");
@@ -1603,6 +1723,12 @@ mod tests {
                 .iter()
                 .any(|(key, value)| { key == NO_COLOR_ENV_VAR && value == NO_COLOR_ENV_VALUE }),
             "feature recording must disable color"
+        );
+        assert!(
+            environment
+                .iter()
+                .any(|(key, value)| key == "TMUX" && value.is_empty()),
+            "feature recording must not inherit host tmux shortcuts"
         );
     }
 

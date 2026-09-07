@@ -735,7 +735,8 @@ fn coalesce_ready_turn_progress_events(
 /// Records the latest child process id observed from a provider turn stream.
 fn set_child_pid(child_pid: &Mutex<Option<u32>>, pid: Option<u32>) {
     // Sync critical section (single assignment, no `.await`);
-    // `std::sync::Mutex` is the correct choice per CLAUDE.md §"Mutex Selection".
+    // `std::sync::Mutex` is the correct choice per CLAUDE.md §"Mutex
+    // Selection".
     if let Ok(mut guard) = child_pid.lock() {
         *guard = pid;
     }
@@ -792,8 +793,9 @@ pub(super) fn terminate_child_process(child_pid: &Mutex<Option<u32>>, kind: Agen
 fn fresh_turn_cancel_token(
     context: &SessionWorkerContext,
 ) -> Result<CancellationToken, SessionError> {
-    // Sync critical section (assignment + clone, no `.await`); `std::sync::Mutex`
-    // is the correct choice per CLAUDE.md §"Mutex Selection".
+    // Sync critical section (assignment + clone, no `.await`);
+    // `std::sync::Mutex` is the correct choice per CLAUDE.md §"Mutex
+    // Selection".
     let mut guard = context
         .cancel_token
         .lock()
