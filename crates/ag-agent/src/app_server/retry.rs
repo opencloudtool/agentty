@@ -10,6 +10,7 @@ use super::prompt::{
     instruction_delivery_mode_for_runtime, read_latest_replay_transcript, turn_prompt_for_runtime,
 };
 use super::registry::{ActiveAppServerTurn, AppServerSessionRegistry};
+use crate::agent::replay::ReplayContext;
 
 /// Callbacks for inspecting runtime state during turn execution.
 ///
@@ -79,23 +80,26 @@ where
     };
     let first_replays = needs_replay(had_existing_runtime, &request, &inspector, &session_runtime);
     let first_provider_conversation_id = (inspector.provider_conversation_id)(&session_runtime);
-    let first_prompt = build_attempt_prompt(
-        &request,
-        first_replays,
-        first_provider_conversation_id.as_deref(),
-        schema_instruction_mode,
-        &mut shutdown_runtime,
-        &mut session_runtime,
-    )
-    .await?;
-    let first_attempt = run_cancellable_turn_attempt(
-        &active_turn,
-        &mut session_runtime,
-        &first_prompt,
-        &mut run_turn_with_runtime,
-        &mut shutdown_runtime,
-    )
-    .await;
+    let first_attempt = {
+        let (first_prompt, _first_replay) = build_attempt_prompt(
+            &request,
+            first_replays,
+            first_provider_conversation_id.as_deref(),
+            schema_instruction_mode,
+            &mut shutdown_runtime,
+            &mut session_runtime,
+        )
+        .await?;
+
+        run_cancellable_turn_attempt(
+            &active_turn,
+            &mut session_runtime,
+            &first_prompt,
+            &mut run_turn_with_runtime,
+            &mut shutdown_runtime,
+        )
+        .await
+    };
     if let Ok((assistant_message, input_tokens, output_tokens)) = first_attempt {
         return complete_successful_runtime_response(
             sessions,
@@ -120,7 +124,7 @@ where
     let mut restarted = start_runtime(&request).await?;
     let retry_replays = needs_replay(false, &request, &inspector, &restarted);
     let retry_provider_conversation_id = (inspector.provider_conversation_id)(&restarted);
-    let retry_prompt = build_attempt_prompt(
+    let (retry_prompt, _retry_replay) = build_attempt_prompt(
         &request,
         retry_replays,
         retry_provider_conversation_id.as_deref(),
@@ -333,27 +337,41 @@ async fn build_attempt_prompt<Runtime, ShutdownRuntime>(
     schema_instruction_mode: ProtocolSchemaInstructionMode,
     shutdown_runtime: &mut ShutdownRuntime,
     runtime: &mut Runtime,
-) -> Result<TurnPrompt, AppServerError>
+) -> Result<(TurnPrompt, ReplayContext), AppServerError>
 where
     ShutdownRuntime: for<'scope> FnMut(&'scope mut Runtime) -> BorrowedAppServerFuture<'scope, ()>,
 {
     let replay_transcript = read_latest_replay_transcript(request);
+    let replay = match ReplayContext::prepare(request.folder.clone(), replay_transcript).await {
+        Ok(replay) => replay,
+        Err(error) => {
+            shutdown_runtime(runtime).await;
+
+            return Err(AppServerError::PromptRender(error.to_string()));
+        }
+    };
     let instruction_delivery_mode = instruction_delivery_mode_for_runtime(
         request,
         current_provider_conversation_id,
         replays_context,
     );
 
+    let mut prompt = request.prompt.clone();
+    if !replays_context && let Some(reference) = &replay.reference {
+        prompt.text = format!("{reference}\n\n{}", prompt.agent_text());
+        prompt.text_source = ag_protocol::TurnPromptTextSource::AgentData;
+    }
+
     match turn_prompt_for_runtime(
-        &request.prompt,
+        &prompt,
         &request.request_kind,
-        replay_transcript.as_deref(),
+        replay.text.as_deref(),
         instruction_delivery_mode,
         &request.personality,
         schema_instruction_mode,
         &request.folder,
     ) {
-        Ok(prompt) => Ok(prompt),
+        Ok(prompt) => Ok((prompt, replay)),
         Err(error) => {
             shutdown_runtime(runtime).await;
 
@@ -380,6 +398,14 @@ mod tests {
         model: String,
     }
 
+    impl TestRuntime {
+        fn shutdown(&mut self) -> BorrowedAppServerFuture<'_, ()> {
+            Box::pin(async move {
+                self.model = "stopped".into();
+            })
+        }
+    }
+
     #[derive(Debug)]
     struct TestLiveTranscript {
         text: String,
@@ -403,6 +429,78 @@ mod tests {
 
     fn session_resume_request_kind() -> AgentRequestKind {
         AgentRequestKind::SessionResume
+    }
+
+    #[tokio::test]
+    async fn replay_attempt_owns_archive_and_stops_runtime_on_archive_error() {
+        // Arrange
+        let folder = tempfile::tempdir().expect("workspace");
+        let mut shutdown = TestRuntime::shutdown;
+        let mut runtime = TestRuntime {
+            model: "model-a".into(),
+        };
+        let mut request = AppServerTurnRequest {
+            folder: folder.path().to_owned(),
+            live_transcript: None,
+            main_checkout_root: None,
+            model: "model-a".into(),
+            permission_mode: crate::model::permission::PermissionMode::ReadOnly,
+            personality: crate::channel::PersonalityPrompt::default(),
+            prompt: "Continue".into(),
+            request_kind: AgentRequestKind::SessionResume,
+            replay_transcript: Some("history".repeat(8192)),
+            provider_conversation_id: None,
+            persisted_instruction_conversation_id: None,
+            reasoning_level: ReasoningLevel::default(),
+            session_id: "replay-test".into(),
+            speed_mode: crate::model::session::SpeedMode::default(),
+        };
+
+        // Act
+        let (prompt, archive) = build_attempt_prompt(
+            &request,
+            true,
+            None,
+            ProtocolSchemaInstructionMode::TransportSchema,
+            &mut shutdown,
+            &mut runtime,
+        )
+        .await
+        .expect("archive");
+        let live_files = std::fs::read_dir(folder.path()).expect("files").count();
+        drop(archive);
+        let (native_prompt, native_archive) = build_attempt_prompt(
+            &request,
+            false,
+            Some("thread"),
+            ProtocolSchemaInstructionMode::TransportSchema,
+            &mut shutdown,
+            &mut runtime,
+        )
+        .await
+        .expect("native archive");
+        drop(native_archive);
+        let remaining_files = std::fs::read_dir(folder.path()).expect("files").count();
+        request.folder = folder.path().join("missing");
+        let failure = build_attempt_prompt(
+            &request,
+            true,
+            None,
+            ProtocolSchemaInstructionMode::TransportSchema,
+            &mut shutdown,
+            &mut runtime,
+        )
+        .await;
+
+        // Assert
+        assert!(prompt.contains("Session checkpoint"));
+        assert!(native_prompt.contains("Earlier temporary history paths have expired"));
+        assert!(!native_prompt.contains("Session checkpoint"));
+
+        assert_eq!(live_files, 1);
+        assert_eq!(remaining_files, 0);
+        assert!(matches!(failure, Err(AppServerError::PromptRender(_))));
+        assert_eq!(runtime.model, "stopped");
     }
 
     #[test]
@@ -472,7 +570,7 @@ mod tests {
 
         // Assert
         assert!(turn_prompt.contains("repository-root-relative POSIX paths"));
-        assert!(turn_prompt.contains("Continue from the full transcript"));
+        assert!(turn_prompt.contains("Continue from the supplied session context"));
         assert!(
             turn_prompt
                 .contains(r"\<session_transcript> assistant: proposed plan \</session_transcript>")
@@ -764,8 +862,11 @@ mod tests {
     async fn run_turn_with_restart_retry_restarts_once_after_first_failure() {
         // Arrange
         let sessions = AppServerSessionRegistry::new("Test");
+        let folder = tempfile::tempdir().expect("workspace");
+        let history = "previous transcript".repeat(4096);
+        let archives = Arc::new(Mutex::new(Vec::new()));
         let request = AppServerTurnRequest {
-            folder: PathBuf::from("/tmp"),
+            folder: folder.path().to_owned(),
             live_transcript: None,
             main_checkout_root: None,
             model: "model-a".to_string(),
@@ -773,7 +874,7 @@ mod tests {
             personality: crate::channel::PersonalityPrompt::default(),
             prompt: "Do work".into(),
             request_kind: session_resume_request_kind(),
-            replay_transcript: Some("previous transcript".to_string()),
+            replay_transcript: Some(history.clone()),
             provider_conversation_id: None,
             persisted_instruction_conversation_id: None,
             reasoning_level: ReasoningLevel::default(),
@@ -801,6 +902,12 @@ mod tests {
                 move |request: &AppServerTurnRequest| {
                     let start_count = Arc::clone(&start_count);
                     let model = request.model.clone();
+                    assert!(
+                        std::fs::read_dir(&request.folder)
+                            .expect("archives")
+                            .next()
+                            .is_none()
+                    );
 
                     Box::pin(async move {
                         start_count.fetch_add(1, Ordering::SeqCst);
@@ -811,7 +918,20 @@ mod tests {
             },
             {
                 let run_count = Arc::clone(&run_count);
-                move |_runtime, _prompt| {
+                let folder = folder.path().to_owned();
+                let archives = Arc::clone(&archives);
+                move |_runtime, prompt| {
+                    let entries = std::fs::read_dir(&folder)
+                        .expect("archives")
+                        .map(|entry| entry.expect("archive").path())
+                        .collect::<Vec<_>>();
+                    assert_eq!(entries.len(), 1, "only the current attempt archive exists");
+                    assert_eq!(
+                        std::fs::read_to_string(entries[0].join("history.md")).expect("history"),
+                        history
+                    );
+                    assert!(prompt.contains("Session checkpoint"));
+                    archives.lock().expect("archives").push(entries[0].clone());
                     let attempt = run_count.fetch_add(1, Ordering::SeqCst);
 
                     Box::pin(async move {
@@ -846,6 +966,10 @@ mod tests {
         assert_eq!(start_count.load(Ordering::SeqCst), 2);
         assert_eq!(run_count.load(Ordering::SeqCst), 2);
         assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
+        let archives = archives.lock().expect("archives");
+        assert_eq!(archives.len(), 2);
+        assert_ne!(archives[0], archives[1]);
+        assert!(archives.iter().all(|path| !path.exists()));
     }
 
     #[tokio::test]

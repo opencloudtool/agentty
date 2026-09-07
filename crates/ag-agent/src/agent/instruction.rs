@@ -47,9 +47,8 @@ pub(crate) fn plan_app_server_instruction_delivery(
         return InstructionDeliveryMode::BootstrapFull;
     }
 
-    if normalize_instruction_conversation_id(current_provider_conversation_id).as_deref()
-        == persisted_instruction_conversation_id
-    {
+    let current_id = normalize_instruction_conversation_id(current_provider_conversation_id);
+    if current_id.is_some() && current_id.as_deref() == persisted_instruction_conversation_id {
         return InstructionDeliveryMode::DeltaOnly;
     }
 
@@ -59,6 +58,25 @@ pub(crate) fn plan_app_server_instruction_delivery(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_conversation_ids_require_full_bootstrap() {
+        // Arrange
+        let ids = [None, Some(""), Some("   ")];
+
+        for current_id in ids {
+            // Act
+            let mode = plan_app_server_instruction_delivery(
+                &AgentRequestKind::SessionStart,
+                current_id,
+                None,
+                false,
+            );
+
+            // Assert
+            assert_eq!(mode, InstructionDeliveryMode::BootstrapFull);
+        }
+    }
 
     #[test]
     /// Reuses the provider-managed bootstrap only when the persisted state

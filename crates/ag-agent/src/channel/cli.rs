@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use ag_protocol::{AgentResponse, TurnPrompt, build_protocol_repair_prompt_for_profile};
+use ag_protocol::{AgentResponse, TurnPrompt, build_protocol_repair_prompt};
 use tokio::sync::mpsc;
 
 use crate::agent::cli::error;
@@ -138,7 +138,14 @@ impl AgentChannel for CliAgentChannel {
             )
             .map_err(|error| AgentError::Backend(error.to_string()))?;
             let prompt_text = req.prompt.agent_text();
-            let build_request = build_command_request(&req, &prompt_text);
+            let replay = agent::replay::ReplayContext::prepare(
+                req.folder.clone(),
+                req.continuation.replay_transcript().map(str::to_owned),
+            )
+            .await
+            .map_err(|error| AgentError::Backend(error.to_string()))?;
+            let mut build_request = build_command_request(&req, &prompt_text);
+            build_request.replay_transcript = replay.text.as_deref();
             let observer = CliTurnObserver {
                 events: events.clone(),
                 kind,
@@ -216,7 +223,7 @@ async fn parse_or_repair_cli_response(
     )));
 
     let repair_prompt =
-        build_protocol_repair_prompt_for_profile(protocol_profile, &parse_error, content);
+        build_protocol_repair_prompt(&parse_error, content).map_err(AgentError::Backend)?;
 
     let repair_content = execute_cli_repair_turn(backend.as_ref(), kind, req, &repair_prompt)
         .await
@@ -263,7 +270,7 @@ async fn execute_cli_repair_turn(
         main_checkout_root: None,
         replay_transcript: None,
         model: &request.model,
-        permission_mode: request.permission_mode,
+        permission_mode: crate::model::permission::PermissionMode::ReadOnly,
         personality_prompt: None,
         prompt: repair_prompt,
         reasoning_level: request.reasoning_level,
@@ -878,6 +885,78 @@ mod tests {
         let error_message = error.to_string();
         assert!(error_message.contains("did not match the required JSON schema"));
         assert!(!error_message.contains("plain non-json response"));
+    }
+
+    #[tokio::test]
+    async fn repair_receives_complete_response_and_rejects_oversize_before_execution() {
+        // Arrange
+        let folder = tempdir().expect("workspace");
+        let request = make_turn_request(folder.path().to_owned());
+        let mut backend = MockAgentBackend::new();
+        backend
+            .expect_build_command()
+            .times(1)
+            .returning(|request| {
+                assert!(request.prompt.contains("preserved tail"));
+                assert_eq!(
+                    request.permission_mode,
+                    crate::model::permission::PermissionMode::ReadOnly
+                );
+                let mut command = std::process::Command::new("sh");
+                command
+                    .arg("-c")
+                    .arg(r#"printf '{"answer":"repaired","questions":[]}'"#);
+
+                Ok(command)
+            });
+        let backend: Arc<dyn AgentBackend> = Arc::new(backend);
+        let (events, _receiver) = mpsc::unbounded_channel();
+        let malformed = format!("{} preserved tail", "x".repeat(2048));
+
+        // Act
+        let repaired = parse_or_repair_cli_response(
+            AgentKind::Claude,
+            &malformed,
+            &request,
+            &backend,
+            &events,
+        )
+        .await
+        .expect("repair");
+        let rejected = parse_or_repair_cli_response(
+            AgentKind::Claude,
+            &"x".repeat(128 * 1024 + 1),
+            &request,
+            &backend,
+            &events,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(repaired.answer, "repaired");
+        assert!(
+            rejected
+                .expect_err("too large")
+                .to_string()
+                .contains("lossless repair limit")
+        );
+    }
+
+    #[tokio::test]
+    async fn cli_archive_failure_stops_before_spawning_provider() {
+        // Arrange
+        let folder = tempdir().expect("workspace");
+        let backend = Arc::new(MockAgentBackend::new());
+        let channel = CliAgentChannel::with_backend(backend, AgentKind::Claude);
+        let mut request = make_turn_request(folder.path().join("missing"));
+        request.continuation = crate::channel::TurnContinuation::replaying("x".repeat(40 * 1024));
+        let (events, _receiver) = mpsc::unbounded_channel();
+
+        // Act
+        let result = channel.run_turn("session".into(), request, events).await;
+
+        // Assert
+        assert!(result.is_err());
     }
 
     #[tokio::test]

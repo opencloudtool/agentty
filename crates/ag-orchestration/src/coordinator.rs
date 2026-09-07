@@ -3329,8 +3329,11 @@ mod tests {
             "stay focused and preserve unrelated work",
             "repository-defined checks required",
             "keep `answer` concise",
-            "result, checks, and any blocker",
-            "uses it for fan-in",
+            "Each acceptance criterion's outcome",
+            "completed, unmet, and unverified criteria",
+            "Exact check commands and their observed results",
+            "Remaining gaps, blockers, and assumptions",
+            "uses this evidence for fan-in",
         ];
 
         // Act

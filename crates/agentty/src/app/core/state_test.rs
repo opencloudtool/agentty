@@ -6975,6 +6975,10 @@ async fn restore_prompt_progress_cleans_attachments_for_merged_session() {
         .expect("attachment path should have a parent")
         .to_path_buf();
     let mut fs_client = crate::infra::fs::MockFsClient::new();
+    fs_client
+        .expect_cleanup_agent_artifacts()
+        .once()
+        .returning(|_| Box::pin(async { Ok(()) }));
     fs_client.expect_is_dir().times(0..).return_const(true);
     fs_client.expect_exists().times(0..).return_const(true);
     fs_client

@@ -5,9 +5,7 @@
 
 use std::sync::Arc;
 
-use ag_protocol::{
-    AgentResponse, ProtocolRequestProfile, build_protocol_repair_prompt_for_profile,
-};
+use ag_protocol::{AgentResponse, ProtocolRequestProfile, build_protocol_repair_prompt};
 use tokio::sync::mpsc;
 
 use crate::agent;
@@ -255,11 +253,8 @@ async fn parse_or_repair_app_server_response(
         "Protocol parse error; retrying schema repair for {kind}."
     )));
 
-    let repair_prompt = build_protocol_repair_prompt_for_profile(
-        protocol_profile,
-        &parse_error,
-        &response.assistant_message,
-    );
+    let repair_prompt = build_protocol_repair_prompt(&parse_error, &response.assistant_message)
+        .map_err(AgentError::Backend)?;
 
     let repair_provider_conversation_id = response
         .provider_conversation_id
@@ -332,7 +327,7 @@ mod tests {
     use super::*;
     use crate::app_server::{AppServerTurnResponse, MockAppServerClient};
     use crate::channel::AgentRequestKind;
-    use crate::model::agent::ReasoningLevel;
+    use crate::model::agent::{AgentModel, ReasoningLevel};
 
     fn make_turn_request() -> TurnRequest {
         TurnRequest {
@@ -922,43 +917,85 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Verifies app-server turns recover valid output when the initial parse
-    /// fails but the protocol-repair retry returns valid protocol JSON.
-    async fn test_run_turn_recovers_valid_output_via_protocol_repair() {
-        // Arrange
-        let call_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut mock_client = MockAppServerClient::new();
-        mock_client.expect_run_turn().times(2).returning({
-            let counter = Arc::clone(&call_counter);
+    async fn repair_preserves_permissions_for_the_next_session_turn() {
+        for (kind, model) in [
+            (AgentKind::Codex, AgentModel::Gpt56Sol),
+            (AgentKind::Gemini, AgentModel::Gemini31Pro),
+            (AgentKind::Antigravity, AgentModel::Gemini31Pro),
+        ] {
+            for permission_mode in crate::model::permission::PermissionMode::ALL {
+                // Arrange
+                let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let mut client = MockAppServerClient::new();
+                client.expect_run_turn().times(3).returning({
+                    let captured = Arc::clone(&captured);
+                    move |request, _stream_tx| {
+                        let mut requests = captured.lock().expect("requests");
+                        let content = match requests.len() {
+                            0 => "malformed response",
+                            1 => r#"{"answer":"Repaired response","questions":[]}"#,
+                            _ => r#"{"answer":"Continued work","questions":[]}"#,
+                        };
+                        requests.push(request);
+                        let mut response = make_ok_response(content);
+                        response.provider_conversation_id = Some("native-session".into());
 
-            move |_request, _stream_tx| {
-                let call_number = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Box::pin(async move { Ok(response) })
+                    }
+                });
+                let channel = AppServerAgentChannel::new(Arc::new(client), kind);
+                let (events_tx, _events_rx) = mpsc::unbounded_channel();
+                let mut request = make_turn_request();
+                request.permission_mode = permission_mode;
+                request.model = model.provider_model_str().into();
 
-                if call_number == 0 {
-                    Box::pin(async { Ok(make_ok_response("plain non-json response")) })
-                } else {
-                    Box::pin(async {
-                        Ok(make_ok_response(
-                            r#"{"answer":"Repaired response","questions":[]}"#,
-                        ))
-                    })
+                // Act
+                let repaired = channel
+                    .run_turn("session".into(), request.clone(), events_tx.clone())
+                    .await
+                    .expect("repair succeeds");
+                request.request_kind = AgentRequestKind::SessionResume;
+                request.continuation = crate::channel::TurnContinuation::provider(
+                    None,
+                    None,
+                    repaired.provider_conversation_id.clone(),
+                    Some("Earlier work and repaired response".into()),
+                );
+                let continued = channel
+                    .run_turn("session".into(), request, events_tx)
+                    .await
+                    .expect("next session turn succeeds");
+
+                // Assert
+                assert_eq!(
+                    repaired.assistant_message.to_display_text(),
+                    "Repaired response"
+                );
+                assert_eq!(
+                    continued.assistant_message.to_display_text(),
+                    "Continued work"
+                );
+                let requests = captured.lock().expect("requests");
+                assert_eq!(requests.len(), 3);
+                for request in requests.iter() {
+                    assert_eq!(request.permission_mode, permission_mode);
+                    assert_eq!(request.session_id, "session");
                 }
+                assert_eq!(
+                    requests[1].provider_conversation_id.as_deref(),
+                    Some("native-session")
+                );
+                assert_eq!(
+                    requests[2].provider_conversation_id.as_deref(),
+                    Some("native-session")
+                );
+                assert!(requests[1].prompt.contains("Do not redo the task"));
+                assert_eq!(
+                    requests[2].replay_transcript.as_deref(),
+                    Some("Earlier work and repaired response")
+                );
             }
-        });
-        let channel = AppServerAgentChannel::new(Arc::new(mock_client), AgentKind::Codex);
-        let (events_tx, _events_rx) = mpsc::unbounded_channel();
-
-        // Act
-        let result = channel
-            .run_turn("sess-1".to_string(), make_turn_request(), events_tx)
-            .await
-            .expect("repair retry should succeed");
-
-        // Assert
-        assert_eq!(
-            result.assistant_message.to_display_text(),
-            "Repaired response"
-        );
+        }
     }
 
     #[tokio::test]

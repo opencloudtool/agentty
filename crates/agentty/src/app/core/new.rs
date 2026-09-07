@@ -57,7 +57,7 @@ impl App {
             working_dir,
             git_branch,
             current_version_display_text,
-            repositories,
+            repositories.into(),
             clients,
         )
         .await?;
@@ -88,7 +88,7 @@ impl App {
             working_dir,
             git_branch,
             format!("v{}", env!("CARGO_PKG_VERSION")),
-            repositories,
+            repositories.into(),
             clients,
         )
         .await
@@ -106,10 +106,9 @@ impl App {
         working_dir: PathBuf,
         git_branch: Option<String>,
         current_version_display_text: String,
-        repositories: impl Into<AppRepositories>,
+        repositories: AppRepositories,
         clients: AppClients,
     ) -> Result<Self, AppError> {
-        let repositories = repositories.into();
         let StartupProjectContext {
             active_project_id,
             active_project_name,
@@ -119,6 +118,7 @@ impl App {
             startup_git_upstream_ref,
             startup_working_dir,
         } = Self::load_startup_project_state(
+            &base_path,
             working_dir.as_path(),
             git_branch,
             &repositories,
@@ -354,18 +354,24 @@ impl App {
         );
     }
 
-    /// Migrates project-independent session state before loading the startup
-    /// project context.
+    /// Reclaims stale agent artifacts and migrates project-independent session
+    /// state before loading the startup project context.
     ///
     /// # Errors
-    /// Returns an error if startup project metadata cannot be persisted or
-    /// loaded from storage.
+    /// Returns an error if artifact recovery fails or startup project metadata
+    /// cannot be persisted or loaded from storage.
     async fn load_startup_project_state(
+        base_path: &Path,
         working_dir: &Path,
         git_branch: Option<String>,
         repositories: &AppRepositories,
         clients: &AppClients,
     ) -> Result<StartupProjectContext, AppError> {
+        clients
+            .fs_client
+            .cleanup_agent_artifacts(base_path.to_owned())
+            .await
+            .map_err(Self::startup_recovery_error)?;
         migrate_active_sessions_off_retired_models(repositories).await;
         let current_project_id =
             AppStartup::persist_startup_project(repositories, working_dir, git_branch.as_deref())
@@ -610,6 +616,69 @@ mod tests {
         assert_eq!(pinned_double_digit, pinned_single_digit);
         assert_eq!(unpinned, "v0.15.10");
         assert_eq!(invalid, unpinned);
+    }
+
+    #[tokio::test]
+    async fn startup_preserves_unregistered_replay_history() {
+        // Arrange
+        let root = tempdir().expect("worktrees");
+        let archive = root.path().join("session/.agentty-replay-orphan");
+        fs::create_dir_all(&archive).expect("archive");
+        fs::write(archive.join(".gitignore"), "*\n").expect("marker");
+        fs::write(archive.join("history.md"), "private history").expect("history");
+        let db = AppRepositories::in_memory().await.expect("database");
+
+        // Act
+        let result = App::new_with_clients(
+            root.path().to_owned(),
+            root.path().to_owned(),
+            None,
+            db,
+            crate::test_support::test_app_clients(),
+        )
+        .await;
+
+        // Assert
+        assert!(result.is_ok());
+        assert_eq!(
+            fs::read_to_string(archive.join("history.md")).expect("preserved history"),
+            "private history"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_reports_archive_cleanup_failures() {
+        // Arrange
+        let root = tempdir().expect("worktrees");
+        let db = AppRepositories::in_memory().await.expect("database");
+        let mut fs_client = crate::infra::fs::MockFsClient::new();
+        fs_client
+            .expect_cleanup_agent_artifacts()
+            .once()
+            .returning(|_| {
+                Box::pin(async { Err(std::io::Error::other("archive cleanup failed").into()) })
+            });
+        let mut clients = crate::test_support::test_app_clients();
+        clients.fs_client = Arc::new(fs_client);
+
+        // Act
+        let result = App::new_with_clients(
+            root.path().to_owned(),
+            root.path().to_owned(),
+            None,
+            db,
+            clients,
+        )
+        .await;
+
+        // Assert
+        let error = result.err().expect("startup must stop");
+        assert!(error.to_string().contains("archive cleanup failed"));
+        assert!(
+            error
+                .to_string()
+                .contains("Startup recovery did not complete")
+        );
     }
 
     #[tokio::test]

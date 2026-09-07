@@ -2113,7 +2113,12 @@ while IFS= read -r prompt_event; do
       answer='Antigravity invocation did not preserve the native conversation.'
     fi
   elif printf '%s' "$prompt_event" | grep -q 'Continue work'; then
-    answer='Antigravity accepted the large stdin replay.'
+    if printf '%s' "$prompt_event" | grep -q 'Session checkpoint' &&
+       grep -q 'preserve the accepted middle decision' .agentty-replay-*/history.md; then
+      answer='Antigravity accepted the large stdin replay.'
+    else
+      answer='Antigravity could not retrieve the omitted replay history.'
+    fi
   else
     answer='Antigravity handled an Agentty utility prompt.'
   fi
@@ -2157,7 +2162,11 @@ fn seed_antigravity_large_replay_project(
     )?;
 
     let runtime = common::seed_runtime()?;
-    let large_answer = "x".repeat(40 * 1024);
+    let large_answer = format!(
+        "{}\npreserve the accepted middle decision\n{}",
+        "x".repeat(24 * 1024),
+        "x".repeat(24 * 1024)
+    );
     runtime.block_on(async {
         let database = common::open_database(env).await?;
         database

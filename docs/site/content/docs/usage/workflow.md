@@ -993,3 +993,14 @@ You can override this location by setting the `AGENTTY_ROOT` environment variabl
 # Run agentty with a custom root directory
 AGENTTY_ROOT=/tmp/agentty-test agentty
 ```
+
+### Continuing long sessions
+
+Follow-up messages preserve the active goal and accepted decisions unless you cancel or
+replace them. A status question does not cancel unfinished work. For long histories,
+agents receive opening and recent context with access to the full history during the
+turn; the saved conversation remains intact.
+
+Agents reuse successful check results while the relevant inputs remain unchanged and
+still run repository-required checks. Orchestration workers report evidence for each
+acceptance criterion, exact check commands and results, and unresolved gaps.

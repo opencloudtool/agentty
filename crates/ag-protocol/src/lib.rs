@@ -17,8 +17,7 @@ mod subtask;
 mod verification;
 
 pub use envelope::{
-    ProtocolSchemaInstructionMode, build_protocol_repair_prompt,
-    build_protocol_repair_prompt_for_profile, prepend_protocol_instructions,
+    ProtocolSchemaInstructionMode, build_protocol_repair_prompt, prepend_protocol_instructions,
     prepend_protocol_refresh_reminder,
 };
 pub use model::{

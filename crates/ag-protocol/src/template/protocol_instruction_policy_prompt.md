@@ -21,6 +21,10 @@ Quality check requirements:
   expanding through the dependency graph to affected dependencies and dependents.
 - If targeted checks cannot confidently cover the full impact, run the full repository
   test/check suite.
+- Run required checks once for the final relevant state. Reuse successful results while
+  their inputs remain unchanged; repeat only after invalidating changes, failures, or
+  new evidence. Repository-mandated checks still apply. Report any blocked or failed
+  check accurately; never claim verification that did not run.
 - Remove session-created temporary scripts and files before finalizing.
 
 Structured response protocol:

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ag_protocol::{
-    AgentResponse, ProtocolRequestProfile, build_protocol_repair_prompt_for_profile,
+    AgentResponse, ProtocolRequestProfile, build_protocol_repair_prompt,
     format_protocol_parse_debug_details, parse_protocol_response_strict,
 };
 use async_trait::async_trait;
@@ -255,11 +255,12 @@ async fn submit_one_shot_with_backend(
         match parse_one_shot_response(&parsed_response.content, protocol_profile) {
             Ok(response) => (response, None),
             Err(parse_error) => {
-                let repair_prompt = build_protocol_repair_prompt_for_profile(
-                    protocol_profile,
-                    &parse_error,
-                    &parsed_response.content,
-                );
+                let repair_prompt =
+                    build_protocol_repair_prompt(&parse_error, &parsed_response.content)?;
+                let request = OneShotRequest {
+                    permission_mode: PermissionMode::ReadOnly,
+                    ..request
+                };
                 let repair_response = execute_one_shot_command(backend, &repair_prompt, request)
                     .await
                     .map_err(|error| format!("{parse_error}\nrepair transport failed: {error}"))?;
@@ -330,8 +331,7 @@ async fn attempt_one_shot_app_server_repair(
     provider_conversation_id: Option<&str>,
 ) -> Result<(AgentResponse, u64, u64), String> {
     let protocol_profile = request.request_kind.protocol_profile();
-    let repair_prompt =
-        build_protocol_repair_prompt_for_profile(protocol_profile, parse_error, malformed_response);
+    let repair_prompt = build_protocol_repair_prompt(parse_error, malformed_response)?;
 
     let (repair_stream_tx, _repair_stream_rx) = tokio::sync::mpsc::unbounded_channel();
     let repair_turn_request = AppServerTurnRequest {
@@ -576,6 +576,53 @@ mod tests {
         // Assert
         assert_eq!(active_pid, Some(42));
         assert_eq!(cleared_pid, None);
+    }
+
+    #[tokio::test]
+    async fn oversized_one_shot_responses_do_not_launch_repair() {
+        // Arrange
+        let folder = tempdir().expect("workspace");
+        let oversized = "x".repeat(128 * 1024 + 1);
+        let response_path = folder.path().join("response.txt");
+        std::fs::write(&response_path, &oversized).expect("response fixture");
+        let mut backend = MockAgentBackend::new();
+        backend.expect_build_command().times(1).returning(move |_| {
+            let mut command = Command::new("cat");
+            command.arg(&response_path);
+
+            Ok(command)
+        });
+        let client = MockAppServerClient::new();
+        let request = OneShotRequest {
+            agent_kind: AgentKind::Claude,
+            child_pid: None,
+            folder: folder.path().to_owned(),
+            model: AgentModel::ClaudeSonnet5,
+            permission_mode: PermissionMode::AutoEdit,
+            prompt: "Generate title".into(),
+            request_kind: AgentRequestKind::UtilityPrompt,
+            reasoning_level: ReasoningLevel::default(),
+            speed_mode: SpeedMode::Normal,
+        };
+
+        // Act
+        let cli_error = submit_one_shot_with_backend(&backend, request.clone())
+            .await
+            .expect_err("oversized CLI response");
+        let native_error = attempt_one_shot_app_server_repair(
+            &client,
+            "bad JSON",
+            &oversized,
+            request,
+            "repair-limit",
+            None,
+        )
+        .await
+        .expect_err("oversized native response");
+
+        // Assert
+        assert!(cli_error.contains("lossless repair limit"));
+        assert!(native_error.contains("lossless repair limit"));
     }
 
     #[tokio::test]
@@ -876,8 +923,16 @@ mod tests {
                     ));
                 }
 
-                assert!(request.prompt.contains("\"title\": \"FocusedReview\""));
-                assert!(!request.prompt.contains("\"answer\""));
+                assert!(request.prompt.contains("Complete malformed response:"));
+                let prompt = crate::agent::prompt::build_cli_prompt_text(
+                    request,
+                    ag_protocol::ProtocolSchemaInstructionMode::PromptSchema,
+                    "Gemini",
+                )
+                .expect("repair envelope");
+                assert!(prompt.contains("\"title\": \"FocusedReview\""));
+                assert_eq!(prompt.matches("Authoritative JSON Schema:").count(), 1);
+                assert!(!prompt.contains("\"answer\""));
 
                 Ok(mock_shell_command(
                     r#"{"project_impact":["Review repaired."],"suggestions":[]}"#,
@@ -1234,6 +1289,64 @@ mod tests {
             *child_pid.lock().expect("child pid lock should succeed"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn one_shot_app_server_repair_preserves_permissions_and_conversation() {
+        for permission_mode in PermissionMode::ALL {
+            // Arrange
+            let folder = tempdir().expect("workspace");
+            let mut client = MockAppServerClient::new();
+            client
+                .expect_run_turn()
+                .times(1)
+                .returning(move |request, _| {
+                    assert_eq!(request.permission_mode, permission_mode);
+                    assert_eq!(request.session_id, "one-shot-session");
+                    assert_eq!(
+                        request.provider_conversation_id.as_deref(),
+                        Some("native-session")
+                    );
+
+                    Box::pin(async {
+                        Ok(AppServerTurnResponse {
+                            assistant_message: r#"{"answer":"Repaired","questions":[]}"#.into(),
+                            context_reset: false,
+                            input_tokens: 2,
+                            output_tokens: 1,
+                            pid: None,
+                            provider_conversation_id: Some("native-session".into()),
+                        })
+                    })
+                });
+            let request = OneShotRequest {
+                agent_kind: AgentKind::Gemini,
+                child_pid: None,
+                folder: folder.path().to_owned(),
+                model: AgentModel::Gemini31Pro,
+                permission_mode,
+                prompt: "Generate title".into(),
+                request_kind: AgentRequestKind::UtilityPrompt,
+                reasoning_level: ReasoningLevel::default(),
+                speed_mode: SpeedMode::Normal,
+            };
+
+            // Act
+            let (response, input_tokens, output_tokens) = attempt_one_shot_app_server_repair(
+                &client,
+                "invalid JSON",
+                "malformed",
+                request,
+                "one-shot-session",
+                Some("native-session"),
+            )
+            .await
+            .expect("repair succeeds");
+
+            // Assert
+            assert_eq!(response.to_display_text(), "Repaired");
+            assert_eq!((input_tokens, output_tokens), (2, 1));
+        }
     }
 
     #[tokio::test]

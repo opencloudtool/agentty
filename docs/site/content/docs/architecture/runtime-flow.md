@@ -680,11 +680,26 @@ one structured response protocol (`answer`, `questions`, `review_comment_outcome
    prepend the shared protocol preamble with a self-descriptive JSON schema. Stateless
    CLI turns resend it every turn; persistent managed-runtime turns reuse a compact
    reminder when the provider context already received the full bootstrap, and replay
-   the transcript when provider context was lost. Transcript replay frames the new
-   prompt as a follow-up in the whole-session context, so rollback wording applies to
+   the transcript when provider context was lost. Delivery mode is explicit: quoted
+   protocol headings in user input, diffs, or history never suppress policy. Transcript
+   replay preserves the active objective, accepted decisions, and authorization; status
+   questions steer rather than cancel unfinished work. Rollback wording applies to
    changes made during the Agentty session unless the user explicitly says otherwise.
-   `crates/ag-protocol/src/` owns the shared response model, schema, parser diagnostics,
-   protocol prompt envelopes, repair prompts, and turn prompt payloads.
+   Histories above 32 KiB use bounded opening/recent excerpts and a complete, temporary
+   workspace archive excluded from Git. Excerpts are explicitly incomplete: agents
+   retrieve relevant omitted history before relying on earlier decisions or
+   verification. The archive lives for the turn attempt and is removed on normal
+   completion, error, or cancellation; durable history is unchanged. Native
+   continuations refresh the archive reference without repeating excerpts. An
+   archive-creation failure fails the turn rather than silently dropping context.
+   Startup recovery requires an ownership record in the trusted managed-worktree parent,
+   outside repository-controlled content, matching the archive's canonical path, device,
+   and inode. Live archives hold OS locks that a crash releases. Recovery preserves
+   unregistered directories (including older archives), copied ownership markers,
+   replacement directories, symlinks, and unrelated contents. Normal cleanup removes
+   both the archive and its record; recovery reports cleanup failures before admitting
+   sessions. `crates/ag-protocol/src/` owns the shared response model, schema, parser
+   diagnostics, protocol prompt envelopes, repair prompts, and turn prompt payloads.
 1. Session-title generation bounds the persisted original request, current title, and
    latest request independently at UTF-8 boundaries so utility prompts remain focused
    even when the durable session transcript is large.
@@ -697,6 +712,16 @@ one structured response protocol (`answer`, `questions`, `review_comment_outcome
    mandatory and a reply that omits other optional fields still validates. Ordinary
    turns leave `review_comment_outcomes` empty; review-comment prompts provide the only
    accepted thread-ID allowlist.
+1. Repair prompts encode malformed output as inert JSON string data, preserve the
+   complete response and a summarized diagnostic within a combined 128 KiB encoded
+   payload budget (including escapes and string delimiters). Encoded diagnostics are
+   capped at 4 KiB. Over-budget payloads fail explicitly instead of asking an agent to
+   reconstruct truncated response content. The repair body omits the schema; shared
+   prompt preparation applies it once for providers without native schema enforcement.
+   Repair requests still receive the transport's workspace and protocol policy and
+   preserve the app-server session's permissions so repair does not invalidate a
+   retained runtime. Standalone CLI repair uses read-only permissions; all repair
+   prompts prohibit tools and task execution.
 1. Final output must parse as the shared protocol JSON object. Claude, Gemini, and Codex
    session turns fail closed on invalid output. Antigravity uses native bidirectional
    `stream-json` with the same schema enforcement and fail-closed protocol-repair
