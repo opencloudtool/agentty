@@ -6,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 description.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
 [features]
 test-utils = ["dep:mockall"]

@@ -10,10 +10,8 @@ authors = [
 ]
 edition = "2024"
 license = "Apache-2.0"
-readme = "README.md"
 description = "Agentty is an ADE (Agentic Development Environment) for structured, controllable AI-assisted software development."
 repository = "https://github.com/agentty-xyz/agentty"
-homepage = "https://github.com/agentty-xyz/agentty"
 
 [workspace.dependencies]
 ag-agent = { path = "crates/ag-agent", version = "0.15.11" }

@@ -6,8 +6,6 @@ edition.workspace = true
 license.workspace = true
 description = "Rust-native TUI end-to-end testing framework using PTY-driven semantic assertions, native frame rendering, and VHS-driven GIF capture."
 repository.workspace = true
-homepage.workspace = true
-readme = "README.md"
 keywords = ["tui", "testing", "e2e", "pty", "ratatui"]
 categories = ["development-tools::testing", "command-line-interface"]
 include = [
@@ -33,7 +31,9 @@ image.workspace = true
 portable-pty.workspace = true
 serde.workspace = true
 serde_yaml_ng.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
 unicode-width.workspace = true
 vt100.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

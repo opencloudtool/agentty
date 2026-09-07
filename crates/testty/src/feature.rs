@@ -529,7 +529,7 @@ fn update_fnv_hash(hash: &mut u64, bytes: &[u8]) {
 
 /// Returns frame bytes with volatile text normalized for hashing.
 ///
-/// Feature tests often run inside fresh [`tempfile::TempDir`] directories,
+/// Feature tests often run inside fresh `tempfile::TempDir` directories,
 /// while the captured TUI footer may display the absolute working directory.
 /// Normalizing those paths keeps freshness sidecars tied to visible UI state
 /// instead of one random temp directory name. Generated tokens the application
