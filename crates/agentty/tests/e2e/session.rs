@@ -6626,6 +6626,58 @@ fn session_question_reconcile_after_help_overlay() -> E2eResult {
     Ok(())
 }
 
+/// Delays the checkout hook so navigation must work before creation finishes.
+fn seed_delayed_session_creation(env: &BuilderEnv) -> E2eResult {
+    seed_sessions_tab(env)?;
+    let hook = env.workdir.join(".git/hooks/post-checkout");
+    std::fs::write(&hook, "#!/bin/sh\nsleep 8\n")?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o750))?;
+
+    Ok(())
+}
+
+/// Navigation and painting remain available during slow worktree setup.
+#[test]
+fn session_creation_keeps_navigation_responsive() -> E2eResult {
+    // Arrange
+    FeatureTest::new("session_creation_responsive")
+        .with_git()
+        .setup(seed_delayed_session_creation)
+        .run(
+            |scenario| {
+                // Act
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .press_key("a")
+                    .wait_for_text("Regular", 5000)
+                    .press_key("Enter")
+                    .wait_for_text("Close this notice", 2000)
+                    .capture_labeled("creating", "Worktree creation is pending")
+                    .press_key("Esc")
+                    .wait_for_stable_frame(300, 1000)
+                    .press_key("?")
+                    .wait_for_text("Keybindings", 2000)
+                    .capture_labeled("navigation", "Help opens before worktree setup finishes")
+                    .sleep_ms(9000)
+                    .capture_labeled("completed", "Creation completion preserves help")
+            },
+            |frame, report| {
+                // Assert
+                let pending = common::frame_from_capture(&report.captures[0]);
+                let pending_full = Region::full(pending.cols(), pending.rows());
+                assertion::assert_text_in_region(&pending, "Creating session", &pending_full);
+                let navigation = common::frame_from_capture(&report.captures[1]);
+                let navigation_full = Region::full(navigation.cols(), navigation.rows());
+                assertion::assert_text_in_region(&navigation, "Keybindings", &navigation_full);
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "Keybindings", &full);
+            },
+        )?;
+
+    Ok(())
+}
+
 /// Verify that pressing `a` on the Sessions tab opens the creation selector,
 /// and choosing the regular option opens prompt mode with the submit footer.
 #[test]
@@ -6782,7 +6834,6 @@ fn build_orchestration_scenario(scenario: Scenario) -> Scenario {
             "Workers stay grouped with their controller",
         )
         .wait_for_text("Phase: AwaitingIntegration", 30000)
-        .press_key("j")
         .wait_for_stable_frame(300, 5000)
         .press_key("Enter")
         .wait_for_text(

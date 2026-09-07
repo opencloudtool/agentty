@@ -765,7 +765,7 @@ impl SessionManager {
         }
 
         let worktree_branch = session_branch(&session_id);
-        self.create_session_worktree(
+        Self::create_session_worktree(
             services,
             &session_id,
             &folder,
@@ -787,7 +787,7 @@ impl SessionManager {
             .fork_session_snapshot(snapshot)
             .await
         {
-            self.rollback_failed_session_creation(
+            Self::rollback_failed_session_creation(
                 services,
                 &folder,
                 &repo_root,
@@ -804,21 +804,15 @@ impl SessionManager {
 
         Self::record_session_creation_activity(services, &session_id).await;
 
-        if let Err(error) = agent::create_backend(source_agent.kind()).setup(&folder) {
-            self.rollback_failed_session_creation(
-                services,
-                &folder,
-                &repo_root,
-                &session_id,
-                &worktree_branch,
-                true,
-            )
-            .await;
-
-            return Err(SessionError::Workflow(format!(
-                "Failed to setup session backend: {error}"
-            )));
-        }
+        Self::setup_created_session_backend(
+            services,
+            agent::create_backend(source_agent.kind()).as_ref(),
+            &folder,
+            &repo_root,
+            &session_id,
+            &worktree_branch,
+        )
+        .await?;
 
         SessionTaskService::refresh_persisted_session_diff_stats(
             services.db(),
@@ -850,9 +844,30 @@ impl SessionManager {
         creation_settings: Option<SessionCreationSettings>,
         creation_kind: SessionCreationKind,
     ) -> Result<String, SessionError> {
-        let mut creation_settings = self
+        let creation_settings = self
             .resolve_session_creation_settings(services, project_id, creation_settings)
             .await?;
+
+        Self::materialize_session(
+            services,
+            project_id,
+            base_branch,
+            working_dir,
+            creation_settings,
+            creation_kind,
+        )
+        .await
+    }
+
+    /// Executes prepared session creation without borrowing foreground state.
+    pub(crate) async fn materialize_session(
+        services: &AppServices,
+        project_id: i64,
+        base_branch: &str,
+        working_dir: PathBuf,
+        mut creation_settings: SessionCreationSettings,
+        creation_kind: SessionCreationKind,
+    ) -> Result<String, SessionError> {
         creation_settings.role = creation_kind.role();
         let session_agent = creation_settings.agent;
         let session_model = session_agent.model();
@@ -876,7 +891,7 @@ impl SessionManager {
             .ok_or_else(|| {
                 SessionError::Workflow("Failed to find git repository root".to_string())
             })?;
-        self.create_session_worktree(
+        Self::create_session_worktree(
             services,
             &session_id,
             &folder,
@@ -910,7 +925,7 @@ impl SessionManager {
             })
             .await
         {
-            self.rollback_failed_session_creation(
+            Self::rollback_failed_session_creation(
                 services,
                 &folder,
                 &repo_root,
@@ -927,13 +942,37 @@ impl SessionManager {
 
         Self::record_session_creation_activity(services, &session_id).await;
 
-        if let Err(error) = agent::create_backend(session_agent.kind()).setup(&folder) {
-            self.rollback_failed_session_creation(
+        Self::setup_created_session_backend(
+            services,
+            agent::create_backend(session_agent.kind()).as_ref(),
+            &folder,
+            &repo_root,
+            &session_id,
+            &worktree_branch,
+        )
+        .await?;
+        services.emit_session_and_project_refresh_events();
+
+        Ok(session_id)
+    }
+
+    /// Configures a newly persisted session and rolls back its resources when
+    /// the injected backend rejects setup. Shared by creation and forking.
+    async fn setup_created_session_backend(
+        services: &AppServices,
+        backend: &dyn agent::AgentBackend,
+        folder: &Path,
+        repo_root: &Path,
+        session_id: &str,
+        worktree_branch: &str,
+    ) -> Result<(), SessionError> {
+        if let Err(error) = backend.setup(folder) {
+            Self::rollback_failed_session_creation(
                 services,
-                &folder,
-                &repo_root,
-                &session_id,
-                &worktree_branch,
+                folder,
+                repo_root,
+                session_id,
+                worktree_branch,
                 true,
             )
             .await;
@@ -942,9 +981,8 @@ impl SessionManager {
                 "Failed to setup session backend: {error}"
             )));
         }
-        services.emit_session_and_project_refresh_events();
 
-        Ok(session_id)
+        Ok(())
     }
 
     /// Creates the git worktree and session-local metadata directory for one
@@ -959,7 +997,6 @@ impl SessionManager {
     /// Returns an error if git worktree creation fails or the `.agentty`
     /// metadata directory cannot be created inside the worktree.
     async fn create_session_worktree(
-        &self,
         services: &AppServices,
         session_id: &str,
         folder: &Path,
@@ -982,7 +1019,7 @@ impl SessionManager {
 
         let data_dir = folder.join(SESSION_DATA_DIR);
         if let Err(error) = services.fs_client().create_dir_all(data_dir).await {
-            self.rollback_failed_session_creation(
+            Self::rollback_failed_session_creation(
                 services,
                 folder,
                 repo_root,
@@ -1058,7 +1095,7 @@ impl SessionManager {
 
         let repo_root = self.load_session_repo_root(services, session_id).await?;
 
-        self.create_session_worktree(
+        Self::create_session_worktree(
             services,
             &persisted_session_id,
             &folder,
@@ -3267,7 +3304,7 @@ impl SessionManager {
 
     /// Resolves project defaults unless the caller supplied a deterministic
     /// launch-settings snapshot.
-    async fn resolve_session_creation_settings(
+    pub(crate) async fn resolve_session_creation_settings(
         &mut self,
         services: &AppServices,
         project_id: i64,
@@ -3337,7 +3374,6 @@ impl SessionManager {
 
     /// Reverts filesystem and database changes after session creation failure.
     async fn rollback_failed_session_creation(
-        &self,
         services: &AppServices,
         folder: &Path,
         repo_root: &Path,
@@ -4738,7 +4774,6 @@ mod tests {
         // Arrange
         let session = test_session("", Status::Draft, None, "");
         let database = database_with_session(&session).await;
-        let session_manager = session_manager_with_one_session(session);
         let repo_root = PathBuf::from("/tmp/project");
         let folder = PathBuf::from("/tmp/session-worktree");
         let expected_repo_root = repo_root.clone();
@@ -4765,19 +4800,214 @@ mod tests {
         );
 
         // Act
-        let result = session_manager
-            .create_session_worktree(
-                &services,
-                "session-id",
-                folder.as_path(),
-                repo_root.as_path(),
-                "wt/session-id",
-                "main",
-            )
-            .await;
+        let result = SessionManager::create_session_worktree(
+            &services,
+            "session-id",
+            folder.as_path(),
+            repo_root.as_path(),
+            "wt/session-id",
+            "main",
+        )
+        .await;
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    /// Expects rollback to remove both the worktree registration and branch.
+    fn rollback_git_client() -> git::MockGitClient {
+        let mut client = git::MockGitClient::new();
+        client
+            .expect_remove_worktree()
+            .once()
+            .returning(|_| Box::pin(async { Ok(()) }));
+        client
+            .expect_delete_branch()
+            .once()
+            .returning(|_, _| Box::pin(async { Ok(()) }));
+
+        client
+    }
+
+    #[tokio::test]
+    async fn creation_and_fork_roll_back_when_metadata_persistence_fails() {
+        for fork in [false, true] {
+            // Arrange
+            let source = test_session("source", Status::Review, Some("Source"), "history");
+            let source_id = source.id.clone();
+            let (database, pool) = database_with_session_and_pool(&source).await;
+            let project_id = database
+                .sessions()
+                .load_session_project_id(&source_id)
+                .await
+                .expect("project lookup")
+                .expect("source project");
+            sqlx::query(
+                "CREATE TRIGGER reject_creation BEFORE INSERT ON session BEGIN SELECT \
+                 RAISE(ABORT, 'creation rejected'); END",
+            )
+            .execute(&pool)
+            .await
+            .expect("failure trigger");
+            let mut manager = session_manager_with_one_session(source);
+            let mut git = rollback_git_client();
+            git.expect_find_git_repo_root()
+                .once()
+                .returning(|path| Box::pin(async move { Some(path) }));
+            git.expect_create_worktree()
+                .once()
+                .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+            let services = test_services_with_fs_client(
+                &database,
+                Arc::new(RealClock),
+                Arc::new(create_passthrough_mock_fs_client()),
+                Arc::new(git),
+                Arc::new(forge::MockReviewRequestClient::new()),
+            );
+
+            // Act
+            let result = if fork {
+                manager.fork_session(&services, &source_id).await
+            } else {
+                manager
+                    .create_session_for_project(
+                        &services,
+                        project_id,
+                        "main",
+                        PathBuf::from("/tmp/project"),
+                        None,
+                        SessionCreationKind::Worker,
+                    )
+                    .await
+            };
+
+            // Assert
+            assert!(
+                result
+                    .expect_err("persistence must fail")
+                    .to_string()
+                    .contains("creation rejected")
+            );
+            assert!(
+                database
+                    .sessions()
+                    .load_session(&source_id)
+                    .await
+                    .expect("source lookup")
+                    .is_some()
+            );
+            assert_eq!(
+                database
+                    .sessions()
+                    .load_sessions_metadata()
+                    .await
+                    .expect("session count")
+                    .0,
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn creation_rolls_back_when_metadata_directory_cannot_be_created() {
+        // Arrange
+        let source = test_session("source", Status::Review, None, "");
+        let database = database_with_session(&source).await;
+        let mut git = rollback_git_client();
+        git.expect_create_worktree()
+            .once()
+            .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+        let mut filesystem = fs::MockFsClient::new();
+        filesystem.expect_create_dir_all().once().returning(|_| {
+            Box::pin(async { Err(fs::FsError::Io(std::io::Error::other("directory rejected"))) })
+        });
+        filesystem
+            .expect_remove_dir_all()
+            .times(1..)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        let services = test_services_with_fs_client(
+            &database,
+            Arc::new(RealClock),
+            Arc::new(filesystem),
+            Arc::new(git),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+
+        // Act
+        let result = SessionManager::create_session_worktree(
+            &services,
+            "new-session",
+            Path::new("/tmp/new-session"),
+            Path::new("/tmp/project"),
+            "wt/new-session",
+            "main",
+        )
+        .await;
+
+        // Assert
+        assert!(
+            result
+                .expect_err("directory creation must fail")
+                .to_string()
+                .contains("directory rejected")
+        );
+        assert_eq!(
+            database
+                .sessions()
+                .load_sessions_metadata()
+                .await
+                .expect("session count")
+                .0,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn backend_setup_failure_rolls_back_persisted_session() {
+        // Arrange
+        let session = test_session("", Status::Draft, None, "");
+        let session_id = session.id.clone();
+        let database = database_with_session(&session).await;
+        let services = test_services_with_fs_client(
+            &database,
+            Arc::new(RealClock),
+            Arc::new(create_passthrough_mock_fs_client()),
+            Arc::new(rollback_git_client()),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+        let mut backend = agent::MockAgentBackend::new();
+        backend.expect_setup().once().returning(|_| {
+            Err(agent::AgentBackendError::Setup(
+                "setup rejected".to_string(),
+            ))
+        });
+
+        // Act
+        let result = SessionManager::setup_created_session_backend(
+            &services,
+            &backend,
+            &session.folder,
+            Path::new("/tmp/project"),
+            &session_id,
+            "wt/new-session",
+        )
+        .await;
+
+        // Assert
+        assert!(
+            result
+                .expect_err("backend setup must fail")
+                .to_string()
+                .contains("setup rejected")
+        );
+        assert!(
+            database
+                .sessions()
+                .load_session(&session_id)
+                .await
+                .expect("session lookup")
+                .is_none()
+        );
     }
 
     #[tokio::test]

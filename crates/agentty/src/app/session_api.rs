@@ -22,6 +22,7 @@ use crate::app::orchestration::{OrchestrationApprovalOutcome, child_session_is_s
 use crate::app::session::{
     SessionCreationKind, SessionCreationSettings, migrate_session_off_retired_model,
 };
+use crate::app::session_creation::PreparedSessionCreation;
 use crate::app::{
     App, AppError, AppEvent, SessionError, SessionRuntimeAccess, SessionRuntimeCommand,
     SessionRuntimeHandle,
@@ -139,7 +140,9 @@ impl App {
     ///
     /// Background callers rely on the terminal event loop to drive the same
     /// mailbox. Foreground callers use this helper so awaiting their own
-    /// response never deadlocks the foreground executor.
+    /// response never deadlocks the foreground executor. Pending creation also
+    /// pumps reducer events so its background completion can acknowledge the
+    /// request; other commands retain their normal snapshot ordering.
     pub(crate) async fn drive_session_request<RequestFuture>(
         &mut self,
         request: RequestFuture,
@@ -154,8 +157,21 @@ impl App {
             tokio::select! {
                 biased;
                 result = &mut request => return result,
-                command = self.sessions.next_command() => {
-                    self.apply_session_runtime_command(command).await;
+                event = async {
+                    if self.pending_session_creations.is_empty() {
+                        crate::app::AppRuntimeEvent::Session(self.sessions.next_command().await)
+                    } else {
+                        self.next_runtime_event().await
+                    }
+                } => {
+                    match event {
+                        crate::app::AppRuntimeEvent::App(event) => {
+                            Box::pin(self.apply_app_events(*event)).await;
+                        }
+                        crate::app::AppRuntimeEvent::Session(command) => {
+                            self.apply_session_runtime_command(command).await;
+                        }
+                    }
                 }
             }
         }
@@ -168,7 +184,8 @@ impl App {
                 request,
                 response_tx,
             } => {
-                let _ = response_tx.send(self.create_api_session(request).await);
+                self.start_session_creation(request, Some(response_tx))
+                    .await;
             }
             SessionRuntimeCommand::Get {
                 response_tx,
@@ -298,12 +315,12 @@ impl App {
         }
     }
 
-    /// Creates one API-requested session, validating project relationships and
-    /// resolving optional inherited settings before creation mutates state.
-    async fn create_api_session(
+    /// Validates one creation request and captures its launch settings. Drafts
+    /// persist immediately; materialized worktrees return an owned effect plan.
+    pub(super) async fn prepare_api_session_creation(
         &mut self,
         request: CreateSessionRequest,
-    ) -> Result<SessionId, ApiSessionError> {
+    ) -> Result<PreparedSessionCreation, ApiSessionError> {
         self.validate_api_session_request(&request).await?;
         self.ensure_project_checkout_available(request.project_id)
             .map_err(api_error_from_app)?;
@@ -318,65 +335,24 @@ impl App {
             .map_or((None, None), |inherited| {
                 (Some(inherited.base_branch), Some(inherited.settings))
             });
-        let session_id = match request.mode {
-            CreateSessionMode::Regular => {
-                if creation_settings.is_none() {
-                    App::create_session(self).await
-                } else {
-                    self.create_api_materialized_session(
+        let creation_kind = match request.mode {
+            CreateSessionMode::Draft => {
+                let project = self.api_project_creation_context(base_branch_override)?;
+                let session_id = self
+                    .sessions
+                    .create_draft_session_for_project_with_settings(
+                        &self.services,
                         request.project_id,
-                        base_branch_override,
+                        &project.base_branch,
                         creation_settings,
-                        SessionCreationKind::Worker,
                     )
                     .await
-                }
-            }
-            CreateSessionMode::Draft => {
-                if creation_settings.is_none() {
-                    self.create_draft_session().await
-                } else {
-                    let project = self.api_project_creation_context(base_branch_override)?;
-                    self.sessions
-                        .create_draft_session_for_project_with_settings(
-                            &self.services,
-                            request.project_id,
-                            &project.base_branch,
-                            creation_settings,
-                        )
-                        .await
-                        .map_err(AppError::from)
-                }
-            }
-            CreateSessionMode::Orchestrator => {
-                self.create_api_materialized_session(
-                    request.project_id,
-                    base_branch_override,
-                    creation_settings,
-                    SessionCreationKind::Orchestrator,
-                )
-                .await
-            }
-            CreateSessionMode::OrchestrationChild { task_id } => {
-                self.create_api_materialized_session(
-                    request.project_id,
-                    base_branch_override,
-                    creation_settings,
-                    SessionCreationKind::OrchestrationChild { task_id },
-                )
-                .await
-            }
-            CreateSessionMode::OrchestrationResearch { task_id } => {
-                self.create_api_materialized_session(
-                    request.project_id,
-                    base_branch_override,
-                    creation_settings,
-                    SessionCreationKind::OrchestrationResearch { task_id },
-                )
-                .await
+                    .map_err(api_error_from_session)?;
+
+                return Ok(PreparedSessionCreation::Persisted(session_id));
             }
             CreateSessionMode::Stacked { parent_session_id } => {
-                if let Some(settings) = creation_settings {
+                let session_id = if let Some(settings) = creation_settings {
                     self.sessions
                         .create_stacked_draft_session_with_settings(
                             &self.services,
@@ -384,17 +360,42 @@ impl App {
                             settings,
                         )
                         .await
-                        .map_err(AppError::from)
                 } else {
-                    self.create_stacked_draft_session(&parent_session_id).await
+                    self.sessions
+                        .create_stacked_draft_session(&self.services, &parent_session_id)
+                        .await
                 }
+                .map_err(api_error_from_session)?;
+
+                return Ok(PreparedSessionCreation::Persisted(session_id));
             }
-        }
-        .map_err(api_error_from_app)?;
+            CreateSessionMode::Regular => SessionCreationKind::Worker,
+            CreateSessionMode::Orchestrator => SessionCreationKind::Orchestrator,
+            CreateSessionMode::OrchestrationChild { task_id } => {
+                SessionCreationKind::OrchestrationChild { task_id }
+            }
+            CreateSessionMode::OrchestrationResearch { task_id } => {
+                SessionCreationKind::OrchestrationResearch { task_id }
+            }
+        };
+        let project = self.api_project_creation_context(base_branch_override)?;
+        let settings = self
+            .sessions
+            .resolve_session_creation_settings(
+                &self.services,
+                request.project_id,
+                creation_settings,
+            )
+            .await
+            .map_err(api_error_from_session)?;
 
-        self.finish_api_session_creation(&session_id).await;
-
-        Ok(SessionId::from(session_id))
+        Ok(PreparedSessionCreation::Materialized {
+            base_branch: project.base_branch,
+            creation_kind,
+            project_id: request.project_id,
+            settings,
+            working_dir: project.working_dir,
+        })
     }
 
     async fn validate_api_session_request(
@@ -421,30 +422,6 @@ impl App {
         }
 
         Ok(())
-    }
-
-    async fn create_api_materialized_session(
-        &mut self,
-        project_id: i64,
-        base_branch_override: Option<String>,
-        creation_settings: Option<SessionCreationSettings>,
-        creation_kind: SessionCreationKind,
-    ) -> Result<String, AppError> {
-        let project = self
-            .api_project_creation_context(base_branch_override)
-            .map_err(|error| AppError::Workflow(error.to_string()))?;
-
-        self.sessions
-            .create_session_for_project(
-                &self.services,
-                project_id,
-                &project.base_branch,
-                project.working_dir,
-                creation_settings,
-                creation_kind,
-            )
-            .await
-            .map_err(AppError::from)
     }
 
     /// Loads one complete session aggregate from persistence plus live queue
@@ -948,7 +925,7 @@ impl App {
     /// Attempts to register a newly persisted active-project session before
     /// acknowledging creation, scheduling a refresh retry when loading is
     /// temporarily unavailable.
-    async fn finish_api_session_creation(&mut self, session_id: &str) {
+    pub(super) async fn finish_api_session_creation(&mut self, session_id: &str) {
         if self
             .sessions
             .sessions()

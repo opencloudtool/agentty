@@ -4,13 +4,12 @@ use ag_tui_text::text_util::inline_text;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, Tab};
-use crate::domain::input::{InputCommand, InputState};
+use crate::domain::input::InputCommand;
 use crate::domain::session::{Session, Status};
-use crate::presentation::app_mode::{AppMode, ChatFocus, ConfirmationIntent, HelpContext};
+use crate::presentation::app_mode::{AppMode, ConfirmationIntent, HelpContext};
 use crate::presentation::help_action::{
     HelpAction, project_list_actions, session_list_actions, settings_actions,
 };
-use crate::presentation::prompt::{PromptAttachmentState, PromptHistoryState};
 use crate::presentation::settings::{SettingsAction, SettingsInput};
 use crate::runtime::EventResult;
 use crate::runtime::mode::confirmation::DEFAULT_OPTION_INDEX;
@@ -258,20 +257,6 @@ fn list_keybindings(app: &App) -> Vec<HelpAction> {
     session_list_actions(can_cancel_selected_session, can_open_selected_session)
 }
 
-/// Opens prompt mode for the provided session identifier.
-pub(crate) fn open_session_prompt(app: &mut App, session_id: String) {
-    app.mode = AppMode::Prompt {
-        at_mention_state: None,
-        attachment_state: PromptAttachmentState::default(),
-        focus: ChatFocus::Input,
-        history_state: PromptHistoryState::new(Vec::new()),
-        slash_state: app.prompt_slash_state(),
-        session_id: session_id.into(),
-        input: InputState::default(),
-        scroll_offset: None,
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use crossterm::event::KeyModifiers;
@@ -280,10 +265,13 @@ mod tests {
     use crate::app::{
         AppEvent, MockSyncMainRunner, ProjectSyncPhase, SyncMainOutcome, SyncSessionStartError,
     };
+    use crate::domain::input::InputState;
     use crate::domain::question::QuestionItem;
     use crate::domain::theme::ColorTheme;
-    use crate::presentation::app_mode::PromptModeSnapshot;
-    use crate::presentation::prompt::PromptSlashState;
+    use crate::presentation::app_mode::{ChatFocus, PromptModeSnapshot};
+    use crate::presentation::prompt::{
+        PromptAttachmentState, PromptHistoryState, PromptSlashState,
+    };
 
     /// Builds a settings-focused test app with the `Launch Configurations` row
     /// selected.
