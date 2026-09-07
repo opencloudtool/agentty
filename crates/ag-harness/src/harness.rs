@@ -2952,7 +2952,7 @@ mod tests {
         let harness = Arc::new(
             Harness::new(model)
                 .database(&database_path)
-                .repository("repo")
+                .repository(Repository::fixture("repo"))
                 .allow(Tool::Read)
                 .file_system(PendingToolFileSystem {
                     started: Arc::clone(&tool_started),
