@@ -161,12 +161,14 @@ pub enum LifecycleEventKind {
     },
 }
 
-/// Shape of a successful provider-neutral model response.
+/// Observable outcome of one provider-neutral model request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ModelResponseType {
     /// Terminal, schema-validated structured output.
     Output,
+    /// Native continuation was unavailable and the request was replayed.
+    ResumeUnavailable,
     /// An intermediate native tool request.
     ToolCall,
 }
@@ -175,6 +177,7 @@ impl fmt::Display for ModelResponseType {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Output => formatter.write_str("output"),
+            Self::ResumeUnavailable => formatter.write_str("resume unavailable"),
             Self::ToolCall => formatter.write_str("tool call"),
         }
     }
@@ -822,13 +825,17 @@ mod tests {
     #[test]
     fn model_response_types_have_stable_display_names() {
         // Arrange
-        let response_types = [ModelResponseType::Output, ModelResponseType::ToolCall];
+        let response_types = [
+            ModelResponseType::Output,
+            ModelResponseType::ResumeUnavailable,
+            ModelResponseType::ToolCall,
+        ];
 
         // Act
         let display_names = response_types.map(|response_type| response_type.to_string());
 
         // Assert
-        assert_eq!(display_names, ["output", "tool call"]);
+        assert_eq!(display_names, ["output", "resume unavailable", "tool call"]);
     }
 
     fn recording_emitter() -> (LifecycleEmitter, Arc<Mutex<Vec<LifecycleEvent>>>) {
