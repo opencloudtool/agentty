@@ -24,13 +24,6 @@ it as a changelog, implementation inventory, or agent-environment setup guide.
 - Runtime mode handlers, visible tab labels, and
   `crates/agentty/src/presentation/help_action.rs` define shortcut names and
   availability. Document both directions of tab navigation.
-- Each E2E test's `FeatureTest::zola()` metadata owns its generated feature title,
-  description, and weight.
-- Keep feature GIFs and same-named PNG posters paired under
-  `docs/site/static/features/`; use `skills/feature-test/SKILL.md` for generation and
-  verification.
-- Change `build_search_index`, the `[search]` configuration, generated-index loading,
-  sidebar behavior, and the `/docs/` result filter together.
 
 ## Change Routing
 
@@ -45,6 +38,4 @@ it as a changelog, implementation inventory, or agent-environment setup guide.
   leaving a historical stub.
 
 Before handoff, scan edited pages for duplicated behavior, stale setup, long table
-cells, invalid internal links, and implementation detail at the wrong layer. Run
-`mdformat` and `zola-check`; for broad docs changes, verify rendered search by title and
-body terms.
+cells, invalid internal links, and implementation detail at the wrong layer.
