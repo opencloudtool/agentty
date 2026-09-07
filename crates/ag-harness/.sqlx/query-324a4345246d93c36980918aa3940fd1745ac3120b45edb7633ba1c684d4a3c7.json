@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT provider,\n       model,\n       output_schema,\n       system_prompt,\n       max_history_bytes AS \"max_history_bytes!: i64\",\n       provider_session_id\nFROM session\nWHERE id = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "provider",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "name": "model",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session",
+            "name": "model"
+          }
+        }
+      },
+      {
+        "name": "output_schema",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session",
+            "name": "output_schema"
+          }
+        }
+      },
+      {
+        "name": "system_prompt",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session",
+            "name": "system_prompt"
+          }
+        }
+      },
+      {
+        "name": "max_history_bytes!: i64",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "session",
+            "name": "max_history_bytes"
+          }
+        }
+      },
+      {
+        "name": "provider_session_id",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session",
+            "name": "provider_session_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "324a4345246d93c36980918aa3940fd1745ac3120b45edb7633ba1c684d4a3c7"
+}
