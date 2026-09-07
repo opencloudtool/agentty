@@ -293,27 +293,15 @@ async fn create_selected_session(app: &mut App) -> io::Result<()> {
         _ => return Ok(()),
     };
     let project_id = app.active_project_id();
-    let service = app.session_service();
-    let request = service.create_session(CreateSessionRequest {
-        inherit_from_session_id: None,
-        mode,
-        project_id,
-    });
-    let session_id = match app.drive_session_request(request).await {
-        Ok(session_id) => session_id,
-        Err(error) => {
-            app.mode = AppMode::SyncBlockedPopup {
-                default_branch: None,
-                is_loading: false,
-                message: error.to_string(),
-                project_name: None,
-                title: "Session creation unavailable".to_string(),
-            };
-
-            return Ok(());
-        }
-    };
-    mode::list::open_session_prompt(app, session_id.into());
+    app.start_session_creation(
+        CreateSessionRequest {
+            inherit_from_session_id: None,
+            mode,
+            project_id,
+        },
+        None,
+    )
+    .await;
 
     Ok(())
 }
@@ -1165,6 +1153,15 @@ mod tests {
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             )
             .await;
+
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !app.pending_session_creations.is_empty() {
+                    let event = app.next_app_event().await.expect("creation event");
+                    app.apply_app_events(event).await;
+                }
+            })
+            .await
+            .expect("creation should finish");
 
             // Assert
             assert!(matches!(result, Ok(EventResult::Continue)));

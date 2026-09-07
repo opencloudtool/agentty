@@ -55,12 +55,14 @@ pub(crate) struct AppServiceDeps {
 }
 
 /// Shared app dependencies used by managers and background workflows.
+#[derive(Clone)]
 pub struct AppServices {
     available_agent_clis: Arc<Mutex<Vec<AgentCliInfo>>>,
     available_agent_kinds: Arc<[AgentKind]>,
     app_server_client_override: Option<Arc<dyn AppServerClient>>,
     base_path: PathBuf,
     cleanup_task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    creation_task_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     clipboard_image_client: Arc<dyn ClipboardImageClient>,
     clock: Arc<dyn Clock>,
     event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -114,6 +116,7 @@ impl AppServices {
             app_server_client_override,
             base_path,
             cleanup_task_handles: Arc::default(),
+            creation_task_handles: Arc::default(),
             clipboard_image_client,
             clock,
             event_tx,
@@ -203,6 +206,35 @@ impl AppServices {
         self.emit_app_event(AppEvent::RefreshProjects);
     }
 
+    /// Tracks worktree creation, which must settle before cleanup because its
+    /// blocking Git operation cannot safely be canceled midway through setup.
+    pub(crate) fn track_session_creation_task(
+        &self,
+        request_id: String,
+        join_handle: JoinHandle<()>,
+    ) {
+        self.creation_task_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(request_id, join_handle);
+    }
+
+    /// Releases a completed request's handle before acknowledging its result.
+    /// Completion is emitted after external work, so joining only settles the
+    /// task's return. Other requests remain tracked for shutdown.
+    pub(crate) async fn finish_session_creation_task(&self, request_id: &str) {
+        let task = self
+            .creation_task_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(request_id);
+        if let Some(task) = task
+            && let Err(error) = task.await
+        {
+            warn!(error = %error, "session creation task failed during completion");
+        }
+    }
+
     /// Tracks one best-effort cleanup task that should complete before the app
     /// finishes graceful shutdown.
     pub(crate) fn track_cleanup_task(&self, join_handle: JoinHandle<()>) {
@@ -211,13 +243,27 @@ impl AppServices {
         }
     }
 
-    /// Waits for all tracked cleanup tasks to finish.
+    /// Settles worktree creation, then waits for tracked cleanup tasks.
     ///
     /// The task list is drained before awaiting so the synchronous mutex guard
     /// is never held across an `.await`. The loop repeats in case a cleanup
-    /// task registers additional cleanup work before it exits. All tasks share
-    /// one shutdown deadline; unfinished tasks are canceled after it expires.
+    /// task registers additional cleanup work before it exits. Cleanup tasks
+    /// share one shutdown deadline; unfinished tasks are canceled after it
+    /// expires.
     pub(crate) async fn wait_for_cleanup_tasks(&self) {
+        let creation_tasks = self
+            .creation_task_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain()
+            .map(|(_, task)| task)
+            .collect::<Vec<_>>();
+        for task in creation_tasks {
+            if let Err(error) = task.await {
+                warn!(error = %error, "session creation task failed during shutdown");
+            }
+        }
+
         wait_for_cleanup_task_handles(
             self.cleanup_task_handles.as_ref(),
             CLEANUP_TASK_SHUTDOWN_TIMEOUT,
@@ -308,6 +354,7 @@ async fn wait_for_cleanup_task_handles(
 /// Returns a stable instrumentation label for one app event variant.
 fn app_event_label(event: &AppEvent) -> &'static str {
     match event {
+        AppEvent::SessionCreationCompleted { .. } => "SessionCreationCompleted",
         AppEvent::AtMentionEntriesLoaded { .. } => "AtMentionEntriesLoaded",
         AppEvent::DiffPreviewLoaded { .. } => "DiffPreviewLoaded",
         AppEvent::SessionDiffLoaded { .. } => "SessionDiffLoaded",
@@ -531,6 +578,145 @@ mod tests {
 
         // Assert
         assert_eq!(label, "SessionTurnStarted");
+    }
+
+    #[tokio::test]
+    async fn creation_completion_releases_handles_and_preserves_pending_work() {
+        // Arrange
+        let (mut app, _directory) = crate::test_support::new_test_app().await;
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        app.services.track_session_creation_task(
+            "pending".to_string(),
+            tokio::spawn(async move {
+                release_rx.await.expect("release pending creation");
+            }),
+        );
+
+        for index in 0..64 {
+            let request_id = format!("completed-{index}");
+            let services = app.services.clone();
+            let (settled_tx, mut settled_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                // Joining must not retain the tracker lock.
+                let unlocked = services.creation_task_handles.try_lock().is_ok();
+                let _ = settled_tx.send(unlocked);
+            });
+            app.services
+                .track_session_creation_task(request_id.clone(), task);
+
+            // Act
+            app.complete_session_creations(vec![(request_id, Err("setup failed".to_string()))])
+                .await;
+
+            // Assert
+            assert!(
+                settled_rx
+                    .try_recv()
+                    .expect("task joined before completion")
+            );
+            let tasks = app.services.creation_task_handles.lock().expect("tracker");
+            assert_eq!(tasks.len(), 1);
+            assert!(
+                !tasks
+                    .get("pending")
+                    .expect("pending creation")
+                    .is_finished()
+            );
+        }
+
+        release_tx.send(()).expect("release creation");
+        app.services.wait_for_cleanup_tasks().await;
+        assert!(
+            app.services
+                .creation_task_handles
+                .lock()
+                .expect("tracker")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_completion_releases_canceled_tasks_and_tolerates_duplicates() {
+        // Arrange
+        let (app, _directory) = crate::test_support::new_test_app().await;
+        let task = tokio::spawn(future::pending::<()>());
+        task.abort();
+        app.services
+            .track_session_creation_task("canceled".to_string(), task);
+
+        // Act
+        app.services.finish_session_creation_task("canceled").await;
+        app.services.finish_session_creation_task("canceled").await;
+
+        // Assert
+        assert!(
+            app.services
+                .creation_task_handles
+                .lock()
+                .expect("tracker")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_settles_creation_before_cleanup() {
+        // Arrange
+        let (app, _directory) = crate::test_support::new_test_app().await;
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let creation_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.services.track_session_creation_task(
+            "pending".to_string(),
+            tokio::spawn({
+                let creation_finished = Arc::clone(&creation_finished);
+                async move {
+                    release_rx.await.expect("creation release");
+                    creation_finished.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }),
+        );
+
+        // Act
+        let shutdown = app.services.wait_for_cleanup_tasks();
+        tokio::pin!(shutdown);
+        let completed_before_release = tokio::select! {
+            () = &mut shutdown => true,
+            () = time::sleep(Duration::from_millis(25)) => false,
+        };
+        assert!(!completed_before_release, "shutdown abandoned creation");
+        release_tx.send(()).expect("release creation");
+        shutdown.await;
+
+        // Assert
+        assert!(creation_finished.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            app.services
+                .creation_task_handles
+                .lock()
+                .expect("creation tasks")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_observes_canceled_creation_task() {
+        // Arrange
+        let (app, _directory) = crate::test_support::new_test_app().await;
+        let task = tokio::spawn(future::pending::<()>());
+        task.abort();
+        app.services
+            .track_session_creation_task("canceled".to_string(), task);
+
+        // Act
+        app.services.wait_for_cleanup_tasks().await;
+
+        // Assert
+        assert!(
+            app.services
+                .creation_task_handles
+                .lock()
+                .expect("creation tasks")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

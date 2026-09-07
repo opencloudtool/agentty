@@ -11,6 +11,11 @@ For keyboard shortcuts by view, see [Keybindings](@/docs/usage/keybindings.md).
 
 <!-- more -->
 
+Creating a regular or orchestrator session runs worktree setup in the background. Close
+the creation notice with `Esc` to continue browsing while setup finishes. If the notice
+stays open, completion opens the new session's composer; otherwise, open the session
+from the list when ready.
+
 ## Interface Layout
 
 <a id="usage-interface-layout"></a> Agentty organizes its interface into six primary

@@ -286,6 +286,11 @@ pub struct App {
     /// Retains focused-review cache generations until their durable writes
     /// settle so project-scoped refreshes cannot discard off-project output.
     pub(crate) pending_focused_review_persistence: HashMap<SessionId, FocusedReviewPersistence>,
+    /// Pending creation responses, completed only after foreground refresh.
+    pub(crate) pending_session_creations:
+        HashMap<String, crate::app::session_creation::PendingSessionCreation>,
+    /// Most recently opened creation notice; older results cannot steal focus.
+    pub(crate) interactive_session_creation: Option<String>,
     /// Tracks background session-diff loads by request generation so stale
     /// completions cannot change the active mode or review generation.
     pub(crate) pending_session_diff_requests: HashMap<u64, PendingSessionDiffRequest>,

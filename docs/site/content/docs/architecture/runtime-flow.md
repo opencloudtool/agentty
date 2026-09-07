@@ -85,20 +85,26 @@ flowchart TD
   process --> tick
 ```
 
-Programmatic session creation uses the same foreground-owned runtime, but its response
-is stricter than the asynchronous list refresh path: before returning a new session id,
-the runtime directly reloads the active-project session snapshot. A backlog of unrelated
-`AppEvent` values therefore cannot make an immediately following session command observe
-the new session as missing. Structured question answers similarly claim the current
-persisted question set before their continuation is queued directly on the per-session
-worker, preventing cloned API clients from enqueueing the same answer set twice and
-ensuring a turn entering `Question` cannot strand the accepted answer in the chat queue.
-The clarification answer is appended to durable history only after the worker accepts
-its continuation command; a rejected enqueue restores the claimed questions without
-leaving a duplicate answer or reply-error notice for the next attempt. If the
-post-create snapshot reload encounters a transient persistence failure, creation still
-returns the already-durable session id and queues another `RefreshSessions` event
-instead of returning an ambiguous error that could prompt duplicate creation.
+Session creation captures the project, base branch, and launch settings on the
+foreground task, then materializes regular and orchestration worktrees in a tracked
+background task. Completion returns through `AppEvent`; the reducer refreshes the
+active-project session snapshot before acknowledging the API request. A backlog of
+unrelated events therefore cannot make an immediately following session command observe
+the new session as missing. Interactive creation uses the same completion path and opens
+the composer only while its original notice remains active in the original project.
+Shutdown waits for creation to settle before starting the cleanup grace period, since
+its blocking Git operation cannot be safely abandoned midway through setup.
+
+Structured question answers similarly claim the current persisted question set before
+their continuation is queued directly on the per-session worker, preventing cloned API
+clients from enqueueing the same answer set twice and ensuring a turn entering
+`Question` cannot strand the accepted answer in the chat queue. The clarification answer
+is appended to durable history only after the worker accepts its continuation command; a
+rejected enqueue restores the claimed questions without leaving a duplicate answer or
+reply-error notice for the next attempt. If the post-create snapshot reload encounters a
+transient persistence failure, creation still returns the already-durable session id and
+queues another `RefreshSessions` event instead of returning an ambiguous error that
+could prompt duplicate creation.
 
 <a id="architecture-runtime-flow-notes"></a> Foreground loop details:
 

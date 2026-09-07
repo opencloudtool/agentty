@@ -65,6 +65,12 @@ pub(crate) enum AppRuntimeEvent {
 /// [`App::apply_app_events`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AppEvent {
+    /// Result of external session creation, acknowledged after snapshot
+    /// refresh.
+    SessionCreationCompleted {
+        request_id: String,
+        result: Result<String, String>,
+    },
     /// Indicates background-loaded prompt at-mention entries for one session.
     AtMentionEntriesLoaded {
         entries: Vec<FileEntry>,
@@ -263,6 +269,7 @@ pub(crate) enum AppEvent {
 /// Reduced representation of all app events currently queued for one tick.
 #[derive(Default)]
 pub(super) struct AppEventBatch {
+    pub(super) session_creations: Vec<(String, Result<String, String>)>,
     pub(super) applied_turns: HashMap<SessionId, TurnAppliedState>,
     pub(super) agent_cli_updates: Option<Vec<AgentCliInfo>>,
     pub(super) at_mention_entries_updates: HashMap<SessionId, Vec<FileEntry>>,
@@ -465,6 +472,16 @@ impl AppEventBatch {
     /// tick preserves cumulative usage from multiple completed turns.
     pub(super) fn collect_event(&mut self, event: AppEvent) {
         match event {
+            AppEvent::SessionOrchestrationProgressUpdated {
+                progress,
+                session_id,
+            } => {
+                self.session_orchestration_progress_updates
+                    .insert(session_id, progress);
+            }
+            AppEvent::SessionCreationCompleted { request_id, result } => {
+                self.session_creations.push((request_id, result));
+            }
             AppEvent::GitStatusUpdated {
                 generation,
                 session_statuses,
@@ -601,10 +618,11 @@ impl AppEventBatch {
             | AppEvent::StackedParentSyncCompleted { .. }
             | AppEvent::StackedParentMergeCompleted { .. }
             | AppEvent::SessionWorkflowNoticeUpdated { .. }
-            | AppEvent::SessionOrchestrationProgressUpdated { .. }
             | AppEvent::PublishedBranchSyncUpdated { .. }
             | AppEvent::ReviewRequestStatusUpdated { .. }) => self.collect_workflow_event(event),
-            AppEvent::GitStatusUpdated { .. }
+            AppEvent::SessionOrchestrationProgressUpdated { .. }
+            | AppEvent::SessionCreationCompleted { .. }
+            | AppEvent::GitStatusUpdated { .. }
             | AppEvent::VersionAvailabilityUpdated { .. }
             | AppEvent::AgentCliVersionsUpdated { .. }
             | AppEvent::UpdateStatusChanged { .. }
@@ -690,13 +708,6 @@ impl AppEventBatch {
             AppEvent::SessionWorkflowNoticeUpdated { notice, session_id } => {
                 self.collect_session_workflow_notice_updated(session_id, notice);
             }
-            AppEvent::SessionOrchestrationProgressUpdated {
-                progress,
-                session_id,
-            } => {
-                self.session_orchestration_progress_updates
-                    .insert(session_id, progress);
-            }
             AppEvent::PublishedBranchSyncUpdated {
                 persistent_notice,
                 session_id,
@@ -713,7 +724,9 @@ impl AppEventBatch {
                 result,
                 session_id,
             } => self.collect_review_request_status_updated(generation, result, session_id),
-            AppEvent::AtMentionEntriesLoaded { .. }
+            AppEvent::SessionOrchestrationProgressUpdated { .. }
+            | AppEvent::SessionCreationCompleted { .. }
+            | AppEvent::AtMentionEntriesLoaded { .. }
             | AppEvent::DiffPreviewLoaded { .. }
             | AppEvent::SessionDiffLoaded { .. }
             | AppEvent::GitStatusUpdated { .. }
@@ -1003,6 +1016,8 @@ impl App {
 
         self.apply_batch_session_snapshot_updates(&mut event_batch);
         self.apply_app_event_effects(after_snapshot_effects).await;
+        self.complete_session_creations(std::mem::take(&mut event_batch.session_creations))
+            .await;
 
         self.apply_worker_action_transitions(&mut event_batch);
 

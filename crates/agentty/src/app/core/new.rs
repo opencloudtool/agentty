@@ -184,6 +184,8 @@ impl App {
             pending_project_sync_completions: std::collections::HashMap::new(),
             pending_project_sync_requests: std::collections::VecDeque::new(),
             pending_focused_review_persistence: std::collections::HashMap::new(),
+            pending_session_creations: std::collections::HashMap::new(),
+            interactive_session_creation: None,
             pending_session_diff_requests: std::collections::HashMap::new(),
             projects,
             services,
