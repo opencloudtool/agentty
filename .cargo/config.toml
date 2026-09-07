@@ -1,3 +1,3 @@
 [build]
-# The pinned nightly predates rustc's replacement `--jobs-frontend` flag.
-rustflags = ["-Z", "threads=8"]
+# Limit each build's parallelism when multiple sessions compile at once.
+jobs = 2
