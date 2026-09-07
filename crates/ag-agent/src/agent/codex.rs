@@ -115,6 +115,8 @@ mod tests {
             vec![
                 "--model",
                 "gpt-5.6-sol",
+                "-c",
+                "agents.max_concurrent_threads_per_session=2",
                 "app-server",
                 "--listen",
                 "stdio://"
@@ -158,6 +160,8 @@ mod tests {
             vec![
                 "--model",
                 "gpt-5.6-luna",
+                "-c",
+                "agents.max_concurrent_threads_per_session=2",
                 "app-server",
                 "--listen",
                 "stdio://"

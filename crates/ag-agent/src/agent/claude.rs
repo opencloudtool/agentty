@@ -3,7 +3,9 @@ use std::process::{Command, Stdio};
 
 use ag_protocol::{SchemaRequiredPolicy, protocol_output_schema};
 
-use super::backend::{AgentBackend, AgentBackendError, BuildCommandRequest};
+use super::backend::{
+    AgentBackend, AgentBackendError, BuildCommandRequest, MAX_CONCURRENT_SUBAGENTS,
+};
 use super::prompt::{CliPromptAccessRootMode, append_cli_prompt_access_directories};
 
 /// Lists the Claude tools Agentty enables for unattended sessions.
@@ -94,6 +96,10 @@ impl AgentBackend for ClaudeBackend {
         );
         command
             .env("ANTHROPIC_MODEL", model)
+            .env(
+                "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+                MAX_CONCURRENT_SUBAGENTS.to_string(),
+            )
             .current_dir(folder)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -261,6 +267,9 @@ mod tests {
         assert!(debug_command.contains("stream-json"));
         assert!(!debug_command.contains("--permission-mode"));
         assert!(!args.iter().any(String::is_empty));
+        assert!(command.get_envs().any(|(key, value)| {
+            key == "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS" && value == Some(OsStr::new("2"))
+        }));
 
         let settings = settings_argument(&command);
         assert_eq!(

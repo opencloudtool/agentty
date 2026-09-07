@@ -56,6 +56,23 @@ after you authenticate with that provider's CLI. It does not implement OAuth flo
 provider OAuth tokens directly, or call private provider APIs. You are responsible for
 choosing an authentication method permitted for your account, plan, and usage pattern.
 
+## Subagent Limits
+
+Agentty requests a limit of two concurrent subagents per Codex or Claude session,
+excluding the parent agent. It applies the limit when starting the provider process,
+including when resuming a saved session. Restart Agentty after updating to apply the
+limit to existing sessions.
+
+Codex limits concurrently open child-agent threads. Claude limits ordinary subagent
+spawning, but provider exceptions such as resumed subagents can exceed the limit.
+Enforcement depends on the installed CLI supporting its native setting. Gemini and
+Antigravity have no verified concurrency setting, so Agentty does not cap their internal
+subagents.
+
+These are per-session provider limits, not host-wide CPU or memory limits. Multiple
+sessions each have their own allowance, and builds or tests can consume additional
+resources.
+
 ## Authentication and Usage
 
 ### Codex
