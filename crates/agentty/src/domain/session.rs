@@ -474,7 +474,12 @@ impl Session {
             && (self.status == Status::InProgress
                 || self.status.allows_review_actions()
                 || (self.status == Status::Draft
-                    && (self.is_draft_session() || self.role == SessionRole::Orchestrator)))
+                    && (self.is_draft_session()
+                        || self.role == SessionRole::Orchestrator
+                        || self
+                            .transient_messages
+                            .get(TransientMessageSlot::WorkspacePreparation)
+                            .is_some())))
     }
 
     /// Returns whether this terminal session can launch a seeded follow-on
@@ -756,6 +761,17 @@ pub(crate) fn can_reply_to_session_in_stack(sessions: &[Session], session_id: &s
     };
 
     !stack.has_branch_mutating_member_except(session_id)
+}
+
+/// Returns whether a caller-owned branch reservation belongs to this stack.
+/// Missing or invalid stacks fail closed, matching the branch-work gates.
+pub(crate) fn has_reserved_branch_work_in_stack(
+    sessions: &[Session],
+    session_id: &str,
+    mut is_reserved: impl FnMut(&str) -> bool,
+) -> bool {
+    SessionStack::for_session(sessions, session_id)
+        .is_none_or(|stack| stack.members.iter().any(|member| is_reserved(&member.id)))
 }
 
 /// Snapshot of one loaded stack tree for branch-work policy checks.
@@ -1661,6 +1677,39 @@ pub(crate) mod tests {
 
         // Assert
         assert!(!can_start_child);
+    }
+
+    #[test]
+    fn test_branch_reservations_follow_stack_membership() {
+        // Arrange
+        let sessions = vec![
+            SessionFixtureBuilder::new().id("root").build(),
+            SessionFixtureBuilder::new()
+                .id("child")
+                .parent_session_id(Some(SessionId::from("root")))
+                .build(),
+            SessionFixtureBuilder::new()
+                .id("grandchild")
+                .parent_session_id(Some(SessionId::from("child")))
+                .build(),
+            SessionFixtureBuilder::new().id("unrelated").build(),
+        ];
+
+        // Act
+        let root_is_reserved =
+            has_reserved_branch_work_in_stack(&sessions, "root", |id| id == "grandchild");
+        let child_is_reserved =
+            has_reserved_branch_work_in_stack(&sessions, "child", |id| id == "root");
+        let unrelated_is_reserved =
+            has_reserved_branch_work_in_stack(&sessions, "unrelated", |id| id == "child");
+        let missing_is_reserved =
+            has_reserved_branch_work_in_stack(&sessions, "missing", |_| false);
+
+        // Assert
+        assert!(root_is_reserved);
+        assert!(child_is_reserved);
+        assert!(!unrelated_is_reserved);
+        assert!(missing_is_reserved);
     }
 
     #[test]

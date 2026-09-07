@@ -2580,6 +2580,8 @@ async fn test_start_staged_session_launches_bundle_and_clears_staged_drafts() {
         .await
         .expect("failed to start staged session");
 
+    crate::test_support::finish_session_creation_tasks(&mut app).await;
+
     // Assert
     assert_eq!(
         app.sessions.sessions()[0].prompt,
@@ -2624,6 +2626,24 @@ async fn test_start_staged_session_clears_draft_flag() {
         .await
         .expect("failed to start staged session");
 
+    crate::test_support::finish_session_creation_tasks(&mut app).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            app.process_pending_app_events().await;
+            if !app
+                .sessions
+                .session_for_id(&session_id)
+                .expect("session")
+                .is_draft_session()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("worker accepts the draft handoff");
+
     // Assert
     let session = app
         .sessions
@@ -2657,6 +2677,15 @@ async fn test_start_staged_session_succeeds_when_clearing_draft_flag_fails() {
     app.stage_draft_message(&session_id, "First draft")
         .await
         .expect("failed to stage first draft");
+    app.services
+        .db()
+        .sessions()
+        .insert_session_preparation(&session_id, "main")
+        .await
+        .expect("prepare");
+    SessionManager::prepare_reserved_session(&app.services, &session_id)
+        .await
+        .expect("ready workspace");
     sqlx::query!(
         r"
 CREATE TRIGGER fail_clear_draft_flag
@@ -2673,6 +2702,8 @@ END
 
     // Act
     let result = app.start_staged_session(&session_id).await;
+
+    crate::test_support::finish_session_creation_tasks(&mut app).await;
 
     // Assert
     assert!(result.is_ok());
@@ -2708,10 +2739,33 @@ async fn test_start_staged_session_launches_stacked_draft_child() {
         .await
         .expect("failed to stage stacked draft message");
 
+    let started = Arc::new(Notify::new());
+    let started_for_agent = Arc::clone(&started);
+    let mut channel = MockAgentChannel::new();
+    channel
+        .expect_run_turn()
+        .once()
+        .returning(move |_, request, _| {
+            assert_eq!(request.prompt.text, "Stacked draft");
+            started_for_agent.notify_one();
+
+            Box::pin(std::future::pending())
+        });
+    app.sessions
+        .worker_service
+        .test_agent_channels
+        .insert(child_session_id.clone().into(), Arc::new(channel));
+
     // Act
     app.start_staged_session(&child_session_id)
         .await
         .expect("failed to start stacked draft");
+    app.sessions.sync_from_handles();
+
+    crate::test_support::finish_session_creation_tasks(&mut app).await;
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("stacked first turn must reach the worker");
     app.sessions.sync_from_handles();
 
     // Assert
@@ -3382,9 +3436,10 @@ async fn test_enqueue_message_survives_refresh_sessions_reducer_pass() {
     // Arrange
     let dir = tempdir().expect("failed to create temp dir");
     let mut app = new_test_app_with_git(dir.path()).await;
-    create_and_start_session(&mut app, "Initial").await;
-    let session_id = app.sessions.sessions()[0].id.clone();
-    wait_for_status(&mut app, &session_id, Status::Review).await;
+    let session_id = app
+        .create_session()
+        .await
+        .expect("failed to create session");
     crate::test_support::set_session_status_for_test(&mut app, &session_id, Status::InProgress);
     app.enqueue_message(&session_id, "queued reply")
         .expect("enqueue_message should succeed for InProgress session");
@@ -5372,6 +5427,8 @@ async fn test_create_session_with_git_no_actual_repo() {
         .expect_find_git_repo_root()
         .times(1)
         .returning(|_| Box::pin(async { None }));
+    mock_git_client.expect_remove_worktree().never();
+    mock_git_client.expect_delete_branch().never();
     install_mock_git_client(&mut app, mock_git_client);
 
     // Act
@@ -5384,6 +5441,15 @@ async fn test_create_session_with_git_no_actual_repo() {
             .expect_err("should be error")
             .to_string()
             .contains("git repository root")
+    );
+    assert!(
+        app.services
+            .db()
+            .sessions()
+            .load_sessions()
+            .await
+            .expect("sessions")
+            .is_empty()
     );
 }
 
@@ -5419,6 +5485,8 @@ async fn test_create_session_cleans_up_on_error() {
                 ))
             })
         });
+    mock_git_client.expect_remove_worktree().never();
+    mock_git_client.expect_delete_branch().never();
     install_mock_git_client(&mut app, mock_git_client);
 
     // Act
@@ -5427,6 +5495,15 @@ async fn test_create_session_cleans_up_on_error() {
     // Assert - session should not be created
     assert!(result.is_err());
     assert_eq!(app.sessions.sessions().len(), 0);
+    assert!(
+        app.services
+            .db()
+            .sessions()
+            .load_sessions()
+            .await
+            .expect("sessions")
+            .is_empty()
+    );
 
     // Verify no session folder was left behind
     let entries = std::fs::read_dir(dir.path())

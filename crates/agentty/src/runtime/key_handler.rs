@@ -33,6 +33,8 @@ pub(crate) async fn handle_key_event<B: Backend>(
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
+    // Further input keeps background creation from interrupting the user.
+
     let result = if let AppMode::Confirmation {
         selected_confirmation_index,
         ..
@@ -1176,6 +1178,55 @@ mod tests {
                     ..
                 } if !session_id.is_empty()
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_input_during_creation_keeps_list_navigation_after_completion() {
+        for key in [
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Char('j'),
+        ] {
+            // Arrange
+            let (mut app, _base_dir) =
+                crate::test_support::new_git_test_app_with_mock_tmux_client().await;
+            let request = CreateSessionRequest {
+                inherit_from_session_id: None,
+                mode: CreateSessionMode::Regular,
+                project_id: app.active_project_id(),
+            };
+            let presentation = PresentationState::default();
+            let backend = ratatui::backend::TestBackend::new(100, 30);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            app.start_session_creation(request, None).await;
+            assert!(matches!(app.mode, AppMode::Prompt { .. }));
+            app.mode = AppMode::List;
+
+            // Act
+            handle_key_event(
+                &mut app,
+                &presentation,
+                &mut terminal,
+                KeyEvent::new(key, KeyModifiers::NONE),
+            )
+            .await
+            .expect("list input");
+            let selected_tab = app.tabs.current();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !app.pending_session_creations.is_empty() {
+                    let event = app.next_app_event().await.expect("creation event");
+                    app.apply_app_events(event).await;
+                }
+            })
+            .await
+            .expect("creation should finish");
+
+            // Assert
+            assert!(matches!(app.mode, AppMode::List));
+            assert_eq!(app.tabs.current(), selected_tab);
+            assert_eq!(app.sessions.sessions().len(), 1);
         }
     }
 

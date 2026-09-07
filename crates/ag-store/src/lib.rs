@@ -10,6 +10,7 @@ mod repository;
 mod review;
 mod session;
 mod session_message;
+mod session_preparation;
 mod session_snapshot;
 mod setting;
 mod status;
@@ -43,6 +44,9 @@ pub use session::{
     ForkSessionSnapshot, PersistedSessionCreation, SessionAgentModelRow, SessionDetailRow,
     SessionFocusedReviewRow, SessionListRow, SessionMessageRow, SessionRepository, SessionRow,
     SessionTurnMetadata,
+};
+pub use session_preparation::{
+    SessionPreparationRepository, SessionPreparationRow, SessionPreparationState,
 };
 pub use setting::SettingRepository;
 pub(crate) use setting::SqliteSettingRepository;

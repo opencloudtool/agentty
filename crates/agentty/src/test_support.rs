@@ -606,6 +606,22 @@ async fn new_git_test_app_with_clients_and_pool(
     (app, base_dir, pool)
 }
 
+/// Drives foreground reducers until all tracked workspace setup has completed.
+#[cfg(test)]
+pub(crate) async fn finish_session_creation_tasks(app: &mut App) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !app.pending_session_creations.is_empty() {
+            let event = app
+                .next_app_event()
+                .await
+                .expect("workspace completion event");
+            app.apply_app_events(event).await;
+        }
+    })
+    .await
+    .expect("workspace setup should complete");
+}
+
 /// Builds one git-backed app rooted at a retained temporary directory.
 #[cfg(test)]
 pub(crate) async fn new_git_test_app() -> (App, tempfile::TempDir) {

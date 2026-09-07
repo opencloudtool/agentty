@@ -7,6 +7,8 @@ use rustc_hash::FxHasher;
 /// Stable identity for one replaceable session-output message.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum TransientMessageSlot {
+    /// Durable workspace setup projected into inline session output.
+    WorkspacePreparation,
     /// Focused review loading, result, or failure output.
     Review,
     /// Active agent turn resolving selected forge review comments.

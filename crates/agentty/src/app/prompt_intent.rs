@@ -185,6 +185,37 @@ impl App {
             return PromptWorkflowOutcome::KeepPrompt;
         }
 
+        if session_mode == PromptSessionMode::NewDraft
+            && self
+                .services
+                .db()
+                .sessions()
+                .load_session_preparation(&session_id)
+                .await
+                .is_ok_and(|preparation| preparation.is_some_and(|row| row.prompt.is_some()))
+        {
+            self.append_output_for_session(
+                &session_id,
+                &TranscriptNotice::Error
+                    .format("The staged prompt is already waiting for workspace setup"),
+            )
+            .await;
+            return PromptWorkflowOutcome::KeepPrompt;
+        }
+        if session_mode != PromptSessionMode::NewDraft {
+            match self.queue_preparation_prompt(&session_id, &prompt).await {
+                Ok(true) => return PromptWorkflowOutcome::ShowSession { session_id },
+                Ok(false) => {}
+                Err(error) => {
+                    self.append_output_for_session(
+                        &session_id,
+                        &TranscriptNotice::Error.format(error),
+                    )
+                    .await;
+                    return PromptWorkflowOutcome::KeepPrompt;
+                }
+            }
+        }
         self.auto_address_review_iterations.remove(&session_id);
         self.submit_turn_prompt(session_id.clone(), session_mode, prompt)
             .await;

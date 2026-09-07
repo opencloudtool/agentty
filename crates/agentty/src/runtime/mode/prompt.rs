@@ -467,6 +467,7 @@ fn prompt_context(app: &mut App) -> Option<PromptContext> {
             session.has_staged_drafts(),
         ) {
             (true, true, _) => PromptSessionMode::NewDraft,
+            (true, false, false) if session.transient_messages.get(crate::domain::transient_message::TransientMessageSlot::WorkspacePreparation).is_some() => PromptSessionMode::NewRegular,
             (true, false, false) => PromptSessionMode::NewDeletable,
             (true, false, true) => PromptSessionMode::NewRegular,
             (false, _, _) => PromptSessionMode::Existing,
@@ -761,8 +762,15 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
         return;
     }
 
+    let composer = match &app.mode {
+        AppMode::Prompt {
+            input,
+            attachment_state,
+            ..
+        } => Some((input.clone(), attachment_state.clone())),
+        _ => None,
+    };
     let (prompt, archived_attachments) = take_submitted_turn_prompt(app);
-    app.cleanup_prompt_attachments(archived_attachments).await;
     let outcome = app
         .submit_prompt(PromptSubmission {
             prompt,
@@ -771,6 +779,22 @@ async fn handle_prompt_submit_key(app: &mut App, prompt_context: &PromptContext)
         })
         .await;
 
+    if matches!(outcome, PromptWorkflowOutcome::KeepPrompt) {
+        if let (
+            Some((saved_input, saved_attachments)),
+            AppMode::Prompt {
+                input,
+                attachment_state,
+                ..
+            },
+        ) = (composer, &mut app.mode)
+        {
+            *input = saved_input;
+            *attachment_state = saved_attachments;
+        }
+    } else {
+        app.cleanup_prompt_attachments(archived_attachments).await;
+    }
     apply_prompt_workflow_outcome(app, outcome, None);
 }
 
@@ -4030,6 +4054,20 @@ mod tests {
             assert_eq!(input.cursor, "@src/main.rs".chars().count());
             assert!(at_mention_state.is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn stale_prompt_submission_keeps_the_current_navigation() {
+        // Arrange
+        let (mut app, _directory) = new_test_prompt_app("draft", None).await;
+        let context = prompt_context(&mut app).expect("context");
+        app.mode = AppMode::List;
+
+        // Act
+        handle_prompt_submit_key(&mut app, &context).await;
+
+        // Assert
+        assert!(matches!(app.mode, AppMode::List));
     }
 
     #[tokio::test]

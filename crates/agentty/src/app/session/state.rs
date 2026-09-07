@@ -196,7 +196,17 @@ impl SessionState {
             if let Some((previous_status, transient_messages)) =
                 transient_state_by_session_id.get(&session.id)
             {
+                let preparation = session
+                    .transient_messages
+                    .get(TransientMessageSlot::WorkspacePreparation)
+                    .cloned();
                 session.transient_messages.clone_from(transient_messages);
+                session
+                    .transient_messages
+                    .retract(TransientMessageSlot::WorkspacePreparation);
+                if let Some(preparation) = preparation {
+                    session.transient_messages.upsert(preparation);
+                }
                 session.reconcile_status_transition(*previous_status);
             }
         }

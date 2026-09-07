@@ -185,7 +185,6 @@ impl App {
             pending_project_sync_requests: std::collections::VecDeque::new(),
             pending_focused_review_persistence: std::collections::HashMap::new(),
             pending_session_creations: std::collections::HashMap::new(),
-            interactive_session_creation: None,
             pending_session_diff_requests: std::collections::HashMap::new(),
             projects,
             services,
@@ -443,6 +442,11 @@ impl App {
         git_client: Arc<dyn GitClient>,
         clock: Arc<dyn Clock>,
     ) -> Result<(), AppError> {
+        repositories
+            .sessions()
+            .recover_session_preparations()
+            .await
+            .map_err(Self::startup_recovery_error)?;
         SessionManager::fail_unfinished_operations_from_previous_run(
             repositories,
             base_path,

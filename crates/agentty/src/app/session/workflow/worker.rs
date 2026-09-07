@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use ag_agent as agent;
@@ -120,6 +120,12 @@ pub(super) enum SessionCommand {
 }
 
 impl SessionCommand {
+    /// Identifies the stable handoff whose saved payload belongs to workspace
+    /// preparation until execution starts.
+    pub(super) fn is_preparation_prompt(&self, session_id: &str) -> bool {
+        self.operation_id() == format!("workspace:{session_id}")
+    }
+
     /// Returns the persisted operation identifier for this command.
     fn operation_id(&self) -> &str {
         match self {
@@ -161,8 +167,13 @@ impl SessionCommand {
 /// Worker command paired with its shared queue order when it was submitted
 /// behind active work.
 struct ScheduledSessionCommand {
+    /// Reserves stack branch work until this command is dropped or finishes.
+    preparation_reservation: Option<Arc<()>>,
     command: SessionCommand,
     queued_order: Option<u64>,
+    /// First turns wait until the foreground has persisted their operation
+    /// and published their initial metadata.
+    ready_rx: Option<oneshot::Receiver<()>>,
 }
 
 impl ScheduledSessionCommand {
@@ -175,7 +186,9 @@ impl ScheduledSessionCommand {
     fn immediate(command: SessionCommand) -> Self {
         Self {
             command,
+            preparation_reservation: None,
             queued_order: None,
+            ready_rx: None,
         }
     }
 
@@ -183,7 +196,9 @@ impl ScheduledSessionCommand {
     fn queued(command: SessionCommand, queued_order: u64) -> Self {
         Self {
             command,
+            preparation_reservation: None,
             queued_order: Some(queued_order),
+            ready_rx: None,
         }
     }
 }
@@ -619,6 +634,7 @@ pub(crate) struct SessionWorkerService {
     /// default factory, enabling deterministic command execution without
     /// spawning real provider processes.
     pub(in crate::app::session) test_agent_channels: HashMap<SessionId, Arc<dyn AgentChannel>>,
+    preparation_reservations: HashMap<SessionId, Weak<()>>,
     workers: HashMap<SessionId, SessionWorkerHandle>,
 }
 
@@ -626,9 +642,39 @@ impl SessionWorkerService {
     /// Creates an empty worker service with no active session workers.
     pub(in crate::app::session) fn new() -> Self {
         Self {
+            preparation_reservations: HashMap::new(),
             test_agent_channels: HashMap::new(),
             workers: HashMap::new(),
         }
+    }
+
+    /// Returns whether a saved first turn still owns queued or running work.
+    pub(super) fn has_preparation_reservation(&self, session_id: &str) -> bool {
+        self.preparation_reservations
+            .get(session_id)
+            .is_some_and(|reservation| reservation.strong_count() > 0)
+    }
+
+    /// Claims branch work during the serialized foreground enqueue. The
+    /// command owns the claim, so failed delivery, an abandoned gate, and
+    /// worker rejection all release it without consuming the saved prompt.
+    fn reserve_preparation_command(
+        &mut self,
+        session_id: &SessionId,
+        command: &mut ScheduledSessionCommand,
+    ) {
+        if !command.command.is_preparation_prompt(session_id) {
+            return;
+        }
+        self.preparation_reservations
+            .retain(|_, reservation| reservation.strong_count() > 0);
+        let reservation = self
+            .preparation_reservations
+            .entry(session_id.clone())
+            .or_default();
+        let claim = reservation.upgrade().unwrap_or_else(|| Arc::new(()));
+        *reservation = Arc::downgrade(&claim);
+        command.preparation_reservation = Some(claim);
     }
 
     /// Marks unfinished operations from previous process runs as failed and
@@ -651,16 +697,34 @@ impl SessionWorkerService {
         )
         .await?;
 
-        let interrupted_session_ids: HashSet<String> = unfinished_operations
-            .into_iter()
-            .map(|operation| operation.session_id)
+        let interrupted_session_ids: HashSet<&str> = unfinished_operations
+            .iter()
+            .map(|operation| operation.session_id.as_str())
             .collect();
 
         for session_id in interrupted_session_ids {
+            let unstarted_first_prompt = unfinished_operations
+                .iter()
+                .filter(|operation| operation.session_id == session_id)
+                .all(|operation| {
+                    operation.id == format!("workspace:{session_id}")
+                        && operation.kind == "start_prompt"
+                        && operation.started_at.is_none()
+                })
+                && db
+                    .sessions()
+                    .load_session_preparation(session_id)
+                    .await?
+                    .is_some_and(|preparation| preparation.prompt.is_some());
+            let recovered_status = if unstarted_first_prompt {
+                Status::Draft
+            } else {
+                Status::Review
+            };
             db.sessions()
                 .update_session_status_with_timing_at(
-                    &session_id,
-                    &Status::Review.to_string(),
+                    session_id,
+                    &recovered_status.to_string(),
                     timestamp_seconds,
                 )
                 .await?;
@@ -749,11 +813,13 @@ impl SessionWorkerService {
         }
 
         let worker = self.ensure_session_worker(services, &runtime);
+        let mut scheduled_command = ScheduledSessionCommand::immediate(command);
+        self.reserve_preparation_command(&session_id, &mut scheduled_command);
         self.send_persisted_command(
             services.db().operations(),
             &session_id,
             worker.sender,
-            ScheduledSessionCommand::immediate(command),
+            scheduled_command,
         )
         .await?;
 
@@ -811,6 +877,42 @@ impl SessionWorkerService {
         if let Some(worker) = self.workers.get(session_id) {
             worker.wake();
         }
+    }
+
+    /// Queues a first turn behind a foreground completion gate, then persists
+    /// its operation. Dropping the returned sender skips the turn; sending
+    /// `()` releases it after the foreground metadata is ready.
+    ///
+    /// # Errors
+    /// Returns an error before accepting the turn when delivery or operation
+    /// persistence fails. Failed delivery leaves no operation to recover.
+    async fn enqueue_gated_session_command(
+        &mut self,
+        services: &AppServices,
+        runtime: SessionWorkerRuntime,
+        command: SessionCommand,
+    ) -> Result<oneshot::Sender<()>, SessionError> {
+        let operation_id = command.operation_id().to_string();
+        let operation_kind = command.kind();
+        let worker = self.ensure_session_worker(services, &runtime);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let mut scheduled_command = ScheduledSessionCommand::immediate(command);
+        scheduled_command.ready_rx = Some(ready_rx);
+        self.reserve_preparation_command(&runtime.session_id, &mut scheduled_command);
+        if worker.sender.send(scheduled_command).is_err() {
+            self.workers.remove(&runtime.session_id);
+
+            return Err(SessionError::Workflow(
+                "Session worker is not available".to_string(),
+            ));
+        }
+        services
+            .db()
+            .operations()
+            .insert_session_operation(&operation_id, &runtime.session_id, operation_kind)
+            .await?;
+
+        Ok(ready_tx)
     }
 
     /// Returns an existing session worker sender or creates one lazily.
@@ -952,7 +1054,13 @@ impl SessionWorkerService {
                     continue;
                 };
                 let result = match work {
-                    ScheduledSessionWork::Command(command) => {
+                    ScheduledSessionWork::Command(mut command) => {
+                        let _reservation = command.preparation_reservation.take();
+                        if let Some(ready_rx) = command.ready_rx.take()
+                            && ready_rx.await.is_err()
+                        {
+                            continue;
+                        }
                         Self::process_session_command(&context, &one_shot_client, command.command)
                             .await
                     }
@@ -1043,6 +1151,17 @@ impl SessionWorkerService {
         let operation_id = command.operation_id().to_string();
         let should_skip = if Self::should_skip_worker_command(context, &operation_id).await {
             true
+        } else if command.is_preparation_prompt(&context.session_id)
+            && let SessionCommand::Run { prompt, .. } = &command
+        {
+            match Self::begin_preparation_prompt(context, &operation_id, &prompt.transcript_text())
+                .await
+            {
+                Ok(started) => {
+                    !started || Self::should_skip_worker_command(context, &operation_id).await
+                }
+                Err(error) => return Some(Err(error)),
+            }
         } else {
             // Best-effort: operation tracking metadata is non-critical.
             let _ = context
@@ -1057,6 +1176,16 @@ impl SessionWorkerService {
             Self::complete_skipped_session_command(context, &command);
 
             return None;
+        }
+
+        if command.is_preparation_prompt(&context.session_id)
+            && let SessionCommand::Run {
+                request_kind,
+                prompt,
+                ..
+            } = &command
+        {
+            Self::append_preparation_prompt(context, request_kind, prompt);
         }
 
         if matches!(
@@ -1092,6 +1221,77 @@ impl SessionWorkerService {
         }
 
         Some(result)
+    }
+
+    /// Fails closed if the durable start marker cannot take ownership of the
+    /// saved payload, leaving both prompt and images available for retry.
+    async fn begin_preparation_prompt(
+        context: &SessionWorkerContext,
+        operation_id: &str,
+        transcript_text: &str,
+    ) -> Result<bool, SessionError> {
+        match context
+            .db
+            .sessions()
+            .begin_preparation_prompt_operation(&context.session_id, transcript_text)
+            .await
+        {
+            Ok(started) => {
+                if started {
+                    let _ = context.app_event_tx.send(AppEvent::RefreshSessions);
+                }
+
+                Ok(started)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let _ = context
+                    .db
+                    .operations()
+                    .mark_session_operation_failed(operation_id, &message)
+                    .await;
+                let _ = context
+                    .db
+                    .sessions()
+                    .update_session_preparation(
+                        &context.session_id,
+                        crate::infra::db::SessionPreparationState::Failed,
+                        Some(&message),
+                    )
+                    .await;
+                let _ = context.app_event_tx.send(AppEvent::RefreshSessions);
+
+                Err(error.into())
+            }
+        }
+    }
+
+    /// Publishes the already-persisted prompt to the live transcript without
+    /// writing a second durable row. Initial turns tolerate legacy messages;
+    /// fork replies may legitimately repeat earlier user text.
+    fn append_preparation_prompt(
+        context: &SessionWorkerContext,
+        request_kind: &AgentRequestKind,
+        prompt: &TurnPrompt,
+    ) {
+        let text = ag_session::stored_message_content(
+            SessionMessageKind::UserPrompt,
+            &prompt.transcript_text(),
+        );
+        let recorded = matches!(request_kind, AgentRequestKind::SessionStart)
+            && context.transcript.lock().is_ok_and(|transcript| {
+                transcript.messages().iter().any(|message| {
+                    message.kind == SessionMessageKind::UserPrompt && message.content == text
+                })
+            });
+        if !recorded && let Ok(mut transcript) = context.transcript.lock() {
+            transcript.append_message(SessionMessageKind::UserPrompt, &text);
+        }
+        SessionTaskService::emit_session_updated(
+            &context.app_event_tx,
+            &context.session_update_versions,
+            &context.session_id,
+        );
     }
 
     /// Resolves external observers when a queued command is canceled or
@@ -1428,6 +1628,25 @@ impl SessionManager {
 
         self.worker_service_mut()
             .enqueue_session_command(services, runtime, command)
+            .await
+    }
+
+    /// Queues and persists a first turn without letting the worker run until
+    /// the caller publishes the initial metadata.
+    ///
+    /// # Errors
+    /// Returns an error when runtime lookup, worker delivery, or operation
+    /// persistence fails.
+    pub(super) async fn enqueue_gated_session_command(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+        command: SessionCommand,
+    ) -> Result<oneshot::Sender<()>, SessionError> {
+        let runtime = self.session_worker_runtime_or_err(services, session_id)?;
+
+        self.worker_service_mut()
+            .enqueue_gated_session_command(services, runtime, command)
             .await
     }
 
@@ -2177,6 +2396,1334 @@ mod tests {
             AppEvent::SessionQueuedSyncResolved { session_id } if session_id == "sess1"
         ));
         assert!(app_event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_after_preparation_marker_skips_start_and_fork_reply() {
+        for (status, request_kind) in [
+            (Status::Draft, AgentRequestKind::SessionStart),
+            (Status::Review, AgentRequestKind::SessionResume),
+        ] {
+            // Arrange
+            let (mut app, _directory) = crate::test_support::new_git_test_app().await;
+            let session_id = app.create_draft_session().await.expect("draft");
+            app.services
+                .db()
+                .sessions()
+                .insert_session_preparation(&session_id, "main")
+                .await
+                .expect("preparation");
+            SessionManager::prepare_reserved_session(&app.services, &session_id)
+                .await
+                .expect("workspace");
+            crate::test_support::set_session_status_for_test(&mut app, &session_id, status);
+            let prompt = TurnPrompt::from_text("saved first turn".to_string());
+            app.services
+                .db()
+                .sessions()
+                .save_preparation_prompt(
+                    &session_id,
+                    &serde_json::to_string(&prompt).expect("JSON"),
+                )
+                .await
+                .expect("save");
+            let operation_id = format!("workspace:{session_id}");
+            let context = preparation_test_worker_context(&app, &session_id);
+            let command = SessionCommand::Run {
+                operation_id: operation_id.clone(),
+                request_kind,
+                replay_transcript: None,
+                prompt: prompt.clone(),
+                turn_metadata: TurnMetadata {
+                    published_upstream_ref: None,
+                    review_comment_thread_ids: Vec::new(),
+                    session_agent: context.session_agent,
+                },
+            };
+            app.services
+                .db()
+                .operations()
+                .insert_session_operation(&operation_id, &session_id, command.kind())
+                .await
+                .expect("queue");
+            // Act: cancel between the committed marker and the worker's
+            // second skip check, before it publishes InProgress.
+            assert!(
+                SessionWorkerService::begin_preparation_prompt(
+                    &context,
+                    &operation_id,
+                    &prompt.transcript_text(),
+                )
+                .await
+                .expect("execution marker")
+            );
+            assert_eq!(*context.status.lock().expect("status"), status);
+            app.cancel_session(&session_id).await.expect("cancel");
+            let cancel_requested = context
+                .db
+                .operations()
+                .is_cancel_requested_for_operation(&operation_id)
+                .await
+                .expect("cancel flag");
+            let skip =
+                SessionWorkerService::should_skip_worker_command(&context, &operation_id).await;
+            let result = SessionWorkerService::process_session_command(
+                &context,
+                &auto_commit_one_shot_client(),
+                command,
+            )
+            .await;
+            app.wait_for_background_cleanup_tasks().await;
+
+            // Assert
+            assert!(skip, "the post-marker check must stop provider execution");
+            assert!(result.is_none());
+            assert!(cancel_requested);
+            assert!(
+                !context
+                    .db
+                    .operations()
+                    .is_session_operation_unfinished(&operation_id)
+                    .await
+                    .expect("operation finished")
+            );
+            assert!(context.cancel_token.lock().expect("token").is_cancelled());
+            assert_eq!(*context.status.lock().expect("status"), Status::Canceled);
+            assert!(!context.folder.exists());
+        }
+    }
+
+    /// Binds a worker to the same persistence and live handles as cancellation.
+    fn preparation_test_worker_context(
+        app: &crate::app::App,
+        session_id: &str,
+    ) -> SessionWorkerContext {
+        let runtime = app
+            .sessions
+            .session_worker_runtime_or_err(&app.services, session_id)
+            .expect("runtime");
+
+        SessionWorkerContext {
+            app_event_tx: app.services.event_sender(),
+            branch_operation_lock: runtime.branch_operation_lock,
+            cancel_token: runtime.cancel_token,
+            channel: Arc::new(MockAgentChannel::new()),
+            child_pid: runtime.child_pid,
+            clock: app.services.clock(),
+            db: app.services.db().clone(),
+            folder: runtime.folder,
+            fs_client: app.services.fs_client(),
+            git_client: app.services.git_client(),
+            personality_catalog_client: runtime.personality_catalog_client,
+            queued_messages: runtime.queued_messages,
+            review_request_client: runtime.review_request_client,
+            session_update_versions: runtime.session_update_versions,
+            session_id: runtime.session_id,
+            session_agent: runtime.session_agent,
+            status: runtime.status,
+            transcript: runtime.transcript,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_preparation_transcript_recovers_initial_prompt_but_keeps_repeated_fork_replies() {
+        // Arrange
+        let (context, _db, _queue, _directory) =
+            queue_test_context(MockAgentChannel::new(), VecDeque::new(), Status::Draft).await;
+        let prompt = TurnPrompt::from_text("repeat this prompt".to_string());
+
+        // Act: recover an older initial transcript, then repeat it in a fork.
+        SessionWorkerService::append_preparation_prompt(
+            &context,
+            &AgentRequestKind::SessionStart,
+            &prompt,
+        );
+        SessionWorkerService::append_preparation_prompt(
+            &context,
+            &AgentRequestKind::SessionStart,
+            &prompt,
+        );
+        SessionWorkerService::append_preparation_prompt(
+            &context,
+            &AgentRequestKind::SessionResume,
+            &prompt,
+        );
+        let transcript = context.transcript.lock().expect("transcript");
+        let messages = transcript.messages();
+
+        // Assert
+        assert_eq!(messages.len(), 2);
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.kind == SessionMessageKind::UserPrompt
+                    && message.content == prompt.text)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_restart_retains_unreleased_first_prompt_and_reclaims_its_operation() {
+        // Arrange
+        let (mut app, _directory) = crate::test_support::new_git_test_app().await;
+        let session_id = app.create_session().await.expect("session");
+        let (_images, prompt) = managed_first_prompt();
+        app.services
+            .db()
+            .sessions()
+            .save_preparation_prompt(&session_id, &serde_json::to_string(&prompt).expect("JSON"))
+            .await
+            .expect("save");
+        let mut command = resume_command(&format!("workspace:{session_id}"));
+        if let SessionCommand::Run { request_kind, .. } = &mut command {
+            *request_kind = AgentRequestKind::SessionStart;
+        }
+        let gate = app
+            .sessions
+            .enqueue_gated_session_command(&app.services, &session_id, command)
+            .await
+            .expect("queue behind gate");
+        app.services
+            .db()
+            .sessions()
+            .update_session_status_with_timing_at(&session_id, "InProgress", 0)
+            .await
+            .expect("legacy foreground status");
+
+        // Act: restart after persistence, before releasing the worker gate.
+        drop(gate);
+        app.services
+            .db()
+            .sessions()
+            .recover_session_preparations()
+            .await
+            .expect("recover saved prompt");
+        SessionWorkerService::fail_unfinished_operations_from_previous_run_at(
+            app.services.db(),
+            app.services.base_path(),
+            app.services.git_client(),
+            123,
+        )
+        .await
+        .expect("recover operations");
+        let row = app
+            .services
+            .db()
+            .sessions()
+            .load_session(&session_id)
+            .await
+            .expect("load")
+            .expect("session");
+        let preparation = app
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(&session_id)
+            .await
+            .expect("load")
+            .expect("preparation");
+
+        // Assert
+        assert_eq!(row.status, "Draft");
+        assert!(preparation.prompt.is_some());
+        assert!(prompt.attachments[0].local_image_path.exists());
+        app.services
+            .db()
+            .sessions()
+            .reclaim_preparation_prompt_operation(&session_id)
+            .await
+            .expect("reclaim unstarted handoff");
+        assert!(
+            app.services
+                .db()
+                .sessions()
+                .preparation_prompt_operation_status(&session_id)
+                .await
+                .expect("operation")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_preparation_acceptance_refreshes_the_live_draft_flag() {
+        // Arrange
+        let (mut app, _directory) = crate::test_support::new_git_test_app().await;
+        let session_id = app.create_draft_session().await.expect("draft");
+        app.stage_draft_message(&session_id, "saved draft")
+            .await
+            .expect("stage");
+        let sessions = app.services.db().sessions();
+        sessions
+            .insert_session_preparation(&session_id, "main")
+            .await
+            .expect("prepare");
+        sessions
+            .save_preparation_prompt(&session_id, "saved draft")
+            .await
+            .expect("save");
+        sessions
+            .update_session_preparation(
+                &session_id,
+                crate::infra::db::SessionPreparationState::Ready,
+                None,
+            )
+            .await
+            .expect("ready");
+        let operation_id = format!("workspace:{session_id}");
+        app.services
+            .db()
+            .operations()
+            .insert_session_operation(&operation_id, &session_id, "start_prompt")
+            .await
+            .expect("queue");
+        let context = preparation_test_worker_context(&app, &session_id);
+        assert!(
+            app.sessions
+                .session_for_id(&session_id)
+                .expect("draft")
+                .is_draft_session()
+        );
+
+        // Act
+        assert!(
+            SessionWorkerService::begin_preparation_prompt(&context, &operation_id, "saved draft")
+                .await
+                .expect("accept")
+        );
+        app.process_pending_app_events().await;
+
+        // Assert
+        assert!(
+            !app.sessions
+                .session_for_id(&session_id)
+                .expect("started draft")
+                .is_draft_session()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_preparation_marker_failure_preserves_prompt_and_never_runs_the_agent() {
+        // Arrange, Act, Assert
+        for trigger in [
+            "CREATE TRIGGER reject_transfer BEFORE UPDATE OF prompt ON session_preparation WHEN \
+             NEW.prompt IS NULL BEGIN SELECT RAISE(ABORT, 'transfer rejected'); END",
+            "CREATE TRIGGER reject_transcript BEFORE INSERT ON session_message BEGIN SELECT \
+             RAISE(ABORT, 'transcript rejected'); END",
+            "CREATE TRIGGER reject_draft_clear BEFORE UPDATE OF is_draft ON session WHEN \
+             NEW.is_draft = 0 BEGIN SELECT RAISE(ABORT, 'draft clear rejected'); END",
+        ] {
+            assert_preparation_publication_failure_is_retryable(trigger).await;
+        }
+    }
+
+    /// Exercises publication transaction failures and a retry after the
+    /// stacked parent becomes active, without allowing provider work.
+    async fn assert_preparation_publication_failure_is_retryable(trigger: &'static str) {
+        // Arrange
+        let (mut app, _directory, pool) = crate::test_support::new_git_test_app_with_pool().await;
+        let parent_id = app.create_session().await.expect("parent");
+        crate::test_support::set_session_status_for_test(&mut app, &parent_id, Status::Review);
+        let session_id = app
+            .create_stacked_draft_session(&parent_id)
+            .await
+            .expect("child");
+        let (_images, prompt) = managed_first_prompt();
+        app.stage_draft_message(&session_id, prompt.text.as_str())
+            .await
+            .expect("stage");
+        app.services
+            .db()
+            .sessions()
+            .insert_session_preparation(&session_id, "main")
+            .await
+            .expect("prepare");
+        app.services
+            .db()
+            .sessions()
+            .save_preparation_prompt(&session_id, &serde_json::to_string(&prompt).expect("JSON"))
+            .await
+            .expect("save");
+        app.sessions
+            .worker_service_mut()
+            .test_agent_channels
+            .insert(session_id.clone().into(), Arc::new(MockAgentChannel::new()));
+        sqlx::query(trigger).execute(&pool).await.expect("trigger");
+
+        // Act
+        app.retry_workspace_preparation(&session_id)
+            .await
+            .expect("submit");
+        crate::test_support::finish_session_creation_tasks(&mut app).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let row = app
+                    .services
+                    .db()
+                    .sessions()
+                    .load_session_preparation(&session_id)
+                    .await
+                    .expect("load")
+                    .expect("preparation");
+                if row.state == crate::infra::db::SessionPreparationState::Failed {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("worker rejects start");
+
+        // Assert
+        let session = app.sessions.session_for_id(&session_id).expect("session");
+        assert_eq!(session.status, Status::Draft);
+        assert!(session.is_draft_session());
+        assert!(
+            app.services
+                .db()
+                .sessions()
+                .load_session(&session_id)
+                .await
+                .expect("load")
+                .expect("row")
+                .is_draft
+        );
+        assert!(prompt.attachments[0].local_image_path.exists());
+        assert_eq!(
+            app.services
+                .db()
+                .sessions()
+                .load_session_messages(&session_id)
+                .await
+                .expect("messages")
+                .len(),
+            0
+        );
+
+        assert_preparation_retry_rejects_active_parent(&mut app, &session_id, &parent_id).await;
+    }
+
+    /// Retries saved work after its parent resumes, checking the gate before
+    /// the worker can attempt the failed transaction again.
+    async fn assert_preparation_retry_rejects_active_parent(
+        app: &mut crate::app::App,
+        session_id: &str,
+        parent_id: &str,
+    ) {
+        // Act: retry must still enforce the stack gate after a failed marker.
+        crate::test_support::set_session_status_for_test(app, parent_id, Status::InProgress);
+        app.retry_workspace_preparation(session_id)
+            .await
+            .expect("retry");
+        crate::test_support::finish_session_creation_tasks(app).await;
+        let preparation = app
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(session_id)
+            .await
+            .expect("load")
+            .expect("preparation");
+
+        // Assert
+        assert_eq!(
+            preparation.state,
+            crate::infra::db::SessionPreparationState::Failed
+        );
+        assert!(
+            preparation
+                .error
+                .expect("parent gate")
+                .contains("parent stack")
+        );
+        assert!(preparation.prompt.is_some());
+        assert!(
+            app.services
+                .db()
+                .sessions()
+                .preparation_prompt_operation_status(session_id)
+                .await
+                .expect("operation")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_queued_saved_child_reserves_stack_until_worker_rejects_acceptance() {
+        // Arrange
+        let (mut app, _directory, pool) = crate::test_support::new_git_test_app_with_pool().await;
+        let parent_id = app.create_session().await.expect("parent");
+        crate::test_support::set_session_status_for_test(&mut app, &parent_id, Status::Review);
+
+        // Act: pause the worker after foreground enqueue, before acceptance.
+        let (child_id, receiver) = queue_saved_stacked_prompt(&mut app, &parent_id).await;
+
+        // Assert: the child is still Draft but the parent cannot claim branch
+        // work.
+        assert_eq!(
+            app.sessions
+                .session_for_id(&child_id)
+                .expect("child")
+                .status,
+            Status::Draft
+        );
+        assert!(!app.sessions.can_reply_to_session_in_stack(&parent_id));
+        assert!(!app.sessions.can_rebase_session_branch_in_stack(&parent_id));
+        assert!(!app.sessions.can_merge_session_branch_in_stack(&parent_id));
+        assert!(!app.sessions.can_mutate_session_branch_in_stack(&parent_id));
+        assert!(!app.sessions.can_start_staged_session(&child_id));
+        assert!(
+            !app.sessions
+                .reply(&app.services, &parent_id, "competing turn")
+                .await
+        );
+
+        // Act: let the real worker reject the durable transfer.
+        sqlx::query(
+            "CREATE TRIGGER reject_transfer BEFORE UPDATE OF prompt ON session_preparation WHEN \
+             NEW.prompt IS NULL BEGIN SELECT RAISE(ABORT, 'transfer rejected'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("reject acceptance");
+        SessionWorkerService::spawn_session_worker(
+            preparation_test_worker_context(&app, &child_id),
+            auto_commit_one_shot_client(),
+            Arc::default(),
+            receiver,
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while app
+                .sessions
+                .worker_service
+                .has_preparation_reservation(&child_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("worker releases reservation");
+
+        // Assert: rejection releases branch work without consuming the prompt.
+        assert!(app.sessions.can_reply_to_session_in_stack(&parent_id));
+        assert!(app.sessions.can_start_staged_session(&child_id));
+        let preparation = app
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(&child_id)
+            .await
+            .expect("load")
+            .expect("preparation");
+        assert_eq!(
+            preparation.state,
+            crate::infra::db::SessionPreparationState::Failed
+        );
+        assert!(preparation.prompt.is_some());
+        assert!(
+            app.sessions
+                .session_for_id(&child_id)
+                .expect("child")
+                .is_draft_session()
+        );
+        assert_eq!(
+            app.services
+                .db()
+                .sessions()
+                .load_session_messages(&child_id)
+                .await
+                .expect("messages"),
+            []
+        );
+    }
+
+    #[tokio::test]
+    async fn test_repeat_staged_start_preserves_queued_first_prompt_acceptance() {
+        // Arrange
+        let (mut app, _directory) = crate::test_support::new_git_test_app().await;
+        let parent_id = app.create_session().await.expect("parent");
+        crate::test_support::set_session_status_for_test(&mut app, &parent_id, Status::Review);
+        let (child_id, mut receiver) = queue_saved_stacked_prompt(&mut app, &parent_id).await;
+        let original = app
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(&child_id)
+            .await
+            .expect("load")
+            .expect("preparation");
+
+        // Act: repeat the public start action and the direct retry while
+        // the first command remains queued and the session remains Draft.
+        let repeated_start = app.start_staged_session(&child_id).await;
+        let repeated_retry = app.retry_workspace_preparation(&child_id).await;
+        let after_retry = app
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(&child_id)
+            .await
+            .expect("load")
+            .expect("preparation");
+
+        // Assert
+        assert!(repeated_start.is_err());
+        assert!(
+            repeated_retry
+                .expect_err("queued retry")
+                .to_string()
+                .contains("already queued")
+        );
+        assert_eq!(
+            original.state,
+            crate::infra::db::SessionPreparationState::Ready
+        );
+        assert!(original.prompt.is_some());
+        assert_eq!(after_retry.state, original.state);
+        assert_eq!(after_retry.prompt, original.prompt);
+        assert_eq!(after_retry.error, original.error);
+        assert!(!app.sessions.can_start_staged_session(&child_id));
+
+        // Act: the original worker can still atomically accept its saved
+        // prompt after both rejected repeats.
+        let mut command = receiver.try_recv().expect("original command");
+        command
+            .ready_rx
+            .take()
+            .expect("gate")
+            .await
+            .expect("released");
+        let context = preparation_test_worker_context(&app, &child_id);
+        let accepted = SessionWorkerService::begin_preparation_prompt(
+            &context,
+            command.command.operation_id(),
+            "saved child prompt",
+        )
+        .await
+        .expect("accept original");
+        let after_acceptance = app
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(&child_id)
+            .await
+            .expect("load")
+            .expect("preparation");
+
+        // Assert
+        assert!(accepted);
+        assert!(after_acceptance.prompt.is_none());
+        assert!(
+            receiver.try_recv().is_err(),
+            "only the original turn was queued"
+        );
+        assert_eq!(
+            app.services
+                .db()
+                .sessions()
+                .load_session_messages(&child_id)
+                .await
+                .expect("messages")
+                .len(),
+            1
+        );
+    }
+
+    /// Captures a saved child's first turn before the worker accepts it.
+    async fn queue_saved_stacked_prompt(
+        app: &mut crate::app::App,
+        parent_id: &str,
+    ) -> (String, mpsc::UnboundedReceiver<ScheduledSessionCommand>) {
+        let child_id = app
+            .create_stacked_draft_session(parent_id)
+            .await
+            .expect("child");
+        app.stage_draft_message(&child_id, "saved child prompt")
+            .await
+            .expect("stage");
+        app.services
+            .db()
+            .sessions()
+            .insert_session_preparation(&child_id, "main")
+            .await
+            .expect("prepare");
+        app.services
+            .db()
+            .sessions()
+            .save_preparation_prompt(
+                &child_id,
+                &serde_json::to_string(&TurnPrompt::from_text("saved child prompt".to_string()))
+                    .expect("JSON"),
+            )
+            .await
+            .expect("save");
+        let (sender, receiver) = mpsc::unbounded_channel();
+        app.sessions.worker_service_mut().workers.insert(
+            child_id.clone().into(),
+            SessionWorkerHandle {
+                queued_work_sequence: Arc::default(),
+                sender,
+                wakeup: Arc::default(),
+            },
+        );
+
+        app.retry_workspace_preparation(&child_id)
+            .await
+            .expect("submit");
+        crate::test_support::finish_session_creation_tasks(app).await;
+
+        (child_id, receiver)
+    }
+
+    #[test]
+    fn test_preparation_reservation_tracks_command_lifetime_and_overlapping_claims() {
+        // Arrange
+        let mut service = SessionWorkerService::new();
+        let id = SessionId::from("child");
+        let mut first = ScheduledSessionCommand::immediate(resume_command("workspace:child"));
+        let mut second = ScheduledSessionCommand::immediate(resume_command("workspace:child"));
+        let mut ordinary = ScheduledSessionCommand::immediate(resume_command("ordinary"));
+
+        // Act
+        service.reserve_preparation_command(&id, &mut ordinary);
+        service.reserve_preparation_command(&id, &mut first);
+        service.reserve_preparation_command(&id, &mut second);
+        drop(first);
+
+        // Assert
+        assert!(ordinary.preparation_reservation.is_none());
+        assert!(service.has_preparation_reservation(&id));
+
+        // Act: abandoning the last queued command releases the claim.
+        drop(second);
+
+        // Assert
+        assert!(!service.has_preparation_reservation(&id));
+
+        // Act: retry after an abandoned command.
+        let mut retry = ScheduledSessionCommand::immediate(resume_command("workspace:child"));
+        service.reserve_preparation_command(&id, &mut retry);
+
+        // Assert
+        assert!(service.has_preparation_reservation(&id));
+    }
+
+    #[tokio::test]
+    async fn test_first_prompt_handoff_preserves_a_terminal_status() {
+        // Arrange
+        let (mut app, _directory) = crate::test_support::new_git_test_app().await;
+        let session_id = app.create_session().await.expect("session");
+        crate::test_support::set_session_status_for_test(&mut app, &session_id, Status::Done);
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        app.sessions.worker_service_mut().workers.insert(
+            session_id.clone().into(),
+            SessionWorkerHandle {
+                queued_work_sequence: Arc::default(),
+                sender,
+                wakeup: Arc::default(),
+            },
+        );
+
+        // Act: a terminal state must not be overwritten by foreground setup.
+        app.sessions
+            .start_session(&app.services, &session_id, "late first prompt")
+            .await
+            .expect("handoff");
+        let command = receiver.try_recv().expect("queued command");
+        command.ready_rx.expect("gate").await.expect("released");
+        app.sessions.sync_from_handles();
+
+        // Assert
+        assert_eq!(
+            app.sessions
+                .session_for_id(&session_id)
+                .expect("session")
+                .status,
+            Status::Done
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_session_turn_keeps_questions_and_status_before_provider_work() {
+        // Arrange
+        let started = Arc::new(Notify::new());
+        let started_for_agent = Arc::clone(&started);
+        let mut channel = MockAgentChannel::new();
+        channel
+            .expect_run_turn()
+            .once()
+            .returning(move |_, request, _| {
+                assert_eq!(request.request_kind, AgentRequestKind::FocusedReview);
+                started_for_agent.notify_one();
+
+                Box::pin(std::future::pending())
+            });
+        let (context, db, _queue, _directory) =
+            queue_test_context(channel, VecDeque::new(), Status::Question).await;
+        db.sessions()
+            .update_session_questions("sess1", "retained questions")
+            .await
+            .expect("questions");
+
+        // Act
+        let turn = run_channel_turn(
+            &context,
+            auto_commit_one_shot_client(),
+            default_turn_metadata(),
+            AgentRequestKind::FocusedReview,
+            None,
+            TurnPrompt::from_text("review this change".to_string()),
+        );
+        tokio::pin!(turn);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                () = started.notified() => {}
+                result = &mut turn => panic!("turn ended before provider work: {result:?}"),
+            }
+        })
+        .await
+        .expect("provider must start");
+
+        // Assert
+        assert_eq!(*context.status.lock().expect("status"), Status::Question);
+        let session = db
+            .sessions()
+            .load_session("sess1")
+            .await
+            .expect("load")
+            .expect("row");
+        assert_eq!(session.questions.as_deref(), Some("retained questions"));
+    }
+
+    /// Creates a retained prompt image under the production cleanup boundary.
+    fn managed_first_prompt() -> (tempfile::TempDir, TurnPrompt) {
+        let managed_tmp = crate::app::agentty_home().join("tmp");
+        std::fs::create_dir_all(&managed_tmp).expect("attachment root");
+        let images = tempfile::tempdir_in(managed_tmp).expect("attachment directory");
+        let image_directory = images.path().join("images");
+        std::fs::create_dir(&image_directory).expect("managed image directory");
+        let image_path = image_directory.join("image.png");
+        std::fs::write(&image_path, b"retained image").expect("attachment");
+        let mut prompt = TurnPrompt::from_text("saved first prompt [Image #1]".to_string());
+        prompt.attachments.push(TurnPromptAttachment {
+            local_image_path: image_path,
+            placeholder: "[Image #1]".to_string(),
+        });
+
+        (images, prompt)
+    }
+
+    #[tokio::test]
+    async fn test_unsaved_first_prompt_cleans_attachments_when_handoff_fails() {
+        // Arrange
+        let (mut app, _directory, pool) = crate::test_support::new_git_test_app_with_pool().await;
+        let session_id = app.create_session().await.expect("session");
+        let (_images, prompt) = managed_first_prompt();
+        let image_path = prompt.attachments[0].local_image_path.clone();
+        sqlx::query(
+            "CREATE TRIGGER reject_start BEFORE INSERT ON session_operation BEGIN SELECT \
+             RAISE(ABORT, 'handoff rejected'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("reject operation insertion");
+
+        // Act
+        let result = app.start_session(&session_id, prompt).await;
+
+        // Assert
+        assert!(
+            result
+                .expect_err("handoff should fail")
+                .to_string()
+                .contains("handoff rejected")
+        );
+        assert!(
+            !image_path.exists(),
+            "unsaved attachments have no retry owner"
+        );
+        assert_eq!(
+            app.sessions
+                .session_for_id(&session_id)
+                .expect("session")
+                .status,
+            Status::Draft
+        );
+    }
+
+    #[tokio::test]
+    async fn test_saved_first_prompt_retries_failed_handoffs_without_losing_attachments() {
+        for (initial_status, reject_delivery) in [
+            (Status::Draft, false),
+            (Status::Draft, true),
+            (Status::Review, false),
+            (Status::Review, true),
+        ] {
+            // Arrange
+            let (mut app, _directory, pool) =
+                crate::test_support::new_git_test_app_with_pool().await;
+            let session_id = app.create_session().await.expect("session");
+            crate::test_support::set_session_status_for_test(&mut app, &session_id, initial_status);
+            app.services
+                .db()
+                .sessions()
+                .update_session_status_with_timing_at(&session_id, &initial_status.to_string(), 0)
+                .await
+                .expect("persist status");
+            let (_images, prompt) = managed_first_prompt();
+            let prompt_json = serde_json::to_string(&prompt).expect("prompt JSON");
+            app.services
+                .db()
+                .sessions()
+                .save_preparation_prompt(&session_id, &prompt_json)
+                .await
+                .expect("save prompt");
+            let rejected_receiver =
+                inject_handoff_failure(&mut app, &pool, &session_id, reject_delivery).await;
+
+            // Act
+            app.retry_workspace_preparation(&session_id)
+                .await
+                .expect("first attempt");
+            crate::test_support::finish_session_creation_tasks(&mut app).await;
+
+            // Assert
+            assert_first_prompt_remains_retryable(
+                &app,
+                &pool,
+                &session_id,
+                &prompt,
+                initial_status,
+            )
+            .await;
+            if let Some(mut receiver) = rejected_receiver {
+                if initial_status == Status::Draft {
+                    let rejected = receiver.try_recv().expect("gated command");
+                    assert!(rejected.ready_rx.expect("gate").await.is_err());
+                } else {
+                    assert!(receiver.try_recv().is_err());
+                }
+                sqlx::query("DROP TRIGGER reject_start")
+                    .execute(&pool)
+                    .await
+                    .expect("restore persistence");
+            }
+
+            // Act: retry through the same setup action used by the UI.
+            let (sender, mut receiver) = mpsc::unbounded_channel();
+            app.sessions.worker_service_mut().workers.insert(
+                session_id.clone().into(),
+                SessionWorkerHandle {
+                    queued_work_sequence: Arc::default(),
+                    sender,
+                    wakeup: Arc::default(),
+                },
+            );
+            app.retry_workspace_preparation(&session_id)
+                .await
+                .expect("retry");
+            crate::test_support::finish_session_creation_tasks(&mut app).await;
+            let accepted = receiver.try_recv().expect("accepted first turn");
+
+            // Assert
+            if let Some(ready_rx) = accepted.ready_rx {
+                ready_rx.await.expect("foreground released worker");
+            }
+            let expected_kind = if initial_status == Status::Draft {
+                AgentRequestKind::SessionStart
+            } else {
+                AgentRequestKind::SessionResume
+            };
+            assert!(matches!(accepted.command, SessionCommand::Run {
+                request_kind, prompt: accepted_prompt, ..
+            } if accepted_prompt == prompt && request_kind == expected_kind));
+            assert!(
+                receiver.try_recv().is_err(),
+                "retry queues exactly one turn"
+            );
+            assert_first_prompt_was_accepted(&app, &session_id, &prompt, initial_status).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fork_retry_replays_history_after_insertion_or_delivery_failure() {
+        for reject_delivery in [false, true] {
+            // Arrange
+            let (mut app, _directory, pool) =
+                crate::test_support::new_git_test_app_with_pool().await;
+            let session_id = prepare_fork_with_saved_reply(&mut app).await;
+            let rejected_receiver =
+                inject_handoff_failure(&mut app, &pool, &session_id, reject_delivery).await;
+
+            // Act
+            app.retry_workspace_preparation(&session_id)
+                .await
+                .expect("first attempt");
+            crate::test_support::finish_session_creation_tasks(&mut app).await;
+
+            // Assert
+            assert!(app.sessions.should_replay_history(&session_id));
+            if let Some(mut receiver) = rejected_receiver {
+                assert!(receiver.try_recv().is_err());
+                sqlx::query("DROP TRIGGER reject_start")
+                    .execute(&pool)
+                    .await
+                    .expect("restore insertion");
+            }
+
+            // Act
+            let (command, _receiver) = capture_prepared_fork_reply(&mut app, &session_id).await;
+
+            // Assert
+            assert_fork_history_replayed(&command);
+            assert!(!app.sessions.should_replay_history(&session_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fork_retry_replays_history_after_worker_acceptance_failure_only_once() {
+        // Arrange
+        let (mut app, _directory, pool) = crate::test_support::new_git_test_app_with_pool().await;
+        let session_id = prepare_fork_with_saved_reply(&mut app).await;
+        let (command, _receiver) = capture_prepared_fork_reply(&mut app, &session_id).await;
+        assert_fork_history_replayed(&command);
+        assert!(!app.sessions.should_replay_history(&session_id));
+        sqlx::query(
+            "CREATE TRIGGER reject_transfer BEFORE UPDATE OF prompt ON session_preparation WHEN \
+             NEW.prompt IS NULL BEGIN SELECT RAISE(ABORT, 'transfer rejected'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("reject acceptance");
+        let context = preparation_test_worker_context(&app, &session_id);
+
+        // Act
+        let rejected = SessionWorkerService::begin_preparation_prompt(
+            &context,
+            command.operation_id(),
+            "Continue the copied conversation",
+        )
+        .await;
+        sqlx::query("DROP TRIGGER reject_transfer")
+            .execute(&pool)
+            .await
+            .expect("restore acceptance");
+        let (retry, mut receiver) = capture_prepared_fork_reply(&mut app, &session_id).await;
+
+        // Assert
+        assert!(rejected.is_err());
+        assert_fork_history_replayed(&retry);
+
+        // Act: after durable acceptance, an ordinary follow-up must not replay
+        // again.
+        assert!(
+            SessionWorkerService::begin_preparation_prompt(
+                &context,
+                retry.operation_id(),
+                "Continue the copied conversation"
+            )
+            .await
+            .expect("accept retry")
+        );
+        app.services
+            .db()
+            .operations()
+            .mark_session_operation_done(retry.operation_id())
+            .await
+            .expect("finish reply");
+        assert!(
+            app.sessions
+                .reply(&app.services, &session_id, "Next reply")
+                .await
+        );
+        let following = receiver.try_recv().expect("following reply").command;
+
+        // Assert
+        assert!(matches!(
+            following,
+            SessionCommand::Run {
+                replay_transcript: None,
+                ..
+            }
+        ));
+    }
+
+    /// Creates a real fork with copied history on a transport that requires
+    /// explicit one-time replay, then saves its first reply for preparation.
+    async fn prepare_fork_with_saved_reply(app: &mut crate::app::App) -> String {
+        let source_id = app.create_session().await.expect("source");
+        app.set_session_model(
+            &source_id,
+            AgentSelection::new(AgentKind::Claude, AgentModel::ClaudeSonnet5),
+        )
+        .await
+        .expect("non-app-server model");
+        assert!(!agent::transport_mode(AgentKind::Claude).uses_app_server());
+        for (kind, content) in [
+            (SessionMessageKind::UserPrompt, "Original source question"),
+            (SessionMessageKind::AssistantAnswer, "Copied source answer"),
+        ] {
+            app.services
+                .db()
+                .sessions()
+                .append_session_message(&source_id, kind, content)
+                .await
+                .expect("source history");
+        }
+        crate::test_support::set_session_status_for_test(app, &source_id, Status::Review);
+        let session_id = app.fork_session(&source_id).await.expect("fork");
+        crate::test_support::finish_session_creation_tasks(app).await;
+        let prompt = TurnPrompt::from_text("Continue the copied conversation".to_string());
+        app.services
+            .db()
+            .sessions()
+            .save_preparation_prompt(&session_id, &serde_json::to_string(&prompt).expect("JSON"))
+            .await
+            .expect("save reply");
+
+        session_id
+    }
+
+    /// Captures the actual command emitted by the saved-prompt retry path.
+    async fn capture_prepared_fork_reply(
+        app: &mut crate::app::App,
+        session_id: &str,
+    ) -> (
+        SessionCommand,
+        mpsc::UnboundedReceiver<ScheduledSessionCommand>,
+    ) {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        app.sessions.worker_service_mut().workers.insert(
+            session_id.into(),
+            SessionWorkerHandle {
+                queued_work_sequence: Arc::default(),
+                sender,
+                wakeup: Arc::default(),
+            },
+        );
+        app.retry_workspace_preparation(session_id)
+            .await
+            .expect("retry");
+        crate::test_support::finish_session_creation_tasks(app).await;
+        let command = receiver.try_recv().expect("saved fork reply").command;
+        assert!(receiver.try_recv().is_err(), "only one turn is queued");
+
+        (command, receiver)
+    }
+
+    /// Checks both sides of the frozen source conversation reach the worker.
+    fn assert_fork_history_replayed(command: &SessionCommand) {
+        assert!(matches!(command, SessionCommand::Run {
+            request_kind: AgentRequestKind::SessionResume,
+            replay_transcript: Some(history), ..
+        } if history.contains("Original source question") && history.contains("Copied source answer") && !history.contains("Continue the copied conversation")));
+    }
+
+    /// Injects either operation insertion failure or a closed worker queue.
+    async fn inject_handoff_failure(
+        app: &mut crate::app::App,
+        pool: &sqlx::SqlitePool,
+        session_id: &str,
+        reject_delivery: bool,
+    ) -> Option<mpsc::UnboundedReceiver<ScheduledSessionCommand>> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let rejected_receiver = if reject_delivery {
+            drop(receiver);
+            None
+        } else {
+            sqlx::query(
+                "CREATE TRIGGER reject_start BEFORE INSERT ON session_operation BEGIN SELECT \
+                 RAISE(ABORT, 'handoff rejected'); END",
+            )
+            .execute(pool)
+            .await
+            .expect("reject operation insertion");
+            Some(receiver)
+        };
+        app.sessions.worker_service_mut().workers.insert(
+            session_id.into(),
+            SessionWorkerHandle {
+                queued_work_sequence: Arc::default(),
+                sender,
+                wakeup: Arc::default(),
+            },
+        );
+
+        rejected_receiver
+    }
+
+    /// Checks durable and rendered state after a rejected first-turn handoff.
+    async fn assert_first_prompt_remains_retryable(
+        app: &crate::app::App,
+        pool: &sqlx::SqlitePool,
+        session_id: &str,
+        prompt: &TurnPrompt,
+        initial_status: Status,
+    ) {
+        let preparation = app
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(session_id)
+            .await
+            .expect("load preparation")
+            .expect("preparation");
+        assert_eq!(
+            preparation.state,
+            crate::infra::db::SessionPreparationState::Failed
+        );
+        assert_eq!(
+            preparation.prompt.as_deref(),
+            Some(serde_json::to_string(prompt).expect("prompt JSON").as_str())
+        );
+        assert_eq!(
+            app.sessions
+                .session_for_id(session_id)
+                .expect("session")
+                .status,
+            initial_status
+        );
+        let status: String = sqlx::query_scalar("SELECT status FROM session WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await
+            .expect("persisted status");
+        assert_eq!(status, initial_status.to_string());
+        assert!(prompt.attachments[0].local_image_path.is_file());
+        assert!(
+            app.services
+                .db()
+                .operations()
+                .load_unfinished_session_operations()
+                .await
+                .expect("operations")
+                .is_empty()
+        );
+        assert!(
+            app.services
+                .db()
+                .sessions()
+                .load_session_messages(session_id)
+                .await
+                .expect("messages")
+                .iter()
+                .all(|message| message.kind != "user_prompt")
+        );
+    }
+
+    /// Checks that retry acknowledges the saved prompt once, preserving the
+    /// worker's attachment ownership and a single transcript entry.
+    async fn assert_first_prompt_was_accepted(
+        app: &crate::app::App,
+        session_id: &str,
+        prompt: &TurnPrompt,
+        initial_status: Status,
+    ) {
+        assert_eq!(
+            app.sessions
+                .session_for_id(session_id)
+                .expect("session")
+                .status,
+            initial_status
+        );
+        let preparation = app
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(session_id)
+            .await
+            .expect("load preparation")
+            .expect("preparation");
+        assert_eq!(
+            preparation.state,
+            crate::infra::db::SessionPreparationState::Ready
+        );
+        assert!(preparation.prompt.is_some());
+        assert!(
+            prompt.attachments[0].local_image_path.is_file(),
+            "worker owns the retained image after acceptance"
+        );
+        assert_eq!(
+            app.services
+                .db()
+                .sessions()
+                .preparation_prompt_operation_status(session_id)
+                .await
+                .expect("operation status")
+                .as_deref(),
+            Some("queued")
+        );
+        let messages = app
+            .services
+            .db()
+            .sessions()
+            .load_session_messages(session_id)
+            .await
+            .expect("messages");
+        let prompts = messages
+            .iter()
+            .filter(|message| message.kind == "user_prompt")
+            .collect::<Vec<_>>();
+        assert!(
+            prompts.is_empty(),
+            "queued prompts remain recoverable until execution"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_worker_waits_for_foreground_gate_and_skips_abandoned_command() {
+        // Arrange
+        let (mut context, db, _queue, _directory) =
+            queue_test_context(MockAgentChannel::new(), VecDeque::new(), Status::Draft).await;
+        db.operations()
+            .insert_session_operation("abandoned", "sess1", "reply")
+            .await
+            .expect("operation");
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        context.app_event_tx = event_tx;
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let mut abandoned = ScheduledSessionCommand::immediate(resume_command("abandoned"));
+        abandoned.ready_rx = Some(ready_rx);
+        let reservation = Arc::new(());
+        let reservation_observer = Arc::downgrade(&reservation);
+        abandoned.preparation_reservation = Some(reservation);
+        command_tx.send(abandoned).expect("gated command");
+        command_tx
+            .send(ScheduledSessionCommand::immediate(SessionCommand::Rebase {
+                base_branch: "main".to_string(),
+                operation_id: "already-resolved-rebase".to_string(),
+            }))
+            .expect("following command");
+        SessionWorkerService::spawn_session_worker(
+            context,
+            auto_commit_one_shot_client(),
+            Arc::default(),
+            command_rx,
+        );
+
+        // Act
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), event_rx.recv())
+                .await
+                .is_err()
+        );
+        drop(ready_tx);
+        let event = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("worker resumed");
+
+        // Assert
+        assert!(matches!(
+            event,
+            Some(AppEvent::SessionQueuedSyncResolved { .. })
+        ));
+        assert!(event_rx.try_recv().is_err());
+        assert_eq!(reservation_observer.strong_count(), 0);
+        assert!(
+            db.operations()
+                .is_session_operation_unfinished("abandoned")
+                .await
+                .expect("unexecuted operation")
+        );
     }
 
     #[tokio::test]

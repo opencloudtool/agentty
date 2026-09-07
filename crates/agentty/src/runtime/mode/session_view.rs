@@ -13,6 +13,7 @@ use crate::domain::input::InputState;
 use crate::domain::session::{FollowUpTaskAction, PublishBranchAction, SessionId, Status};
 use crate::domain::session_message::SessionMessageKind;
 use crate::domain::transcript_notice::TranscriptNotice;
+use crate::domain::transient_message::TransientMessageSlot;
 use crate::presentation::app_mode::{
     AppMode, ChatFocus, ConfirmationIntent, ConfirmationViewMode, DiffSidebarFocus, HelpContext,
 };
@@ -757,7 +758,12 @@ fn view_session_snapshot(app: &App, view_context: &ViewContext) -> Option<ViewSe
         session_status,
         start_staged_session: ViewActionState::from_bool(
             app.sessions
-                .can_start_staged_session(view_context.session_id.as_str()),
+                .can_start_staged_session(view_context.session_id.as_str())
+                || (session.accepts_user_turns()
+                    && session
+                        .transient_messages
+                        .get(TransientMessageSlot::WorkspacePreparation)
+                        .is_some()),
         ),
     })
 }

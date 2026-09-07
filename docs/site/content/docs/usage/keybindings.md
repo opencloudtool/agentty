@@ -64,6 +64,11 @@ warning. Press `Enter` to continue to the `Regular`, `Draft`, `Orchestrator`, `S
 or `Append to stack` selector, or `Esc` / `q` to cancel. `Orchestrator` is marked
 `[Preview]`, as is `Append to stack`.
 
+Choosing `Regular` or `Orchestrator` opens the composer while workspace setup runs in
+background. Submit immediately to save the prompt until setup completes. Completion
+preserves your input and navigation. If setup fails, press `s` from session view to
+retry. `Draft` keeps `Enter` for staging and `s` for starting the staged prompt.
+
 In the `a` selector, `Stacked` is enabled only when the selected session can parent a
 new draft within the five-level stack limit. `Append to stack` is enabled only for an
 independent **Review** or **AgentReview** session with an eligible idle parent. Select

@@ -226,6 +226,40 @@ pub struct SessionListRow {
     pub updated_at: i64,
 }
 
+impl From<SessionRow> for SessionListRow {
+    fn from(row: SessionRow) -> Self {
+        Self {
+            added_lines: row.added_lines,
+            agent: row.agent,
+            base_branch: row.base_branch,
+            created_at: row.created_at,
+            deleted_lines: row.deleted_lines,
+            has_diff: row.has_diff,
+            id: row.id,
+            in_progress_started_at: row.in_progress_started_at,
+            in_progress_total_seconds: row.in_progress_total_seconds,
+            input_tokens: row.input_tokens,
+            is_draft: row.is_draft,
+            model: row.model,
+            output_tokens: row.output_tokens,
+            parent_session_id: row.parent_session_id,
+            permission_mode: row.permission_mode,
+            personality_id: row.personality_id,
+            project_id: row.project_id,
+            published_upstream_ref: row.published_upstream_ref,
+            reasoning_level_override: row.reasoning_level_override,
+            response_style: row.response_style,
+            review_request: row.review_request,
+            role: row.role,
+            size: row.size,
+            speed_mode: row.speed_mode,
+            status: row.status,
+            title: row.title,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 /// Minimal provider/model row used to migrate active sessions across projects.
 #[derive(sqlx::FromRow)]
 pub struct SessionAgentModelRow {
@@ -282,7 +316,7 @@ pub struct SessionPersonalityState {
 
 /// Session-focused persistence boundary used by app orchestration and tests.
 #[async_trait]
-pub trait SessionRepository: Send + Sync {
+pub trait SessionRepository: crate::SessionPreparationRepository + Send + Sync {
     /// Appends one typed transcript message and refreshes session ordering
     /// metadata.
     async fn append_session_message(
@@ -368,6 +402,13 @@ pub trait SessionRepository: Send + Sync {
     /// transcript messages while clearing source-specific runtime linkage.
     async fn fork_session_snapshot(&self, snapshot: ForkSessionSnapshot<'_>)
     -> Result<(), DbError>;
+
+    /// Atomically snapshots a fork and its frozen workspace start commit.
+    async fn reserve_fork_session_snapshot(
+        &self,
+        snapshot: ForkSessionSnapshot<'_>,
+        start_ref: &str,
+    ) -> Result<(), DbError>;
 
     /// Loads one complete persisted session row by stable identifier.
     async fn load_session(&self, session_id: &str) -> Result<Option<SessionRow>, DbError>;
@@ -686,7 +727,7 @@ pub trait SessionRepository: Send + Sync {
 /// `SQLite` implementation of [`SessionRepository`].
 #[derive(Clone)]
 pub(crate) struct SqliteSessionRepository(
-    SqlitePool,
+    pub(super) SqlitePool,
     Arc<dyn TimestampSource>,
     SessionMessageStore,
     SessionSnapshotStore,
@@ -704,7 +745,7 @@ impl SqliteSessionRepository {
     }
 
     /// Returns the shared persistence timestamp in Unix seconds.
-    fn now(&self) -> i64 {
+    pub(super) fn now(&self) -> i64 {
         self.1.now_timestamp_seconds()
     }
 }
@@ -1406,7 +1447,15 @@ WHERE id = ?
         &self,
         snapshot: ForkSessionSnapshot<'_>,
     ) -> Result<(), DbError> {
-        self.3.fork(snapshot).await
+        self.3.fork(snapshot, None).await
+    }
+
+    async fn reserve_fork_session_snapshot(
+        &self,
+        snapshot: ForkSessionSnapshot<'_>,
+        start_ref: &str,
+    ) -> Result<(), DbError> {
+        self.3.fork(snapshot, Some(start_ref)).await
     }
 
     async fn load_session(&self, session_id: &str) -> Result<Option<SessionRow>, DbError> {
@@ -2779,44 +2828,12 @@ WHERE id = ?
     }
 }
 
-/// Borrowed values used to insert one newly created session row.
-struct InsertSessionRow<'a> {
-    /// Agent provider kind persisted alongside the model for this session.
-    agent: &'a str,
-    /// Base branch or parent branch used for future worktree materialization.
-    base_branch: &'a str,
-    /// Stable session identifier.
-    id: &'a str,
-    /// Whether the row was created through explicit draft staging.
-    is_draft: bool,
-    /// Agent model identifier persisted for the session.
-    model: &'a str,
-    /// Orchestration task that owns this child session, when applicable.
-    orchestration_task_id: Option<i64>,
-    /// Optional parent session id for one-level stacked drafts.
-    parent_session_id: Option<&'a str>,
-    /// Provider permission mode captured for the session.
-    permission_mode: PermissionMode,
-    /// Workspace personality selected for future turns, when present.
-    personality_id: Option<&'a str>,
-    /// Owning project identifier.
-    project_id: i64,
-    /// Reasoning level captured from the project default at creation.
-    reasoning_level: ReasoningLevel,
-    /// Response style captured from the project default at creation.
-    response_style: ResponseStyle,
-    /// Persisted session role, or `None` for the default worker role.
-    role: Option<&'a str>,
-    /// Response-speed preference captured for the session.
-    speed_mode: SpeedMode,
-    /// Initial lifecycle status string.
-    status: &'a str,
-}
+type InsertSessionRow<'a> = PersistedSessionCreation<'a>;
 
 /// Inserts one newly created session row with explicit draft-mode
 /// persistence.
-async fn insert_session_with_draft_mode(
-    pool: &SqlitePool,
+pub(super) async fn insert_session_with_draft_mode<'executor>(
+    executor: impl sqlx::Executor<'executor, Database = sqlx::Sqlite>,
     timestamp_seconds: i64,
     row: InsertSessionRow<'_>,
 ) -> Result<(), DbError> {
@@ -2885,7 +2902,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     .bind("")
     .bind(timestamp_seconds)
     .bind(timestamp_seconds)
-    .execute(pool)
+    .execute(executor)
     .await?;
 
     Ok(())

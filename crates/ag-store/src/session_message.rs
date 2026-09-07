@@ -41,6 +41,25 @@ impl SessionMessageStore {
 
         let now = self.timestamp_source.now_timestamp_seconds();
         let mut transaction = self.pool.begin().await.db_context(APPEND_SESSION_MESSAGE)?;
+        Self::append_normalized_in_transaction(&mut transaction, id, kind, &content, now).await?;
+
+        transaction
+            .commit()
+            .await
+            .db_context(APPEND_SESSION_MESSAGE)?;
+
+        Ok(())
+    }
+
+    /// Appends normalized content within the caller's transaction, preserving
+    /// transcript ordering and the owning session's modification timestamp.
+    pub(super) async fn append_normalized_in_transaction(
+        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        id: &str,
+        kind: SessionMessageKind,
+        content: &str,
+        now: i64,
+    ) -> Result<(), DbError> {
         let update_result = sqlx::query!(
             r"
 UPDATE session
@@ -50,16 +69,11 @@ WHERE id = ?
             now,
             id
         )
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await
         .db_context(APPEND_SESSION_MESSAGE)?;
 
         if update_result.rows_affected() == 0 {
-            transaction
-                .commit()
-                .await
-                .db_context(APPEND_SESSION_MESSAGE)?;
-
             return Ok(());
         }
 
@@ -76,14 +90,9 @@ WHERE session_id = ?
         .bind(content)
         .bind(now)
         .bind(id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await
         .db_context(APPEND_SESSION_MESSAGE)?;
-
-        transaction
-            .commit()
-            .await
-            .db_context(APPEND_SESSION_MESSAGE)?;
 
         Ok(())
     }
@@ -113,6 +122,31 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn append_after_session_deletion_does_not_create_orphan_messages() {
+        // Arrange
+        let repositories = AppRepositories::in_memory().await.expect("database");
+
+        // Act
+        repositories
+            .sessions()
+            .append_session_message(
+                "deleted-session",
+                SessionMessageKind::UserPrompt,
+                "late prompt",
+            )
+            .await
+            .expect("missing session is ignored");
+        let messages = repositories
+            .sessions()
+            .load_session_messages("deleted-session")
+            .await
+            .expect("messages");
+
+        // Assert
+        assert_eq!(messages.len(), 0);
     }
 
     #[tokio::test]

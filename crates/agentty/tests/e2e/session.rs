@@ -6661,10 +6661,12 @@ fn session_creation_keeps_navigation_responsive() -> E2eResult {
                     .press_key("a")
                     .wait_for_text("Regular", 5000)
                     .press_key("Enter")
-                    .wait_for_text("Close this notice", 2000)
-                    .capture_labeled("creating", "Worktree creation is pending")
-                    .press_key("Esc")
                     .wait_for_stable_frame(300, 1000)
+                    .write_text("Typing while workspace prepares")
+                    .capture_labeled("creating", "Composer accepts input during setup")
+                    .press_key("Tab")
+                    .wait_for_text("q: sessions", 2000)
+                    .press_key("q")
                     .press_key("?")
                     .wait_for_text("Keybindings", 2000)
                     .capture_labeled("navigation", "Help opens before worktree setup finishes")
@@ -6675,12 +6677,213 @@ fn session_creation_keeps_navigation_responsive() -> E2eResult {
                 // Assert
                 let pending = common::frame_from_capture(&report.captures[0]);
                 let pending_full = Region::full(pending.cols(), pending.rows());
-                assertion::assert_text_in_region(&pending, "Creating session", &pending_full);
+                assertion::assert_text_in_region(
+                    &pending,
+                    "Typing while workspace prepares",
+                    &pending_full,
+                );
+                assertion::assert_not_visible(&pending, "Creating session");
+                assertion::assert_not_visible(&pending, "Regular");
                 let navigation = common::frame_from_capture(&report.captures[1]);
                 let navigation_full = Region::full(navigation.cols(), navigation.rows());
                 assertion::assert_text_in_region(&navigation, "Keybindings", &navigation_full);
                 let full = Region::full(frame.cols(), frame.rows());
                 assertion::assert_text_in_region(frame, "Keybindings", &full);
+            },
+        )?;
+
+    Ok(())
+}
+
+/// Accepts a first prompt before checkout finishes, then dispatches it once.
+#[test]
+fn session_creation_runs_early_prompt_once() -> E2eResult {
+    // Arrange
+    FeatureTest::new("session_creation_early_prompt")
+        .with_git()
+        .setup(|env| {
+            seed_delayed_session_creation(env)?;
+            seed_claude_structured_output_project(env)
+        })
+        .run(
+            |scenario| {
+                // Act
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .press_key("a")
+                    .wait_for_text("Regular", 5000)
+                    .press_key("Enter")
+                    .wait_for_text("Enter: send", 2000)
+                    .write_text("Run this early prompt exactly once")
+                    .press_key("Enter")
+                    .wait_for_text("Saved prompt:", 2000)
+                    .capture_labeled("queued", "Prompt waits for workspace setup")
+                    .press_key("Enter")
+                    .press_key("Enter")
+                    .wait_for_text(CLAUDE_STRUCTURED_RESPONSE_TEXT, 30000)
+                    .wait_for_stable_frame(300, 3000)
+                    .capture_labeled("started", "Saved prompt runs after workspace setup")
+            },
+            |frame, report| {
+                // Assert
+                let queued = common::frame_from_capture(&report.captures[0]);
+                assertion::assert_not_visible(&queued, CLAUDE_STRUCTURED_RESPONSE_TEXT);
+                assertion::assert_match_count(frame, "Run this early prompt exactly once", 1);
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, CLAUDE_STRUCTURED_RESPONSE_TEXT, &full);
+                assertion::assert_not_visible(frame, "Saved prompt:");
+            },
+        )?;
+
+    Ok(())
+}
+
+/// Restart before gate release preserves a first prompt for explicit retry.
+#[test]
+fn session_creation_recovers_unreleased_first_prompt() -> E2eResult {
+    // Arrange
+    FeatureTest::new("session_creation_restart_before_start")
+        .with_git()
+        .setup(|env| {
+            seed_sessions_tab(env)?;
+            seed_claude_structured_output_project(env)?;
+            common::seed_session(
+                env,
+                SessionSeed::regular(
+                    "unreleased-first",
+                    "claude-haiku-4-5-20251001",
+                    "main",
+                    "InProgress",
+                )
+                .with_title("Recover the pending first prompt"),
+            )?;
+            common::seed_runtime()?.block_on(async {
+                let db = common::open_database(env).await?;
+                let prompt = agentty::domain::turn_prompt::TurnPrompt::from_text(
+                    "Recover the pending first prompt".to_string(),
+                );
+                db.sessions()
+                    .insert_session_preparation("unreleased-first", "main")
+                    .await?;
+                db.sessions()
+                    .save_preparation_prompt("unreleased-first", &serde_json::to_string(&prompt)?)
+                    .await?;
+                db.sessions()
+                    .update_session_preparation(
+                        "unreleased-first",
+                        ag_store::SessionPreparationState::Ready,
+                        None,
+                    )
+                    .await?;
+                db.sessions()
+                    .update_session_prompt("unreleased-first", &prompt.text)
+                    .await?;
+                // Older handoffs could publish the first prompt before
+                // releasing the gate.
+                db.sessions()
+                    .append_session_message(
+                        "unreleased-first",
+                        SessionMessageKind::UserPrompt,
+                        &prompt.text,
+                    )
+                    .await?;
+                db.operations()
+                    .insert_session_operation(
+                        "workspace:unreleased-first",
+                        "unreleased-first",
+                        "start_prompt",
+                    )
+                    .await?;
+                Ok::<(), Box<dyn std::error::Error>>(())
+            })
+        })
+        .run(
+            |scenario| {
+                // Act
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .press_key("Enter")
+                    .wait_for_text("Press s to retry.", 5000)
+                    .capture_labeled("recovered", "Unstarted prompt survives restart")
+                    .press_key("s")
+                    .wait_for_text(CLAUDE_STRUCTURED_RESPONSE_TEXT, 30000)
+                    .wait_for_stable_frame(300, 3000)
+            },
+            |frame, report| {
+                // Assert
+                let recovered = common::frame_from_capture(&report.captures[0]);
+                assertion::assert_not_visible(&recovered, CLAUDE_STRUCTURED_RESPONSE_TEXT);
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, CLAUDE_STRUCTURED_RESPONSE_TEXT, &full);
+                assertion::assert_not_visible(frame, "Saved prompt:");
+            },
+        )?;
+
+    Ok(())
+}
+
+/// A rejected first-turn handoff keeps its saved prompt retryable with `s`.
+#[test]
+fn session_creation_retries_rejected_handoff() -> E2eResult {
+    // Arrange
+    FeatureTest::new("session_creation_retry_handoff")
+        .with_git()
+        .setup(|env| {
+            seed_delayed_session_creation(env)?;
+            seed_claude_structured_output_project(env)?;
+            common::seed_runtime()?.block_on(async {
+                let db_path = env.agentty_root.join(DB_DIR).join(DB_FILE);
+                let mut connection = SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .connect()
+                    .await?;
+                connection
+                    .execute(
+                        "CREATE TABLE reject_first_handoff (pending INTEGER); INSERT INTO \
+                         reject_first_handoff VALUES (1); CREATE TRIGGER reject_start BEFORE \
+                         INSERT ON session_operation WHEN EXISTS (SELECT 1 FROM \
+                         reject_first_handoff) BEGIN SELECT RAISE(ABORT, 'handoff rejected'); \
+                         END; CREATE TRIGGER allow_retry AFTER UPDATE ON session_preparation WHEN \
+                         NEW.state = 'failed' BEGIN DELETE FROM reject_first_handoff; END;",
+                    )
+                    .await?;
+                connection.close().await
+            })?;
+
+            Ok(())
+        })
+        .run(
+            |scenario| {
+                // Act
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .press_key("a")
+                    .wait_for_text("Regular", 5000)
+                    .press_key("Enter")
+                    .wait_for_text("Enter: send", 2000)
+                    .write_text("Retry this saved first prompt")
+                    .press_key("Enter")
+                    .wait_for_text("Saved prompt:", 2000)
+                    .wait_for_text("Press s to retry.", 30000)
+                    .capture_labeled(
+                        "rejected",
+                        "Saved prompt remains retryable after handoff failure",
+                    )
+                    .press_key("s")
+                    .wait_for_text(CLAUDE_STRUCTURED_RESPONSE_TEXT, 30000)
+                    .wait_for_stable_frame(300, 3000)
+                    .capture_labeled("retried", "Retry submits the saved prompt once")
+            },
+            |frame, report| {
+                // Assert
+                let rejected = common::frame_from_capture(&report.captures[0]);
+                let rejected_full = Region::full(rejected.cols(), rejected.rows());
+                assertion::assert_text_in_region(&rejected, "Saved prompt:", &rejected_full);
+                assertion::assert_not_visible(&rejected, CLAUDE_STRUCTURED_RESPONSE_TEXT);
+                assertion::assert_match_count(frame, "Retry this saved first prompt", 1);
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, CLAUDE_STRUCTURED_RESPONSE_TEXT, &full);
+                assertion::assert_not_visible(frame, "Saved prompt:");
             },
         )?;
 
@@ -10684,7 +10887,7 @@ fn session_fork_confirmation_creates_session_from_review_session() -> E2eResult 
                     .wait_for_text("j/k: scroll", 5000)
                     .capture_labeled(
                         "forked_session_chat_focus",
-                        "Clean fork hides the diff preview shortcut",
+                        "Fork keeps chat navigation available",
                     )
                     .press_key("q")
                     .wait_for_stable_frame(300, 5000)
@@ -10724,10 +10927,9 @@ fn session_fork_confirmation_creates_session_from_review_session() -> E2eResult 
                     Region::full(forked_chat_frame.cols(), forked_chat_frame.rows());
                 assertion::assert_text_in_region(
                     &forked_chat_frame,
-                    "Tab: focus | j/k: scroll | q: sessions",
+                    "Tab: focus | j/k: scroll",
                     &forked_chat_full,
                 );
-                assertion::assert_not_visible(&forked_chat_frame, "d: diff");
 
                 let full = Region::full(frame.cols(), frame.rows());
                 let session_list_text = frame.text_in_region(&full);

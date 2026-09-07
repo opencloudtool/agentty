@@ -8,7 +8,8 @@ use ag_orchestration as orchestration;
 use tracing::warn;
 
 use super::{draft, session_folder};
-use crate::app::SessionManager;
+use crate::app::session::SessionError;
+use crate::app::{AppServices, SessionManager};
 use crate::domain::agent::{
     AgentModel, AgentSelection, ReasoningLevel, ResponseStyle, SpeedMode,
     parse_persisted_session_agent_model,
@@ -21,10 +22,14 @@ use crate::domain::session::{
     SessionStats, Status, activity_day_key_with_offset,
 };
 use crate::domain::session_message::{SessionMessage, SessionMessageKind, SessionTranscript};
-use crate::domain::transient_message::{TransientMessage, TransientMessageStore};
+use crate::domain::transient_message::{
+    TransientMessage, TransientMessageAnchor, TransientMessageBody, TransientMessageLifecycle,
+    TransientMessageSlot, TransientMessageStore,
+};
 use crate::infra::clock::Clock;
 use crate::infra::db::{
     AppRepositories, DbError, SessionDetailRow, SessionListRow, SessionMessageRow,
+    SessionPreparationRow, SessionPreparationState,
 };
 use crate::infra::fs::FsClient;
 
@@ -57,6 +62,7 @@ struct LoadSessionContext<'a> {
     fs_client: &'a dyn FsClient,
     handles: &'a mut HashMap<SessionId, SessionHandles>,
     orchestration_metadata: &'a HashMap<String, orchestration::OrchestrationSessionMetadata>,
+    preparations: &'a HashMap<String, SessionPreparationRow>,
     project_name: &'a str,
     session_worktree_availability: &'a mut HashMap<SessionId, bool>,
     sessions: &'a mut Vec<Session>,
@@ -143,6 +149,110 @@ pub(crate) async fn migrate_session_off_retired_model(
 }
 
 impl SessionManager {
+    /// Registers only the newly persisted row; creation never reloads every
+    /// session.
+    pub(crate) async fn register_created_session(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+        working_dir: &Path,
+    ) -> Result<(), SessionError> {
+        if self.session_for_id(session_id).is_some() {
+            return Ok(());
+        }
+        let row = services
+            .db()
+            .sessions()
+            .load_session(session_id)
+            .await?
+            .ok_or(SessionError::NotFound)?;
+        let permission_mode = row
+            .permission_mode
+            .parse()
+            .map_err(|_| SessionError::Workflow("Invalid session permission mode".to_string()))?;
+        let metadata = orchestration::session_metadata_for_project(
+            services.db(),
+            row.project_id.unwrap_or_default(),
+        )
+        .await;
+        let preparation = services
+            .db()
+            .sessions()
+            .load_session_preparation(session_id)
+            .await?;
+        let preparations = preparation
+            .into_iter()
+            .map(|row| (row.session_id.clone(), row))
+            .collect();
+        let mut sessions = Vec::new();
+        let mut availability = HashMap::new();
+        let fs_client = services.fs_client();
+        Self::push_loaded_session_row(
+            &mut LoadSessionContext {
+                active_session_id: Some(session_id),
+                base: services.base_path(),
+                db: services.db(),
+                fs_client: fs_client.as_ref(),
+                handles: self.state.handles_mut(),
+                orchestration_metadata: &metadata,
+                preparations: &preparations,
+                project_name: working_dir
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or_default(),
+                session_worktree_availability: &mut availability,
+                sessions: &mut sessions,
+            },
+            row.into(),
+            permission_mode,
+        )
+        .await;
+        for session in sessions {
+            self.state.push_session(session);
+        }
+        for (id, available) in availability {
+            self.set_session_worktree_available(&id, available);
+        }
+
+        Ok(())
+    }
+
+    /// Projects durable readiness into the session's inline status message.
+    pub(crate) fn apply_workspace_preparation(
+        session: &mut Session,
+        preparation: Option<&SessionPreparationRow>,
+    ) {
+        session
+            .transient_messages
+            .retract(TransientMessageSlot::WorkspacePreparation);
+        let Some(preparation) = preparation else {
+            return;
+        };
+        let mut text = match preparation.state {
+            SessionPreparationState::Preparing => "Preparing workspace. You can keep typing; \
+                                                   submitted prompts wait for setup."
+                .to_string(),
+            SessionPreparationState::Failed => format!(
+                "Workspace setup failed: {}\nPress s to retry. Your saved prompt is retained.",
+                preparation.error.as_deref().unwrap_or("Unknown error")
+            ),
+            SessionPreparationState::Ready | SessionPreparationState::Canceled => return,
+        };
+        if let Some(prompt) = preparation.prompt.as_deref().and_then(|value| {
+            serde_json::from_str::<crate::domain::turn_prompt::TurnPrompt>(value).ok()
+        }) {
+            text.push_str("\n\nSaved prompt:\n");
+            text.push_str(&prompt.transcript_text());
+        }
+        session.transient_messages.upsert(TransientMessage {
+            anchor: TransientMessageAnchor::Tail,
+            body: TransientMessageBody::Plain(text),
+            lifecycle: TransientMessageLifecycle::UntilResolved,
+            slot: TransientMessageSlot::WorkspacePreparation,
+            turn_position: None,
+        });
+    }
+
     /// Loads session models from the database using the provided filesystem
     /// boundary to decide which session folders exist.
     ///
@@ -222,7 +332,15 @@ impl SessionManager {
         let mut sessions: Vec<Session> = Vec::new();
         let mut session_worktree_availability = HashMap::new();
 
+        let preparations = db
+            .sessions()
+            .load_session_preparations(active_project_id)
+            .await?
+            .into_iter()
+            .map(|row| (row.session_id.clone(), row))
+            .collect();
         let mut load_context = LoadSessionContext {
+            preparations: &preparations,
             base,
             db,
             project_name: &project_name,
@@ -289,6 +407,7 @@ impl SessionManager {
             active_session_id,
             sessions,
             session_worktree_availability,
+            preparations,
         } = load_context;
         let session_id = SessionId::from(row.id.clone());
         let folder = session_folder(base, &session_id);
@@ -300,7 +419,7 @@ impl SessionManager {
             .and_then(|existing| existing.status.lock().ok().map(|status| *status));
 
         if should_skip_missing_folder_session(
-            has_session_folder,
+            has_session_folder || preparations.contains_key(&row.id),
             row.is_draft,
             persisted_status,
             live_handle_status,
@@ -308,7 +427,11 @@ impl SessionManager {
             return;
         }
 
-        session_worktree_availability.insert(session_id.clone(), has_session_folder);
+        let workspace_ready = preparations
+            .get(&row.id)
+            .is_none_or(|preparation| preparation.state == SessionPreparationState::Ready);
+        session_worktree_availability
+            .insert(session_id.clone(), has_session_folder && workspace_ready);
 
         let (session_detail, session_status, session_transcript) =
             Self::load_session_detail_and_transcript(
@@ -339,7 +462,8 @@ impl SessionManager {
             Self::loaded_queue_snapshots(handles.get(&session_id));
         let (role, orchestration_metadata) =
             Self::loaded_orchestration_metadata(&row, orchestration_metadata);
-        sessions.push(Self::build_loaded_session(LoadedSessionInput {
+        let preparation = preparations.get(&row.id);
+        let mut session = Self::build_loaded_session(LoadedSessionInput {
             controller_session_id: orchestration_metadata.controller_session_id,
             draft_attachments,
             follow_up_tasks: Vec::new(),
@@ -366,7 +490,9 @@ impl SessionManager {
             session_transcript,
             size: persisted_size,
             speed_mode,
-        }));
+        });
+        Self::apply_workspace_preparation(&mut session, preparation);
+        sessions.push(session);
     }
 
     async fn load_session_detail_and_transcript(
