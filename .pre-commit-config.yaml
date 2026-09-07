@@ -125,6 +125,14 @@ repos:
         always_run: true
         pass_filenames: false
         stages: [manual]
+      - id: test-ag-orchestration-src
+        name: cargo nextest ag-orchestration src
+        description: Source tests for `crates/ag-orchestration/src`.
+        entry: cargo nextest run --locked --profile ci -p ag-orchestration --lib
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [manual]
       - id: test-ag-protocol-src
         name: cargo nextest ag-protocol src
         description: Source tests for `crates/ag-protocol/src`.

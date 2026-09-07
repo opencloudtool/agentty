@@ -25,7 +25,7 @@ pub use message::{
 pub use model::{
     ForgeKind, PermissionMode, ResponseStyle, ReviewRequest, ReviewRequestState,
     ReviewRequestSummary, Session, SessionId, SessionRole, SessionSettings, SessionStatus,
-    SpeedMode, activity_day_key_with_offset,
+    SpeedMode, activity_day_key_with_offset, session_branch,
 };
 pub use orchestration::{
     IntegrationApproach, MAX_AUTOMATED_REVIEW_ITERATIONS, OrchestrationPlanTask,
@@ -40,7 +40,10 @@ pub use project::{
     Project, ProjectListItem, mru_project_order, ordered_project_items, project_name_from_path,
 };
 pub use question::{QuestionItem, default_option_index};
-pub use review::{FocusedReviewStatus, has_actionable_review_suggestions, review_suggestions};
+pub use review::{
+    FocusedReviewStatus, build_apply_review_prompt, has_actionable_review_suggestions,
+    review_suggestions,
+};
 pub use service::{
     AnswerQuestionsRequest, CoordinatorMessageRequest, CoordinatorMessageVisibility,
     CreateSessionMode, CreateSessionRequest, QuestionAnswer, SessionBackend, SessionService,

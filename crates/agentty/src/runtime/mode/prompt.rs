@@ -1317,10 +1317,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
+    use ag_session::build_apply_review_prompt;
     use tempfile::tempdir;
 
     use super::*;
-    use crate::app::prompt_intent::build_apply_review_prompt;
     use crate::domain::agent::{AgentCliInfo, AgentModel, AgentSelection, ReasoningLevel};
     use crate::domain::file_entry::FileEntry;
     use crate::domain::input::INPUT_HISTORY_LIMIT;

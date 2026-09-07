@@ -107,6 +107,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ag-orchestration"
+version = "0.15.11"
+dependencies = [
+ "ag-agent",
+ "ag-git",
+ "ag-protocol",
+ "ag-session",
+ "ag-store",
+ "askama",
+ "async-trait",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ag-protocol"
 version = "0.15.11"
 dependencies = [
@@ -223,6 +239,7 @@ dependencies = [
  "ag-clipboard",
  "ag-forge",
  "ag-git",
+ "ag-orchestration",
  "ag-protocol",
  "ag-session",
  "ag-store",

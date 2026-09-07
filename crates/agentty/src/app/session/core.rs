@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ag_git as git;
+pub(crate) use ag_session::session_branch;
 use tokio::task::{JoinHandle, JoinSet};
 
 use super::SessionError;
@@ -1214,19 +1215,10 @@ impl SessionManager {
     }
 }
 
-/// Prefix used for default session worktree branches.
-const SESSION_BRANCH_PREFIX: &str = "wt/";
-
 /// Returns the folder path for a session under the given base directory.
 pub(crate) fn session_folder(base: &Path, session_id: &str) -> PathBuf {
     let len = session_id.len().min(8);
     base.join(&session_id[..len])
-}
-
-/// Returns the default worktree branch name for a session.
-pub(crate) fn session_branch(session_id: &str) -> String {
-    let len = session_id.len().min(8);
-    format!("{SESSION_BRANCH_PREFIX}{}", &session_id[..len])
 }
 
 /// Extracts the remote branch portion from one upstream reference.

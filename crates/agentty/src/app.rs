@@ -9,7 +9,6 @@ mod branch_publish;
 mod core;
 mod error;
 mod merge_queue;
-mod orchestration;
 mod project;
 pub(crate) mod prompt_intent;
 mod reducer;
@@ -35,9 +34,6 @@ pub use core::{AGENTTY_WT_DIR, App, UpdateStatus, agentty_home};
 pub(crate) use core::{AppEvent, AppRuntimeEvent};
 
 pub use error::AppError;
-pub(crate) use orchestration::{
-    OrchestrationApprovalOutcome, OrchestrationCoordinator, OrchestrationSchedule,
-};
 pub use project::ProjectManager;
 pub(crate) use review::ReviewCacheEntry;
 #[cfg(test)]

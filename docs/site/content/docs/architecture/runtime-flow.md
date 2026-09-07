@@ -307,15 +307,17 @@ Creation is restricted to the active project while `SessionRuntime` owns a singl
 active-project `SessionManager`, and can copy the agent, model, permission mode,
 reasoning, personality, and base-branch snapshot from another session in that project
 without changing defaults for later ordinary sessions. The adapter deliberately contains
-no orchestrator policy. `app/orchestration.rs` owns that sequencing: it persists typed
+no orchestrator policy. `ag-orchestration` owns that sequencing: it persists typed
 implementation or research task rows before approval, reads child status, report or
 final answer, and token totals in one SQLite task snapshot during reconciliation, and
 uses the session API mailbox only for child creation, mutation, cleanup, and a durable
 roll-up submission. The terminal runtime injects the reconciliation schedule, keeping
-direct timer APIs out of the coordinator. The database link from task to child makes
-restart re-linking independent of branch-name parsing. Session-list refreshes load
-controller progress and child adjacency in one project-wide orchestration query instead
-of issuing queries for each saved session.
+direct timer APIs out of the coordinator. `OrchestrationEventSink` carries refresh and
+progress notifications; Agentty adapts them to `AppEvent` without exposing its reducer
+types to the coordinator. The database link from task to child makes restart re-linking
+independent of branch-name parsing. Session-list refreshes load controller progress and
+child adjacency in one project-wide orchestration query instead of issuing queries for
+each saved session.
 
 ```mermaid
 flowchart LR

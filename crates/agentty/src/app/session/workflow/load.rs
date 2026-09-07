@@ -4,10 +4,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use ag_git::GitClient;
+use ag_orchestration as orchestration;
 use tracing::warn;
 
 use super::{draft, session_folder};
-use crate::app::{SessionManager, orchestration};
+use crate::app::SessionManager;
 use crate::domain::agent::{
     AgentModel, AgentSelection, ReasoningLevel, ResponseStyle, SpeedMode,
     parse_persisted_session_agent_model,

@@ -605,7 +605,7 @@ impl App {
             None
         };
 
-        let prompt = crate::app::prompt_intent::build_apply_review_prompt(suggestions);
+        let prompt = ag_session::build_apply_review_prompt(suggestions);
         if let Some(completed_iterations) = completed_auto_address_iterations {
             if !self.reply(session_id, prompt).await {
                 self.set_review_ready_output(

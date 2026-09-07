@@ -160,6 +160,11 @@ Documentation for installation and workflows is available at
 > workflows, integrations, and safeguards evolve. Always review and verify the changes
 > Agentty proposes or applies in your repositories before you rely on them.
 
+The workspace includes reusable session contracts (`ag-session`), persistence
+(`ag-store`), and campaign coordination (`ag-orchestration`). Campaign hosts supply
+session execution, notifications, and reconciliation scheduling independently of the
+TUI.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.

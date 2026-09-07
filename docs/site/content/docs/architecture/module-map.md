@@ -45,6 +45,10 @@ For file-level detail, read the module docstrings directly.
   process-level tests. It derives provider parsing and help from `ag-harness`, then owns
   command-line defaults, application prompts, bounded repository permission selection,
   terminal-safe output, and creation and resumption of durable sessions.
+- `crates/ag-orchestration/`: Frontend-neutral campaign planning, approval,
+  reconciliation, verification, integration, and controller/child prompt templates.
+  Hosts inject `SessionService`, persistence repositories, `OrchestrationEventSink`, and
+  `OrchestrationSchedule`; the crate does not depend on `agentty` or terminal UI.
 - `crates/ag-protocol/`: Shared structured response protocol library crate with
   transport-neutral response models, schema generation, parser diagnostics, protocol
   prompt envelopes, repair prompts, review-comment outcomes, and turn prompt payload
@@ -76,16 +80,16 @@ For file-level detail, read the module docstrings directly.
 - `main.rs` / `lib.rs`: Composition root — database bootstrap, `App` construction,
   runtime launch, and public module exports.
 - `app/`: Orchestration layer. Owns the `App` state, the `AppEvent` reducer, project and
-  settings persistence manager, the merge queue, the project sync orchestrator, durable
-  campaign planning, managed-worker capability routing, the multi-session orchestration
-  coordinator, branch publish, review, generation-matched background full-diff requests,
-  typed prompt workflow requests and outcomes, the `session_api.rs` adapter for
-  `ag-session`, the bounded `session_runtime.rs` command actor, prepared background
-  session creation with foreground completion, and the session module (`app/session/`)
-  with its per-session worker queues and workflow steps (`lifecycle`, `turn`,
-  `post_turn`, `merge`, `task`, `worker`). Prompt composers, slash-menu state, and mode
-  navigation remain presentation-owned. No direct process, filesystem, or clock calls —
-  everything external goes through `infra/` traits.
+  settings persistence manager, the merge queue, the project sync orchestrator, campaign
+  workflow wiring, managed-worker capability routing, the application adapter for
+  `ag-orchestration` notifications, branch publish, review, generation-matched
+  background full-diff requests, typed prompt workflow requests and outcomes, the
+  `session_api.rs` adapter for `ag-session`, the bounded `session_runtime.rs` command
+  actor, prepared background session creation with foreground completion, and the
+  session module (`app/session/`) with its per-session worker queues and workflow steps
+  (`lifecycle`, `turn`, `post_turn`, `merge`, `task`, `worker`). Prompt composers,
+  slash-menu state, and mode navigation remain presentation-owned. No direct process,
+  filesystem, or clock calls — everything external goes through `infra/` traits.
 - `domain/`: Pure Agentty-specific business entities and logic — render/runtime session
   snapshots, themes, clarification input progress, explicit transient-message slots and
   lifecycles, prompt-composer logic, the shared `InputState` command and undo/redo

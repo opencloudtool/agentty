@@ -35,6 +35,12 @@ application ports:
 | Repository traits          | `crates/ag-store/src/*.rs`                   | Narrow persistence boundaries (`SessionRepository`, `ProjectRepository`, `ReviewRepository`, `UsageRepository`, `ActivityRepository`, `OperationRepository`, `OrchestrationRepository`, `SettingRepository`); activity persistence returns raw timestamps for clock-aware app aggregation. `OrchestrationRepository` owns its own pool so orchestration reconciliation never contends with the foreground session-runtime mailbox. |
 | `TimestampSource`          | `crates/ag-store/src/timestamp.rs`           | Unix timestamps for persistence writes; Agentty adapts its environment-selected `Clock` at the composition root while standalone store constructors use the system clock.                                                                                                                                                                                                                                                          |
 
+`ag-orchestration` injects `OrchestrationEventSink` for campaign refresh/progress
+notifications and `OrchestrationSchedule` for reconciliation wakeups. Tests can combine
+an in-memory event channel, deterministic schedule, repository mocks, and a
+`SessionBackend` without constructing the TUI. Agentty tests its event translation at
+the application boundary.
+
 `OrchestrationRepository` also bulk-loads session-list progress and controller-child
 adjacency per project, and atomically claims roll-up submission before the session API
 uses its stable operation identifier.

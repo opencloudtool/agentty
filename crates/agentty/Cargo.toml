@@ -19,6 +19,7 @@ ag-agent.workspace = true
 ag-clipboard.workspace = true
 ag-forge.workspace = true
 ag-git.workspace = true
+ag-orchestration.workspace = true
 ag-protocol.workspace = true
 ag-session.workspace = true
 ag-store.workspace = true
