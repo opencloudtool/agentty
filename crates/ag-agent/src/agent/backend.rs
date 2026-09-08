@@ -10,6 +10,12 @@ use crate::model::agent::ReasoningLevel;
 use crate::model::permission::PermissionMode;
 use crate::model::session::SpeedMode;
 
+/// Maximum concurrent subagents requested from providers with a native limit.
+///
+/// Excludes the parent agent. Provider exceptions still apply; this is not a
+/// host-wide CPU or memory limit.
+pub(super) const MAX_CONCURRENT_SUBAGENTS: usize = 2;
+
 /// Transport runtime used to execute turns for one backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentTransport {
