@@ -1,26 +1,37 @@
 # `ag-harness-cli`
 
-Start a durable session:
+Chat with models through a repository-aware, durable terminal harness.
+
+## Get started
 
 ```sh
-MODEL_API_KEY=your-key cargo run -p ag-harness-cli -- \
-  --git-executable /absolute/path/to/git \
-  run muse-spark-1.3 --session review-42
+export MODEL_API_KEY="your-key"
+cargo run --locked -p ag-harness-cli -- run muse-spark-1.3
 ```
 
-Resume it later:
+This starts an interactive chat with read-only access to the current directory.
+
+## Common commands
 
 ```sh
-MODEL_API_KEY=your-key cargo run -p ag-harness-cli -- \
-  --git-executable /absolute/path/to/git resume review-42
+# Start a named session
+cargo run --locked -p ag-harness-cli -- run muse-spark-1.3 --session review-42
+
+# Resume it later
+cargo run --locked -p ag-harness-cli -- resume review-42
+
+# Allow repository writes
+cargo run --locked -p ag-harness-cli -- run muse-spark-1.3 --allow-write
+
+# Chat about another repository
+cargo run --locked -p ag-harness-cli -- \
+  run muse-spark-1.3 --read-dir /path/to/repository
 ```
 
-The current directory is readable by default. Add `--allow-write` to permit patches or
-`--read-dir <DIR>` to choose another repository root. `--git-executable <FILE>` is
-required and must select an absolute Git executable outside the containing worktree.
-Select Kimi or Qwen with `--provider`; `--base-url` overrides the provider endpoint.
+## Defaults
 
-Session history defaults to `~/.ag-harness/db/harness.db`. Set `AG_HARNESS_ROOT`, or
-pass `--database <FILE>`, to choose another location. If `HOME` is unavailable, one of
-those explicit locations is required. Run `ag-harness --help` for the complete provider
-and credential list.
+- Repository writes are disabled unless `--allow-write` is set.
+- Sessions are stored in `~/.ag-harness/db/harness.db`.
+- The first valid Git in `PATH` is used; `--git-executable <FILE>` overrides it.
+- Muse is the default provider. Run `cargo run --locked -p ag-harness-cli -- run --help`
+  for Kimi, Qwen, model, and credential options.

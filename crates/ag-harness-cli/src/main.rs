@@ -1,9 +1,10 @@
 //! Interactive command-line chat powered by the `ag-harness` model runtime.
 
 use std::borrow::Cow;
+use std::ffi::OsStr;
 #[cfg(not(test))]
 use std::io::IsTerminal as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::{env, io};
 
@@ -42,14 +43,14 @@ const READ_WRITE_SYSTEM_PROMPT: &str = concat!(
     name = "ag-harness",
     version,
     about = "Chats with models through a repository harness",
-    after_help = provider_help(),
-    group(clap::ArgGroup::new("repository").required(true).args(["git_executable"]))
+    after_help = provider_help()
 )]
 struct Cli {
     /// SQLite database used for durable session history.
     #[arg(long, global = true, value_name = "FILE")]
     database: Option<PathBuf>,
-    /// Absolute path to the host-controlled Git executable.
+    /// Absolute Git executable override; defaults to the first valid Git found
+    /// in PATH.
     #[arg(long, global = true, value_name = "FILE")]
     git_executable: Option<PathBuf>,
     #[command(subcommand)]
@@ -239,14 +240,9 @@ where
                 args.base_url.as_deref(),
                 &mut environment,
             )?;
-            let git_executable = git_executable.ok_or(CliError::GitExecutableRequired)?;
-            let (harness, system_prompt) = configured_harness(
-                client,
-                database,
-                args.read_dir,
-                git_executable,
-                args.allow_write,
-            )?;
+            let repository = repository_or_default(args.read_dir, git_executable)?;
+            let (harness, system_prompt) =
+                configured_harness(client, database, repository, args.allow_write);
             let mut session = harness
                 .session(&session_id, chat_schema()?)
                 .system_prompt(system_prompt)
@@ -262,14 +258,8 @@ where
             let (provider, model) = stored_model_identity(&info)?;
             let client =
                 model_client(provider, &model, args.base_url.as_deref(), &mut environment)?;
-            let git_executable = git_executable.ok_or(CliError::GitExecutableRequired)?;
-            let (harness, _) = configured_harness(
-                client,
-                database,
-                args.read_dir,
-                git_executable,
-                args.allow_write,
-            )?;
+            let repository = repository_or_default(args.read_dir, git_executable)?;
+            let (harness, _) = configured_harness(client, database, repository, args.allow_write);
             let mut session = harness.resume(&args.session).await?;
             let mut output = output;
             announce_session(&mut output, &args.session).await?;
@@ -311,6 +301,37 @@ fn database_path(
     Ok(PathBuf::from(home).join(".ag-harness/db/harness.db"))
 }
 
+fn repository_or_default(root: PathBuf, explicit: Option<PathBuf>) -> Result<Repository, CliError> {
+    if let Some(explicit) = explicit {
+        return Repository::new(root, explicit).map_err(CliError::from);
+    }
+    let path = env::var_os("PATH");
+
+    repository_from_path(&root, path.as_deref())
+}
+
+fn repository_from_path(root: &Path, path: Option<&OsStr>) -> Result<Repository, CliError> {
+    let executable_name = format!("git{}", env::consts::EXE_SUFFIX);
+
+    let candidates = path
+        .iter()
+        .flat_map(env::split_paths)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(&executable_name));
+    for candidate in candidates {
+        match Repository::new(root, candidate) {
+            Ok(repository) => return Ok(repository),
+            Err(
+                error @ (ag_harness::RepositoryError::Root { .. }
+                | ag_harness::RepositoryError::RootIsGitAdministrative { .. }),
+            ) => return Err(error.into()),
+            Err(_) => {}
+        }
+    }
+
+    Err(CliError::GitExecutableNotFound)
+}
+
 fn model_client(
     provider: ModelProvider,
     model: &str,
@@ -330,11 +351,9 @@ fn model_client(
 fn configured_harness(
     client: ag_harness::ModelClient,
     database: PathBuf,
-    repository_root: PathBuf,
-    git_executable: PathBuf,
+    repository: Repository,
     allow_write: bool,
-) -> Result<(Harness, &'static str), CliError> {
-    let repository = Repository::new(repository_root, git_executable)?;
+) -> (Harness, &'static str) {
     let mut harness = Harness::new(client)
         .database(database)
         .repository(repository)
@@ -342,9 +361,9 @@ fn configured_harness(
     if allow_write {
         harness = harness.allow(Tool::Write);
 
-        Ok((harness, READ_WRITE_SYSTEM_PROMPT))
+        (harness, READ_WRITE_SYSTEM_PROMPT)
     } else {
-        Ok((harness, READ_ONLY_SYSTEM_PROMPT))
+        (harness, READ_ONLY_SYSTEM_PROMPT)
     }
 }
 
@@ -628,8 +647,8 @@ enum CliError {
     ChatTurnsFailed,
     #[error("--database, AG_HARNESS_ROOT, or HOME is required for durable session storage")]
     DatabaseLocation,
-    #[error("--git-executable is required for repository tools")]
-    GitExecutableRequired,
+    #[error("No valid Git executable was found in PATH; pass --git-executable <FILE>")]
+    GitExecutableNotFound,
     #[error("model output did not contain a message")]
     MissingMessage,
     #[error("stored session does not identify a supported built-in model")]
@@ -1198,7 +1217,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_requires_an_explicit_git_executable() {
+    fn cli_accepts_the_default_git_executable() {
         // Arrange
         let arguments = [
             "ag-harness",
@@ -1210,15 +1229,85 @@ mod tests {
         ];
 
         // Act
-        let error = Cli::try_parse_from(arguments)
-            .expect_err("missing Git executable should fail during argument parsing");
+        let cli = Cli::try_parse_from(arguments)
+            .expect("missing Git executable override should use the default");
+
+        // Assert
+        assert_eq!(cli.git_executable, None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn git_executable_default_skips_a_non_executable_file() {
+        // Arrange
+        let storage = tempfile::tempdir().expect("temporary storage should exist");
+        let executable_name = format!("git{}", env::consts::EXE_SUFFIX);
+        let inert = storage.path().join(executable_name);
+        std::fs::write(&inert, "not executable").expect("inert Git fixture should be written");
+        let trusted_git = test_git_executable();
+        let trusted_directory = trusted_git
+            .parent()
+            .expect("trusted Git executable should have a parent");
+        let path = env::join_paths([storage.path(), trusted_directory])
+            .expect("test PATH should be valid");
+        let root = env::current_dir().expect("current directory should resolve");
+        let expected = Repository::new(&root, trusted_git)
+            .expect("trusted Git executable should configure the repository");
+
+        // Act
+        let actual = repository_from_path(&root, Some(path.as_os_str()));
 
         // Assert
         assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
+            actual.expect("non-executable Git should be skipped"),
+            expected
         );
-        assert!(error.to_string().contains("--git-executable <FILE>"));
+    }
+
+    #[test]
+    fn git_executable_default_uses_the_process_path() {
+        // Arrange
+        let root = env::current_dir().expect("current directory should resolve");
+        let expected = Repository::new(&root, test_git_executable())
+            .expect("trusted Git executable should configure the repository");
+
+        // Act
+        let actual = repository_or_default(root, None)
+            .expect("test PATH should contain a trusted Git executable");
+
+        // Assert
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn git_executable_default_requires_git_on_path() {
+        // Arrange
+        let root = env::current_dir().expect("current directory should resolve");
+
+        // Act
+        let error = repository_from_path(&root, None)
+            .expect_err("missing PATH should not produce a Git executable");
+
+        // Assert
+        assert!(matches!(error, CliError::GitExecutableNotFound));
+    }
+
+    #[test]
+    fn git_executable_default_preserves_repository_root_errors() {
+        // Arrange
+        let storage = tempfile::tempdir().expect("temporary storage should exist");
+        let missing_root = storage.path().join("missing-root");
+        let path = env::var_os("PATH").expect("test PATH should be configured");
+
+        // Act
+        let error = repository_from_path(&missing_root, Some(path.as_os_str()))
+            .expect_err("missing repository root should fail");
+
+        // Assert
+        assert!(matches!(
+            error,
+            CliError::Repository(ag_harness::RepositoryError::Root { .. })
+        ));
     }
 
     #[tokio::test]

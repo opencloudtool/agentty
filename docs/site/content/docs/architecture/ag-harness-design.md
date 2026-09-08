@@ -27,12 +27,14 @@ flowchart LR
 - `run_once` executes a turn without durable history.
 
 Repository tools are denied by default. `Tool::Read` and `Tool::Write` must be enabled
-explicitly, and both receive a validated `Repository` configuration. The host selects an
-absolute Git executable whose configured location and canonical target are outside the
-containing worktree. Configuration canonicalizes it once and never discovers Git from
-`PATH`. Unix hosts also verify effective execute access; other platforms defer that
-check to process creation. Repository-relative tool arguments reject `.git` components
-before filesystem access.
+explicitly, and both receive a validated `Repository` configuration. The library host
+selects an absolute Git executable whose configured location and canonical target are
+outside the containing worktree. The companion CLI defaults to the first valid `git`
+executable found in an absolute `PATH` entry and exposes `--git-executable` as an
+override. `Repository` canonicalizes the selection once and never performs its own
+`PATH` discovery. Unix hosts also verify effective execute access; other platforms defer
+that check to process creation. Repository-relative tool arguments reject `.git`
+components before filesystem access.
 
 ## Session lifecycle
 
