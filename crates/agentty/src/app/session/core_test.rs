@@ -71,6 +71,9 @@ fn test_loading_review(diff_hash: u64) -> ReviewCacheEntry {
 fn create_passthrough_mock_fs_client() -> fs::MockFsClient {
     let mut mock_fs_client = fs::MockFsClient::new();
     mock_fs_client
+        .expect_cleanup_agent_artifacts()
+        .returning(|root| fs::FsClient::cleanup_agent_artifacts(&fs::RealFsClient, root));
+    mock_fs_client
         .expect_create_dir_all()
         .times(0..)
         .returning(|path| {

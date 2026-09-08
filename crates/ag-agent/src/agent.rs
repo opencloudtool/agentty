@@ -3,8 +3,6 @@
 //! This module feeds the curated crate-root API while keeping provider
 //! command builders, parsers, and transport policy descriptors private.
 
-use std::path::Path;
-
 mod antigravity;
 pub(crate) mod app_server;
 mod availability;
@@ -16,6 +14,7 @@ mod gemini;
 mod instruction;
 mod prompt;
 mod provider;
+pub(crate) mod replay;
 mod response_parser;
 mod submission;
 
@@ -37,6 +36,7 @@ pub(crate) use provider::{
     parse_stream_output_line, parse_turn_response, protocol_schema_instruction_mode,
 };
 pub use provider::{create_app_server_client, create_backend, transport_mode};
+pub use replay::cleanup_session_worktree_artifacts;
 pub(crate) use response_parser::{
     ParsedResponse, compact_codex_progress_message, is_codex_completion_status_message,
 };
@@ -45,14 +45,3 @@ pub use submission::MockOneShotClient;
 pub use submission::{
     OneShotClient, OneShotError, OneShotRequest, OneShotSubmission, RealOneShotClient,
 };
-
-/// Removes provider-owned worktree artifacts derived from one session folder.
-///
-/// Current providers keep setup state inside the session worktree or git
-/// metadata, so there is no external provider artifact to remove.
-///
-/// # Errors
-/// This function currently never returns an error.
-pub fn cleanup_session_worktree_artifacts(_folder: &Path) -> Result<(), AgentBackendError> {
-    Ok(())
-}

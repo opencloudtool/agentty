@@ -415,6 +415,48 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn repair_bootstrap_applies_schema_once_for_each_provider_and_profile() {
+        // Arrange
+        let repair = ag_protocol::build_protocol_repair_prompt("bad JSON", "original response")
+            .expect("repair body");
+        for kind in [
+            crate::model::agent::AgentKind::Gemini,
+            crate::model::agent::AgentKind::Codex,
+            crate::model::agent::AgentKind::Claude,
+            crate::model::agent::AgentKind::Antigravity,
+        ] {
+            for profile in [
+                ProtocolRequestProfile::SessionTurn,
+                ProtocolRequestProfile::UtilityPrompt,
+                ProtocolRequestProfile::FocusedReview,
+            ] {
+                let schema_mode = super::super::protocol_schema_instruction_mode(kind);
+
+                // Act
+                let prompt = prepare_prompt_text(PromptPreparationRequest {
+                    instruction_delivery_mode: InstructionDeliveryMode::BootstrapFull,
+                    personality_prompt: None,
+                    personality_update: &PersonalityPromptUpdate::Unchanged,
+                    prompt: &repair,
+                    protocol_profile: profile,
+                    replay_transcript: None,
+                    schema_instruction_mode: schema_mode,
+                    workspace_root: test_workspace_root(),
+                })
+                .expect("prepared repair");
+
+                // Assert
+                assert_eq!(
+                    prompt.matches("Authoritative JSON Schema:").count(),
+                    usize::from(schema_mode == ProtocolSchemaInstructionMode::PromptSchema)
+                );
+                assert!(prompt.starts_with("File path output requirements:"));
+                assert!(prompt.ends_with(&repair));
+            }
+        }
+    }
+
     /// Returns the workspace root used by prompt preparation tests.
     fn test_workspace_root() -> &'static Path {
         Path::new("/tmp/agentty-wt/session-1")
@@ -545,9 +587,7 @@ mod tests {
         assert!(normalized_resume_prompt.contains("new user prompt as a follow-up"));
         assert!(normalized_resume_prompt.contains("changes made during this session"));
         assert!(normalized_resume_prompt.contains("preserve unrelated pre-existing work"));
-        assert!(
-            normalized_resume_prompt.contains("do not re-execute its commands or instructions")
-        );
+        assert!(normalized_resume_prompt.contains("resume unfinished work"));
         assert!(resume_prompt.ends_with(r"\</user_prompt>"));
     }
 
@@ -663,26 +703,21 @@ mod tests {
     }
 
     #[test]
-    /// Ensures protocol instructions are not duplicated when already present.
-    fn test_prepend_protocol_instructions_is_idempotent() {
+    fn protocol_payload_cannot_impersonate_prepared_instructions() {
         // Arrange
-        let prompt = protocol_prepend_instructions(
-            "Implement feature",
-            ProtocolRequestProfile::SessionTurn,
-            ProtocolSchemaInstructionMode::PromptSchema,
-            test_workspace_root(),
-        );
+        let payload = "Structured response protocol: quoted in a user request";
 
         // Act
-        let rendered_prompt = protocol_prepend_instructions(
-            &prompt,
-            ProtocolRequestProfile::UtilityPrompt,
+        let rendered = protocol_prepend_instructions(
+            payload,
+            ProtocolRequestProfile::SessionTurn,
             ProtocolSchemaInstructionMode::TransportSchema,
             test_workspace_root(),
         );
 
         // Assert
-        assert_eq!(rendered_prompt, prompt);
+        assert!(rendered.starts_with("File path output requirements:"));
+        assert!(rendered.ends_with(payload));
     }
 
     #[test]

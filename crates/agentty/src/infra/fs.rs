@@ -24,6 +24,13 @@ pub enum FsError {
 /// `MockFsClient` to avoid mutating the real filesystem.
 #[cfg_attr(test, mockall::automock)]
 pub trait FsClient: Send + Sync {
+    /// Reclaims registered stale agent archives in immediate child worktrees
+    /// of the trusted, repository-external managed-worktree `root`.
+    ///
+    /// # Errors
+    /// Returns an error when recovery cannot inspect or remove an archive.
+    fn cleanup_agent_artifacts(&self, root: PathBuf) -> FsFuture<Result<(), FsError>>;
+
     /// Recursively creates `path` and its missing parents.
     ///
     /// # Errors
@@ -89,6 +96,29 @@ pub trait FsClient: Send + Sync {
 pub struct RealFsClient;
 
 impl FsClient for RealFsClient {
+    fn cleanup_agent_artifacts(&self, root: PathBuf) -> FsFuture<Result<(), FsError>> {
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let entries = match std::fs::read_dir(root) {
+                    Ok(entries) => entries,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(FsError::from(error)),
+                };
+                for entry in entries {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        ag_agent::cleanup_session_worktree_artifacts(&entry.path())
+                            .map_err(std::io::Error::other)?;
+                    }
+                }
+
+                Ok(())
+            })
+            .await
+            .map_err(std::io::Error::other)?
+        })
+    }
+
     fn create_dir_all(&self, path: PathBuf) -> FsFuture<Result<(), FsError>> {
         Box::pin(async move { tokio::fs::create_dir_all(path).await.map_err(FsError::from) })
     }
@@ -145,6 +175,45 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[tokio::test]
+    async fn startup_cleanup_scans_worktrees_without_following_links() {
+        // Arrange
+        let root = tempdir().expect("worktrees");
+        let worktree = root.path().join("session");
+        let archive = worktree.join(".agentty-replay-orphan");
+        std::fs::create_dir_all(&archive).expect("archive");
+        std::fs::write(archive.join(".gitignore"), "*\n").expect("marker");
+        std::fs::write(archive.join("history.md"), "private").expect("history");
+        let elsewhere = tempdir().expect("outside root");
+        let linked_archive = elsewhere.path().join(".agentty-replay-keep");
+        std::fs::create_dir(&linked_archive).expect("archive");
+        std::fs::write(linked_archive.join(".gitignore"), "*\n").expect("marker");
+        std::os::unix::fs::symlink(elsewhere.path(), root.path().join("linked"))
+            .expect("worktree symlink");
+        let file = root.path().join("file");
+        std::fs::write(&file, "preserve").expect("file");
+
+        // Act
+        RealFsClient
+            .cleanup_agent_artifacts(root.path().to_owned())
+            .await
+            .expect("cleanup");
+        let missing = RealFsClient
+            .cleanup_agent_artifacts(root.path().join("missing"))
+            .await;
+        let invalid = RealFsClient.cleanup_agent_artifacts(file.clone()).await;
+
+        // Assert
+        assert_eq!(
+            std::fs::read_to_string(archive.join("history.md")).expect("preserved history"),
+            "private"
+        );
+        assert!(linked_archive.exists());
+        assert!(file.exists());
+        assert!(missing.is_ok());
+        assert!(invalid.is_err());
+    }
 
     /// Verifies `RealFsClient::read_file()` reads bytes through the async
     /// filesystem adapter.
