@@ -17,6 +17,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::SessionMessage;
 
+const SESSION_BRANCH_PREFIX: &str = "wt/";
+
+/// Returns the default worktree branch name for a session.
+pub fn session_branch(session_id: &str) -> String {
+    let len = session_id.len().min(8);
+
+    format!("{SESSION_BRANCH_PREFIX}{}", &session_id[..len])
+}
+
 /// Number of seconds in one activity-calendar day.
 const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -484,6 +493,18 @@ pub fn activity_day_key_with_offset(timestamp_seconds: i64, utc_offset_seconds: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_session_branch_uses_first_8_chars() {
+        // Arrange
+        let session_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+        // Act
+        let branch = session_branch(session_id);
+
+        // Assert
+        assert_eq!(branch, "wt/a1b2c3d4");
+    }
 
     #[test]
     fn session_id_round_trips_json() {

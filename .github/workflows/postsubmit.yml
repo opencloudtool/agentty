@@ -38,6 +38,8 @@ jobs:
             hook: test-ag-harness-src
           - member: ag-harness-cli
             hook: test-ag-harness-cli-src
+          - member: ag-orchestration
+            hook: test-ag-orchestration-src
           - member: ag-protocol
             hook: test-ag-protocol-src
           - member: ag-session

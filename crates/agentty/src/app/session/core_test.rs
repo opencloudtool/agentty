@@ -6986,18 +6986,6 @@ fn test_session_folder_uses_first_8_chars() {
 }
 
 #[test]
-fn test_session_branch_uses_first_8_chars() {
-    // Arrange
-    let session_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-
-    // Act
-    let branch = session_branch(session_id);
-
-    // Assert
-    assert_eq!(branch, "wt/a1b2c3d4");
-}
-
-#[test]
 fn orchestration_research_creation_uses_managed_read_only_role_and_task_link() {
     // Arrange
     let creation_kind = SessionCreationKind::OrchestrationResearch { task_id: 42 };

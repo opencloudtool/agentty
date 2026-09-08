@@ -1,0 +1,27 @@
+[package]
+name = "ag-orchestration"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ag-git.workspace = true
+ag-protocol.workspace = true
+ag-session.workspace = true
+ag-store.workspace = true
+askama.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+ag-agent.workspace = true
+ag-git = { workspace = true, features = ["test-utils"] }
+ag-store = { workspace = true, features = ["test-utils"] }

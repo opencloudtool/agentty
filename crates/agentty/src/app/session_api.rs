@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ag_agent::{ReasoningLevel, ResponseStyle, SpeedMode, parse_persisted_session_agent_model};
+use ag_orchestration::{OrchestrationApprovalOutcome, child_session_is_stopped};
 use ag_protocol::QuestionItem;
 use ag_session::{
     AnswerQuestionsRequest, CoordinatorMessageRequest, CoordinatorMessageVisibility,
@@ -18,7 +19,6 @@ use tokio::sync::oneshot;
 #[cfg(test)]
 use crate::app::branch_publish::{BranchPublishTaskSuccess, review_request_from_publish_result};
 use crate::app::branch_publish::{branch_publish_loading_label, review_request_queued_label};
-use crate::app::orchestration::{OrchestrationApprovalOutcome, child_session_is_stopped};
 use crate::app::session::{
     SessionCreationKind, SessionCreationSettings, migrate_session_off_retired_model,
 };
@@ -108,8 +108,8 @@ impl App {
         controller_session_id: &str,
         integration_approach: Option<IntegrationApproach>,
     ) -> OrchestrationApprovalOutcome {
-        let outcome = crate::app::orchestration::approve_orchestration(
-            self.services.db(),
+        let outcome = ag_orchestration::approve_orchestration(
+            self.services.db().orchestrations(),
             controller_session_id,
             integration_approach,
         )
@@ -124,10 +124,9 @@ impl App {
 
     /// Detaches one managed child and schedules a session-list refresh.
     pub(crate) async fn detach_managed_child(&self, child_session_id: &str) -> bool {
-        let detached =
-            crate::app::orchestration::detach_managed_child(self.services.db(), child_session_id)
-                .await
-                .unwrap_or(false);
+        let detached = ag_orchestration::detach_managed_child(self.services.db(), child_session_id)
+            .await
+            .unwrap_or(false);
         if detached {
             self.services.emit_app_event(AppEvent::RefreshSessions);
         }
@@ -709,7 +708,7 @@ impl App {
     /// Returns the active child count displayed in orchestration cancellation
     /// confirmation.
     pub(crate) async fn orchestration_running_child_count(&self, session_id: &str) -> usize {
-        crate::app::orchestration::running_child_count(self.services.db(), session_id).await
+        ag_orchestration::running_child_count(self.services.db(), session_id).await
     }
 
     /// Claims structured question answers against the current persisted

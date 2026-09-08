@@ -1,5 +1,6 @@
 use std::io;
 
+use ag_orchestration::OrchestrationApprovalOutcome;
 use crossterm::event::{self, KeyCode, KeyEvent};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -7,7 +8,7 @@ use ratatui::layout::Rect;
 use tracing::warn;
 
 use crate::app::session::{SessionTaskService, remote_branch_name_from_upstream_ref};
-use crate::app::{self, App, AppEvent, OrchestrationApprovalOutcome, ReviewCacheEntry};
+use crate::app::{self, App, AppEvent, ReviewCacheEntry};
 use crate::domain::input::InputState;
 use crate::domain::session::{FollowUpTaskAction, PublishBranchAction, SessionId, Status};
 use crate::domain::session_message::SessionMessageKind;

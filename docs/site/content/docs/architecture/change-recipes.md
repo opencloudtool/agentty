@@ -29,6 +29,16 @@ through the correct modules without crossing layer boundaries.
 1. Update docs when lifecycle/status behavior changes:
    `docs/site/content/docs/usage/workflow.md`.
 
+## Changing Campaign Orchestration
+
+1. Keep shared task and lifecycle models in `ag-session`, campaign policy and prompts in
+   `ag-orchestration`, and SQL in `ag-store`.
+1. Route session mutations through `SessionService`. Emit campaign notifications through
+   `OrchestrationEventSink`; Agentty owns translation to reducer events and injects the
+   reconciliation schedule.
+1. Run `test-ag-orchestration-src` and affected session/store/application checks through
+   `prek`. Preserve the campaign E2E coverage in `crates/agentty/tests/e2e/`.
+
 ## Add a New Agent Backend or Model
 
 1. Update provider model declarations in `crates/ag-agent/src/model/agent.rs`.

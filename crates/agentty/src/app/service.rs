@@ -8,6 +8,7 @@ use std::time::Duration;
 use ag_agent::{AppServerClient, OneShotClient, RealOneShotClient};
 use ag_forge::ReviewRequestClient;
 use ag_git::GitClient;
+use ag_orchestration::{OrchestrationEvent, OrchestrationEventSink};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Instant};
@@ -303,6 +304,22 @@ impl AppServices {
     }
 }
 
+impl OrchestrationEventSink for AppServices {
+    fn emit(&self, event: OrchestrationEvent) {
+        let event = match event {
+            OrchestrationEvent::RefreshSessions => AppEvent::RefreshSessions,
+            OrchestrationEvent::ProgressUpdated {
+                progress,
+                session_id,
+            } => AppEvent::SessionOrchestrationProgressUpdated {
+                progress,
+                session_id,
+            },
+        };
+        self.emit_app_event(event);
+    }
+}
+
 /// Waits for tracked cleanup tasks until one shared deadline, then cancels
 /// every unfinished task so terminal shutdown can continue.
 async fn wait_for_cleanup_task_handles(
@@ -405,6 +422,41 @@ mod tests {
     use std::future;
 
     use super::*;
+
+    #[tokio::test]
+    async fn orchestration_notifications_reach_the_app_event_channel() {
+        // Arrange
+        let (app, _directory) = crate::test_support::new_test_app().await;
+        let mut services = app.services;
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        services.event_tx = event_tx;
+        let session_id = SessionId::from("controller");
+
+        // Act
+        services.emit(OrchestrationEvent::RefreshSessions);
+        for progress in [Some("Running 2 tasks".to_string()), None] {
+            services.emit(OrchestrationEvent::ProgressUpdated {
+                progress,
+                session_id: session_id.clone(),
+            });
+        }
+
+        // Assert
+        assert_eq!(
+            event_rx.try_recv().expect("refresh event"),
+            AppEvent::RefreshSessions
+        );
+        for progress in [Some("Running 2 tasks".to_string()), None] {
+            assert_eq!(
+                event_rx.try_recv().expect("progress event"),
+                AppEvent::SessionOrchestrationProgressUpdated {
+                    progress,
+                    session_id: session_id.clone(),
+                }
+            );
+        }
+        assert!(event_rx.try_recv().is_err());
+    }
 
     #[test]
     fn app_event_label_names_session_review_comment_snapshot_loads() {

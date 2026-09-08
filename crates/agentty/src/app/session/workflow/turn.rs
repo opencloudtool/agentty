@@ -274,8 +274,7 @@ async fn prepare_agent_prompt(
 ) -> TurnPrompt {
     let session_role = load_session_role(&context.db, &context.session_id).await;
     let agent_prompt =
-        crate::app::orchestration::controller_prompt(&context.db, &context.session_id, prompt)
-            .await;
+        ag_orchestration::controller_prompt(&context.db, &context.session_id, prompt).await;
 
     apply_read_only_chat_prompt(agent_prompt, permission_mode, session_role)
 }

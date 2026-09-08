@@ -1,9 +1,9 @@
 //! Multi-session orchestration planning, reconciliation, and fan-in.
 //!
 //! Controller turns persist validated plans before approval. A background
-//! coordinator reads child state directly from `SQLite` and uses the foreground
-//! session runtime only for mutations, keeping polling off the bounded actor
-//! mailbox used by interactive commands.
+//! coordinator reads child state through persistence repositories and uses
+//! `SessionService` for mutations. Hosts supply notification and scheduling
+//! boundaries independently of their frontend.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -16,30 +16,21 @@ use ag_protocol::{
 };
 use ag_session::{
     CoordinatorMessageRequest, CoordinatorMessageVisibility, CreateSessionMode,
-    CreateSessionRequest, SessionId, SessionRole, SessionService, SessionStatus,
-};
-use askama::Template;
-use async_trait::async_trait;
-use tokio::sync::mpsc;
-use tracing::warn;
-
-use crate::app::AppEvent;
-use crate::app::prompt_intent::build_apply_review_prompt;
-use crate::app::session::session_branch;
-use crate::domain::orchestration::{
-    IntegrationApproach, MAX_AUTOMATED_REVIEW_ITERATIONS, OrchestrationPlanTask,
+    CreateSessionRequest, DEFAULT_AUTO_APPROVE_ORCHESTRATION_RESEARCH,
+    DEFAULT_ORCHESTRATION_PARALLELISM, FocusedReviewStatus, IntegrationApproach,
+    MAX_AUTOMATED_REVIEW_ITERATIONS, MAX_ORCHESTRATION_PARALLELISM, OrchestrationPlanTask,
     OrchestrationPolicy, OrchestrationStatus, OrchestrationTaskKind, OrchestrationTaskStatus,
-    validate_subtasks as validate_orchestration_plan,
+    SessionId, SessionRole, SessionService, SessionStatus, SettingName, build_apply_review_prompt,
+    review_suggestions, session_branch, validate_subtasks as validate_orchestration_plan,
 };
-use crate::domain::review::{self, FocusedReviewStatus};
-use crate::domain::setting::{
-    DEFAULT_AUTO_APPROVE_ORCHESTRATION_RESEARCH, DEFAULT_ORCHESTRATION_PARALLELISM,
-    MAX_ORCHESTRATION_PARALLELISM, SettingName,
-};
-use crate::infra::db::{
+use ag_store::{
     AppRepositories, DbError, OrchestrationRepository, PersistedOrchestrationTask,
     SessionOrchestrationMetadataRow, SessionOrchestrationRow, SessionOrchestrationTaskRow,
 };
+use askama::Template;
+use tracing::warn;
+
+use crate::event::{OrchestrationEvent, OrchestrationEventSink, OrchestrationSchedule};
 
 /// Maximum child summary length persisted into a roll-up.
 const RESULT_SUMMARY_MAX_CHARS: usize = 800;
@@ -63,7 +54,7 @@ const CONTROLLER_SNAPSHOT_TRUNCATION_SUFFIX: &str = "…(truncated)";
 
 /// Result of attempting to advance one parked campaign step.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OrchestrationApprovalOutcome {
+pub enum OrchestrationApprovalOutcome {
     /// The parked plan or integration step advanced.
     Approved,
     /// Integration cannot advance until the user selects its destination.
@@ -103,13 +94,15 @@ struct OrchestrationResearchPromptTemplate<'a> {
 
 /// Derived list metadata for one controller or child session.
 #[derive(Clone, Default)]
-pub(crate) struct OrchestrationSessionMetadata {
-    pub(crate) controller_session_id: Option<SessionId>,
-    pub(crate) progress: Option<String>,
+pub struct OrchestrationSessionMetadata {
+    /// Controller owning this managed child, when present.
+    pub controller_session_id: Option<SessionId>,
+    /// Human-readable progress for the session list.
+    pub progress: Option<String>,
 }
 
 /// Applies controller-only instructions to a turn prompt.
-pub(crate) async fn controller_prompt(
+pub async fn controller_prompt(
     db: &AppRepositories,
     session_id: &str,
     prompt: TurnPrompt,
@@ -144,7 +137,10 @@ pub(crate) async fn controller_prompt(
 }
 
 /// Persists a validated controller plan before the turn parks for approval.
-pub(crate) async fn persist_controller_plan(
+///
+/// # Errors
+/// Returns a repository error if reading or persisting the campaign fails.
+pub async fn persist_controller_plan(
     db: &AppRepositories,
     controller_session_id: &str,
     response: &mut AgentResponse,
@@ -243,7 +239,10 @@ pub(crate) async fn persist_controller_plan(
 
 /// Computes and persists a touched-area planning comparison for one settled
 /// managed child through the injected Git boundary.
-pub(crate) async fn persist_managed_child_area_compliance(
+///
+/// # Errors
+/// Returns an error if task metadata, Git inspection, or persistence fails.
+pub async fn persist_managed_child_area_compliance(
     db: &AppRepositories,
     git_client: &dyn GitClient,
     child_session_id: &str,
@@ -653,13 +652,15 @@ fn area_violations(changed_files: &[String], touched_areas: &[String]) -> Vec<St
 }
 
 /// Approves the currently parked campaign step.
-pub(crate) async fn approve_orchestration(
-    db: &AppRepositories,
+///
+/// # Errors
+/// Returns a repository error if reading or advancing the campaign fails.
+pub async fn approve_orchestration(
+    repository: &dyn OrchestrationRepository,
     controller_session_id: &str,
     integration_approach: Option<IntegrationApproach>,
 ) -> Result<OrchestrationApprovalOutcome, DbError> {
-    let Some(orchestration) = db
-        .orchestrations()
+    let Some(orchestration) = repository
         .load_orchestration_for_controller(controller_session_id)
         .await?
     else {
@@ -667,8 +668,7 @@ pub(crate) async fn approve_orchestration(
     };
     match orchestration.status.parse::<OrchestrationStatus>() {
         Ok(OrchestrationStatus::AwaitingApproval) => {
-            let approved = db
-                .orchestrations()
+            let approved = repository
                 .approve_orchestration_plan(orchestration.id)
                 .await?;
 
@@ -679,8 +679,7 @@ pub(crate) async fn approve_orchestration(
             });
         }
         Ok(OrchestrationStatus::AwaitingIntegration) => {
-            let tasks = db
-                .orchestrations()
+            let tasks = repository
                 .load_orchestration_tasks(orchestration.id)
                 .await?;
             if tasks.iter().any(task_blocks_integration_approval) {
@@ -689,8 +688,7 @@ pub(crate) async fn approve_orchestration(
             let Some(integration_approach) = integration_approach else {
                 return Ok(OrchestrationApprovalOutcome::IntegrationApproachRequired);
             };
-            let approved = db
-                .orchestrations()
+            let approved = repository
                 .approve_orchestration_integration(orchestration.id, integration_approach)
                 .await?;
 
@@ -707,7 +705,10 @@ pub(crate) async fn approve_orchestration(
 }
 
 /// Permanently transfers a managed child from its campaign to the user.
-pub(crate) async fn detach_managed_child(
+///
+/// # Errors
+/// Returns a repository error if detaching the child fails.
+pub async fn detach_managed_child(
     db: &AppRepositories,
     child_session_id: &str,
 ) -> Result<bool, DbError> {
@@ -718,7 +719,7 @@ pub(crate) async fn detach_managed_child(
 
 /// Bulk-loads controller-child adjacency and controller progress for one
 /// project's session-list refresh.
-pub(crate) async fn session_metadata_for_project(
+pub async fn session_metadata_for_project(
     db: &AppRepositories,
     project_id: i64,
 ) -> HashMap<String, OrchestrationSessionMetadata> {
@@ -736,10 +737,7 @@ pub(crate) async fn session_metadata_for_project(
 }
 
 /// Returns the active child count shown in cascade-cancel confirmation.
-pub(crate) async fn running_child_count(
-    db: &AppRepositories,
-    controller_session_id: &str,
-) -> usize {
+pub async fn running_child_count(db: &AppRepositories, controller_session_id: &str) -> usize {
     let Ok(Some(orchestration)) = db
         .orchestrations()
         .load_orchestration_for_controller(controller_session_id)
@@ -773,18 +771,10 @@ pub(crate) async fn running_child_count(
     active_child_count
 }
 
-/// Runtime-owned schedule that wakes orchestration reconciliation.
-#[async_trait]
-pub(crate) trait OrchestrationSchedule: Send {
-    /// Waits until the coordinator should reconcile its next persisted
-    /// snapshot.
-    async fn wait_for_reconciliation(&mut self);
-}
-
-/// Reconciles all active orchestrations while the foreground runtime is
-/// available.
-pub(crate) struct OrchestrationCoordinator {
-    event_tx: mpsc::UnboundedSender<AppEvent>,
+/// Reconciles active campaigns through host-provided session and persistence
+/// ports.
+pub struct OrchestrationCoordinator {
+    events: Arc<dyn OrchestrationEventSink>,
     live_statuses: Mutex<HashMap<i64, String>>,
     repository: Arc<dyn OrchestrationRepository>,
     session_service: SessionService,
@@ -792,22 +782,22 @@ pub(crate) struct OrchestrationCoordinator {
 
 impl OrchestrationCoordinator {
     /// Creates a coordinator from cloneable persistence and session ports.
-    pub(crate) fn new(
-        event_tx: mpsc::UnboundedSender<AppEvent>,
+    pub fn new(
+        events: Arc<dyn OrchestrationEventSink>,
         repository: Arc<dyn OrchestrationRepository>,
         session_service: SessionService,
     ) -> Self {
         Self {
-            event_tx,
+            events,
             live_statuses: Mutex::new(HashMap::new()),
             repository,
             session_service,
         }
     }
 
-    /// Runs reconciliation on an injected schedule until the terminal loop
-    /// cancels the task.
-    pub(crate) async fn run(self, mut schedule: impl OrchestrationSchedule) {
+    /// Runs reconciliation on an injected schedule until the host cancels
+    /// the task.
+    pub async fn run(self, mut schedule: impl OrchestrationSchedule) {
         loop {
             schedule.wait_for_reconciliation().await;
             if let Err(error) = self.reconcile_once().await {
@@ -817,7 +807,11 @@ impl OrchestrationCoordinator {
     }
 
     /// Reconciles one snapshot of every active orchestration.
-    pub(crate) async fn reconcile_once(&self) -> Result<(), String> {
+    ///
+    /// # Errors
+    /// Returns an error if a campaign cannot be reconciled through the injected
+    /// ports.
+    pub async fn reconcile_once(&self) -> Result<(), String> {
         let orchestrations = self
             .repository
             .load_active_orchestrations()
@@ -950,20 +944,16 @@ impl OrchestrationCoordinator {
         if let Some(error) = first_cancellation_error {
             return Err(error);
         }
-        if tasks
-            .iter()
-            .all(|task| task_status(task).is_some_and(OrchestrationTaskStatus::is_settled))
-        {
-            self.repository
-                .update_orchestration_status(
-                    orchestration.id,
-                    &OrchestrationStatus::Canceled.to_string(),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            self.clear_live_status(orchestration);
-            let _ = self.event_tx.send(AppEvent::RefreshSessions);
-        }
+        // Every task was already settled or successfully canceled above.
+        self.repository
+            .update_orchestration_status(
+                orchestration.id,
+                &OrchestrationStatus::Canceled.to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        self.clear_live_status(orchestration);
+        self.events.emit(OrchestrationEvent::RefreshSessions);
 
         Ok(())
     }
@@ -1047,7 +1037,7 @@ impl OrchestrationCoordinator {
             .await
             .map_err(|error| error.to_string())?;
         if surfaced {
-            let _ = self.event_tx.send(AppEvent::RefreshSessions);
+            self.events.emit(OrchestrationEvent::RefreshSessions);
         }
 
         Ok(())
@@ -1284,7 +1274,7 @@ impl OrchestrationCoordinator {
             .map_err(|error| error.to_string())?;
         if completed {
             self.clear_live_status(orchestration);
-            let _ = self.event_tx.send(AppEvent::RefreshSessions);
+            self.events.emit(OrchestrationEvent::RefreshSessions);
         }
 
         Ok(())
@@ -1482,7 +1472,7 @@ impl OrchestrationCoordinator {
                 let suggestions = task
                     .child_focused_review_text
                     .as_deref()
-                    .and_then(review::review_suggestions);
+                    .and_then(review_suggestions);
                 let Some(suggestions) = suggestions else {
                     self.complete_task_review(task).await?;
 
@@ -1765,7 +1755,7 @@ impl OrchestrationCoordinator {
         {
             self.fail_task_spawn(task, error.to_string()).await?;
         }
-        let _ = self.event_tx.send(AppEvent::RefreshSessions);
+        self.events.emit(OrchestrationEvent::RefreshSessions);
 
         Ok(())
     }
@@ -1776,7 +1766,7 @@ impl OrchestrationCoordinator {
             .cancel_session(&child_session_id)
             .await
             .map_err(|error| error.to_string())?;
-        let _ = self.event_tx.send(AppEvent::RefreshSessions);
+        self.events.emit(OrchestrationEvent::RefreshSessions);
 
         Ok(())
     }
@@ -1820,24 +1810,20 @@ impl OrchestrationCoordinator {
             return;
         }
 
-        let _ = self
-            .event_tx
-            .send(AppEvent::SessionOrchestrationProgressUpdated {
-                progress: Some(message),
-                session_id: SessionId::from(orchestration.controller_session_id.clone()),
-            });
+        self.events.emit(OrchestrationEvent::ProgressUpdated {
+            progress: Some(message),
+            session_id: SessionId::from(orchestration.controller_session_id.clone()),
+        });
     }
 
     fn clear_live_status(&self, orchestration: &SessionOrchestrationRow) {
         if let Ok(mut live_statuses) = self.live_statuses.lock() {
             live_statuses.remove(&orchestration.id);
         }
-        let _ = self
-            .event_tx
-            .send(AppEvent::SessionOrchestrationProgressUpdated {
-                progress: None,
-                session_id: SessionId::from(orchestration.controller_session_id.clone()),
-            });
+        self.events.emit(OrchestrationEvent::ProgressUpdated {
+            progress: None,
+            session_id: SessionId::from(orchestration.controller_session_id.clone()),
+        });
     }
 
     async fn submit_rollup(
@@ -2025,7 +2011,7 @@ fn task_is_integration_settled(task: &SessionOrchestrationTaskRow) -> bool {
 }
 
 /// Returns whether an observed child can no longer perform branch work.
-pub(crate) fn child_session_is_stopped(status: Option<&str>) -> bool {
+pub fn child_session_is_stopped(status: Option<&str>) -> bool {
     status
         .and_then(|status| status.parse::<SessionStatus>().ok())
         .is_some_and(|status| {
@@ -2276,7 +2262,7 @@ fn campaign_task_evidence(task: &SessionOrchestrationTaskRow) -> String {
                 && task
                     .child_focused_review_text
                     .as_deref()
-                    .and_then(review::review_suggestions)
+                    .and_then(review_suggestions)
                     .is_some() =>
         {
             format!(
@@ -2397,7 +2383,7 @@ fn rollup_review_evidence(task: &SessionOrchestrationTaskRow) -> String {
             if let Some(suggestions) = task
                 .child_focused_review_text
                 .as_deref()
-                .and_then(review::review_suggestions)
+                .and_then(review_suggestions)
             {
                 return format!(
                     "automatic remediation limit reached after {}/{} turns; remaining \
@@ -2491,18 +2477,162 @@ mod tests {
     use std::error::Error;
     use std::sync::Mutex;
 
-    use ag_agent::{AgentKind, ReasoningLevel};
+    use ag_agent::{AgentKind, ReasoningLevel, SpeedMode};
     use ag_git::MockGitClient;
     use ag_protocol::VerificationVerdictItem;
     use ag_session::{
         AnswerQuestionsRequest, ForgeKind, ReviewRequest, ReviewRequestState, ReviewRequestSummary,
         Session, SessionBackend, SessionError,
     };
+    use ag_store::{MockOrchestrationRepository, PersistedSessionCreation};
     use async_trait::async_trait;
+    use tokio::sync::mpsc;
 
     use super::*;
-    use crate::domain::agent::SpeedMode;
-    use crate::infra::db::{MockOrchestrationRepository, PersistedSessionCreation};
+
+    #[tokio::test]
+    async fn approval_reports_unavailable_when_another_actor_advances_the_campaign() {
+        // Arrange
+        for phase in [
+            OrchestrationStatus::AwaitingApproval,
+            OrchestrationStatus::AwaitingIntegration,
+        ] {
+            let mut repository = MockOrchestrationRepository::new();
+            let mut snapshot = orchestration(2);
+            snapshot.status = phase.to_string();
+            repository
+                .expect_load_orchestration_for_controller()
+                .withf(|id| id == "controller")
+                .once()
+                .return_once(move |_| Ok(Some(snapshot)));
+            if phase == OrchestrationStatus::AwaitingApproval {
+                repository
+                    .expect_approve_orchestration_plan()
+                    .withf(|id| *id == 1)
+                    .once()
+                    .returning(|_| Ok(false));
+            } else {
+                repository
+                    .expect_load_orchestration_tasks()
+                    .withf(|id| *id == 1)
+                    .once()
+                    .returning(|_| Ok(Vec::new()));
+                repository
+                    .expect_approve_orchestration_integration()
+                    .withf(|id, approach| *id == 1 && *approach == IntegrationApproach::LocalMerge)
+                    .once()
+                    .returning(|_, _| Ok(false));
+            }
+
+            // Act
+            let outcome = approve_orchestration(
+                &repository,
+                "controller",
+                Some(IntegrationApproach::LocalMerge),
+            )
+            .await
+            .expect("stale approval is not a repository failure");
+
+            // Assert
+            assert_eq!(outcome, OrchestrationApprovalOutcome::Unavailable);
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_active_follow_up_preserves_the_persisted_plan_and_requests_revision() {
+        // Arrange
+        let (database, _) = controller_database().await;
+        let (campaign, _, _, _) = persist_approved_plan(
+            &database,
+            vec![subtask("protocol", &[]), subtask("ui", &[])],
+        )
+        .await;
+        let before = database
+            .orchestrations()
+            .load_orchestration_tasks(campaign.id)
+            .await
+            .expect("tasks should load");
+        let mut invalid = subtask("protocol", &[]);
+        invalid.prompt.clear();
+        let mut response = AgentResponse::plain("Follow up");
+        response.subtasks = vec![invalid];
+
+        // Act
+        persist_controller_plan(&database, "controller", &mut response)
+            .await
+            .expect("invalid follow-up should ask for revision");
+
+        // Assert
+        assert_eq!(response.subtasks, [] as [SubtaskItem; 0]);
+        assert_eq!(response.questions.len(), 1);
+        assert_eq!(
+            database
+                .orchestrations()
+                .load_orchestration_tasks(campaign.id)
+                .await
+                .expect("tasks should still load"),
+            before,
+        );
+    }
+
+    #[tokio::test]
+    async fn unrecognized_campaign_phase_does_not_issue_session_mutations() {
+        // Arrange
+        let backend = TestSessionBackend::default();
+        let mut repository = MockOrchestrationRepository::new();
+        let mut snapshot = orchestration(2);
+        snapshot.status = "Unrecognized".to_string();
+        repository
+            .expect_load_active_orchestrations()
+            .once()
+            .return_once(move || Ok(vec![snapshot]));
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
+
+        // Act
+        let result = coordinator.reconcile_once().await;
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        assert_eq!(backend.calls(), [] as [String; 0]);
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn repeated_terminal_result_does_not_rewrite_the_task_summary() {
+        // Arrange
+        let backend = TestSessionBackend::default();
+        let repository = MockOrchestrationRepository::new();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
+        let mut completed = task(1, "protocol", OrchestrationTaskStatus::Ready, Some("child"));
+        completed.child_status = Some(SessionStatus::Done.to_string());
+        completed.child_answer = Some("Completed".to_string());
+        completed.result_summary = Some("Completed".to_string());
+        let before = completed.clone();
+
+        // Act
+        coordinator
+            .reconcile_task(&mut completed)
+            .await
+            .expect("first observation");
+        coordinator
+            .reconcile_task(&mut completed)
+            .await
+            .expect("repeated observation");
+
+        // Assert
+        assert_eq!(completed, before);
+        assert_eq!(backend.calls(), [] as [String; 0]);
+    }
 
     #[derive(Clone, Default)]
     struct TestSessionBackend {
@@ -2861,7 +2991,11 @@ mod tests {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
         (
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service()),
+            OrchestrationCoordinator::new(
+                Arc::new(event_tx),
+                Arc::new(repository),
+                backend.service(),
+            ),
             updates,
         )
     }
@@ -3005,7 +3139,7 @@ mod tests {
             .load_orchestration_tasks(orchestration.id)
             .await
             .expect("failed to load tasks");
-        approve_orchestration(database, "controller", None)
+        approve_orchestration(database.orchestrations(), "controller", None)
             .await
             .expect("approval should start orchestration");
         let project_id = database
@@ -3925,8 +4059,11 @@ mod tests {
             });
         let backend = TestSessionBackend::default();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut campaign = orchestration(2);
         campaign.status = OrchestrationStatus::AwaitingApproval.to_string();
 
@@ -3939,7 +4076,7 @@ mod tests {
         // Assert
         assert!(matches!(
             event_rx.try_recv(),
-            Ok(AppEvent::SessionOrchestrationProgressUpdated { .. })
+            Ok(OrchestrationEvent::ProgressUpdated { .. })
         ));
     }
 
@@ -4121,8 +4258,11 @@ mod tests {
             .times(2)
             .returning(|_| Ok(true));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut campaign = orchestration(2);
         campaign.status = OrchestrationStatus::Integrating.to_string();
 
@@ -4171,8 +4311,11 @@ mod tests {
             .times(3)
             .returning(|_| Ok(IntegrationApproach::ReviewRequest.to_string()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut campaign = orchestration(2);
         campaign.status = OrchestrationStatus::Integrating.to_string();
 
@@ -4228,8 +4371,11 @@ mod tests {
             .times(2)
             .returning(|_| Ok(IntegrationApproach::ReviewRequest.to_string()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut campaign = orchestration(2);
         campaign.status = OrchestrationStatus::Integrating.to_string();
 
@@ -4276,8 +4422,11 @@ mod tests {
             .once()
             .returning(|_| Ok(IntegrationApproach::ReviewRequest.to_string()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut campaign = orchestration(2);
         campaign.status = OrchestrationStatus::Integrating.to_string();
 
@@ -4314,8 +4463,11 @@ mod tests {
             .once()
             .returning(|_| Ok(true));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut campaign = orchestration(2);
         campaign.status = OrchestrationStatus::AwaitingIntegration.to_string();
 
@@ -4387,8 +4539,11 @@ mod tests {
             .returning(|_| Ok(IntegrationApproach::LocalMerge.to_string()));
         let backend = TestSessionBackend::default();
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         let result = coordinator.reconcile_once().await;
@@ -4418,8 +4573,11 @@ mod tests {
             });
         let backend = TestSessionBackend::default();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut waiting = task(
             1,
             "waiting",
@@ -4444,7 +4602,10 @@ mod tests {
             .expect("empty questions should be ignored");
 
         // Assert
-        assert!(matches!(event_rx.try_recv(), Ok(AppEvent::RefreshSessions)));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(OrchestrationEvent::RefreshSessions)
+        ));
         assert!(event_rx.try_recv().is_err());
     }
 
@@ -4462,8 +4623,11 @@ mod tests {
             .returning(|_, _| Ok(()));
         let backend = TestSessionBackend::default();
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut pending = focused_review_task(
             1,
             "pending",
@@ -4576,8 +4740,11 @@ mod tests {
             });
         let backend = TestSessionBackend::default();
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut unclaimed = focused_review_task(
             4,
             "unclaimed",
@@ -4656,8 +4823,11 @@ mod tests {
             });
         let backend = TestSessionBackend::default();
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut base = review_applying_task();
         let mut lost_child = base.clone();
         lost_child.child_session_id = None;
@@ -4726,8 +4896,11 @@ mod tests {
             .returning(|_, _, _| Ok(()));
         let backend = TestSessionBackend::default();
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let base = review_applying_task();
         let observed = [
             SessionStatus::Question,
@@ -4785,8 +4958,11 @@ mod tests {
             .returning(|_| Ok(Some("queued".to_string())));
         let backend = TestSessionBackend::default();
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut applying = review_applying_task();
 
         // Act
@@ -4842,8 +5018,11 @@ mod tests {
             .returning(|_, _| Ok(()));
         let backend = TestSessionBackend::default();
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut base = task(
             1,
             "continue",
@@ -4927,8 +5106,11 @@ mod tests {
             });
         let backend = TestSessionBackend::default();
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         let coordinator_task = tokio::spawn(coordinator.run(OneShotSchedule::default()));
@@ -4980,14 +5162,14 @@ mod tests {
             });
         repository
             .expect_load_child_session_id_for_task()
-            .times(2)
-            .returning(|id| match id {
-                1 => Ok(Some("child-1".to_string())),
-                3 => Ok(None),
-                _ => Err(DbError::Io(std::io::Error::other(format!(
-                    "unexpected reverse-link lookup for task {id}"
-                )))),
-            });
+            .withf(|id| *id == 1)
+            .once()
+            .returning(|_| Ok(Some("child-1".to_string())));
+        repository
+            .expect_load_child_session_id_for_task()
+            .withf(|id| *id == 3)
+            .once()
+            .returning(|_| Ok(None));
         repository
             .expect_update_orchestration_task_status()
             .withf(|id, status, error| {
@@ -5003,8 +5185,11 @@ mod tests {
             .once()
             .returning(|_, _| Ok(()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         let result = coordinator.reconcile_once().await;
@@ -5053,8 +5238,11 @@ mod tests {
             .once()
             .returning(|_, _| Ok(()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         let first_result = coordinator.reconcile_once().await;
@@ -5112,8 +5300,11 @@ mod tests {
             .once()
             .returning(|_, _| Ok(true));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         coordinator
@@ -5156,8 +5347,11 @@ mod tests {
             .once()
             .returning(|_, _, _| Ok(OrchestrationTaskStatus::Planned.to_string()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut planned_task = task(1, "protocol", OrchestrationTaskStatus::Planned, None);
 
         // Act
@@ -5195,8 +5389,11 @@ mod tests {
             .once()
             .returning(|_, _| Ok(true));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut planned_task = task(1, "architecture", OrchestrationTaskStatus::Planned, None);
         planned_task.kind = OrchestrationTaskKind::Research.to_string();
         planned_task.prompt = "Map the runtime boundaries".to_string();
@@ -5240,8 +5437,11 @@ mod tests {
             .once()
             .returning(|_, _, _| Ok(()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut research = task(
             1,
             "architecture",
@@ -5283,8 +5483,11 @@ mod tests {
             .once()
             .returning(|_, _, _| Ok(()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut research = task(
             1,
             "architecture",
@@ -5419,8 +5622,11 @@ mod tests {
             .once()
             .returning(|_, _| Ok(true));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut planned_task = task(1, "protocol", OrchestrationTaskStatus::Planned, None);
 
         // Act
@@ -5450,8 +5656,11 @@ mod tests {
             .once()
             .returning(|_| Ok(false));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut planned_task = task(1, "protocol", OrchestrationTaskStatus::Planned, None);
 
         // Act
@@ -5485,8 +5694,11 @@ mod tests {
             .once()
             .returning(|_, _| Ok(false));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut planned_task = task(1, "protocol", OrchestrationTaskStatus::Planned, None);
 
         // Act
@@ -5523,8 +5735,11 @@ mod tests {
             .once()
             .returning(|_, _, _| Ok(OrchestrationTaskStatus::Planned.to_string()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut creating_task = task(1, "protocol", OrchestrationTaskStatus::Creating, None);
 
         // Act
@@ -5556,8 +5771,11 @@ mod tests {
             .once()
             .returning(|_| Ok(None));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut continued = task(
             1,
             "protocol",
@@ -5602,8 +5820,11 @@ mod tests {
             .once()
             .returning(|_, _| Ok(false));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let mut creating_task = task(1, "protocol", OrchestrationTaskStatus::Creating, None);
 
         // Act
@@ -5663,8 +5884,11 @@ mod tests {
             .once()
             .returning(|_, _, _| Ok(()));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         coordinator
@@ -5687,8 +5911,11 @@ mod tests {
         let repository = MockOrchestrationRepository::new();
         let backend = TestSessionBackend::default();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
         let orchestration = orchestration(2);
         let tasks = vec![
             task(
@@ -5707,7 +5934,7 @@ mod tests {
         // Assert
         assert_eq!(
             event_rx.try_recv(),
-            Ok(AppEvent::SessionOrchestrationProgressUpdated {
+            Ok(OrchestrationEvent::ProgressUpdated {
                 progress: Some(
                     "Phase: Running\nParallel workers: 2 (global setting)\n- protocol [protocol]: \
                      running\n- ui [ui]: waiting"
@@ -5724,7 +5951,7 @@ mod tests {
         // Assert
         assert_eq!(
             event_rx.try_recv(),
-            Ok(AppEvent::SessionOrchestrationProgressUpdated {
+            Ok(OrchestrationEvent::ProgressUpdated {
                 progress: None,
                 session_id: SessionId::from("controller"),
             })
@@ -5873,8 +6100,11 @@ mod tests {
             .once()
             .returning(|_| Ok(true));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         coordinator
@@ -5907,8 +6137,11 @@ mod tests {
             .once()
             .returning(|_| Ok(false));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         coordinator
@@ -5992,8 +6225,11 @@ mod tests {
             .returning(|_| Ok(Some("done".to_string())));
         expect_rollup_completion_failure_then_success(&mut repository);
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         let first_result = coordinator.reconcile_once().await;
@@ -6051,8 +6287,11 @@ mod tests {
             .once()
             .returning(|_| Ok(Some("failed".to_string())));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         coordinator
@@ -6109,8 +6348,11 @@ mod tests {
                     .pop_front())
             });
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
-        let coordinator =
-            OrchestrationCoordinator::new(event_tx, Arc::new(repository), backend.service());
+        let coordinator = OrchestrationCoordinator::new(
+            Arc::new(event_tx),
+            Arc::new(repository),
+            backend.service(),
+        );
 
         // Act
         let queued_result = coordinator.reconcile_once().await;
@@ -6490,7 +6732,7 @@ mod tests {
         persist_controller_plan(&database, "controller", &mut initial_response)
             .await
             .expect("initial plan should persist");
-        approve_orchestration(&database, "controller", None)
+        approve_orchestration(database.orchestrations(), "controller", None)
             .await
             .expect("approval should start orchestration");
         let mut repeated_response = AgentResponse::plain("Approval received");
@@ -6759,11 +7001,11 @@ mod tests {
             .complete_orchestration_rollup(orchestration.id)
             .await
             .expect("roll-up should complete");
-        let prompt_outcome = approve_orchestration(&database, "controller", None)
+        let prompt_outcome = approve_orchestration(database.orchestrations(), "controller", None)
             .await
             .expect("prompt eligibility should be inspected");
         let approval = approve_orchestration(
-            &database,
+            database.orchestrations(),
             "controller",
             Some(IntegrationApproach::LocalMerge),
         )
@@ -6894,7 +7136,7 @@ mod tests {
 
         // Act
         let outcome = approve_orchestration(
-            &database,
+            database.orchestrations(),
             "controller",
             Some(IntegrationApproach::LocalMerge),
         )
@@ -7094,7 +7336,7 @@ mod tests {
             .load_orchestration_tasks(orchestration.id)
             .await
             .expect("failed to load retried tasks");
-        approve_orchestration(&database, "controller", None)
+        approve_orchestration(database.orchestrations(), "controller", None)
             .await
             .expect("retry approval should start orchestration");
         let claimed = database

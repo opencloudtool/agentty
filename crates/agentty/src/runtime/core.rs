@@ -8,12 +8,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use ag_orchestration::{OrchestrationCoordinator, OrchestrationSchedule};
 use async_trait::async_trait;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use tokio::sync::mpsc;
 
-use crate::app::{App, OrchestrationCoordinator, OrchestrationSchedule};
+use crate::app::App;
 use crate::infra::clock::Clock;
 use crate::runtime::{FRAME_INTERVAL, PresentationState, event, terminal};
 
@@ -169,7 +170,7 @@ where
 {
     let _session_runtime_consumer = app.sessions.foreground_consumer();
     let orchestration_coordinator = OrchestrationCoordinator::new(
-        app.services.event_sender(),
+        Arc::new(app.services.clone()),
         app.services.db().orchestration_repository(),
         app.coordinator_session_service(),
     );
