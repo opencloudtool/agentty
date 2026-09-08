@@ -14,7 +14,8 @@ use crate::lifecycle::{
     LifecycleEmitter, LifecycleId, LifecycleObserver, ToolErrorType, ToolLifecycle, TurnLifecycle,
 };
 use crate::model::{
-    Model, ModelError, ModelMessage, ModelRequest, ModelResponse, ensure_unique_tool_call_ids,
+    Model, ModelError, ModelMessage, ModelRequest, ModelResponse, ReasoningEffort,
+    ensure_unique_tool_call_ids,
 };
 use crate::policy::Policy;
 use crate::read::{self, ReadError, ReadTool};
@@ -216,6 +217,7 @@ pub struct Harness {
     max_history_bytes: usize,
     max_tool_calls: usize,
     model: Arc<dyn Model>,
+    model_reasoning_effort: Option<ReasoningEffort>,
     policy: Policy,
     repository: Option<Repository>,
 }
@@ -230,6 +232,7 @@ impl Harness {
             max_history_bytes: DEFAULT_MAX_HISTORY_BYTES,
             max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
             model: Arc::new(model),
+            model_reasoning_effort: None,
             policy: Policy::default(),
             repository: None,
         }
@@ -293,6 +296,14 @@ impl Harness {
     #[must_use]
     pub fn max_history_bytes(mut self, max_history_bytes: NonZeroUsize) -> Self {
         self.max_history_bytes = max_history_bytes.get();
+
+        self
+    }
+
+    /// Sets the reasoning depth for model calls that do not specify one.
+    #[must_use]
+    pub fn model_reasoning_effort(mut self, reasoning_effort: ReasoningEffort) -> Self {
+        self.model_reasoning_effort = Some(reasoning_effort);
 
         self
     }
@@ -445,7 +456,13 @@ impl Harness {
         let mut tool_calls = Vec::new();
 
         loop {
-            let (response, activities, provider_session_id, native_resume_rejected) = self
+            let (
+                response,
+                activities,
+                provider_session_id,
+                native_resume_rejected,
+                reasoning_content,
+            ) = self
                 .complete_model_request(&request, model_request_index, turn_id)
                 .await?;
             if native_resume_rejected || provider_session_id.is_some() {
@@ -457,7 +474,7 @@ impl Harness {
 
             match response {
                 ModelResponse::Output(output) => {
-                    request.record_output(&output);
+                    request.record_output_with_reasoning(&output, reasoning_content);
                     let report = TurnReport::new(started_at.elapsed(), model_requests, tool_calls);
 
                     let provider_session_id = request.provider_session_id().map(str::to_string);
@@ -520,6 +537,11 @@ impl Harness {
         if self.lifecycle.is_enabled() {
             request.mark_lifecycle_observed();
         }
+        if request.model_reasoning_effort().is_none()
+            && let Some(reasoning_effort) = self.model_reasoning_effort
+        {
+            request = request.with_model_reasoning_effort(reasoning_effort);
+        }
         let read_allowed = self.policy.allows(Tool::Read);
         let write_allowed = self.policy.allows(Tool::Write);
         if !read_allowed && !write_allowed {
@@ -556,6 +578,7 @@ impl Harness {
             Vec<ModelRequestActivity>,
             Option<String>,
             bool,
+            Option<String>,
         ),
         TurnError,
     > {
@@ -564,9 +587,13 @@ impl Harness {
             .complete_model_attempt(request.clone(), model_request_index, turn_id)
             .await
         {
-            Ok((response, activity, provider_session_id)) => {
-                Ok((response, vec![activity], provider_session_id, false))
-            }
+            Ok((response, activity, provider_session_id, reasoning_content)) => Ok((
+                response,
+                vec![activity],
+                provider_session_id,
+                false,
+                reasoning_content,
+            )),
             Err(ModelAttemptError {
                 duration,
                 error: ModelError::ResumeUnavailable,
@@ -583,12 +610,15 @@ impl Harness {
                     .complete_model_attempt(replay_request, replay_index, turn_id)
                     .await
                 {
-                    Ok((response, replay_activity, provider_session_id)) => Ok((
-                        response,
-                        vec![rejected_activity, replay_activity],
-                        provider_session_id,
-                        true,
-                    )),
+                    Ok((response, replay_activity, provider_session_id, reasoning_content)) => {
+                        Ok((
+                            response,
+                            vec![rejected_activity, replay_activity],
+                            provider_session_id,
+                            true,
+                            reasoning_content,
+                        ))
+                    }
                     Err(failure) => Err(ResumeFailure::Replay {
                         source: failure.error,
                     }
@@ -610,7 +640,15 @@ impl Harness {
         request: ModelRequest,
         model_request_index: u64,
         turn_id: Option<LifecycleId>,
-    ) -> Result<(ModelResponse, ModelRequestActivity, Option<String>), ModelAttemptError> {
+    ) -> Result<
+        (
+            ModelResponse,
+            ModelRequestActivity,
+            Option<String>,
+            Option<String>,
+        ),
+        ModelAttemptError,
+    > {
         let started_at = Instant::now();
         let model_lifecycle =
             self.lifecycle
@@ -620,7 +658,7 @@ impl Harness {
             Some(model_lifecycle) => model_lifecycle.scope(operation).await,
             None => operation.await,
         };
-        let (response, completion, provider_session_id) = match completion {
+        let (response, completion, provider_session_id, reasoning_content) = match completion {
             Ok(completion) => completion.into_parts(),
             Err(error) => {
                 if let Some(model_lifecycle) = model_lifecycle {
@@ -656,7 +694,7 @@ impl Harness {
             model_lifecycle.completed(completion, response_type);
         }
 
-        Ok((response, activity, provider_session_id))
+        Ok((response, activity, provider_session_id, reasoning_content))
     }
 
     async fn execute_tool_call(
@@ -1409,6 +1447,52 @@ mod tests {
         assert!(turn_started_id(&events[1]).is_none());
         assert!(model_started_id(&events[0]).is_none());
         assert!(tool_requested_id(&events[0]).is_none());
+    }
+
+    #[tokio::test]
+    async fn applies_reasoning_effort_to_every_model_call() {
+        // Arrange
+        let mut model = model();
+        model
+            .expect_complete()
+            .times(1)
+            .withf(|request| request.model_reasoning_effort() == Some(ReasoningEffort::Low))
+            .returning(|_| {
+                Ok(response_without_metadata(ModelResponse::Output(json!({
+                    "summary": "quick"
+                }))))
+            });
+        let harness = Harness::new(model).model_reasoning_effort(ReasoningEffort::Low);
+
+        // Act
+        let output = harness
+            .run_once("reply quickly", object_schema())
+            .await
+            .expect("configured reasoning request should succeed");
+
+        // Assert
+        assert_eq!(output.output(), &json!({ "summary": "quick" }));
+    }
+
+    #[test]
+    fn preserves_request_reasoning_effort_over_harness_default() {
+        // Arrange
+        let harness = Harness::new(model()).model_reasoning_effort(ReasoningEffort::Low);
+        let request = ModelRequest::new("reply", object_schema())
+            .with_model_reasoning_effort(ReasoningEffort::High);
+
+        // Act
+        let (request, read_tool, write_tool) = harness
+            .prepare_request(request)
+            .expect("request preparation should succeed");
+
+        // Assert
+        assert_eq!(
+            request.model_reasoning_effort(),
+            Some(ReasoningEffort::High)
+        );
+        assert!(read_tool.is_none());
+        assert!(write_tool.is_none());
     }
 
     #[tokio::test]

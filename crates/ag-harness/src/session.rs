@@ -1113,6 +1113,16 @@ impl EncodedMessage {
     fn from_message(message: &ModelMessage) -> Result<Self, SessionError> {
         let (kind, payload) = match message {
             ModelMessage::Assistant(content) => ("assistant", serialize_payload(content)),
+            ModelMessage::AssistantReasoning {
+                content,
+                reasoning_content,
+            } => (
+                "assistant_reasoning",
+                serialize_payload(&StoredAssistantReasoning {
+                    content,
+                    reasoning_content,
+                }),
+            ),
             ModelMessage::AssistantToolCall(call) => (
                 "assistant_tool_call",
                 serialize_payload(&StoredToolCall::from_call(call)?),
@@ -1157,6 +1167,14 @@ impl EncodedMessage {
     fn into_message(kind: &str, payload: &str) -> Result<ModelMessage, SessionError> {
         match kind {
             "assistant" => deserialize_payload(payload).map(ModelMessage::Assistant),
+            "assistant_reasoning" => {
+                let assistant = deserialize_payload::<StoredAssistantReasoningOwned>(payload)?;
+
+                Ok(ModelMessage::AssistantReasoning {
+                    content: assistant.content,
+                    reasoning_content: assistant.reasoning_content,
+                })
+            }
             "assistant_tool_call" => deserialize_payload::<StoredToolCall>(payload)?
                 .into_call()
                 .map(ModelMessage::AssistantToolCall),
@@ -1180,6 +1198,18 @@ impl EncodedMessage {
             }),
         }
     }
+}
+
+#[derive(Serialize)]
+struct StoredAssistantReasoning<'a> {
+    content: &'a str,
+    reasoning_content: &'a str,
+}
+
+#[derive(Deserialize)]
+struct StoredAssistantReasoningOwned {
+    content: String,
+    reasoning_content: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -2006,6 +2036,10 @@ ORDER BY turn_position, message_position
             .expect("session should be created");
         let messages = vec![
             ModelMessage::User("inspect and edit".to_string()),
+            ModelMessage::AssistantReasoning {
+                content: r#"{"summary":"thinking"}"#.to_string(),
+                reasoning_content: "I should inspect before editing.".to_string(),
+            },
             ModelMessage::AssistantToolCall(read_call("read-one")),
             ModelMessage::ToolResult {
                 call_id: "read-one".to_string(),

@@ -4,7 +4,9 @@ use async_trait::async_trait;
 
 use super::catalog::{ModelConfiguration, ModelConfigurationError, ModelProvider};
 use crate::lifecycle::LifecycleObserver;
-use crate::model::{Model, ModelClient, ModelCompletion, ModelError, ModelMetadata, ModelRequest};
+use crate::model::{
+    Model, ModelClient, ModelCompletion, ModelError, ModelMetadata, ModelRequest, ReasoningEffort,
+};
 use crate::{chat_completion, telemetry};
 
 pub(crate) const DEFAULT_BASE_URL: &str = "https://api.meta.ai/v1";
@@ -22,11 +24,19 @@ pub const MUSE_SPARK_1_3_CONTRIBUTOR: &str = "muse-spark-1.3-contributor";
 pub(crate) const POLICY: chat_completion::ChatCompletionProviderPolicy =
     chat_completion::ChatCompletionProviderPolicy {
         display_name: "Meta Model API",
+        reasoning_format: chat_completion::ReasoningFormat::Effort(reasoning_effort_name),
         response_format_with_tools: true,
         structured_output: chat_completion::StructuredOutputMode::JsonSchema,
         telemetry_name: telemetry::PROVIDER_META,
         unsupported_schema_reason: "Muse structured output requires an explicit object root schema",
     };
+
+fn reasoning_effort_name(reasoning_effort: ReasoningEffort) -> &'static str {
+    match reasoning_effort {
+        ReasoningEffort::Max => ReasoningEffort::XHigh.as_str(),
+        reasoning_effort => reasoning_effort.as_str(),
+    }
+}
 
 /// Muse model configured from the standard Model API environment variables.
 pub struct Muse {
@@ -169,6 +179,24 @@ mod tests {
 
         // Assert
         assert_eq!(models, ["muse-spark-1.3", "muse-spark-1.3-contributor"]);
+    }
+
+    #[test]
+    fn reasoning_effort_maps_max_to_xhigh_and_preserves_supported_values() {
+        // Arrange
+        let cases = [
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::XHigh, "xhigh"),
+            (ReasoningEffort::Max, "xhigh"),
+        ];
+
+        // Act
+        let actual = cases.map(|(effort, _)| reasoning_effort_name(effort));
+
+        // Assert
+        assert_eq!(actual, cases.map(|(_, expected)| expected));
     }
 
     #[test]

@@ -63,10 +63,23 @@ impl StructuredOutputMode {
 #[derive(Clone, Copy)]
 pub(crate) struct ChatCompletionProviderPolicy {
     pub(crate) display_name: &'static str,
+    pub(crate) reasoning_format: ReasoningFormat,
     pub(crate) response_format_with_tools: bool,
     pub(crate) structured_output: StructuredOutputMode,
     pub(crate) telemetry_name: &'static str,
     pub(crate) unsupported_schema_reason: &'static str,
+}
+
+/// Provider wire representation for a requested reasoning depth.
+#[derive(Clone, Copy)]
+pub(crate) enum ReasoningFormat {
+    Effort(fn(model::ReasoningEffort) -> &'static str),
+    EnableThinking,
+    None,
+    Thinking {
+        disable_supported: bool,
+        preserve_reasoning: bool,
+    },
 }
 
 /// Provider-neutral result of decoding one Chat Completions choice.
@@ -78,6 +91,7 @@ pub(crate) enum GeneratedResponse {
     Output {
         metadata: model::CompletionMetadata,
         output: String,
+        reasoning_content: Option<String>,
     },
     ToolCall {
         call: tool::ToolCall,
@@ -139,9 +153,12 @@ impl ChatCompletionBackend {
         let response_format = (tools.is_empty() || self.policy.response_format_with_tools)
             .then(|| self.response_format(request.schema()));
         let payload = ChatCompletionPayload {
+            enable_thinking: self.enable_thinking(request),
             messages: self.messages(request)?,
             model: &self.model,
+            reasoning_effort: self.reasoning_effort(request),
             response_format,
+            thinking: self.thinking(request),
             tools,
         };
         let payload = serde_json::to_value(payload).map_err(model::ModelError::request)?;
@@ -162,7 +179,16 @@ impl ChatCompletionBackend {
                 metadata,
             )),
             "stop" => Ok(match content {
-                Some(output) => GeneratedResponse::Output { metadata, output },
+                Some(output) => GeneratedResponse::Output {
+                    metadata,
+                    output,
+                    reasoning_content: self
+                        .policy
+                        .structured_output
+                        .assistant_reasoning_content()
+                        .then_some(reasoning_content)
+                        .flatten(),
+                },
                 None => GeneratedResponse::failed(model::ModelError::InvalidResponse, metadata),
             }),
             "tool_calls" => Ok(Self::decode_tool_call(
@@ -226,6 +252,16 @@ impl ChatCompletionBackend {
                 model::ModelMessage::Assistant(content) => {
                     messages.push(ChatCompletionMessagePayload::Text {
                         content: content.clone(),
+                        role: "assistant",
+                    });
+                }
+                model::ModelMessage::AssistantReasoning {
+                    content,
+                    reasoning_content,
+                } => {
+                    messages.push(ChatCompletionMessagePayload::AssistantReasoning {
+                        content: content.clone(),
+                        reasoning_content: reasoning_content.clone(),
                         role: "assistant",
                     });
                 }
@@ -322,6 +358,51 @@ impl ChatCompletionBackend {
         }
     }
 
+    fn enable_thinking(&self, request: &model::ModelRequest) -> Option<bool> {
+        match self.policy.reasoning_format {
+            ReasoningFormat::EnableThinking => {
+                request.model_reasoning_effort().map(reasoning_enabled)
+            }
+            ReasoningFormat::Effort(_)
+            | ReasoningFormat::None
+            | ReasoningFormat::Thinking { .. } => None,
+        }
+    }
+
+    fn reasoning_effort(&self, request: &model::ModelRequest) -> Option<&'static str> {
+        match self.policy.reasoning_format {
+            ReasoningFormat::Effort(name) => request.model_reasoning_effort().map(name),
+            ReasoningFormat::EnableThinking
+            | ReasoningFormat::None
+            | ReasoningFormat::Thinking { .. } => None,
+        }
+    }
+
+    fn thinking(&self, request: &model::ModelRequest) -> Option<Thinking> {
+        match self.policy.reasoning_format {
+            ReasoningFormat::Thinking {
+                disable_supported,
+                preserve_reasoning,
+            } => {
+                let enabled = request
+                    .model_reasoning_effort()
+                    .map_or(preserve_reasoning, |reasoning_effort| {
+                        !disable_supported || reasoning_enabled(reasoning_effort)
+                    });
+
+                (request.model_reasoning_effort().is_some() || preserve_reasoning).then(|| {
+                    Thinking {
+                        keep: (enabled && preserve_reasoning).then_some("all"),
+                        kind: if enabled { "enabled" } else { "disabled" },
+                    }
+                })
+            }
+            ReasoningFormat::Effort(_)
+            | ReasoningFormat::EnableThinking
+            | ReasoningFormat::None => None,
+        }
+    }
+
     fn map_completion_error(&self, error: ChatCompletionError) -> model::ModelError {
         match error {
             ChatCompletionError::Http {
@@ -415,6 +496,10 @@ impl ChatCompletionBackend {
             reasoning_content.map(str::to_string),
         )
     }
+}
+
+fn reasoning_enabled(reasoning_effort: model::ReasoningEffort) -> bool {
+    reasoning_effort != model::ReasoningEffort::Low
 }
 
 /// One provider-authenticated request using the Chat Completions wire API.
@@ -689,12 +774,26 @@ impl ChatCompletionError {
 
 #[derive(Serialize)]
 struct ChatCompletionPayload<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enable_thinking: Option<bool>,
     messages: Vec<ChatCompletionMessagePayload>,
     model: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<ResponseFormat<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ChatCompletionTool<'a>>,
+}
+
+#[derive(Serialize)]
+struct Thinking {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep: Option<&'static str>,
+    #[serde(rename = "type")]
+    kind: &'static str,
 }
 
 #[derive(Serialize)]
@@ -702,6 +801,11 @@ struct ChatCompletionPayload<'a> {
 enum ChatCompletionMessagePayload {
     Text {
         content: String,
+        role: &'static str,
+    },
+    AssistantReasoning {
+        content: String,
+        reasoning_content: String,
         role: &'static str,
     },
     AssistantToolCall {
@@ -909,6 +1013,13 @@ mod tests {
 
     use super::*;
 
+    fn max_as_xhigh(reasoning_effort: model::ReasoningEffort) -> &'static str {
+        match reasoning_effort {
+            model::ReasoningEffort::Max => model::ReasoningEffort::XHigh.as_str(),
+            reasoning_effort => reasoning_effort.as_str(),
+        }
+    }
+
     fn native_schema_backend() -> ChatCompletionBackend {
         ChatCompletionBackend::with_client(
             "test-key".to_string(),
@@ -916,6 +1027,7 @@ mod tests {
             "native-schema-model".to_string(),
             ChatCompletionProviderPolicy {
                 display_name: "Native schema provider",
+                reasoning_format: ReasoningFormat::Effort(max_as_xhigh),
                 response_format_with_tools: true,
                 structured_output: StructuredOutputMode::JsonSchema,
                 telemetry_name: "native_schema",
@@ -932,6 +1044,153 @@ mod tests {
 
         // Assert
         assert_eq!(endpoint, "https://example.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn maps_reasoning_effort_to_each_provider_wire_format() {
+        // Arrange
+        let schema = schema_contract::OutputSchema::new(serde_json::json!({
+            "type": "object"
+        }))
+        .expect("schema should be valid");
+        let backend = |reasoning_format| {
+            ChatCompletionBackend::with_client(
+                "test-key".to_string(),
+                "https://example.com/v1".to_string(),
+                "model".to_string(),
+                ChatCompletionProviderPolicy {
+                    display_name: "Provider",
+                    reasoning_format,
+                    response_format_with_tools: true,
+                    structured_output: StructuredOutputMode::JsonSchema,
+                    telemetry_name: "provider",
+                    unsupported_schema_reason: "object schema required",
+                },
+                default_client(),
+            )
+        };
+        let request = |reasoning_effort| {
+            model::ModelRequest::new("hello", schema.clone())
+                .with_model_reasoning_effort(reasoning_effort)
+        };
+
+        // Act
+        let effort_backend = backend(ReasoningFormat::Effort(max_as_xhigh));
+        let low_request = request(model::ReasoningEffort::Low);
+        let maximum_request = request(model::ReasoningEffort::Max);
+        let medium_request = request(model::ReasoningEffort::Medium);
+        let kimi_backend = backend(crate::provider::kimi_policy("kimi-k2.6").reasoning_format);
+        let kimi_k2_7_backend =
+            backend(crate::provider::kimi_policy("kimi-k2.7-code").reasoning_format);
+        let kimi_k3_backend = backend(crate::provider::kimi_policy("kimi-k3").reasoning_format);
+        let high_request = request(model::ReasoningEffort::High);
+        let xhigh_request = request(model::ReasoningEffort::XHigh);
+        let qwen_backend = backend(crate::provider::qwen_policy("qwen-plus").reasoning_format);
+        let qwen_3_8_backend =
+            backend(crate::provider::qwen_policy("qwen3.8-max").reasoning_format);
+
+        // Assert
+        assert_eq!(effort_backend.reasoning_effort(&low_request), Some("low"));
+        assert_eq!(
+            effort_backend.reasoning_effort(&maximum_request),
+            Some("xhigh")
+        );
+        assert_eq!(effort_backend.enable_thinking(&low_request), None);
+        assert!(effort_backend.thinking(&low_request).is_none());
+        assert_eq!(
+            kimi_backend
+                .thinking(&low_request)
+                .map(|thinking| thinking.kind),
+            Some("disabled")
+        );
+        assert_eq!(
+            kimi_backend
+                .thinking(&high_request)
+                .map(|thinking| thinking.kind),
+            Some("enabled")
+        );
+        assert_eq!(
+            kimi_k2_7_backend
+                .thinking(&low_request)
+                .map(|thinking| thinking.kind),
+            Some("enabled")
+        );
+        assert_eq!(kimi_k2_7_backend.reasoning_effort(&low_request), None);
+        assert!(kimi_k3_backend.thinking(&low_request).is_none());
+        assert_eq!(kimi_k3_backend.reasoning_effort(&low_request), Some("low"));
+        assert_eq!(
+            kimi_k3_backend.reasoning_effort(&medium_request),
+            Some("high")
+        );
+        assert_eq!(
+            kimi_k3_backend.reasoning_effort(&high_request),
+            Some("high")
+        );
+        assert_eq!(
+            kimi_k3_backend.reasoning_effort(&xhigh_request),
+            Some("max")
+        );
+        assert_eq!(
+            kimi_k3_backend.reasoning_effort(&maximum_request),
+            Some("max")
+        );
+        assert_eq!(qwen_backend.enable_thinking(&low_request), Some(false));
+        assert_eq!(qwen_backend.enable_thinking(&high_request), Some(true));
+        assert_eq!(qwen_backend.reasoning_effort(&high_request), None);
+        assert_eq!(qwen_3_8_backend.enable_thinking(&low_request), None);
+        assert_eq!(qwen_3_8_backend.reasoning_effort(&low_request), Some("low"));
+        assert_eq!(
+            qwen_3_8_backend.reasoning_effort(&medium_request),
+            Some("medium")
+        );
+        assert_eq!(
+            qwen_3_8_backend.reasoning_effort(&high_request),
+            Some("xhigh")
+        );
+        assert_eq!(
+            qwen_3_8_backend.reasoning_effort(&maximum_request),
+            Some("xhigh")
+        );
+    }
+
+    #[test]
+    fn preserves_k2_6_reasoning_only_while_thinking_is_enabled() {
+        // Arrange
+        let backend = ChatCompletionBackend::with_client(
+            "test-key".to_string(),
+            "https://example.com/v1".to_string(),
+            "kimi-k2.6".to_string(),
+            crate::provider::kimi_policy("kimi-k2.6"),
+            default_client(),
+        );
+        let schema = schema_contract::OutputSchema::new(serde_json::json!({
+            "type": "object"
+        }))
+        .expect("schema should be valid");
+        let default_request = model::ModelRequest::new("hello", schema.clone());
+        let low_request = model::ModelRequest::new("hello", schema.clone())
+            .with_model_reasoning_effort(model::ReasoningEffort::Low);
+        let high_request = model::ModelRequest::new("hello", schema)
+            .with_model_reasoning_effort(model::ReasoningEffort::High);
+
+        // Act
+        let default_thinking = backend
+            .thinking(&default_request)
+            .expect("K2.6 defaults should preserve thinking");
+        let low_thinking = backend
+            .thinking(&low_request)
+            .expect("explicit low effort should disable K2.6 thinking");
+        let high_thinking = backend
+            .thinking(&high_request)
+            .expect("explicit high effort should preserve K2.6 thinking");
+
+        // Assert
+        assert_eq!(default_thinking.kind, "enabled");
+        assert_eq!(default_thinking.keep, Some("all"));
+        assert_eq!(low_thinking.kind, "disabled");
+        assert_eq!(low_thinking.keep, None);
+        assert_eq!(high_thinking.kind, "enabled");
+        assert_eq!(high_thinking.keep, Some("all"));
     }
 
     #[test]
@@ -1070,7 +1329,7 @@ mod tests {
         }))
         .expect("schema should be valid");
         let mut request = model::ModelRequest::new("first question", schema.clone());
-        request.record_output(&serde_json::json!({"message": "first answer"}));
+        request.record_output_with_reasoning(&serde_json::json!({"message": "first answer"}), None);
         let mut messages = request.into_messages();
         messages.insert(
             0,
@@ -1535,6 +1794,7 @@ mod tests {
             "model".to_string(),
             ChatCompletionProviderPolicy {
                 display_name: "Provider",
+                reasoning_format: ReasoningFormat::Effort(max_as_xhigh),
                 response_format_with_tools: true,
                 structured_output: StructuredOutputMode::JsonSchema,
                 telemetry_name: "provider",
