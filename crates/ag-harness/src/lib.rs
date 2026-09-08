@@ -19,13 +19,11 @@ mod session;
 mod telemetry;
 mod tool;
 mod trace;
+mod turn;
 mod write;
 
 pub use file_system::{FileSystem, LocalFileSystem};
-pub use harness::{
-    Harness, ModelRequestActivity, Session, SessionBuilder, ToolActivity, TurnError, TurnOutcome,
-    TurnReport,
-};
+pub use harness::{Harness, Session, SessionBuilder};
 pub use lifecycle::{
     LifecycleEvent, LifecycleEventKind, LifecycleId, LifecycleObserver, LifecycleObserverSet,
     LifecycleOperationGuard, ModelResponseType, ToolErrorType, TurnErrorType,
@@ -49,4 +47,5 @@ pub use tool::{
     WriteArguments,
 };
 pub use trace::LifecycleTraceObserver;
+pub use turn::{ModelRequestActivity, ToolActivity, TurnError, TurnOutcome, TurnReport};
 pub use write::{WriteError, WriteOutput};
