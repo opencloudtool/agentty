@@ -43,9 +43,20 @@ before dependents in the publish plan.
 
 - Give every touched test explicit `// Arrange`, `// Act`, and `// Assert` sections;
   combine labels only when that improves a very small test.
-- Keep test-only code inside `#[cfg(test)] mod tests` unless it belongs to an
-  established shared test-support surface. Mockable traits may use
-  `#[cfg_attr(test, mockall::automock)]`.
+- Keep production and test code in separate files. Load sibling `*_test.rs` unit suites
+  with `#[cfg(test)]`, `#[path = "<module>_test.rs"]`, and `mod tests;`. Split large
+  suites by behavior behind a test-module router; keep access to private internals
+  through child modules rather than widening production visibility.
+- Keep test-only imports, helpers, builders, and implementations in test files. Do not
+  vary production fields, trait contracts, defaults, or control flow with test
+  configuration; inject dependencies for deterministic tests. Mockable traits may retain
+  `#[cfg_attr(test, mockall::automock)]` and feature-gated shared mocks.
+- Keep suite-local fixtures with their tests, crate-wide fixtures in test-gated support
+  modules, and cross-crate support behind `test-utils`. Put public-contract integration
+  tests in each crate's `tests/`, shared integration helpers in `tests/support/`, and
+  Agentty PTY workflows in `crates/agentty/tests/e2e/`.
+- Keep coverage filename filters aligned with the test-file convention when moving
+  suites; preserve coverage of production code.
 - Keep a real test for an isolated external command. For flows with multiple external
   calls, inject a trait boundary and use deterministic mocks.
 - Reuse named fixtures, builders, and expectation helpers instead of duplicating test
