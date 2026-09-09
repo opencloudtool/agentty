@@ -221,6 +221,8 @@ pub struct DiffLineComment {
 /// File and inline comments accumulated while the unified diff remains open.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiffLineComments {
+    /// Repository lookup for the comment currently receiving input.
+    pub(crate) at_mention_state: Option<Box<PromptAtMentionState>>,
     /// Comments retained in the order in which their targets were selected.
     pub(crate) comments: Vec<DiffLineComment>,
     /// Index of the comment currently receiving text input.
@@ -316,6 +318,7 @@ impl DiffLineComments {
         let Some(editing_index) = self.editing_index.take() else {
             return;
         };
+        self.at_mention_state = None;
         self.selection_anchor_index = None;
         if self
             .comments

@@ -9678,6 +9678,62 @@ fn test_diff_changed_line_navigation() -> E2eResult {
 /// Verify that file and changed-line comments survive navigation until one
 /// batch is submitted as the next session turn.
 #[test]
+fn test_diff_comment_file_lookup() -> E2eResult {
+    // Arrange, Act, Assert
+    FeatureTest::new("diff_comment_file_lookup")
+        .with_git()
+        .zola(
+            "Look up files in diff comments",
+            "Reference repository files while writing diff feedback.",
+            48,
+        )
+        .setup(|env| {
+            seed_review_ready_session(env)?;
+            seed_linked_review_worktree_with_diff(env)?;
+            seed_line_comment_codex_stub(env)?;
+            seed_line_comment_review_stub(env)?;
+            seed_sessions_startup_tab(env)
+        })
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::open_selected_session_view())
+                    .press_key("d")
+                    .wait_for_text("main.rs", 5000)
+                    .press_key("j")
+                    .wait_for_text("Enter/l: open", 5000)
+                    .write_text("C")
+                    .wait_for_text("File comment", 5000)
+                    .write_text("See @src/ma")
+                    .wait_for_text("Tab/Enter: select", 5000)
+                    .capture_labeled(
+                        "comment_lookup",
+                        "File lookup beside the active comment input",
+                    )
+                    .press_key("Tab")
+                    .write_text("for context")
+                    .wait_for_text("See @src/main.rs for context", 5000)
+                    .capture_labeled(
+                        "lookup_selected",
+                        "File reference inserted without leaving the comment editor",
+                    )
+            },
+            |frame, report| {
+                let lookup = common::frame_from_capture(&report.captures[0]);
+                let content =
+                    Region::new(lookup.cols() / 5, 0, lookup.cols() * 4 / 5, lookup.rows());
+                assertion::assert_text_in_region(&lookup, "src/main.rs", &content);
+                assertion::assert_text_in_region(&lookup, "Files (", &content);
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "See @src/main.rs for context", &full);
+            },
+        )?;
+
+    Ok(())
+}
+
+#[test]
 fn test_diff_line_comments() -> E2eResult {
     // Arrange, Act, Assert
     FeatureTest::new("diff_line_comments")
