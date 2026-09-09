@@ -6171,6 +6171,139 @@ fn session_stop_turn_returns_to_review() -> E2eResult {
     Ok(())
 }
 
+/// Seeds clarification questions and a file lookup target without a live agent.
+fn seed_question_at_lookup_session(env: &BuilderEnv) -> E2eResult {
+    let session_id = "question-lookup-session";
+    common::seed_session(
+        env,
+        SessionSeed::regular(session_id, "claude-haiku-4-5-20251001", "main", "Question")
+            .with_title("File answer"),
+    )?;
+    let session_folder = test_support::session_folder(&env.agentty_root.join("wt"), session_id);
+    std::fs::create_dir_all(&session_folder)?;
+    std::fs::write(
+        session_folder.join("answer_lookup_target.rs"),
+        "// lookup target\n",
+    )?;
+    common::seed_runtime()?.block_on(async {
+        let database = common::open_database(env).await?;
+        database
+            .sessions()
+            .update_session_questions(
+                session_id,
+                r#"[{"text":"Which file?","options":[]},{"text":"Anything else?","options":[]}]"#,
+            )
+            .await
+    })?;
+
+    Ok(())
+}
+
+/// Verify file lookup inserts into a clarification answer before submission.
+#[test]
+fn test_question_answer_at_lookup() -> E2eResult {
+    // Arrange, Act, Assert
+    FeatureTest::new("question_answer_at_lookup")
+        .with_git()
+        .setup(seed_question_at_lookup_session)
+        .zola(
+            "File lookup in answers",
+            "Reference repository files while answering an agent's clarification question.",
+            51,
+        )
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .wait_for_text("File answer", 5000)
+                    .press_key("Enter")
+                    .wait_for_text("Question 1/2", 5000)
+                    .write_text("@missing")
+                    .wait_for_text("Tab/Enter: close @", 5000)
+                    .capture_labeled("empty", "An empty lookup offers dismissal controls")
+                    .press_key("Tab")
+                    .press_key("ctrl+w")
+                    .write_text("@answer_lookup")
+                    .wait_for_text("answer_lookup_target.rs", 5000)
+                    .wait_for_text("Tab/Enter: select", 5000)
+                    .write_text("\x1b[13;2u")
+                    .wait_for_text("Enter: send", 5000)
+                    .capture_labeled("newline", "Shift+Enter inserts a newline during lookup")
+                    .write_text("@answer_lookup")
+                    .wait_for_text("answer_lookup_target.rs", 5000)
+                    .press_key("Left")
+                    .wait_for_text("Tab/Enter: select", 5000)
+                    .capture_labeled("lookup", "Repository file suggestions in the answer input")
+                    .press_key("Enter")
+                    .wait_for_text("@answer_lookup_target.rs", 5000)
+                    .write_text("please")
+                    .wait_for_text("@answer_lookup_target.rs please", 5000)
+                    .capture_labeled(
+                        "inserted",
+                        "Enter inserts the file and keeps the answer editable",
+                    )
+                    .press_key("Enter")
+                    .wait_for_text("Question 2/2", 5000)
+            },
+            |frame, report| {
+                let empty_frame = common::frame_from_capture(&report.captures[0]);
+                assertion::assert_not_visible(&empty_frame, "Tab/Enter: select");
+                assertion::assert_not_visible(&empty_frame, "Up/Down: navigate");
+                let newline_frame = common::frame_from_capture(&report.captures[1]);
+                let newline_area = Region::full(newline_frame.cols(), newline_frame.rows());
+                assertion::assert_text_in_region(&newline_frame, "@answer_lookup", &newline_area);
+                assertion::assert_not_visible(&newline_frame, "answer_lookup_target.rs");
+                let inserted_frame = common::frame_from_capture(&report.captures[3]);
+                let inserted_area = Region::full(inserted_frame.cols(), inserted_frame.rows());
+                assertion::assert_text_in_region(&inserted_frame, "Question 1/2", &inserted_area);
+                assertion::assert_text_in_region(
+                    &inserted_frame,
+                    "@answer_lookup_target.rs please",
+                    &inserted_area,
+                );
+                assertion::assert_not_visible(&inserted_frame, "Tab/Enter: select");
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "Question 2/2", &full);
+            },
+        )
+}
+
+/// Verify a short terminal hides lookup controls when no result row fits.
+#[test]
+fn test_question_answer_at_lookup_clipped() -> E2eResult {
+    // Arrange, Act, Assert
+    FeatureTest::new("question_answer_at_lookup_clipped")
+        .with_git()
+        .with_terminal_size(100, 10)
+        .setup(seed_question_at_lookup_session)
+        .run(
+            |scenario| {
+                scenario
+                    .compose(&common::wait_for_agentty_startup())
+                    .compose(&common::switch_to_tab("Sessions"))
+                    .press_key("Enter")
+                    .wait_for_text("Enter: send", 5000)
+                    .write_text("@answer_lookup")
+                    .wait_for_text("Esc: cancel @", 5000)
+                    .wait_for_stable_frame(300, 5000)
+                    .capture_labeled("clipped", "No selection hints without space for a result")
+                    .press_key("Esc")
+                    .wait_for_text("Enter: send", 5000)
+            },
+            |frame, report| {
+                let clipped = common::frame_from_capture(&report.captures[0]);
+                assertion::assert_not_visible(&clipped, "answer_lookup_target.rs");
+                assertion::assert_not_visible(&clipped, "Tab/Enter: select");
+                assertion::assert_not_visible(&clipped, "Up/Down: navigate");
+                assertion::assert_not_visible(&clipped, "Tab/Enter: close @");
+                let full = Region::full(frame.cols(), frame.rows());
+                assertion::assert_text_in_region(frame, "@answer_lookup", &full);
+                assertion::assert_text_in_region(frame, "Enter: send", &full);
+            },
+        )
+}
+
 /// Verify that `Esc` leaves a clarification question active, then answering
 /// one question, leaving with `q`, and reopening resumes at the next
 /// unanswered question instead of restarting from the first.

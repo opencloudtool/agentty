@@ -1327,7 +1327,7 @@ async fn handle_at_mention_select(app: &mut App) {
         app,
         InputCommand::ReplaceRange {
             start: selection.at_start,
-            end: selection.cursor,
+            end: selection.at_end,
             text: selection.text,
         },
     )
@@ -3888,7 +3888,10 @@ mod tests {
             },
         ]);
         state.selected_index = 9;
-        let (mut app, _base_dir) = new_test_prompt_app("@src/ma", Some(state)).await;
+        let (mut app, _base_dir) = new_test_prompt_app("@src/main", Some(state)).await;
+        if let AppMode::Prompt { input, .. } = &mut app.mode {
+            input.cursor = "@src/ma".chars().count();
+        }
 
         // Act
         handle_at_mention_select(&mut app).await;

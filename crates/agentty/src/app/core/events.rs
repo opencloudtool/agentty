@@ -1899,7 +1899,8 @@ impl App {
     }
 
     /// Applies loaded at-mention entries to the currently focused prompt or
-    /// question session, if the mention query is still active.
+    /// question session, if the mention query is still active. Question updates
+    /// only refresh an open picker: a queued load must not undo dismissal.
     fn apply_prompt_at_mention_entries(&mut self, session_id: &str, entries: Vec<FileEntry>) {
         let (at_mention_state, has_query) = match &mut self.mode {
             AppMode::Prompt {
@@ -1915,7 +1916,7 @@ impl App {
                 input,
                 session_id: mode_session_id,
                 ..
-            } if mode_session_id == session_id => {
+            } if mode_session_id == session_id && at_mention_state.is_some() => {
                 (at_mention_state, input.at_mention_query().is_some())
             }
             _ => return,

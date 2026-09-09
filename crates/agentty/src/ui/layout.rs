@@ -195,7 +195,8 @@ pub fn prompt_panel_areas(area: Rect) -> PromptPanelAreas {
     }
 }
 
-/// Returns how many lookup entries can fit above the question input overlay.
+/// Returns the lookup row capacity above the question input, excluding borders.
+/// Returns zero when no complete item row fits.
 pub(crate) fn question_at_mention_max_visible(
     bottom_area: Rect,
     input_area: Rect,
@@ -203,7 +204,7 @@ pub(crate) fn question_at_mention_max_visible(
 ) -> usize {
     usize::from(input_area.y.saturating_sub(bottom_area.y))
         .saturating_sub(2)
-        .clamp(1, default_max_visible)
+        .min(default_max_visible)
 }
 
 /// Calculates the height split for question mode's prompt, input, and footer.
@@ -1089,14 +1090,25 @@ mod tests {
     #[test]
     fn test_question_at_mention_max_visible_clamps_to_available_rows() {
         // Arrange
-        let bottom_area = Rect::new(1, 10, 78, 8);
-        let input_area = Rect::new(1, 15, 78, 2);
+        let bottom_area = Rect::new(1, 10, 78, 20);
 
-        // Act
-        let max_visible = question_at_mention_max_visible(bottom_area, input_area, 10);
+        for (available_rows, limit, expected) in [
+            (0, 10, 0),
+            (1, 10, 0),
+            (2, 10, 0),
+            (3, 10, 1),
+            (5, 10, 3),
+            (20, 10, 10),
+            (5, 0, 0),
+        ] {
+            let input_area = Rect::new(1, 10 + available_rows, 78, 2);
 
-        // Assert
-        assert_eq!(max_visible, 3);
+            // Act
+            let max_visible = question_at_mention_max_visible(bottom_area, input_area, limit);
+
+            // Assert
+            assert_eq!(max_visible, expected);
+        }
     }
 
     #[test]
@@ -1152,10 +1164,11 @@ mod tests {
 
         // Act
         let unchanged_chat_focus_line =
-            question_help_footer_line(ChatFocus::Chat, false, false, false);
+            question_help_footer_line(ChatFocus::Chat, false, false, QuestionLookupState::Closed);
         let changed_chat_focus_line =
-            question_help_footer_line(ChatFocus::Chat, true, false, false);
-        let answer_focus_line = question_help_footer_line(ChatFocus::Input, false, false, false);
+            question_help_footer_line(ChatFocus::Chat, true, false, QuestionLookupState::Closed);
+        let answer_focus_line =
+            question_help_footer_line(ChatFocus::Input, false, false, QuestionLookupState::Closed);
 
         // Assert
         assert_eq!(
@@ -1182,9 +1195,11 @@ mod tests {
 
         // Act
         let answer_focus_with_options =
-            question_help_footer_line(ChatFocus::Input, false, true, false).to_string();
+            question_help_footer_line(ChatFocus::Input, false, true, QuestionLookupState::Closed)
+                .to_string();
         let answer_focus_with_overlay =
-            question_help_footer_line(ChatFocus::Input, false, false, true).to_string();
+            question_help_footer_line(ChatFocus::Input, false, false, QuestionLookupState::Matches)
+                .to_string();
 
         // Assert
         assert_eq!(
@@ -1193,7 +1208,7 @@ mod tests {
         );
         assert_eq!(
             answer_focus_with_overlay,
-            "Tab: focus | Enter: send | Esc: cancel @ | Ctrl+C: end turn"
+            "Tab/Enter: select | Up/Down: navigate | Esc: cancel @ | Ctrl+C: end turn"
         );
     }
 

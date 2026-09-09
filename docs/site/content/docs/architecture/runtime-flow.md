@@ -844,7 +844,9 @@ their triggers:
   the first message, so lightweight list rows cannot replace an existing title.
 
 - **At-mention file indexing** (`@` in prompt or question input): lists session files
-  for the mention picker, falling back to the project root for unstarted drafts.
+  for the mention picker, falling back to the project root for unstarted drafts. Loaded
+  entries remain cached, but only refresh an already-open question picker; delayed
+  results never reopen a dismissed question lookup.
 
 - **Session-size refresh** (`Enter` on a session in list mode): recomputes the diff-size
   bucket off the key-handling path.
