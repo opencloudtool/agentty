@@ -82,10 +82,7 @@ fn response(message: &str, input_tokens: u64, output_tokens: u64) -> ResponseTem
 fn harness_command() -> std::io::Result<(tempfile::TempDir, Command)> {
     let storage = tempfile::tempdir()?;
     let mut command = Command::new(cargo_bin!("ag-harness"));
-    command
-        .arg("--git-executable")
-        .arg(test_git_executable())
-        .env("AG_HARNESS_ROOT", storage.path());
+    command.env("AG_HARNESS_ROOT", storage.path());
 
     Ok((storage, command))
 }
@@ -122,8 +119,9 @@ fn help_describes_the_chat_interface() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help should be UTF-8");
     assert!(stdout.contains("Chats with models through a repository harness"));
-    assert!(stdout.contains("Usage: ag-harness [OPTIONS] <--git-executable <FILE>> <COMMAND>"));
+    assert!(stdout.contains("Usage: ag-harness [OPTIONS] <COMMAND>"));
     assert!(stdout.contains("--git-executable <FILE>"));
+    assert!(stdout.contains("defaults to the first valid Git found in PATH"));
     assert!(stdout.contains("Commands:"));
     assert!(stdout.contains("Starts a new durable session"));
     assert!(stdout.contains("Resumes a durable session"));
@@ -142,22 +140,66 @@ fn help_describes_the_chat_interface() {
     assert!(!stdout.contains("Examples:"));
 }
 
+#[cfg(unix)]
 #[test]
-fn missing_git_executable_is_a_clap_error() {
+fn default_git_skips_a_non_executable_path_entry() {
     // Arrange
-    let mut command = Command::new(cargo_bin!("ag-harness"));
+    let (storage, mut command) = harness_command().expect("temporary storage should exist");
+    let inert_directory = storage.path().join("inert-bin");
+    fs::create_dir(&inert_directory).expect("inert PATH directory should exist");
+    fs::write(inert_directory.join("git"), "not executable")
+        .expect("inert Git fixture should be written");
+    let inherited_path = std::env::var_os("PATH").expect("test PATH should be configured");
+    let path = std::env::join_paths(
+        std::iter::once(inert_directory).chain(std::env::split_paths(&inherited_path)),
+    )
+    .expect("test PATH should be valid");
 
     // Act
     let output = command
-        .args(["run", "muse-custom"])
+        .args([
+            "run",
+            "muse-custom",
+            "--base-url",
+            "https://models.example/v1",
+        ])
+        .env("MODEL_API_KEY", "test-key")
+        .env("PATH", path)
         .output()
-        .expect("CLI argument validation should run");
+        .expect("CLI default discovery should run");
 
     // Assert
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8(output.stderr).expect("argument error should be UTF-8");
-    assert!(stderr.contains("required arguments were not provided"));
-    assert!(stderr.contains("--git-executable <FILE>"));
+    assert!(
+        output.status.success(),
+        "CLI should use the later executable Git: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn missing_default_git_executable_is_a_runtime_error() {
+    // Arrange
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
+
+    // Act
+    let output = command
+        .args([
+            "run",
+            "muse-custom",
+            "Hello",
+            "--base-url",
+            "https://models.example/v1",
+        ])
+        .env("MODEL_API_KEY", "test-key")
+        .env_remove("PATH")
+        .output()
+        .expect("CLI default validation should run");
+
+    // Assert
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("runtime error should be UTF-8");
+    assert!(stderr.contains("No valid Git executable was found in PATH"));
+    assert!(stderr.contains("pass --git-executable <FILE>"));
 }
 
 #[test]
@@ -174,10 +216,7 @@ fn run_help_describes_optional_initial_prompt() {
     // Assert
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help should be UTF-8");
-    assert!(
-        stdout
-            .contains("Usage: ag-harness <--git-executable <FILE>> run [OPTIONS] <MODEL> [PROMPT]")
-    );
+    assert!(stdout.contains("Usage: ag-harness run [OPTIONS] <MODEL> [PROMPT]"));
     assert!(stdout.contains("Optional first prompt"));
     assert!(stdout.contains("--base-url <URL>"));
     for provider in ModelProvider::all() {
