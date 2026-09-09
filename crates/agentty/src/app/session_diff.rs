@@ -172,6 +172,7 @@ impl App {
     /// owned by a deleted session so detached task completions remain stale.
     pub(crate) fn discard_deleted_session_diff_state(&mut self, session_id: &SessionId) {
         self.auto_address_review_iterations.remove(session_id);
+        self.review_diff_hashes.remove(session_id);
         self.diff_comment_progress.remove(session_id);
         self.pending_session_diff_requests
             .retain(|_, request| request.session_id != *session_id);
@@ -909,53 +910,97 @@ impl App {
             }
         };
         let diff_hash = review::diff_content_hash(&diff);
-        if diff.trim().is_empty() {
-            if is_manual {
-                let _ = self
-                    .services
-                    .db()
-                    .sessions()
-                    .update_session_focused_review(&session_id, None, None, None)
-                    .await;
-                self.set_review_ready_output(
+        let should_start = match self
+            .prepare_review_diff(
+                &session_id,
+                diff_hash,
+                !diff.trim().is_empty() && cached_diff_hash != Some(diff_hash),
+                is_manual,
+            )
+            .await
+        {
+            Ok(should_start) => should_start,
+            Err(error) => {
+                warn!(%session_id, %error, "Failed to claim focused review");
+                let persistence = review::fail_review_preparation(
+                    &mut self.review_cache,
+                    self.sessions.state_mut(),
                     &session_id,
-                    diff_hash,
-                    review::REVIEW_NO_DIFF_MESSAGE.to_string(),
+                    format!("Failed to claim focused review: {error}"),
                 );
-            } else if cached_diff_hash.is_none() {
-                let _ = self
-                    .services
-                    .db()
-                    .sessions()
-                    .update_session_focused_review(&session_id, None, None, None)
-                    .await;
-                self.clear_review_output(&session_id);
+                self.persist_focused_review_updates(vec![persistence]).await;
+                review::restore_session_review_status(self.sessions.state_mut(), &session_id);
+
+                return;
             }
-            review::restore_session_review_status(self.sessions.state_mut(), &session_id);
+        };
+        if should_start {
+            self.start_review_assist(
+                &session_id,
+                &target.folder,
+                diff_hash,
+                &diff,
+                target.review_agent,
+            )
+            .await;
 
             return;
         }
-        if cached_diff_hash == Some(diff_hash) {
-            review::restore_session_review_status(self.sessions.state_mut(), &session_id);
-
-            return;
+        if is_manual && diff.trim().is_empty() {
+            let _ = self
+                .services
+                .db()
+                .sessions()
+                .update_session_focused_review(&session_id, None, None, None)
+                .await;
+            self.set_review_ready_output(
+                &session_id,
+                diff_hash,
+                review::REVIEW_NO_DIFF_MESSAGE.to_string(),
+            );
+        } else if !is_manual && cached_diff_hash.is_none() {
+            let _ = self
+                .services
+                .db()
+                .sessions()
+                .update_session_focused_review(&session_id, None, None, None)
+                .await;
+            self.clear_review_output(&session_id);
         }
+        review::restore_session_review_status(self.sessions.state_mut(), &session_id);
+    }
 
-        self.start_review_assist(
-            &session_id,
-            &target.folder,
-            diff_hash,
-            &diff,
-            target.review_agent,
-        )
-        .await;
-        self.persist_focused_review_updates(vec![FocusedReviewPersistence {
-            diff_hash: Some(diff_hash),
-            session_id,
-            status: FocusedReviewStatus::Pending,
-            text: None,
-        }])
-        .await;
+    /// Recovers the baseline and commits it together with any pending-review
+    /// claim before the caller starts generation. Failed writes leave the
+    /// in-memory baseline unchanged so a later attempt can retry.
+    async fn prepare_review_diff(
+        &mut self,
+        session_id: &SessionId,
+        diff_hash: u64,
+        review_allowed: bool,
+        is_manual: bool,
+    ) -> Result<bool, DbError> {
+        let persisted = self
+            .services
+            .db()
+            .sessions()
+            .load_session_review_diff_hash(session_id)
+            .await?;
+        let previous = self
+            .review_diff_hashes
+            .get(session_id)
+            .copied()
+            .or_else(|| persisted.and_then(|hash| hash.parse().ok()));
+        let should_start = review_allowed && (is_manual || previous != Some(diff_hash));
+        self.services
+            .db()
+            .sessions()
+            .update_session_review_diff_hash(session_id, &diff_hash.to_string(), should_start)
+            .await?;
+        self.review_diff_hashes
+            .insert(session_id.clone(), diff_hash);
+
+        Ok(should_start)
     }
 }
 
@@ -980,6 +1025,30 @@ mod tests {
                 .expect("session should be created"),
         );
         app.sessions.sessions_mut()[0].status = Status::Review;
+
+        (app, base_dir, session_id)
+    }
+
+    /// Builds a persisted review session without requiring a real worktree.
+    async fn review_app_with_mock_backend() -> (App, tempfile::TempDir, SessionId) {
+        let (mut app, base_dir) = crate::test_support::new_test_app_with_mock_tmux_client().await;
+        let mut session =
+            crate::test_support::session_fixture_with_folder(base_dir.path().to_path_buf());
+        session.status = Status::Review;
+        let session_id = session.id.clone();
+        app.services
+            .db()
+            .sessions()
+            .insert_session(
+                &session_id,
+                "gpt-5.6-sol",
+                "main",
+                "Review",
+                app.projects.active_project_id(),
+            )
+            .await
+            .expect("failed to persist review session");
+        app.sessions.push_session(session);
 
         (app, base_dir, session_id)
     }
@@ -1497,6 +1566,312 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn review_diff_after_new_turn_compares_content_and_allows_manual_review() {
+        for (previous_diff, current_diff, is_manual, expects_review) in [
+            ("+old line", "+old line", false, false),
+            ("+old line", "+new line", false, true),
+            ("+old line", "+old line", true, true),
+            ("+old line", "", false, false),
+            ("", "+old line", false, true),
+        ] {
+            // Arrange
+            let (mut app, _base_dir, session_id) = review_app_with_mock_backend().await;
+            app.set_review_ready_output(
+                &session_id,
+                review::diff_content_hash(previous_diff),
+                "Previous review".to_string(),
+            );
+
+            // Act
+            app.clear_review_output(&session_id);
+            app.supersede_review_diff_loads(&HashSet::from([session_id.clone()]));
+            let target = test_review_target(&app, &session_id);
+            app.apply_review_diff_update(
+                SessionDiffUpdate {
+                    request_id: 1,
+                    result: Ok(current_diff.to_string()),
+                    session_id: session_id.clone(),
+                },
+                None,
+                is_manual,
+                target,
+            )
+            .await;
+
+            // Assert
+            assert_eq!(app.review_is_loading(&session_id), expects_review);
+            assert_eq!(
+                app.review_diff_hashes.get(&session_id),
+                Some(&review::diff_content_hash(current_diff))
+            );
+            assert_eq!(
+                app.sessions.sessions()[0].status,
+                if expects_review {
+                    Status::AgentReview
+                } else {
+                    Status::Review
+                }
+            );
+            if !expects_review {
+                assert_eq!(app.review_view_state(&session_id), (None, None));
+                assert_eq!(app.sessions.sessions()[0].transient_messages.messages(), []);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unchanged_review_diff_clears_durable_trigger_across_consecutive_turns() {
+        // Arrange
+        let (mut app, _base_dir, session_id) = review_app_with_mock_backend().await;
+        let diff = "+existing change";
+        let diff_hash = review::diff_content_hash(diff);
+        app.set_review_ready_output(&session_id, diff_hash, "Previous review".to_string());
+
+        for request_id in 1..=2 {
+            // Act
+            app.clear_review_output(&session_id);
+            app.defer_auto_review_session(&session_id).await;
+            let target = test_review_target(&app, &session_id);
+            app.apply_review_diff_update(
+                SessionDiffUpdate {
+                    request_id,
+                    result: Ok(diff.to_string()),
+                    session_id: session_id.clone(),
+                },
+                None,
+                false,
+                target,
+            )
+            .await;
+
+            // Assert
+            assert!(!app.review_cache.contains_key(&session_id));
+            assert!(!app.deferred_auto_review_session_ids.contains(&session_id));
+            assert_eq!(app.review_diff_hashes.get(&session_id), Some(&diff_hash));
+            assert_eq!(
+                app.services
+                    .db()
+                    .sessions()
+                    .load_pending_focused_review_session_ids(app.projects.active_project_id())
+                    .await
+                    .expect("failed to load pending reviews"),
+                [] as [String; 0]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_during_turn_recovers_review_diff_baseline() {
+        for (current_diff, expects_review) in [("+old line", false), ("+new line", true)] {
+            // Arrange
+            let (mut app, base_dir, session_id) = review_app_with_mock_backend().await;
+            std::fs::create_dir_all(session::session_folder(base_dir.path(), &session_id))
+                .expect("persisted session worktree directory should exist");
+            let diff_hash = review::diff_content_hash("+old line");
+            app.prepare_review_diff(&session_id, diff_hash, false, false)
+                .await
+                .expect("baseline should persist");
+            app.set_review_ready_output(&session_id, diff_hash, "Previous review".to_string());
+            let repositories = app.services.db().clone();
+            repositories
+                .sessions()
+                .update_session_focused_review(
+                    &session_id,
+                    Some(FocusedReviewStatus::Ready),
+                    Some(diff_hash.to_string()),
+                    Some("Previous review".to_string()),
+                )
+                .await
+                .expect("previous review should persist");
+
+            // Act: a new turn clears the output, then the application restarts.
+            app.clear_review_output(&session_id);
+            repositories
+                .sessions()
+                .update_session_focused_review(&session_id, None, None, None)
+                .await
+                .expect("new turn should clear review output");
+            repositories
+                .sessions()
+                .update_session_status_with_timing_at(&session_id, "InProgress", 1)
+                .await
+                .expect("turn should be running before restart");
+            drop(app);
+            let base_path = base_dir.path().to_path_buf();
+            let mut app = App::new_with_clients(
+                base_path.clone(),
+                base_path,
+                None,
+                repositories,
+                crate::test_support::test_app_clients_with_mock_app_server(),
+            )
+            .await
+            .expect("application should restart with persisted sessions");
+            assert!(app.review_diff_hashes.is_empty());
+            app.sessions
+                .state_mut()
+                .session_mut_for_id(&session_id)
+                .expect("session should survive restart")
+                .status = Status::Review;
+            let target = test_review_target(&app, &session_id);
+            app.apply_review_diff_update(
+                SessionDiffUpdate {
+                    request_id: 1,
+                    result: Ok(current_diff.to_string()),
+                    session_id: session_id.clone(),
+                },
+                None,
+                false,
+                target,
+            )
+            .await;
+
+            // Assert
+            assert_eq!(app.review_is_loading(&session_id), expects_review);
+            assert_eq!(
+                app.review_diff_hashes.get(&session_id),
+                Some(&review::diff_content_hash(current_diff))
+            );
+            if !expects_review {
+                assert_eq!(app.review_view_state(&session_id), (None, None));
+                assert_eq!(app.sessions.sessions()[0].status, Status::Review);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_after_review_claim_recovers_before_worker_starts() {
+        // Arrange
+        let (mut app, base_dir, session_id) = review_app_with_mock_backend().await;
+        std::fs::create_dir_all(session::session_folder(base_dir.path(), &session_id))
+            .expect("persisted session worktree directory should exist");
+        app.prepare_review_diff(
+            &session_id,
+            review::diff_content_hash("+old line"),
+            false,
+            false,
+        )
+        .await
+        .expect("old baseline should persist");
+        let repositories = app.services.db().clone();
+        let diff = "+changed line";
+        let diff_hash = review::diff_content_hash(diff);
+
+        // Act: stop immediately after preparation, before spawning the worker.
+        assert!(
+            app.prepare_review_diff(&session_id, diff_hash, true, false)
+                .await
+                .expect("new baseline and claim should commit")
+        );
+        assert!(!app.review_is_loading(&session_id));
+        drop(app);
+        let base_path = base_dir.path().to_path_buf();
+        let mut app = App::new_with_clients(
+            base_path.clone(),
+            base_path,
+            None,
+            repositories,
+            crate::test_support::test_app_clients_with_mock_app_server(),
+        )
+        .await
+        .expect("application should restart");
+        let pending = app
+            .services
+            .db()
+            .sessions()
+            .load_pending_focused_review_session_ids(app.projects.active_project_id())
+            .await
+            .expect("startup trigger should persist");
+        let request_id = app
+            .pending_session_diff_requests
+            .iter()
+            .find_map(|(request_id, request)| {
+                (request.session_id == session_id).then_some(*request_id)
+            })
+            .expect("startup should schedule review diff recovery");
+        app.apply_session_diff_update(SessionDiffUpdate {
+            request_id,
+            result: Ok(diff.to_string()),
+            session_id: session_id.clone(),
+        })
+        .await;
+
+        // Assert
+        assert_eq!(pending, vec![session_id.to_string()]);
+        assert!(app.review_is_loading(&session_id));
+        assert_eq!(app.review_diff_hashes.get(&session_id), Some(&diff_hash));
+        assert_eq!(app.sessions.sessions()[0].status, Status::AgentReview);
+    }
+
+    #[tokio::test]
+    async fn review_diff_baseline_tolerates_invalid_hash_and_database_failure() {
+        // Arrange
+        let base_dir = tempfile::tempdir().expect("temporary directory should exist");
+        let database = crate::infra::db::Database::open_in_memory()
+            .await
+            .expect("database should open");
+        let base_path = base_dir.path().to_path_buf();
+        let mut app = App::new_with_clients(
+            base_path.clone(),
+            base_path,
+            None,
+            database.clone(),
+            crate::test_support::test_app_clients_with_mock_app_server(),
+        )
+        .await
+        .expect("application should start");
+        let session_id = SessionId::from("baseline-failure");
+        database
+            .sessions()
+            .insert_session(
+                &session_id,
+                "gpt-5.6-sol",
+                "main",
+                "Review",
+                app.projects.active_project_id(),
+            )
+            .await
+            .expect("session should persist");
+        database
+            .sessions()
+            .update_session_review_diff_hash(&session_id, "invalid", false)
+            .await
+            .expect("baseline should persist");
+
+        let mut session =
+            crate::test_support::session_fixture_with_folder(base_dir.path().to_path_buf());
+        session.id = session_id.clone();
+        session.status = Status::Review;
+        app.sessions.push_session(session);
+
+        // Act
+        let invalid_previous = app.prepare_review_diff(&session_id, 42, true, false).await;
+        database.pool().close().await;
+        let target = test_review_target(&app, &session_id);
+        app.apply_review_diff_update(
+            SessionDiffUpdate {
+                request_id: 1,
+                result: Ok("+new line".to_string()),
+                session_id: session_id.clone(),
+            },
+            None,
+            false,
+            target,
+        )
+        .await;
+
+        // Assert
+        assert!(invalid_previous.expect("invalid baseline should allow review"));
+        assert_eq!(app.review_diff_hashes.get(&session_id), Some(&42));
+        assert!(!app.review_is_loading(&session_id));
+        assert!(matches!(
+            app.review_cache.get(&session_id),
+            Some(ReviewCacheEntry::Failed { .. })
+        ));
+        assert_eq!(app.sessions.sessions()[0].status, Status::Review);
+    }
+
+    #[tokio::test]
     async fn automatic_empty_review_diff_clears_durable_trigger() {
         // Arrange
         let (mut app, _base_dir, session_id) = review_app().await;
@@ -1575,6 +1950,7 @@ mod tests {
     async fn deleting_session_discards_pending_review_diff_and_late_completion() {
         // Arrange
         let (mut app, _base_dir, session_id) = review_app().await;
+        app.review_diff_hashes.insert(session_id.clone(), 42);
         let request_id = 42;
         app.pending_session_diff_requests.insert(
             request_id,
@@ -1602,6 +1978,7 @@ mod tests {
         // Assert
         assert!(app.pending_session_diff_requests.is_empty());
         assert!(!app.deferred_auto_review_session_ids.contains(&session_id));
+        assert!(!app.review_diff_hashes.contains_key(&session_id));
     }
 
     #[tokio::test]

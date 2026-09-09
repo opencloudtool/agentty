@@ -689,6 +689,21 @@ pub trait SessionRepository: crate::SessionPreparationRepository + Send + Sync {
         text: Option<String>,
     ) -> Result<(), DbError>;
 
+    /// Loads the prior diff baseline independently of focused-review output.
+    /// An unfinished generated review returns no baseline so restart recovery
+    /// can regenerate it instead of treating it as an unchanged completed turn.
+    async fn load_session_review_diff_hash(&self, id: &str) -> Result<Option<String>, DbError>;
+
+    /// Persists the observed diff baseline, atomically claiming a pending
+    /// focused review when `claim_review` is true. Callers must commit this
+    /// claim before starting review generation.
+    async fn update_session_review_diff_hash(
+        &self,
+        id: &str,
+        diff_hash: &str,
+        claim_review: bool,
+    ) -> Result<(), DbError>;
+
     /// Updates the display title for a session row.
     async fn update_session_title(&self, id: &str, title: &str) -> Result<(), DbError>;
 
@@ -2669,6 +2684,59 @@ WHERE id = ?
         )
         .execute(&self.0)
         .await?;
+
+        Ok(())
+    }
+
+    async fn load_session_review_diff_hash(&self, id: &str) -> Result<Option<String>, DbError> {
+        let previous = sqlx::query_scalar!(
+            r#"SELECT CASE WHEN focused_review_status = 'Pending' AND focused_review_diff_hash IS NOT NULL
+                    THEN NULL ELSE review_diff_hash END AS "review_diff_hash?: String"
+               FROM session WHERE id = ?"#,
+            id
+        )
+            .fetch_optional(&self.0)
+            .await?
+            .flatten();
+
+        Ok(previous)
+    }
+
+    async fn update_session_review_diff_hash(
+        &self,
+        id: &str,
+        diff_hash: &str,
+        claim_review: bool,
+    ) -> Result<(), DbError> {
+        let mut transaction = self.0.begin().await?;
+        sqlx::query!(
+            "UPDATE session SET review_diff_hash = ? WHERE id = ?",
+            diff_hash,
+            id
+        )
+        .execute(&mut *transaction)
+        .await?;
+        if claim_review {
+            let now = self.now();
+            sqlx::query!(
+                r"
+UPDATE session
+SET focused_review_status = ?,
+    focused_review_diff_hash = ?,
+    focused_review_text = ?,
+    updated_at = ?
+WHERE id = ?
+",
+                "Pending",
+                diff_hash,
+                None::<String>,
+                now,
+                id
+            )
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
 
         Ok(())
     }

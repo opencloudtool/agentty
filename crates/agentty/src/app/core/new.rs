@@ -20,6 +20,7 @@ use crate::infra::db::AppRepositories;
 use crate::infra::fs::FsClient;
 #[cfg(test)]
 use crate::infra::project_discovery::ProjectDiscoveryClient;
+use crate::presentation::settings::SettingsPresentationState;
 
 /// Environment flag that pins the version rendered by feature-test runs.
 const E2E_PIN_DISPLAY_VERSION_ENV_VAR: &str = "AGENTTY_E2E_PIN_DISPLAY_VERSION";
@@ -172,8 +173,7 @@ impl App {
             mode: crate::presentation::app_mode::AppMode::List,
             needs_redraw: true,
             settings,
-            settings_presentation:
-                crate::presentation::settings::SettingsPresentationState::default(),
+            settings_presentation: SettingsPresentationState::default(),
             tabs: crate::app::tab::TabManager::new(initial_tab),
             current_version_display_text,
             prompt_progress: std::collections::HashMap::new(),
@@ -194,6 +194,7 @@ impl App {
             event_rx,
             is_tmux_session: clients.is_tmux_session,
             review_cache,
+            review_diff_hashes: std::collections::HashMap::new(),
             latest_available_version: None,
             last_seen_session_update_versions: std::collections::HashMap::new(),
             merge_queue: crate::app::merge_queue::MergeQueue::default(),

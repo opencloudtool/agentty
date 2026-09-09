@@ -136,12 +136,15 @@ The shortcuts available in each state are listed in
 [Keybindings](@/docs/usage/keybindings.md).
 
 When an eligible session enters **Review**, Agentty starts focused review in the
-background. Orchestrator controller sessions skip this automatic review because they
-coordinate child branches without owning changes themselves. While focused review is
-running, **AgentReview** keeps the review-oriented shortcuts available; pressing `r`
-starts session sync immediately and cancels pending focused-review output so stale
-review text cannot reappear after the rebase begins. Provider progress and commentary
-remain transient; only the terminal focused-review answer is stored and rendered.
+background when its diff has changed since the previous turn. Follow-up turns that leave
+the diff unchanged skip automatic review, including after an application restart; manual
+focused review remains available. Orchestrator controller sessions skip this automatic
+review because they coordinate child branches without owning changes themselves. While
+focused review is running, **AgentReview** keeps the review-oriented shortcuts
+available; pressing `r` starts session sync immediately and cancels pending
+focused-review output so stale review text cannot reappear after the rebase begins.
+Provider progress and commentary remain transient; only the terminal focused-review
+answer is stored and rendered.
 
 ### Typical Transitions
 

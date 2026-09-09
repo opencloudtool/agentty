@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT CASE WHEN focused_review_status = 'Pending' AND focused_review_diff_hash IS NOT NULL\n                    THEN NULL ELSE review_diff_hash END AS \"review_diff_hash?: String\"\n               FROM session WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "review_diff_hash?: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "4b8a85a02575d7436ac1f3463495b9046705e8b415b6c1bce57c57ba01cabea9"
+}
