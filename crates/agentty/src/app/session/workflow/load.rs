@@ -217,7 +217,8 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Projects durable readiness into the session's inline status message.
+    /// Shows saved-prompt readiness and setup failures without flashing a
+    /// preparation notice while the user is still composing their first prompt.
     pub(crate) fn apply_workspace_preparation(
         session: &mut Session,
         preparation: Option<&SessionPreparationRow>,
@@ -229,6 +230,7 @@ impl SessionManager {
             return;
         };
         let mut text = match preparation.state {
+            SessionPreparationState::Preparing if preparation.prompt.is_none() => String::new(),
             SessionPreparationState::Preparing => "Preparing workspace. You can keep typing; \
                                                    submitted prompts wait for setup."
                 .to_string(),
@@ -909,6 +911,42 @@ mod tests {
     use crate::infra::clock::RealClock;
     use crate::infra::db::SessionReviewRequestRow;
     use crate::infra::fs;
+
+    #[test]
+    fn test_workspace_preparation_shows_failures_and_clears_them_on_retry() {
+        // Arrange
+        let mut session = crate::test_support::session_fixture("preparing", Status::Draft);
+        let mut preparation = SessionPreparationRow {
+            error: Some("setup failed".to_string()),
+            prompt: None,
+            session_id: session.id.to_string(),
+            start_ref: "main".to_string(),
+            state: SessionPreparationState::Failed,
+        };
+
+        // Act
+        SessionManager::apply_workspace_preparation(&mut session, Some(&preparation));
+
+        // Assert
+        let notice = session
+            .transient_messages
+            .get(TransientMessageSlot::WorkspacePreparation)
+            .expect("setup failure remains visible");
+        assert!(matches!(&notice.body, TransientMessageBody::Plain(text)
+            if text.contains("setup failed") && text.contains("Press s to retry")));
+
+        // Act
+        preparation.state = SessionPreparationState::Preparing;
+        SessionManager::apply_workspace_preparation(&mut session, Some(&preparation));
+
+        // Assert
+        let notice = session
+            .transient_messages
+            .get(TransientMessageSlot::WorkspacePreparation)
+            .expect("preparation remains available to lifecycle actions");
+        assert!(matches!(&notice.body, TransientMessageBody::Plain(text) if text.is_empty()));
+        assert!(session.allows_cancel_action());
+    }
 
     /// Clock fixture that supplies event-specific offsets for activity rows.
     struct ActivityOffsetClock;
