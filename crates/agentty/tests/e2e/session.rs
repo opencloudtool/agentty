@@ -1021,7 +1021,8 @@ fn seed_auto_address_review_lifecycle(env: &BuilderEnv) -> Result<(), Box<dyn st
 }
 
 /// Installs one prompt-aware Claude stub that exposes both automatic-review
-/// stop conditions through stable transcript text.
+/// stop conditions through stable transcript text. Coding turns change the
+/// tracked fixture so each completed turn remains eligible for review.
 fn install_auto_address_review_lifecycle_stub(
     env: &BuilderEnv,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1062,12 +1063,15 @@ case "$prompt" in
     esac
     ;;
   *"Verify the focused-review suggestions against the current code"*)
+    printf '// Automatic remediation %s\n' "$review_count" >> src/main.rs
     result='{\"answer\":\"Automatic remediation turn completed.\",\"questions\":[]}'
     ;;
   *"Start the no-suggestions lifecycle"*)
+    printf '// Start no-suggestions lifecycle\n' >> src/main.rs
     result='{\"answer\":\"No-suggestions lifecycle turn completed.\",\"questions\":[]}'
     ;;
   *"Start the iteration-limit lifecycle"*)
+    printf '// Start iteration-limit lifecycle\n' >> src/main.rs
     result='{\"answer\":\"Iteration-limit lifecycle turn completed.\",\"questions\":[]}'
     ;;
   *)

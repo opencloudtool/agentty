@@ -184,14 +184,19 @@ focused-review state application and persistence run afterward. Key behaviors:
   and request generation; the reducer discards canceled or superseded completions, so
   Git work never blocks terminal redraw or input handling. Automatic review checks start
   only from completed-turn and session-status events, not unrelated per-session updates.
-  A completed turn supersedes pending review and `/apply` diff continuations before
-  queued diff results are reduced, and repeated `/apply` checks are deduplicated per
-  session. Clearing or regenerating focused review also invalidates pending `/apply`
-  continuations, whose completions revalidate the current review-ready cache generation
-  before submitting an agent turn. Sessions in `Auto Edit + Auto Address Comments` reuse
-  this continuation automatically when a ready review has actionable suggestions. Each
-  resulting turn re-enters focused review, and an in-memory per-user-prompt counter
-  stops automatic application after three turns.
+  The last observed diff hash is persisted independently of review output and recovered
+  after restart. It survives clearing review output for a new turn, so an unchanged diff
+  does not launch another automatic review. A changed diff and its pending-review claim
+  are committed atomically before generation starts, so a restart cannot lose that
+  review. Manual review can still run. A completed turn supersedes pending review and
+  `/apply` diff continuations before queued diff results are reduced, and repeated
+  `/apply` checks are deduplicated per session. Clearing or regenerating focused review
+  also invalidates pending `/apply` continuations, whose completions revalidate the
+  current review-ready cache generation before submitting an agent turn. Sessions in
+  `Auto Edit + Auto Address Comments` reuse this continuation automatically when a ready
+  review has actionable suggestions. Each resulting turn rechecks its diff for focused
+  review, and an in-memory per-user-prompt counter stops automatic application after
+  three turns.
 - Externally merged review requests transition sessions to read-only `Merged`; only a
   successful user-triggered sync of the request's local target advances them to `Done`.
   Closed requests transition editable sessions to `Canceled`.

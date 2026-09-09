@@ -275,6 +275,10 @@ pub struct App {
     /// switches, is hydrated after restart, and is ready when the user presses
     /// `f`.
     pub(crate) review_cache: HashMap<SessionId, ReviewCacheEntry>,
+    /// Caches the persisted review diff baseline across turns and project
+    /// switches independently of visible output. Lazily recovered after
+    /// restart and removed when the session is deleted.
+    pub(crate) review_diff_hashes: HashMap<SessionId, u64>,
     /// Counts automatic focused-review remediation turns in the current
     /// user-initiated cycle for each session.
     pub(crate) auto_address_review_iterations: HashMap<SessionId, u8>,
@@ -1040,10 +1044,19 @@ impl App {
     }
 
     /// Clears cached focused-review state, invalidates pending `/apply`
-    /// continuations, and retracts its display slot.
+    /// continuations, and retracts its display slot while retaining the diff
+    /// baseline for automatic review of the next turn.
     pub(crate) fn clear_review_output(&mut self, session_id: &str) {
         self.discard_pending_apply_review_diff_loads(&SessionId::from(session_id));
-        self.review_cache.remove(session_id);
+        if let Some(diff_hash) = self
+            .review_cache
+            .remove(session_id)
+            .and_then(|entry| entry.diff_hash())
+        {
+            self.review_diff_hashes
+                .entry(SessionId::from(session_id))
+                .or_insert(diff_hash);
+        }
         if let Some(session) = self.sessions.state_mut().session_mut_for_id(session_id) {
             session
                 .transient_messages
