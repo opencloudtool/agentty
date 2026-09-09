@@ -274,11 +274,25 @@ pub(crate) async fn abort_rebase(repo_path: PathBuf) -> Result<(), GitError> {
 /// otherwise.
 ///
 /// # Errors
-/// Returns a [`GitError`] when the git directory cannot be resolved.
+/// Returns [`GitError::RepositoryUnavailable`] when the repository folder is
+/// missing, or another [`GitError`] when its git directory cannot be resolved.
 pub(crate) async fn is_rebase_in_progress(repo_path: PathBuf) -> Result<bool, GitError> {
     spawn_blocking(move || -> Result<bool, GitError> {
-        let git_dir = resolve_git_dir(&repo_path)
-            .ok_or_else(|| GitError::OutputParse("Failed to resolve git directory".to_string()))?;
+        match fs::metadata(&repo_path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Err(GitError::RepositoryUnavailable {
+                    detail: format!("Repository folder is missing: {}", repo_path.display()),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let git_dir = resolve_git_dir(&repo_path).ok_or_else(|| {
+            GitError::OutputParse(format!(
+                "Failed to resolve git directory for `{}`",
+                repo_path.display()
+            ))
+        })?;
 
         Ok(has_rebase_metadata(&git_dir))
     })
@@ -627,6 +641,77 @@ mod tests {
 
     use super::*;
     use crate::MockSleeper;
+
+    #[tokio::test]
+    async fn rebase_probe_reports_missing_repository() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should exist");
+        let missing = directory.path().join("removed-worktree");
+
+        // Act
+        let error = is_rebase_in_progress(missing.clone())
+            .await
+            .expect_err("missing worktree should be classified");
+
+        // Assert
+        assert!(
+            matches!(error, GitError::RepositoryUnavailable { ref detail }
+            if detail.contains(&missing.display().to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn rebase_probe_preserves_invalid_repository_and_io_errors() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should exist");
+        let parent_file = directory.path().join("file");
+        fs::write(&parent_file, "not a directory").expect("file should be written");
+
+        // Act
+        let invalid_repository = is_rebase_in_progress(directory.path().to_path_buf()).await;
+        let io_error = is_rebase_in_progress(parent_file.join("worktree")).await;
+
+        // Assert
+        assert!(
+            matches!(invalid_repository, Err(GitError::OutputParse(message))
+            if message.contains(&directory.path().display().to_string()))
+        );
+        assert!(matches!(io_error, Err(GitError::Io(_))));
+    }
+
+    #[tokio::test]
+    async fn rebase_probe_detects_metadata_in_checkout_and_linked_worktree() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should exist");
+        let checkout = directory.path().join("checkout");
+        let linked = directory.path().join("linked");
+        let git_dir = checkout.join(".git");
+        fs::create_dir_all(&git_dir).expect("git directory should exist");
+        fs::create_dir(&linked).expect("worktree directory should exist");
+        fs::write(linked.join(".git"), "gitdir: ../checkout/.git\n")
+            .expect("gitdir file should be written");
+
+        // Act / Assert
+        assert!(
+            !is_rebase_in_progress(checkout.clone())
+                .await
+                .expect("probe should succeed")
+        );
+        for metadata in ["rebase-merge", "rebase-apply"] {
+            fs::create_dir(git_dir.join(metadata)).expect("rebase metadata should exist");
+            assert!(
+                is_rebase_in_progress(checkout.clone())
+                    .await
+                    .expect("probe should succeed")
+            );
+            assert!(
+                is_rebase_in_progress(linked.clone())
+                    .await
+                    .expect("probe should succeed")
+            );
+            fs::remove_dir(git_dir.join(metadata)).expect("rebase metadata should be removed");
+        }
+    }
 
     #[test]
     fn test_run_git_command_with_index_lock_retry_retries_and_sleeps_before_success() {

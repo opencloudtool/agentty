@@ -19,6 +19,10 @@ images whose turns never began, so `s` can submit them again. Saved prompts surv
 restart; review the previous turn if dispatch was interrupted. If you switch projects, a
 saved prompt resumes when you return to its project.
 
+Startup marks interrupted rebases as failed and restores their sessions to **Review**. A
+removed session worktree does not block this recovery. Storage errors or Git inspection
+and cleanup failures in existing worktrees must be resolved before startup can complete.
+
 Drafts keep their staging controls: `Enter` saves a draft, and `s` starts background
 workspace setup for the staged prompt. Stacked drafts still require a review-ready
 parent and an idle stack. Forks capture the source history and commit before setup.
