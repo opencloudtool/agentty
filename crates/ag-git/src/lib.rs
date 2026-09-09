@@ -31,8 +31,6 @@ pub(crate) use rebase::{
     rebase_onto_start, rebase_start,
 };
 pub(crate) use repo::{main_checkout_working_tree, main_repo_root, repo_url};
-#[cfg(test)]
-pub(crate) use sleeper::MockSleeper;
 pub(crate) use sleeper::{Sleeper, ThreadSleeper};
 pub use sync::{
     BranchTrackingMap, PullRebaseResult, SingleCommitMessageStrategy, WorktreeFileContent,
