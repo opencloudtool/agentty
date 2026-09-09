@@ -149,7 +149,8 @@ pub trait GitClient: Send + Sync {
     /// Returns whether rebase metadata exists in `repo_path`.
     ///
     /// # Errors
-    /// Returns an error when git state cannot be inspected.
+    /// Returns [`GitError::RepositoryUnavailable`] when the repository folder
+    /// is missing, or another error when git state cannot be inspected.
     fn is_rebase_in_progress(&self, repo_path: PathBuf) -> GitFuture<Result<bool, GitError>>;
 
     /// Returns detected in-progress git operation metadata in `repo_path`.

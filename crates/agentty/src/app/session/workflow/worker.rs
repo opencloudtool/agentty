@@ -740,7 +740,8 @@ impl SessionWorkerService {
     /// Aborts stale git rebase state left by interrupted worker operations.
     ///
     /// Only worker-backed rebase operations are handled here because merge
-    /// tasks are not yet persisted in `session_operation`.
+    /// tasks are not yet persisted in `session_operation`. Missing worktrees
+    /// need no Git cleanup; their operations still undergo durable recovery.
     ///
     /// # Errors
     /// Returns an error when Git cannot inspect or abort interrupted rebase
@@ -760,7 +761,12 @@ impl SessionWorkerService {
 
         for session_id in rebase_session_ids {
             let folder = session_folder(base_path, session_id);
-            let is_rebase_in_progress = git_client.is_rebase_in_progress(folder.clone()).await?;
+            let is_rebase_in_progress = match git_client.is_rebase_in_progress(folder.clone()).await
+            {
+                Ok(in_progress) => in_progress,
+                Err(ag_git::GitError::RepositoryUnavailable { .. }) => continue,
+                Err(error) => return Err(error.into()),
+            };
             if is_rebase_in_progress {
                 git_client.abort_rebase(folder).await?;
             }
@@ -7533,6 +7539,80 @@ mod tests {
         // Assert
         assert!(matches!(result, Err(SessionError::Git(_))));
         assert!(operation_is_unfinished);
+    }
+
+    #[tokio::test]
+    /// Verifies a removed worktree does not trap startup in recovery.
+    async fn test_restart_recovery_completes_for_missing_rebase_worktree() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let db = AppRepositories::in_memory().await.expect("db should open");
+        seed_recovery_test_operation(&db, Status::Rebasing, REBASE_OPERATION_KIND).await;
+
+        // Act
+        SessionWorkerService::fail_unfinished_operations_from_previous_run_at(
+            &db,
+            base_dir.path(),
+            Arc::new(ag_git::RealGitClient),
+            300,
+        )
+        .await
+        .expect("missing worktree should not prevent recovery");
+        let sessions = db
+            .sessions()
+            .load_sessions()
+            .await
+            .expect("sessions should load");
+        let unfinished = db
+            .operations()
+            .load_unfinished_session_operations()
+            .await
+            .expect("operations should load");
+
+        // Assert
+        assert_eq!(sessions[0].status, "Review");
+        assert!(unfinished.is_empty());
+    }
+
+    #[tokio::test]
+    /// Verifies an existing worktree with invalid metadata remains retryable.
+    async fn test_restart_recovery_preserves_git_inspection_failure() {
+        // Arrange
+        let base_dir = tempdir().expect("failed to create temp dir");
+        let db = AppRepositories::in_memory().await.expect("db should open");
+        seed_recovery_test_operation(&db, Status::Rebasing, REBASE_OPERATION_KIND).await;
+        let mut git_client = MockGitClient::new();
+        git_client
+            .expect_is_rebase_in_progress()
+            .once()
+            .returning(|_| {
+                Box::pin(async { Err(ag_git::GitError::OutputParse("invalid gitdir".to_string())) })
+            });
+        git_client.expect_abort_rebase().times(0);
+
+        // Act
+        let result = SessionWorkerService::fail_unfinished_operations_from_previous_run_at(
+            &db,
+            base_dir.path(),
+            Arc::new(git_client),
+            300,
+        )
+        .await;
+        let sessions = db
+            .sessions()
+            .load_sessions()
+            .await
+            .expect("sessions should load");
+        let unfinished = db
+            .operations()
+            .load_unfinished_session_operations()
+            .await
+            .expect("operations should load");
+
+        // Assert
+        assert!(matches!(result, Err(SessionError::Git(_))));
+        assert_eq!(sessions[0].status, "Rebasing");
+        assert_eq!(unfinished.len(), 1);
     }
 
     #[tokio::test]
