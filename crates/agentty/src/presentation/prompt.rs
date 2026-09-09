@@ -10,7 +10,7 @@ pub use crate::domain::composer::{
 use crate::domain::file_entry::FileEntry;
 
 /// UI state for prompt `@` file and directory mention selection.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PromptAtMentionState {
     /// Cached list of all files and directories in the session directory.
     pub all_entries: Vec<FileEntry>,

@@ -339,6 +339,12 @@ markdown file loads automatically, while folders and other file types continue s
 their normal diff. Deleted, binary, oversized, and unreadable markdown files show a
 short availability notice. Press `p` again to return to raw diff lines.
 
+Type `@` in a diff comment to look up repository files. `Up` / `Down` navigate matches,
+and `Tab` / `Enter` insert the selected path without finishing the comment. `Esc`
+dismisses the lookup while preserving the draft; press it again to finish editing. With
+no matches, `Tab` / `Enter` dismiss the lookup. Modified `Enter` still inserts a
+newline.
+
 Whole-file comments stay visible above the selected file's patch, while line and range
 comments stay beneath their source. Press `Enter` again on a completed comment to edit
 it; clearing its text and finishing removes it. Completed comments use a distinct inset

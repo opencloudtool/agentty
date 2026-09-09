@@ -20,6 +20,7 @@ use crate::presentation::app_mode::{
     DiffLineSide, DiffPreview, DiffPreviewUnavailableReason, DiffReviewComments, DiffSidebarFocus,
 };
 use crate::presentation::{help_action, review_comment as review_comment_selection};
+use crate::ui::component::chat_input::ChatInput;
 use crate::ui::component::file_explorer::FileExplorer;
 use crate::ui::component::vertical_scrollbar::VerticalScrollbar;
 #[cfg(test)]
@@ -28,7 +29,7 @@ use crate::ui::diff_util::{
     DiffLine, DiffLineKind, FileTreeItem, diff_header_new_path, diff_header_paths, parse_diff_lines,
 };
 use crate::ui::page::review_comment;
-use crate::ui::{Component, Page, diff_util, markdown, style};
+use crate::ui::{Component, Page, diff_util, input_layout, markdown, prompt_format, style};
 
 const WRAPPED_CHUNK_START_INDEX: usize = 0;
 const DIFF_COMMENT_CACHE_ENTRY_LIMIT: usize = 64;
@@ -1901,6 +1902,67 @@ impl DiffPage<'_> {
         .selected_index(self.file_explorer_selected_index)
         .focused(self.sidebar_focus == DiffSidebarFocus::Files && self.focus == DiffFocus::Files)
     }
+
+    /// Paints repository suggestions adjacent to the active comment input.
+    fn render_comment_lookup(&self, f: &mut Frame, diff_area: Rect, footer_area: Rect) {
+        let Some(state) = &self.line_comments.at_mention_state else {
+            return;
+        };
+        let Some(index) = self.line_comments.editing_index else {
+            return;
+        };
+        let content = self.diff_layout_cache.content(self.diff);
+        let layout = self.diff_layout_cache.resolved_layout(
+            &content,
+            self.line_comments,
+            self.file_explorer_selected_index,
+            diff_area,
+        );
+        let scroll_offset = diff_util::clamp_diff_scroll_offset(
+            self.scroll_offset,
+            layout.line_count,
+            layout.render_layout.viewport_height,
+        );
+        let viewport = Rect::new(
+            diff_area.x + 1,
+            diff_area.y + 1,
+            u16::try_from(layout.render_layout.content_width).unwrap_or(u16::MAX),
+            layout.render_layout.viewport_height,
+        );
+        let lookup_area = |height| {
+            layout
+                .comment_insertions
+                .iter()
+                .find(|insertion| insertion.comment == index)
+                .and_then(|insertion| {
+                    comment_lookup_area(
+                        viewport,
+                        insertion.display_row..insertion.display_row + insertion.height,
+                        scroll_offset,
+                        height,
+                    )
+                })
+        };
+        let menu = lookup_area(12).and_then(|area| {
+            let input = &self.line_comments.comments[index].input;
+            prompt_format::file_lookup_suggestion_list(
+                input.text(),
+                input.cursor,
+                state,
+                usize::from(area.height.saturating_sub(2)),
+            )
+        });
+        let help = if let Some(menu) = menu
+            && let Some(area) =
+                lookup_area(input_layout::suggestion_dropdown_height(menu.items.len()))
+        {
+            ChatInput::render_suggestion_dropdown(f, area, &menu);
+            "Up/Down: navigate  Tab/Enter: select  Esc: dismiss lookup"
+        } else {
+            "Esc: dismiss lookup"
+        };
+        f.render_widget(Paragraph::new(help), footer_area);
+    }
 }
 
 impl Page for DiffPage<'_> {
@@ -2009,7 +2071,46 @@ impl Page for DiffPage<'_> {
             }),
         ));
         f.render_widget(help_message, areas.footer_area);
+        self.render_comment_lookup(f, areas.diff_area, areas.footer_area);
     }
+}
+
+/// Anchors the lookup to the visible comment, preferring the space above it.
+/// Top-edge comments use the space below rather than covering their own input.
+fn comment_lookup_area(
+    viewport: Rect,
+    rows: Range<usize>,
+    scroll_offset: u16,
+    desired_height: u16,
+) -> Option<Rect> {
+    let scroll_offset = usize::from(scroll_offset);
+    if rows.end <= scroll_offset || rows.start >= scroll_offset + usize::from(viewport.height) {
+        return None;
+    }
+    let top = u16::try_from(rows.start.saturating_sub(scroll_offset)).unwrap_or(u16::MAX);
+    let bottom = u16::try_from(rows.end.saturating_sub(scroll_offset))
+        .unwrap_or(u16::MAX)
+        .min(viewport.height);
+    let margin = u16::try_from(COMMENT_INPUT_HORIZONTAL_MARGIN)
+        .unwrap_or(u16::MAX)
+        .min(viewport.width);
+    let input_area = Rect::new(
+        viewport.x + margin,
+        viewport.y + top,
+        viewport.width - margin,
+        bottom.saturating_sub(top),
+    );
+    if top >= 3 {
+        return input_layout::overlay_area_above(viewport, input_area, desired_height);
+    }
+    let height = viewport.height.saturating_sub(bottom).min(desired_height);
+
+    (height >= 3).then_some(Rect::new(
+        input_area.x,
+        input_area.bottom(),
+        input_area.width,
+        height,
+    ))
 }
 
 /// Returns the preview path when it still matches the active markdown row.
@@ -2153,6 +2254,8 @@ fn preview_unavailable_message(reason: &DiffPreviewUnavailableReason) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::buffer::Cell;
+
     use super::*;
     use crate::domain::theme::ColorTheme;
     use crate::presentation::app_mode::DiffLineCommentTarget;
@@ -2431,6 +2534,133 @@ mod tests {
         assert_eq!(new_line.side, DiffLineSide::New);
         assert_eq!(old_line_index, Some(0));
         assert_eq!(new_line_index, Some(1));
+    }
+
+    #[test]
+    fn test_comment_lookup_tracks_input_and_scroll_position() {
+        // Arrange
+        let viewport = Rect::new(20, 2, 70, 20);
+
+        // Act, Assert
+        for (rows, scroll, expected) in [
+            (8..11, 0, Some(Rect::new(21, 5, 69, 5))),
+            (8..11, 4, Some(Rect::new(21, 2, 69, 4))),
+            (0..3, 0, Some(Rect::new(21, 5, 69, 5))),
+            (0..3, 1, Some(Rect::new(21, 4, 69, 5))),
+            (0..3, 3, None),
+            (20..23, 0, None),
+            (0..19, 0, None),
+        ] {
+            assert_eq!(comment_lookup_area(viewport, rows, scroll, 5), expected);
+        }
+    }
+
+    #[test]
+    fn test_diff_comment_lookup_renders_matches_and_constrained_footer() {
+        for (height, has_match, editing) in [
+            (14, true, true),
+            (3, true, true),
+            (14, false, true),
+            (14, true, false),
+        ] {
+            // Arrange
+            let diff = concat!(
+                "diff --git a/src/main.rs b/src/main.rs\n",
+                "@@ -0,0 +1,2 @@\n",
+                "+fn main() {}\n",
+                "+review();\n",
+            );
+            let mut line_comments = DiffLineComments::default();
+            line_comments.start_editing_target(DiffLineCommentTarget::single(
+                DiffLineCommentAnchor {
+                    content: "fn main() {}".to_string(),
+                    line: 1,
+                    path: "src/main.rs".to_string(),
+                    side: DiffLineSide::New,
+                },
+            ));
+            line_comments
+                .editing_input_mut()
+                .expect("inline comment should be editable")
+                .insert_text("@src");
+            line_comments.at_mention_state = Some(Box::new(
+                crate::presentation::prompt::PromptAtMentionState::new(if has_match {
+                    vec![crate::domain::file_entry::FileEntry {
+                        is_dir: false,
+                        path: "src/lookup.rs".into(),
+                    }]
+                } else {
+                    Vec::new()
+                }),
+            ));
+            if !editing {
+                line_comments.editing_index = None;
+            }
+            let session = session_fixture();
+            let diff_layout_cache = DiffLayoutCache::default();
+            let markdown_render_cache = markdown::MarkdownRenderCache::default();
+            let mut page = DiffPage::new(DiffPageInput {
+                can_comment: true,
+                diff,
+                diff_layout_cache: &diff_layout_cache,
+                file_explorer_selected_index: 1,
+                focus: DiffFocus::Content,
+                line_comments: &line_comments,
+                markdown_render_cache: &markdown_render_cache,
+                preview: test_diff_preview(),
+                review_comments: None,
+                scroll_offset: 0,
+                selected_diff_line_index: 0,
+                session: &session,
+                sidebar_focus: DiffSidebarFocus::Files,
+            });
+            let backend = ratatui::backend::TestBackend::new(100, height);
+            let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
+
+            // Act
+            terminal
+                .draw(|frame| page.render(frame, frame.area()))
+                .expect("failed to render diff page");
+
+            // Assert
+            let text = buffer_text(terminal.backend().buffer());
+            assert_eq!(text.contains("Esc: dismiss lookup"), editing);
+            assert_eq!(
+                text.contains("Tab/Enter: select"),
+                height == 14 && has_match && editing
+            );
+            assert_eq!(
+                text.contains("src/lookup.rs"),
+                height == 14 && has_match && editing
+            );
+            if height == 14 && has_match && editing {
+                let areas = diff_util::diff_page_areas(Rect::new(0, 0, 100, height));
+                assert_comment_lookup_position(terminal.backend().buffer(), areas.diff_area);
+            }
+        }
+    }
+
+    /// Checks that suggestions stay in the diff pane without covering the
+    /// draft.
+    fn assert_comment_lookup_position(buffer: &ratatui::buffer::Buffer, diff_area: Rect) {
+        let row_texts: Vec<String> = buffer
+            .content
+            .chunks(100)
+            .map(|row| row.iter().map(Cell::symbol).collect())
+            .collect();
+        let (lookup_row, lookup_text) = row_texts
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains("src/lookup.rs"))
+            .expect("lookup row");
+        let input_row = row_texts
+            .iter()
+            .position(|row| row.contains("@src|"))
+            .expect("input row");
+        assert_ne!(lookup_row, input_row);
+        assert!(
+            lookup_text.find("src/lookup.rs").expect("lookup column") >= usize::from(diff_area.x)
+        );
     }
 
     #[test]

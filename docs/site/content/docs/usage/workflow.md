@@ -274,6 +274,13 @@ range, press `Shift+V` on the first changed row, extend the visual selection wit
 `k` or the arrow keys, then press `Enter`; `Esc` cancels the selection without leaving
 the patch. The full range stays highlighted while its inline editor is open and after
 the comment is finished, so every inline comment retains its visible source context.
+Type `@` in a diff comment to look up repository files. The lookup aligns with the
+comment input, opening above it when space allows and below it near the top edge. `Up` /
+`Down` navigate matches, and `Tab` / `Enter` insert the selected path without finishing
+the comment. `Esc` dismisses the lookup while preserving the draft; press it again to
+finish editing. With no matches, `Tab` / `Enter` dismiss the lookup. Modified `Enter`
+still inserts a newline.
+
 Finishing empty text removes the comment and its source highlight. Completed comments
 keep a distinct inset background, and the active editor uses the stronger selection
 highlight. Leaving Diff mode keeps every completed comment with that session, so

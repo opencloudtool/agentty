@@ -10,9 +10,11 @@ use crate::presentation::app_mode::{
     DiffSidebarFocus, HelpContext, PromptModeSnapshot, ViewportRect,
     allows_diff_line_comment_reply,
 };
-use crate::presentation::prompt::{PromptAttachmentState, PromptHistoryState};
+use crate::presentation::prompt::{
+    PromptAtMentionState, PromptAttachmentState, PromptHistoryState,
+};
 use crate::runtime::EventResult;
-use crate::runtime::mode::input_key;
+use crate::runtime::mode::{at_mention, input_key};
 use crate::ui::component::file_explorer::FileExplorer;
 use crate::ui::{RenderCacheStore, diff_util, page};
 
@@ -463,6 +465,29 @@ fn handle_line_comment_edit_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
+    if !input_key::should_insert_newline(key)
+        && let Some(state) = &mut line_comments.at_mention_state
+        && let Some(input) = line_comments
+            .editing_index
+            .and_then(|index| line_comments.comments.get_mut(index))
+            .map(|comment| &mut comment.input)
+    {
+        match key.code {
+            KeyCode::Esc => line_comments.at_mention_state = None,
+            KeyCode::Up => at_mention::move_selection_up(state),
+            KeyCode::Down => at_mention::move_selection_down(input, state),
+            KeyCode::Tab | KeyCode::Enter | KeyCode::Char('\r' | '\n') => {
+                if let Some(selection) = at_mention::selected_replacement(input, state) {
+                    input.replace_range(selection.at_start, selection.at_end, &selection.text);
+                }
+                line_comments.at_mention_state = None;
+            }
+            _ => return apply_comment_input_key(app, key),
+        }
+
+        return true;
+    }
+
     if key.code == KeyCode::Esc
         || (input_key::is_enter_key(key.code) && !input_key::should_insert_newline(key))
     {
@@ -474,13 +499,58 @@ fn handle_line_comment_edit_key(app: &mut App, key: KeyEvent) -> bool {
 
         return true;
     }
-    if let Some(command) = input_key::command_for_key(key, input_key::InputCapabilities::MULTILINE)
+    apply_comment_input_key(app, key)
+}
+
+/// Applies text editing before refreshing the repository lookup.
+fn apply_comment_input_key(app: &mut App, key: KeyEvent) -> bool {
+    if let AppMode::Diff { line_comments, .. } = &mut app.mode
+        && let Some(command) =
+            input_key::command_for_key(key, input_key::InputCapabilities::MULTILINE)
         && let Some(input) = line_comments.editing_input_mut()
     {
         input.apply(command);
+        sync_comment_at_mention(app);
     }
 
     true
+}
+
+/// Refreshes lookup state after typing, cursor movement, or paste.
+fn sync_comment_at_mention(app: &mut App) {
+    let AppMode::Diff {
+        line_comments,
+        session_id,
+        ..
+    } = &mut app.mode
+    else {
+        return;
+    };
+    let Some(index) = line_comments.editing_index else {
+        return;
+    };
+    match at_mention::sync_action(
+        &line_comments.comments[index].input,
+        line_comments.at_mention_state.as_deref(),
+    ) {
+        at_mention::AtMentionSyncAction::Dismiss => line_comments.at_mention_state = None,
+        at_mention::AtMentionSyncAction::KeepOpen => {
+            if let Some(state) = &mut line_comments.at_mention_state {
+                at_mention::reset_selection(state);
+            }
+        }
+        at_mention::AtMentionSyncAction::Activate => {
+            line_comments.at_mention_state = Some(Box::new(PromptAtMentionState::new(Vec::new())));
+            let session_id = session_id.clone();
+            let lookup_root = app.at_mention_lookup_root(&session_id);
+            at_mention::start_loading_entries(
+                app.services.event_sender(),
+                lookup_root,
+                session_id,
+                &mut app.sessions,
+            );
+        }
+    }
 }
 
 /// Inserts normalized pasted text into the active multiline diff comment
@@ -494,6 +564,7 @@ pub(crate) fn handle_paste(app: &mut App, pasted_text: &str) {
     };
 
     input.insert_text(&input_key::normalize_pasted_text(pasted_text));
+    sync_comment_at_mention(app);
 }
 
 /// Replaces Diff mode with one next-turn prompt containing every comment.
@@ -1353,6 +1424,117 @@ mod tests {
             .expect("at-mention state must survive leaving diff");
         assert_eq!(at_mention_state.selected_index, 1);
         assert_eq!(at_mention_state.all_entries, vec![prompt_mention_entry()]);
+    }
+
+    #[tokio::test]
+    async fn test_comment_lookup_selection_and_dismissal() {
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Char('\r'),
+            KeyCode::Char('\n'),
+            KeyCode::Esc,
+        ] {
+            for has_match in [true, false] {
+                // Arrange
+                let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+                app.mode = diff_mode_fixture(
+                    "diff --git a/src/main.rs b/src/main.rs\n+review();\n",
+                    1,
+                    DiffFocus::Content,
+                    DiffPreview::default(),
+                );
+                if let AppMode::Diff { line_comments, .. } = &mut app.mode {
+                    line_comments.start_editing_target(DiffCommentTarget::File {
+                        path: "src/main.rs".into(),
+                    });
+                    let input = line_comments
+                        .editing_input_mut()
+                        .expect("comment is editable");
+                    *input = InputState::with_text("Use @src/pending after".into());
+                    input.cursor = "Use @src".len();
+                }
+                sync_comment_at_mention(&mut app);
+                let entries = if has_match {
+                    vec![crate::domain::file_entry::FileEntry {
+                        is_dir: false,
+                        path: "src/lib.rs".into(),
+                    }]
+                } else {
+                    Vec::new()
+                };
+                app.apply_app_events(AppEvent::AtMentionEntriesLoaded {
+                    entries: entries.clone(),
+                    session_id: "session-id".into(),
+                })
+                .await;
+
+                // Act
+                for key in [KeyCode::Down, KeyCode::Up, code] {
+                    handle_line_comment_edit_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
+                }
+                app.apply_app_events(AppEvent::AtMentionEntriesLoaded {
+                    entries,
+                    session_id: "session-id".into(),
+                })
+                .await;
+
+                // Assert
+                let AppMode::Diff { line_comments, .. } = &app.mode else {
+                    unreachable!("diff mode expected")
+                };
+                assert!(line_comments.is_editing());
+                assert!(line_comments.at_mention_state.is_none());
+                assert_eq!(
+                    line_comments.comments[0].input.text(),
+                    if has_match && code != KeyCode::Esc {
+                        "Use @src/lib.rs  after"
+                    } else {
+                        "Use @src/pending after"
+                    }
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_comment_lookup_edits_paste_and_newline() {
+        // Arrange
+        let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+        sync_comment_at_mention(&mut app);
+        apply_comment_input_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        app.mode = diff_mode_fixture(
+            "diff --git a/src/main.rs b/src/main.rs\n+review();\n",
+            1,
+            DiffFocus::Content,
+            DiffPreview::default(),
+        );
+        sync_comment_at_mention(&mut app);
+        if let AppMode::Diff { line_comments, .. } = &mut app.mode {
+            line_comments.start_editing_target(DiffCommentTarget::File {
+                path: "src/main.rs".into(),
+            });
+        }
+
+        // Act
+        handle_paste(&mut app, "@sr");
+        handle_line_comment_edit_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+        );
+
+        // Assert
+        assert!(
+            matches!(&app.mode, AppMode::Diff { line_comments, .. } if line_comments.at_mention_state.is_some())
+        );
+
+        // Act
+        handle_line_comment_edit_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+        // Assert
+        assert!(
+            matches!(&app.mode, AppMode::Diff { line_comments, .. } if line_comments.at_mention_state.is_none() && line_comments.comments[0].input.text() == "@src\n" && line_comments.is_editing())
+        );
     }
 
     #[tokio::test]
