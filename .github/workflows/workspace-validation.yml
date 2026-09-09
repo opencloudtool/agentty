@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust and `prek`
-        uses: ./.github/actions/setup-rust-prek
+        uses: $/.github/actions/setup-rust-prek
         with:
           cargo-audit: ${{ inputs['cargo-audit'] && 'true' || 'false' }}
           cargo-machete: ${{ inputs['cargo-machete'] && 'true' || 'false' }}

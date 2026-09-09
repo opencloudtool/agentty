@@ -112,7 +112,7 @@ jobs:
           path: plan-dist-manifest.json
 
   custom-release-checks:
-    uses: ./.github/workflows/release-checks.yml
+    uses: $/.github/workflows/release-checks.yml
 
   # Build and packages all the platform-specific things
   build-local-artifacts:
@@ -390,7 +390,7 @@ jobs:
       - plan
       - host
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
-    uses: ./.github/workflows/publish-npm-oidc.yml
+    uses: $/.github/workflows/publish-npm-oidc.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
     # publish jobs get escalated permissions
@@ -403,7 +403,7 @@ jobs:
       - plan
       - host
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
-    uses: ./.github/workflows/publish-crates-io.yml
+    uses: $/.github/workflows/publish-crates-io.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
     # publish jobs get escalated permissions

@@ -8,12 +8,14 @@ cargo-dist-version = "0.31.0"
 # CI backends to support
 ci = "github"
 # Keep release CI marked as intentionally customized because the checked-in
-# workflow avoids blanket secret forwarding on custom jobs that do not need it,
+# workflow uses `$/` self-repository references for custom jobs and avoids
+# blanket secret forwarding on custom jobs that do not need it,
 # and the generated `host` job is patched to require release checks before
 # creating the GitHub release announcement and to reuse an existing draft when a
 # release upload is retried. The generated workflow still runs the release plan
 # on pull requests and merge queue checks, while release-only validation is
-# tag-gated in `.github/workflows/release-checks.yml`.
+# tag-gated in `.github/workflows/release-checks.yml`. Reapply these customizations
+# after `dist init`; dist 0.31.0 still generates `./` workflow references.
 allow-dirty = ["ci"]
 # The installers to generate for each app
 installers = ["shell", "npm"]
