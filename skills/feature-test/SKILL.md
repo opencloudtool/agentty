@@ -47,13 +47,15 @@ Choose a short, descriptive `snake_case` name that describes the feature (e.g.,
 
 Place the test in the E2E module that best matches the feature area:
 
-- `session.rs` — session lifecycle and prompt interactions.
+- `session/` — topic modules for session lifecycle, prompts, diffs, reviews, and related
+  interactions; `session.rs` registers these modules.
 - `navigation.rs` — tab cycling, help overlay, quit dialog.
 - `confirmation.rs` — confirmation dialogs.
 - `project.rs` — project page and project-related flows.
 
 If no existing module fits, create a new one and register it in
-`crates/agentty/tests/e2e/main.rs`.
+`crates/agentty/tests/e2e/main.rs`, or in `crates/agentty/tests/e2e/session.rs` for a
+new session topic.
 
 ### 2. Write the test using `FeatureTest`
 
