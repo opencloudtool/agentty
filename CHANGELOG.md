@@ -7,6 +7,40 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [v0.15.12] - 2026-09-08
+
+### Added
+
+- agentty: support repository file lookup in question answers.
+- ag-harness: expose model history and validate tool calls.
+
+### Changed
+
+- orchestration: move campaign orchestration into a reusable workspace crate.
+- ag-harness: strengthen durable session persistence, recovery, and lifecycle handling.
+- ag-harness: use trusted Git executables for repository tools and default the CLI to
+  Git from `PATH`.
+- agentty: limit concurrent subagents for native providers.
+- build: limit parallelism across sessions and update Rust, dependencies, and GitHub
+  Actions.
+- release: bump workspace crate metadata and lockfile package versions to `0.15.12`.
+
+### Fixed
+
+- agentty: keep session creation, transcript rendering, and scrolling responsive.
+- agentty: preserve session replay context, protocol integrity, and replacement
+  continuations during resume fallback.
+- agentty: skip duplicate automatic focused reviews and preserve review routing.
+- agentty: track session resources without using runtime process IDs incorrectly.
+- agentty: avoid optional Git locks during inspection and stop automatic commits on
+  persistent index locks.
+
+### Contributors
+
+- @andagaev
+- @dependabot
+- @minev-dev
+
 ## [v0.15.11] - 2026-09-05
 
 ### Added
