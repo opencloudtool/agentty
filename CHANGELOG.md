@@ -7,6 +7,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [v0.15.14] - 2026-09-09
+
+### Added
+
+- agentty: prevent concurrent instances from using the same application database.
+
+### Changed
+
+- agentty: keep workspace preparation quiet during initial prompt composition.
+- release: bump workspace crate metadata and lockfile package versions to `0.15.14`.
+
+### Fixed
+
+- agentty: recover missing worktrees when resuming rebases.
+- ci: use repository-relative references for custom GitHub Actions.
+
+### Contributors
+
+- @minev-dev
+
 ## [v0.15.13] - 2026-09-09
 
 ### Added
