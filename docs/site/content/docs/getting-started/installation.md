@@ -96,6 +96,11 @@ for third-party invocation through Agentty.
 1. Run `agentty`.
 1. Start a new session and let the agent work in its dedicated worktree branch.
 
+Only one Agentty instance can use a given Agentty root at a time. If startup reports
+that another instance is running, close that instance first. A crash releases ownership
+automatically; do not delete the lock file. Separate `AGENTTY_ROOT` directories can run
+independently.
+
 ## Review Changes
 
 <a id="installation-review-changes"></a> Inside `agentty`, open the diff view (`d`) to

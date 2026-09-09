@@ -1,5 +1,8 @@
 //! Navigation E2E tests: tab cycling, reverse tab cycling, and help overlay.
 
+use agentty::infra::db::{
+    DB_DIR, DB_FILE, Database, SessionPreparationState, acquire_instance_lock,
+};
 use testty::assertion;
 use testty::region::Region;
 
@@ -7,6 +10,81 @@ use crate::common;
 use crate::common::FeatureTest;
 
 type E2eResult = Result<(), Box<dyn std::error::Error>>;
+
+/// A contending CLI must exit before startup recovery mutates live work.
+#[tokio::test]
+async fn second_instance_preserves_live_operations() -> E2eResult {
+    // Arrange
+    let root = tempfile::tempdir()?;
+    let _owner = acquire_instance_lock(root.path()).await?;
+    let database = Database::open(&root.path().join(DB_DIR).join(DB_FILE)).await?;
+    let project_id = database
+        .projects()
+        .upsert_project("live-project", None)
+        .await?;
+    database
+        .sessions()
+        .insert_session("live", "gpt-5.6-sol", "main", "InProgress", project_id)
+        .await?;
+    database
+        .sessions()
+        .insert_session_preparation("live", "main")
+        .await?;
+    database
+        .operations()
+        .insert_session_operation("live-turn", "live", "rebase")
+        .await?;
+    database
+        .operations()
+        .mark_session_operation_running("live-turn")
+        .await?;
+
+    // Act
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::process::Command::new(assert_cmd::cargo::cargo_bin!("agentty"))
+            .arg("--no-update")
+            .env("AGENTTY_ROOT", root.path())
+            .current_dir(root.path())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+
+    // Assert
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Another Agentty instance is already using")
+    );
+    assert_eq!(
+        database
+            .sessions()
+            .load_session("live")
+            .await?
+            .expect("live session")
+            .status,
+        "InProgress"
+    );
+    assert_eq!(
+        database
+            .sessions()
+            .load_session_preparation("live")
+            .await?
+            .expect("live preparation")
+            .state,
+        SessionPreparationState::Preparing
+    );
+    let operations = database
+        .operations()
+        .load_unfinished_session_operations()
+        .await?;
+    assert_eq!(operations.len(), 1);
+    assert_eq!(operations[0].status, "running");
+    assert!(!operations[0].cancel_requested);
+
+    Ok(())
+}
 
 /// Verify that agentty startup renders the Sessions tab when an active
 /// project already exists.

@@ -141,6 +141,10 @@ agentty --help       # Show supported command-line options
 agentty --version    # Show the installed Agentty version
 ```
 
+Only one Agentty instance can use a given Agentty root at a time. Close the running
+instance before launching another. Separate `AGENTTY_ROOT` directories can run
+independently.
+
 From the **Sessions** tab, create an `Orchestrator` session for broad goals. It can run
 temporary read-only research waves to map architecture, review risks, or answer design
 questions before proposing implementation workers. Research reports are verified by the

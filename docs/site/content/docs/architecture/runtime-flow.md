@@ -45,6 +45,12 @@ these constraints:
 <a id="architecture-runtime-flow-main"></a> Primary foreground path from process start
 to one event-loop cycle:
 
+Before opening the database or recovering unfinished operations, the executable acquires
+an exclusive OS file lock for its Agentty root. It holds the handle throughout the
+application runtime, preventing a second instance from treating live work as abandoned.
+The lock file stays in place; closing the handle or exiting the process releases
+ownership.
+
 ```mermaid
 flowchart TD
   main["main.rs"]

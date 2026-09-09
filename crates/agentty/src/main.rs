@@ -7,7 +7,8 @@ use std::process::ExitCode;
 use ag_git::{GitClient, RealGitClient};
 use agentty::app::{AGENTTY_WT_DIR, App, AppError, agentty_home};
 use agentty::infra::db::{
-    DB_DIR, DB_FILE, Database, timestamp_source_from_environment as environment_timestamp_source,
+    DB_DIR, DB_FILE, Database, acquire_instance_lock,
+    timestamp_source_from_environment as environment_timestamp_source,
 };
 use clap::Parser;
 
@@ -43,6 +44,17 @@ async fn main() -> ExitCode {
 /// execution fails.
 async fn run(cli: Cli) -> Result<(), AppError> {
     let home = agentty_home();
+    let _instance_lock = acquire_instance_lock(&home).await.map_err(|error| {
+        let message = if error.kind() == io::ErrorKind::WouldBlock {
+            "Another Agentty instance is already using this Agentty root. Close it before starting \
+             another instance."
+                .to_string()
+        } else {
+            format!("Failed to acquire the Agentty instance lock: {error}")
+        };
+
+        AppError::Workflow(message)
+    })?;
     let base_path = home.join(AGENTTY_WT_DIR);
     let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let git_client = RealGitClient;
@@ -66,6 +78,8 @@ mod tests {
 
     use super::*;
 
+    const LOCK_FAILURE_CHILD_ENV: &str = "AGENTTY_LOCK_FAILURE_CHILD";
+    const OWNED_ROOT_CHILD_ENV: &str = "AGENTTY_OWNED_ROOT_CHILD";
     const DATABASE_FAILURE_CHILD_ENV: &str = "AGENTTY_DATABASE_FAILURE_CHILD";
 
     #[test]
@@ -98,18 +112,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_reports_database_parent_creation_failure() {
-        if env::var_os(DATABASE_FAILURE_CHILD_ENV).is_some() {
+    async fn run_reports_instance_lock_parent_creation_failure() {
+        if env::var_os(LOCK_FAILURE_CHILD_ENV).is_some() {
             // Arrange
             let cli = Cli { no_update: false };
 
             // Act
             let error = run(cli)
                 .await
-                .expect_err("database startup should reject a file-backed root");
+                .expect_err("startup should reject a file-backed root");
 
             // Assert
-            assert!(matches!(error, AppError::Db(_)));
+            assert!(matches!(error, AppError::Workflow(_)));
+            assert!(
+                error
+                    .to_string()
+                    .contains("Failed to acquire the Agentty instance lock")
+            );
 
             return;
         }
@@ -125,12 +144,93 @@ mod tests {
         // Act
         let status = tokio::process::Command::new(test_binary)
             .arg("--exact")
-            .arg("tests::run_reports_database_parent_creation_failure")
-            .env(DATABASE_FAILURE_CHILD_ENV, "1")
+            .arg("tests::run_reports_instance_lock_parent_creation_failure")
+            .env(LOCK_FAILURE_CHILD_ENV, "1")
             .env("AGENTTY_ROOT", blocking_root)
             .status()
             .await
             .expect("isolated startup test should run");
+
+        // Assert
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn run_rejects_an_owned_root_before_opening_the_database() {
+        if env::var_os(OWNED_ROOT_CHILD_ENV).is_some() {
+            // Arrange / Act
+            let error = run(Cli { no_update: true })
+                .await
+                .expect_err("root is owned");
+
+            // Assert
+            assert!(
+                error
+                    .to_string()
+                    .contains("Another Agentty instance is already using")
+            );
+
+            return;
+        }
+
+        // Arrange
+        let root = tempfile::tempdir().expect("root");
+        let owner = acquire_instance_lock(root.path())
+            .await
+            .expect("owner lock");
+        let database_path = root.path().join(DB_DIR).join(DB_FILE);
+
+        // Act
+        let status = tokio::process::Command::new(env::current_exe().expect("test binary"))
+            .arg("--exact")
+            .arg("tests::run_rejects_an_owned_root_before_opening_the_database")
+            .env(OWNED_ROOT_CHILD_ENV, "1")
+            .env("AGENTTY_ROOT", root.path())
+            .status()
+            .await
+            .expect("contending process");
+
+        // Assert
+        assert!(status.success());
+        assert!(
+            !database_path.exists(),
+            "contention must precede database creation"
+        );
+        drop(owner);
+    }
+
+    #[tokio::test]
+    async fn run_releases_instance_lock_after_database_open_failure() {
+        if env::var_os(DATABASE_FAILURE_CHILD_ENV).is_some() {
+            // Arrange / Act
+            let error = run(Cli { no_update: true })
+                .await
+                .expect_err("database path is a directory");
+
+            // Assert
+            assert!(matches!(error, AppError::Db(_)));
+            let _owner = acquire_instance_lock(&agentty_home())
+                .await
+                .expect("failed startup must release ownership");
+
+            return;
+        }
+
+        // Arrange
+        let root = tempfile::tempdir().expect("root");
+        tokio::fs::create_dir_all(root.path().join(DB_DIR).join(DB_FILE))
+            .await
+            .expect("block database opening");
+
+        // Act
+        let status = tokio::process::Command::new(env::current_exe().expect("test binary"))
+            .arg("--exact")
+            .arg("tests::run_releases_instance_lock_after_database_open_failure")
+            .env(DATABASE_FAILURE_CHILD_ENV, "1")
+            .env("AGENTTY_ROOT", root.path())
+            .status()
+            .await
+            .expect("startup process");
 
         // Assert
         assert!(status.success());
