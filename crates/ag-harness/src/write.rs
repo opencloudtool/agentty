@@ -8,7 +8,9 @@ use tokio::io::AsyncReadExt as _;
 
 use crate::file_system::FileSystem;
 use crate::schema_contract;
+use crate::session::SessionError;
 use crate::tool::WriteArguments;
+use crate::write_journal::{WriteJournal, content_hash};
 
 const BYTE_ORDER_MARK: &[u8] = b"\xef\xbb\xbf";
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
@@ -48,6 +50,9 @@ impl WriteOutput {
 /// Failure returned while validating or applying one repository write.
 #[derive(Debug, Error)]
 pub enum WriteError {
+    /// Recording a durable write intent or outcome failed.
+    #[error("write journal failed: {0}")]
+    Journal(Box<SessionError>),
     /// The existing file is not valid UTF-8 text.
     #[error("write target `{path}` is not UTF-8 text")]
     BinaryTarget {
@@ -132,7 +137,10 @@ impl WriteError {
                 source.kind(),
                 io::ErrorKind::AlreadyExists | io::ErrorKind::InvalidData
             ),
-            Self::Encode(_) | Self::ReadTarget { .. } | Self::RepositoryRoot { .. } => false,
+            Self::Encode(_)
+            | Self::ReadTarget { .. }
+            | Self::RepositoryRoot { .. }
+            | Self::Journal(_) => false,
         }
     }
 
@@ -153,6 +161,7 @@ impl WriteError {
 }
 
 pub(crate) struct WriteTool {
+    pub(crate) journal: Option<WriteJournal>,
     file_system: Arc<dyn FileSystem>,
     repository_root: PathBuf,
 }
@@ -160,6 +169,7 @@ pub(crate) struct WriteTool {
 impl WriteTool {
     pub(crate) fn new(file_system: Arc<dyn FileSystem>, repository_root: PathBuf) -> Self {
         Self {
+            journal: None,
             file_system,
             repository_root,
         }
@@ -168,6 +178,7 @@ impl WriteTool {
     pub(crate) async fn execute(
         &self,
         arguments: &WriteArguments,
+        call_id: &str,
     ) -> Result<WriteOutput, WriteError> {
         let root = self
             .file_system
@@ -191,18 +202,60 @@ impl WriteTool {
             });
         }
         let bytes_written = result.len();
-        self.file_system
+        let intent = match &self.journal {
+            Some(journal) => Some(
+                journal
+                    .intent(
+                        call_id,
+                        &root,
+                        arguments.path(),
+                        current.as_deref(),
+                        &result,
+                    )
+                    .await
+                    .map_err(|error| WriteError::Journal(Box::new(error)))?,
+            ),
+            None => None,
+        };
+        let replacement = self
+            .file_system
             .replace_beneath(&root, Path::new(arguments.path()), current, result)
-            .await
-            .map_err(|source| WriteError::WriteTarget {
-                path: arguments.path().to_string(),
-                source,
-            })?;
+            .await;
+        if let (Some(journal), Some(intent)) = (&self.journal, intent) {
+            journal
+                .finish(intent, replacement.is_ok())
+                .await
+                .map_err(|error| WriteError::Journal(Box::new(error)))?;
+        }
+        replacement.map_err(|source| WriteError::WriteTarget {
+            path: arguments.path().to_string(),
+            source,
+        })?;
 
         Ok(WriteOutput::new(
             arguments.path().to_string(),
             bytes_written,
         ))
+    }
+
+    pub(crate) async fn current_hash(
+        &self,
+        stored_root: &Path,
+        path: &str,
+    ) -> Option<Option<String>> {
+        let root = self
+            .file_system
+            .canonicalize(&self.repository_root)
+            .await
+            .ok()?;
+        if root != stored_root {
+            return None;
+        }
+
+        self.read_current(&root, path)
+            .await
+            .ok()
+            .map(|content| content.as_deref().map(content_hash))
     }
 
     async fn read_current(&self, root: &Path, path: &str) -> Result<Option<Vec<u8>>, WriteError> {
@@ -1120,7 +1173,7 @@ mod tests {
 
         // Act
         let output = tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect("write should succeed");
 
@@ -1157,7 +1210,7 @@ mod tests {
 
         // Act
         let output = tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect("missing file should be created");
 
@@ -1182,7 +1235,7 @@ mod tests {
 
         // Act
         let error = tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect_err("no-op patch should fail");
 
@@ -1211,7 +1264,7 @@ mod tests {
 
         // Act
         let error = tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect_err("replace failure should be typed");
 
@@ -1248,15 +1301,15 @@ mod tests {
 
         // Act
         let root_error = root_tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect_err("missing root should fail");
         let read_error = read_tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect_err("read boundary failure should fail");
         let content_error = content_tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect_err("content read failure should fail");
 
@@ -1285,7 +1338,7 @@ mod tests {
 
         // Act
         let error = tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect_err("oversized target should fail");
         let result = error
@@ -1320,7 +1373,7 @@ mod tests {
 
         // Act
         let error = tool
-            .execute(&arguments)
+            .execute(&arguments, "write-call")
             .await
             .expect_err("oversized result should fail");
 

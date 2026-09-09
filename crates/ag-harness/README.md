@@ -37,6 +37,15 @@ messages, tool calls, and tool results. Failed and interrupted turns remain visi
 the database but are not replayed. Different sessions can run concurrently; one session
 accepts only one active turn at a time.
 
+Writes have a separate durable journal. After a failed send or session reopen,
+`session.writes().await?` returns write intents, acknowledged outcomes, and current hash
+comparisons for uncertain writes. The next send includes diagnostics for writes from
+incomplete turns so retries can inspect the changed files. Provider diagnostics omit
+native repository roots, which remain available to the host through `writes()`. A
+successful turn acknowledges only the displayed diagnostics, allowing later sends to
+retain provider continuation. Recovery never reapplies a patch automatically. `run_once`
+does not create this journal.
+
 The library does not choose a database location. Configure it once with
 `Harness::database()`. The companion CLI defaults to `~/.ag-harness/db/harness.db`;
 override that with `AG_HARNESS_ROOT` or `--database`.

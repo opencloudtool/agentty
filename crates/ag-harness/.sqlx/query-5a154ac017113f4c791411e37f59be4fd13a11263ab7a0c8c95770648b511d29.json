@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\nUPDATE session_write SET acknowledged_by_turn = ?\nWHERE session_id = ? AND id = ? AND turn_position < ? AND acknowledged_by_turn IS NULL\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "5a154ac017113f4c791411e37f59be4fd13a11263ab7a0c8c95770648b511d29"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "\nINSERT INTO session_write (\n    session_id, turn_position, call_id, repository_root, path,\n    expected_hash, resulting_hash, status\n)\nSELECT session_id, turn_position, ?, ?, ?, ?, ?, 'pending'\nFROM session_turn\nWHERE session_id = ? AND turn_position = ? AND owner_token = ?\n  AND status = 'running' AND lease_expires_at > ?\nRETURNING id AS \"id!\"\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3de16657ffc446a31b8e99d9fd4cbe152e63bf63582071e8179072e1f9fb6224"
+}

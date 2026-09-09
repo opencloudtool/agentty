@@ -21,6 +21,7 @@ mod tool;
 mod trace;
 mod turn;
 mod write;
+mod write_journal;
 
 pub use file_system::{FileSystem, LocalFileSystem};
 pub use harness::{Harness, Session, SessionBuilder};
@@ -50,3 +51,4 @@ pub use tool::{
 pub use trace::LifecycleTraceObserver;
 pub use turn::{ModelRequestActivity, ToolActivity, TurnError, TurnOutcome, TurnReport};
 pub use write::{WriteError, WriteOutput};
+pub use write_journal::{WriteRecord, WriteRecovery, WriteStatus};

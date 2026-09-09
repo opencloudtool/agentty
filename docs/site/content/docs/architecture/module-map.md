@@ -38,11 +38,12 @@ For file-level detail, read the module docstrings directly.
   pending, running, completed, failed, and interrupted turns in SQLite, while replaying
   only bounded whole completed turns. `Harness` owns a lazily initialized database pool
   shared by its sessions; `Session::send` owns terminal lifecycle events through durable
-  completion. The `read` tool provides bounded worktree reads, path listing, literal
-  search, host-bound diffs, and base/HEAD file inspection; stale-safe patch writes and
-  file reads use the injectable `FileSystem` boundary. Application binaries own prompts,
-  tool permissions, and telemetry setup; the v0 read tool owns its fixed `main`
-  comparison base.
+  completion. A separate write journal retains intents and outcomes across turn failure
+  and reconciles uncertain writes through `FileSystem`. The `read` tool provides bounded
+  worktree reads, path listing, literal search, host-bound diffs, and base/HEAD file
+  inspection; stale-safe patch writes and file reads use the injectable `FileSystem`
+  boundary. Application binaries own prompts, tool permissions, and telemetry setup; the
+  v0 read tool owns its fixed `main` comparison base.
 - `crates/ag-harness-cli/`: Interactive `ag-harness` command-line application and its
   process-level tests. It derives provider parsing and help from `ag-harness`, then owns
   command-line defaults, application prompts, bounded repository permission selection,

@@ -78,6 +78,31 @@ it can continue model or tool work. If a turn fails and recording that failure a
 fails, `SessionError` retains both errors instead of replacing the original turn
 failure.
 
+Validated writes commit an independent journal intent before filesystem replacement,
+then record its acknowledged outcome before returning to the model. SQLite uses `FULL`
+synchronous commits so the intent is synced before file mutation. Each record retains
+the turn and tool-call identity, original repository root as native bytes, relative
+path, and SHA-256 fingerprints of the expected and intended content; missing expected
+content denotes a create. Journal failures stop execution. These records survive failed
+turns and history eviction without treating partial conversation messages as completed
+history.
+
+`Session::writes()` exposes the journal after errors and reopening. For inactive turns
+whose write outcome is pending or failed, it compares the original repository's current
+file with both fingerprints, reporting a result match, expected match, conflict, or
+unavailable observation. Observations do not prove which process wrote the file and are
+recomputed: a cancelled filesystem operation may finish later. Recovery never reapplies
+writes. Subsequent sends include write diagnostics from incomplete turns and disable
+native continuation for that request so the provider receives this context. A dedicated
+provider-facing representation omits the repository root; `Session::writes()` retains
+the native `PathBuf` for host-side inspection, including non-UTF-8 Unix paths.
+Diagnostics retain at most 16 KiB of the newest write records and report how many were
+omitted. Completion acknowledges only the displayed record IDs in the same transaction
+as the completed turn and its provider continuation identifier. Failed turns and failed
+commits leave diagnostics pending, and omitted records remain eligible for later sends.
+Once all diagnostics are acknowledged, subsequent sends retain native continuation.
+`Session::writes()` always exposes the complete journal, including acknowledged records.
+
 ## Resume and provider fallback
 
 On resume, the harness validates the stored model identity and restores completed
