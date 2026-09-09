@@ -6820,6 +6820,7 @@ fn session_creation_keeps_navigation_responsive() -> E2eResult {
                     &pending_full,
                 );
                 assertion::assert_not_visible(&pending, "Creating session");
+                assertion::assert_not_visible(&pending, "Preparing workspace");
                 assertion::assert_not_visible(&pending, "Regular");
                 let navigation = common::frame_from_capture(&report.captures[1]);
                 let navigation_full = Region::full(navigation.cols(), navigation.rows());

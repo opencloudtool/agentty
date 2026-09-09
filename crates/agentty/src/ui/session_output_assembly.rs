@@ -473,6 +473,12 @@ fn append_transient_message(
             None
         }
         TransientMessageBody::Plain(status_message) => {
+            // Empty bodies retain lifecycle state without occupying display
+            // rows.
+            if status_message.is_empty() {
+                return None;
+            }
+
             append_block_separator(lines, SessionOutputSeparator::AfterPreviousContent);
             append_plain_status_lines(lines, status_message, inner_width);
 
@@ -971,6 +977,39 @@ mod tests {
             lines.iter().map(ToString::to_string).collect::<Vec<_>>(),
             ["", "≡ queued › queued reply", ""]
         );
+    }
+
+    #[test]
+    fn test_empty_preparation_marker_preserves_draft_output_rows() {
+        for messages in [
+            vec![],
+            vec![SessionMessage::conversation(
+                0,
+                SessionMessageKind::UserPrompt,
+                "A saved prompt",
+            )],
+        ] {
+            // Arrange
+            let mut session = crate::test_support::session_fixture("preparing", Status::Draft);
+            session.transcript = Some(SessionTranscript::new(messages));
+            let expected = output_lines(&session, 80, None, None);
+            session.transient_messages.upsert(TransientMessage {
+                anchor: TransientMessageAnchor::Tail,
+                body: TransientMessageBody::Plain(String::new()),
+                lifecycle:
+                    crate::domain::transient_message::TransientMessageLifecycle::UntilResolved,
+                slot: TransientMessageSlot::WorkspacePreparation,
+                turn_position: None,
+            });
+
+            // Act
+            let actual = output_lines(&session, 80, None, None);
+
+            // Assert
+            assert_eq!(actual.lines, expected.lines);
+            assert_eq!(actual.transient_loader_line_index, None);
+            assert!(session.allows_cancel_action());
+        }
     }
 
     #[test]

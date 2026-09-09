@@ -12,11 +12,12 @@ For keyboard shortcuts by view, see [Keybindings](@/docs/usage/keybindings.md).
 <!-- more -->
 
 New sessions open their composer before workspace setup finishes. You can type
-immediately and submit a prompt; it waits safely for the workspace. Setup progress and
-failures appear inline. Press `s` from the session view to retry failed setup. A restart
-also preserves prompts and images whose turns never began, so `s` can submit them again.
-Saved prompts survive a restart; review the previous turn if dispatch was interrupted.
-If you switch projects, a saved prompt resumes when you return to its project.
+immediately and submit a prompt; it waits safely for the workspace. Setup stays quiet
+until a submitted prompt is waiting or setup fails. These notices appear inline. Press
+`s` from the session view to retry failed setup. A restart also preserves prompts and
+images whose turns never began, so `s` can submit them again. Saved prompts survive a
+restart; review the previous turn if dispatch was interrupted. If you switch projects, a
+saved prompt resumes when you return to its project.
 
 Drafts keep their staging controls: `Enter` saves a draft, and `s` starts background
 workspace setup for the staged prompt. Stacked drafts still require a review-ready
