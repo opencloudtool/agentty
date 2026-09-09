@@ -38,6 +38,10 @@ impl TurnOutcome {
     pub(crate) fn new(output: Value, report: TurnReport) -> Self {
         Self { output, report }
     }
+
+    pub(crate) fn set_duration(&mut self, duration: Duration) {
+        self.report.duration = duration;
+    }
 }
 
 /// Observable, content-free activity from one successful model turn.
@@ -49,7 +53,8 @@ pub struct TurnReport {
 }
 
 impl TurnReport {
-    /// Returns the complete elapsed turn time.
+    /// Returns the complete elapsed turn time, including persistence for
+    /// durable session turns.
     pub fn duration(&self) -> Duration {
         self.duration
     }

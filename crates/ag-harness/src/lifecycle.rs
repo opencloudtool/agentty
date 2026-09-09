@@ -199,6 +199,8 @@ pub enum TurnErrorType {
     ToolCallLimit,
     /// A repository-scoped tool was enabled without a repository root.
     RepositoryRequired,
+    /// Durable session coordination or persistence failed.
+    Session,
 }
 
 impl TurnErrorType {
@@ -211,6 +213,7 @@ impl TurnErrorType {
             Self::ToolDenied => crate::telemetry::ERROR_TOOL_DENIED,
             Self::ToolCallLimit => crate::telemetry::ERROR_TOOL_CALL_LIMIT,
             Self::RepositoryRequired => crate::telemetry::ERROR_REPOSITORY_REQUIRED,
+            Self::Session => crate::telemetry::ERROR_SESSION,
         }
     }
 }

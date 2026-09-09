@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 use serde_json::Value;
+use tokio::sync::OnceCell;
 
 use crate::file_system::{FileSystem, LocalFileSystem};
-#[cfg(test)]
-use crate::lifecycle::TurnErrorType;
 use crate::lifecycle::{
-    LifecycleEmitter, LifecycleId, LifecycleObserver, ToolErrorType, ToolLifecycle, TurnLifecycle,
+    LifecycleEmitter, LifecycleId, LifecycleObserver, ToolErrorType, ToolLifecycle, TurnErrorType,
+    TurnLifecycle,
 };
 use crate::model::{
     Model, ModelError, ModelMessage, ModelRequest, ModelResponse, ensure_unique_tool_call_ids,
@@ -57,7 +57,33 @@ impl Session<'_> {
     /// Returns [`SessionError`] when the model turn or persistence operation
     /// fails.
     pub async fn send(&mut self, prompt: impl Into<String>) -> Result<TurnOutcome, SessionError> {
-        let prompt = prompt.into();
+        let started_at = Instant::now();
+        let turn = self.harness.lifecycle.start_turn();
+        let turn_id = turn.as_ref().map(TurnLifecycle::id);
+        let mut result = self.send_turn(prompt.into(), turn_id).await;
+        if let Ok(outcome) = &mut result {
+            outcome.set_duration(started_at.elapsed());
+        }
+        if let Some(turn) = turn {
+            match &result {
+                Ok(_) => turn.completed(),
+                Err(
+                    SessionError::Turn(error) | SessionError::TurnPersistence { turn: error, .. },
+                ) => {
+                    turn.failed(error.error_type());
+                }
+                Err(_) => turn.failed(TurnErrorType::Session),
+            }
+        }
+
+        result
+    }
+
+    async fn send_turn(
+        &mut self,
+        prompt: String,
+        turn_id: Option<LifecycleId>,
+    ) -> Result<TurnOutcome, SessionError> {
         let AcquiredTurn {
             mut guard,
             provider_session_id,
@@ -80,7 +106,7 @@ impl Session<'_> {
 
                 return Err(error);
             }
-            result = self.harness.run_request(request) => result,
+            result = self.harness.run_turn(request, turn_id) => result,
         };
         let (outcome, mut messages, provider_session_id) = match result {
             Ok(result) => result,
@@ -210,6 +236,7 @@ fn retained_bytes(messages: &[ModelMessage]) -> usize {
 /// returns tool results to the model, and finishes with locally validated
 /// structured output.
 pub struct Harness {
+    database: OnceCell<Database>,
     database_path: Option<PathBuf>,
     file_system: Arc<dyn FileSystem>,
     lifecycle: LifecycleEmitter,
@@ -224,6 +251,7 @@ impl Harness {
     /// Creates a deny-by-default harness backed by the local filesystem.
     pub fn new(model: impl Model + 'static) -> Self {
         Self {
+            database: OnceCell::new(),
             database_path: None,
             file_system: Arc::new(LocalFileSystem),
             lifecycle: LifecycleEmitter::default(),
@@ -236,8 +264,12 @@ impl Harness {
     }
 
     /// Configures the SQLite database used by durable sessions.
+    ///
+    /// The first create or resume initializes one shared connection pool and
+    /// runs migrations. Reconfiguring the path resets that shared database.
     #[must_use]
     pub fn database(mut self, path: impl Into<PathBuf>) -> Self {
+        self.database = OnceCell::new();
         self.database_path = Some(path.into());
 
         self
@@ -309,9 +341,18 @@ impl Harness {
         schema: OutputSchema,
     ) -> Result<TurnOutcome, TurnError> {
         let request = ModelRequest::new(prompt, schema);
-        self.run_request(request)
-            .await
-            .map(|(outcome, _, _)| outcome)
+        let turn = self.lifecycle.start_turn();
+        let turn_id = turn.as_ref().map(TurnLifecycle::id);
+        let result = self.run_turn(request, turn_id).await;
+
+        if let Some(turn) = turn {
+            match &result {
+                Ok(_) => turn.completed(),
+                Err(error) => turn.failed(error.error_type()),
+            }
+        }
+
+        result.map(|(outcome, _, _)| outcome)
     }
 
     /// Builds a new durable session whose responses must match `schema`.
@@ -378,7 +419,10 @@ impl Harness {
             .as_deref()
             .ok_or(SessionError::StorageRequired)?;
 
-        Database::open(path).await
+        self.database
+            .get_or_try_init(|| Database::open(path))
+            .await
+            .cloned()
     }
 
     fn validate_session_model(&self, id: &str, loaded: &LoadedSession) -> Result<(), SessionError> {
@@ -412,24 +456,6 @@ impl Harness {
         }
 
         Ok(())
-    }
-
-    async fn run_request(
-        &self,
-        request: ModelRequest,
-    ) -> Result<(TurnOutcome, Vec<ModelMessage>, Option<String>), TurnError> {
-        let turn = self.lifecycle.start_turn();
-        let turn_id = turn.as_ref().map(TurnLifecycle::id);
-        let result = self.run_turn(request, turn_id).await;
-
-        if let Some(turn) = turn {
-            match &result {
-                Ok(_) => turn.completed(),
-                Err(error) => turn.failed(error.error_type()),
-            }
-        }
-
-        result
     }
 
     async fn run_turn(
@@ -2771,6 +2797,81 @@ END
     }
 
     #[tokio::test]
+    async fn concurrent_session_creation_and_resume_share_one_database_pool() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let harness = Harness::new(model()).database(directory.path().join("harness.db"));
+        assert!(harness.database.get().is_none());
+
+        // Act
+        let (first, second) = tokio::join!(
+            harness.session("first", object_schema()).create(),
+            harness.session("second", object_schema()).create()
+        );
+        let first = first.expect("first session should be created");
+        let second = second.expect("second session should be created");
+        let resumed = harness
+            .resume("first")
+            .await
+            .expect("session should resume");
+        first.database.pool().close().await;
+
+        // Assert
+        assert!(second.database.pool().is_closed());
+        assert!(resumed.database.pool().is_closed());
+        assert!(
+            harness
+                .database
+                .get()
+                .expect("database should be initialized")
+                .pool()
+                .is_closed()
+        );
+    }
+
+    #[tokio::test]
+    async fn database_initialization_retries_after_failure_and_resets_on_reconfiguration() {
+        // Arrange
+        let directory = tempdir().expect("temporary directory should be created");
+        let parent = directory.path().join("blocked");
+        tokio::fs::write(&parent, "not a directory")
+            .await
+            .expect("blocking file should exist");
+        let harness = Harness::new(model()).database(parent.join("harness.db"));
+
+        // Act
+        let error = harness
+            .session("first", object_schema())
+            .create()
+            .await
+            .err();
+        assert!(harness.database.get().is_none());
+        tokio::fs::remove_file(&parent)
+            .await
+            .expect("blocking file should be removed");
+        let session = harness
+            .session("first", object_schema())
+            .create()
+            .await
+            .expect("initialization should retry");
+        let original = session.database.clone();
+        drop(session);
+        let harness = harness.database(directory.path().join("other.db"));
+        let missing = harness.resume("first").await.err();
+        let session = harness
+            .session("first", object_schema())
+            .create()
+            .await
+            .expect("new database should allow the same id");
+        original.pool().close().await;
+
+        // Assert
+        assert!(matches!(error, Some(SessionError::Io(_))));
+        assert!(matches!(missing, Some(SessionError::NotFound { .. })));
+        assert!(!session.database.pool().is_closed());
+    }
+
+    #[tokio::test]
     async fn completion_persistence_failure_interrupts_the_session_turn() {
         // Arrange
         let directory = tempdir().expect("temporary directory should be created");
@@ -2781,7 +2882,18 @@ END
                 "summary": "done"
             }))))
         });
-        let harness = Arc::new(Harness::new(model).database(&database_path));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed_events = Arc::clone(&events);
+        let harness = Arc::new(
+            Harness::new(model)
+                .database(&database_path)
+                .with_lifecycle_observer(move |event| {
+                    observed_events
+                        .lock()
+                        .expect("events should lock")
+                        .push(event);
+                }),
+        );
         let session = harness
             .session("session-a", object_schema())
             .create()
@@ -2819,6 +2931,21 @@ END
                 .contains("injected completion persistence failure")
         );
         assert_eq!(state, expected_state);
+        let events = events.lock().expect("events should lock");
+        assert_eq!(events.len(), 4);
+        let turn_id = turn_started_id(&events[0]).expect("turn should start");
+        assert!(matches!(
+            events[3].kind(),
+            crate::LifecycleEventKind::TurnFailed {
+                error_type: TurnErrorType::Session,
+                turn_id: event_turn_id,
+                ..
+            } if *event_turn_id == turn_id
+        ));
+        assert!(!events.iter().any(|event| matches!(
+            event.kind(),
+            crate::LifecycleEventKind::TurnCompleted { .. }
+        )));
     }
 
     #[tokio::test]
@@ -2831,7 +2958,16 @@ END
             .expect_complete()
             .times(1)
             .returning(|_| Err(ModelError::InvalidResponse));
-        let harness = Harness::new(model).database(&database_path);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed_events = Arc::clone(&events);
+        let harness = Harness::new(model)
+            .database(&database_path)
+            .with_lifecycle_observer(move |event| {
+                observed_events
+                    .lock()
+                    .expect("events should lock")
+                    .push(event);
+            });
         let mut session = harness
             .session("session-a", object_schema())
             .create()
@@ -2859,6 +2995,15 @@ END
 
         // Assert
         assert!(matches!(&error, SessionError::TurnPersistence { .. }));
+        let events = events.lock().expect("events should lock");
+        assert_eq!(events.len(), 4);
+        assert!(matches!(
+            events[3].kind(),
+            crate::LifecycleEventKind::TurnFailed {
+                error_type: TurnErrorType::Model(crate::ModelErrorType::InvalidResponse),
+                ..
+            }
+        ));
         if let SessionError::TurnPersistence { turn, persistence } = error {
             assert!(matches!(
                 turn,

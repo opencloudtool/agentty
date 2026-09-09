@@ -9,6 +9,7 @@ use ag_harness::{
     LifecycleEvent, LifecycleEventKind, LifecycleObserver, ModelErrorType, ModelResponseType,
     TurnErrorType,
 };
+use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::Notify;
 use wiremock::matchers::{method, path};
@@ -48,6 +49,26 @@ impl Respond for PendingResponse {
         ResponseTemplate::new(200)
             .set_delay(Duration::from_secs(10))
             .set_body_json(success_body())
+    }
+}
+
+struct GatedModel {
+    release: Arc<Notify>,
+    started: Arc<Notify>,
+}
+
+#[async_trait]
+impl ag_harness::Model for GatedModel {
+    async fn complete(
+        &self,
+        _request: ag_harness::ModelRequest,
+    ) -> Result<ag_harness::ModelCompletion, ag_harness::ModelError> {
+        self.started.notify_one();
+        self.release.notified().await;
+
+        Ok(ag_harness::ModelCompletion::from_response(
+            ag_harness::ModelResponse::Output(json!({"name": "done"})),
+        ))
     }
 }
 
@@ -117,6 +138,34 @@ fn assert_sequence(events: &[LifecycleEvent]) {
             .collect::<Vec<_>>(),
         (0..events.len() as u64).collect::<Vec<_>>()
     );
+}
+
+fn assert_durable_terminal(events: &[LifecycleEvent], cancel: bool, persistence_wait: Duration) {
+    assert_sequence(events);
+    assert_eq!(events.len(), 4);
+    let turn_id = match events[0].kind() {
+        LifecycleEventKind::TurnStarted { turn_id } => Some(turn_id),
+        _ => None,
+    }
+    .expect("first event should start the turn");
+    if cancel {
+        assert!(matches!(
+            events[3].kind(),
+            LifecycleEventKind::TurnFailed {
+                error_type: TurnErrorType::Cancelled,
+                turn_id: failed_id,
+                ..
+            } if failed_id == turn_id
+        ));
+    } else {
+        assert!(matches!(
+            events[3].kind(),
+            LifecycleEventKind::TurnCompleted {
+                duration,
+                turn_id: completed_id,
+            } if completed_id == turn_id && *duration >= persistence_wait
+        ));
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -345,4 +394,105 @@ async fn cancelling_harness_turn_closes_model_and_turn_lifecycles_once() {
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn durable_lifecycle_and_duration_include_completion_persistence() {
+    for cancel in [false, true] {
+        // Arrange
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("harness.db");
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let model_completed = Arc::new(Notify::new());
+        let events = EventRecorder::default();
+        let observed_events = events.clone();
+        let observed_completion = Arc::clone(&model_completed);
+        let harness = Arc::new(
+            ag_harness::Harness::new(GatedModel {
+                release: Arc::clone(&release),
+                started: Arc::clone(&started),
+            })
+            .database(&database_path)
+            .with_lifecycle_observer(move |event: LifecycleEvent| {
+                if matches!(
+                    event.kind(),
+                    LifecycleEventKind::ModelRequestCompleted { .. }
+                ) {
+                    observed_completion.notify_one();
+                }
+                observed_events.observe(event);
+            }),
+        );
+        harness
+            .session("durable", request().schema().clone())
+            .create()
+            .await
+            .expect("session should be created");
+        let database = sqlx::SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new().filename(&database_path),
+        )
+        .await
+        .expect("inspection database should open");
+        let mut turn = tokio::spawn(async move {
+            let mut session = harness
+                .resume("durable")
+                .await
+                .expect("session should resume");
+            session.send("complete").await
+        });
+
+        // Act
+        wait_for_provider(&started, &mut turn)
+            .await
+            .expect("model should start");
+        let writer = database
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("writer lock should be acquired");
+        release.notify_one();
+        wait_for_provider(&model_completed, &mut turn)
+            .await
+            .expect("model should complete");
+        let persistence_started = std::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let persistence_wait = persistence_started.elapsed();
+
+        // Assert
+        assert_eq!(
+            events.events().len(),
+            3,
+            "turn must stay active while its commit is blocked"
+        );
+        assert!(!turn.is_finished());
+        if cancel {
+            turn.abort();
+            assert!(
+                turn.await
+                    .expect_err("turn should be cancelled")
+                    .is_cancelled()
+            );
+            writer
+                .rollback()
+                .await
+                .expect("writer lock should be released");
+        } else {
+            writer
+                .commit()
+                .await
+                .expect("writer lock should be released");
+            let outcome = turn
+                .await
+                .expect("turn task should finish")
+                .expect("durable send should succeed");
+            assert!(outcome.report().duration() >= persistence_wait);
+            let status: String = sqlx::query_scalar("SELECT status FROM session_turn")
+                .fetch_one(&database)
+                .await
+                .expect("turn state should load");
+            assert_eq!(status, "completed");
+        }
+        assert_durable_terminal(&events.events(), cancel, persistence_wait);
+        database.close().await;
+    }
 }

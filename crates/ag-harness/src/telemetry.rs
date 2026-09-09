@@ -45,6 +45,7 @@ pub(crate) const ERROR_TOOL_CALL_LIMIT: &str = "tool_call_limit";
 pub(crate) const ERROR_TOOL_DENIED: &str = "tool_denied";
 pub(crate) const ERROR_TOOL_EXECUTION: &str = "tool_execution_error";
 pub(crate) const ERROR_REPOSITORY_REQUIRED: &str = "repository_required";
+pub(crate) const ERROR_SESSION: &str = "session_error";
 pub(crate) const ERROR_UNSUPPORTED_OUTPUT: &str = "unsupported_output";
 pub(crate) const INSTRUMENTATION_SCOPE: &str = "ag-harness";
 pub(crate) const OPERATION_CHAT: &str = "chat";

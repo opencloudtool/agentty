@@ -964,6 +964,7 @@ mod tests {
             TurnErrorType::ToolDenied,
             TurnErrorType::ToolCallLimit,
             TurnErrorType::RepositoryRequired,
+            TurnErrorType::Session,
         ];
         let tool_errors = [
             ToolErrorType::Cancelled,
@@ -985,6 +986,7 @@ mod tests {
                 "tool_denied",
                 "tool_call_limit",
                 "repository_required",
+                "session_error",
             ]
         );
         assert_eq!(
