@@ -11,10 +11,16 @@ For keyboard shortcuts by view, see [Keybindings](@/docs/usage/keybindings.md).
 
 <!-- more -->
 
-Creating a regular or orchestrator session runs worktree setup in the background. Close
-the creation notice with `Esc` to continue browsing while setup finishes. If the notice
-stays open, completion opens the new session's composer; otherwise, open the session
-from the list when ready.
+New sessions open their composer before workspace setup finishes. You can type
+immediately and submit a prompt; it waits safely for the workspace. Setup progress and
+failures appear inline. Press `s` from the session view to retry failed setup. A restart
+also preserves prompts and images whose turns never began, so `s` can submit them again.
+Saved prompts survive a restart; review the previous turn if dispatch was interrupted.
+If you switch projects, a saved prompt resumes when you return to its project.
+
+Drafts keep their staging controls: `Enter` saves a draft, and `s` starts background
+workspace setup for the staged prompt. Stacked drafts still require a review-ready
+parent and an idle stack. Forks capture the source history and commit before setup.
 
 ## Interface Layout
 

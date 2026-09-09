@@ -86,14 +86,33 @@ flowchart TD
 ```
 
 Session creation captures the project, base branch, and launch settings on the
-foreground task, then materializes regular and orchestration worktrees in a tracked
-background task. Completion returns through `AppEvent`; the reducer refreshes the
-active-project session snapshot before acknowledging the API request. A backlog of
-unrelated events therefore cannot make an immediately following session command observe
-the new session as missing. Interactive creation uses the same completion path and opens
-the composer only while its original notice remains active in the original project.
-Shutdown waits for creation to settle before starting the cleanup grace period, since
-its blocking Git operation cannot be safely abandoned midway through setup.
+foreground task and reserves a durable session identity before opening its composer. A
+tracked background task materializes the workspace; completion updates only that session
+and never changes navigation or typed input. Preparation has its own persisted state,
+independent of `Draft`. Saved prompts and attachments remain recoverable until the
+worker atomically records execution start, persists the user transcript, acknowledges
+the saved prompt, and clears the draft flag. Failed handoffs retain draft staging, so
+retries still require a review-ready parent. A crash before that transaction commits
+leaves the saved payload; a crash afterward leaves the transcript available for review.
+A retry reclaims failed operations that never started; queued operations on a live
+worker are left alone, and operations that reached execution are never replayed
+automatically. First turns wait behind a foreground gate before execution. Their
+transcript and `InProgress` status are published when execution begins, so an unreleased
+gate cannot consume a saved first prompt. Queued saved turns reserve branch work in
+their stack until the command finishes or is dropped, closing the gap before worker
+acceptance without publishing an early running status. Repeated starts and setup retries
+are rejected while that session owns a saved-turn reservation, preserving the queued
+command's ready workspace. Fork handoff failures retain their saved images and copied
+history for retry, including when worker acceptance fails after enqueue. Runtime API
+creation waits for the setup attempt and returns the reserved identifier even on setup
+failure, so callers can link the session and retry its workspace through the first
+message. Synchronous creation and fork callers requiring a ready workspace roll back
+failed reservations and their resources before returning an error. Cancellation
+atomically claims an active preparation worker's cleanup; if preparation has already
+finished, cancellation schedules cleanup itself. Terminal cancellation also cancels all
+unfinished operations before cleanup, including first turns whose execution marker
+precedes their `InProgress` status. Shutdown waits for setup to settle because Git
+checkout cannot safely be abandoned midway.
 
 Structured question answers similarly claim the current persisted question set before
 their continuation is queued directly on the per-session worker, preventing cloned API
@@ -344,8 +363,8 @@ flowchart LR
    resolves a presentation-owned slash-menu selection. `app/prompt_intent.rs` executes
    the requested session workflow and returns typed composer/navigation effects; prompt
    mode applies those effects to `AppMode`.
-1. `start_session()` (first prompt) or `reply()` (follow-up) persists the command in
-   `session_operation` and enqueues it on the per-session worker.
+1. `start_session()` (first prompt) or `reply()` (follow-up) hands the command to the
+   per-session worker and persists its `session_operation` record before execution.
 1. The worker marks the operation `running`, checks cancel flags, verifies worktree
    isolation, and delegates to `workflow/turn.rs`, queued session sync, or queued
    review-request creation. An **InProgress** or **Rebasing** branch action can enqueue
@@ -838,11 +857,10 @@ their triggers:
 - **Deferred session cleanup** (session delete): removes the worktree folder and branch
   after database deletion.
 
-- **Session fork** (root session view `F`): creates a new worktree branch from the
-  source session branch, copies `session_message` rows in one transaction, clears
-  provider/review-request/stack linkage and source diff metadata, refreshes diff state
-  directly from the new worktree, and marks the fork for one-time transcript replay
-  before its first reply. Stacked child sessions do not expose this action.
+- **Session fork** (root session view `F`): freezes the source commit and snapshots
+  transcript rows before preparing the new worktree in the background. The fork clears
+  provider/review-request/stack linkage and replays history on its first reply. Stacked
+  child sessions do not expose this action.
 
 - **Focused review assist** (entering review): runs the review prompt with the diff and
   saved user/agent chat history through the provider-enforced read-only permission mode,

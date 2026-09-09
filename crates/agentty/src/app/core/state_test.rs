@@ -5417,6 +5417,255 @@ async fn apply_app_events_agent_response_batches_same_session_turns() {
 }
 
 #[tokio::test]
+async fn failed_follow_up_preparation_rolls_back_reserved_sibling() {
+    // Arrange
+    let (mut app, directory, pool) = crate::test_support::new_git_test_app_with_pool().await;
+    let source_id = app.create_session().await.expect("source");
+    crate::test_support::set_session_status_for_test(&mut app, &source_id, Status::Review);
+    app.sessions
+        .sessions_mut()
+        .iter_mut()
+        .find(|session| session.id == source_id)
+        .expect("source")
+        .follow_up_tasks = vec![SessionFollowUpTask {
+        id: 1,
+        launched_session_id: None,
+        position: 0,
+        text: "Follow up on the source".to_string(),
+    }];
+    let original_resources = session_creation_resources(directory.path()).await;
+    sqlx::query(
+        "CREATE TRIGGER reject_ready BEFORE UPDATE OF state ON session_preparation WHEN NEW.state \
+         = 'ready' BEGIN SELECT RAISE(ABORT, 'preparation rejected'); END",
+    )
+    .execute(&pool)
+    .await
+    .expect("reject preparation after checkout");
+
+    for _attempt in 0..2 {
+        // Act
+        let result = app.launch_or_open_selected_follow_up_task(&source_id).await;
+
+        // Assert
+        assert!(
+            result
+                .expect_err("preparation failure")
+                .to_string()
+                .contains("preparation rejected")
+        );
+        let sessions = app
+            .services
+            .db()
+            .sessions()
+            .load_sessions()
+            .await
+            .expect("sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, source_id);
+        let unlinked_preparations: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM session_preparation WHERE session_id != ?")
+                .bind(&source_id)
+                .fetch_one(&pool)
+                .await
+                .expect("preparation count");
+        assert_eq!(unlinked_preparations, 0);
+        assert!(
+            app.sessions
+                .session_for_id(&source_id)
+                .expect("source")
+                .follow_up_tasks[0]
+                .launched_session_id
+                .is_none()
+        );
+        assert_eq!(
+            session_creation_resources(directory.path()).await,
+            original_resources
+        );
+    }
+
+    // Act: readiness remains the success contract after the fault is removed.
+    sqlx::query("DROP TRIGGER reject_ready")
+        .execute(&pool)
+        .await
+        .expect("restore preparation");
+    let retry_id = app.create_session().await.expect("retry creation");
+    let preparation = app
+        .services
+        .db()
+        .sessions()
+        .load_session_preparation(&retry_id)
+        .await
+        .expect("load")
+        .expect("preparation");
+
+    // Assert
+    assert_eq!(preparation.state, db::SessionPreparationState::Ready);
+    assert_eq!(
+        app.services
+            .db()
+            .sessions()
+            .load_sessions()
+            .await
+            .expect("sessions")
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn failed_synchronous_fork_rolls_back_snapshot_and_workspace() {
+    // Arrange
+    let (mut app, directory, pool) = crate::test_support::new_git_test_app_with_pool().await;
+    let source_id = app.create_session().await.expect("source");
+    crate::test_support::set_session_status_for_test(&mut app, &source_id, Status::Review);
+    for (kind, text) in [
+        (SessionMessageKind::UserPrompt, "Source question"),
+        (SessionMessageKind::AssistantAnswer, "Source answer"),
+    ] {
+        app.services
+            .db()
+            .sessions()
+            .append_session_message(&source_id, kind, text)
+            .await
+            .expect("source history");
+    }
+    let original_messages = app
+        .services
+        .db()
+        .sessions()
+        .load_session_messages(&source_id)
+        .await
+        .expect("source messages");
+    let original_resources = session_creation_resources(directory.path()).await;
+    sqlx::query(
+        "CREATE TRIGGER reject_ready BEFORE UPDATE OF state ON session_preparation WHEN NEW.state \
+         = 'ready' BEGIN SELECT RAISE(ABORT, 'preparation rejected'); END",
+    )
+    .execute(&pool)
+    .await
+    .expect("reject after checkout");
+
+    for _attempt in 0..2 {
+        // Act
+        let result = app.sessions.fork_session(&app.services, &source_id).await;
+
+        // Assert
+        assert!(
+            result
+                .expect_err("fork preparation failure")
+                .to_string()
+                .contains("preparation rejected")
+        );
+        let sessions = app
+            .services
+            .db()
+            .sessions()
+            .load_sessions()
+            .await
+            .expect("sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, source_id);
+        let (preparations, messages): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM session_preparation), (SELECT COUNT(*) FROM \
+             session_message)",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("remaining metadata");
+        assert_eq!(preparations, 1);
+        assert_eq!(messages, 2);
+        assert_eq!(
+            app.services
+                .db()
+                .sessions()
+                .load_session_messages(&source_id)
+                .await
+                .expect("source retained"),
+            original_messages
+        );
+        assert_eq!(
+            session_creation_resources(directory.path()).await,
+            original_resources
+        );
+    }
+
+    // Act: a subsequent successful synchronous fork returns a ready snapshot.
+    sqlx::query("DROP TRIGGER reject_ready")
+        .execute(&pool)
+        .await
+        .expect("restore setup");
+    assert_synchronous_fork_is_ready_with_history(&mut app, &source_id).await;
+}
+
+/// Verifies successful synchronous creation still returns a ready fork with
+/// the source conversation after an earlier preparation fault is removed.
+async fn assert_synchronous_fork_is_ready_with_history(app: &mut App, source_id: &str) {
+    // Act
+    let fork_id = app
+        .sessions
+        .fork_session(&app.services, source_id)
+        .await
+        .expect("fork");
+    let preparation = app
+        .services
+        .db()
+        .sessions()
+        .load_session_preparation(&fork_id)
+        .await
+        .expect("load")
+        .expect("fork preparation");
+    let fork_messages = app
+        .services
+        .db()
+        .sessions()
+        .load_session_messages(&fork_id)
+        .await
+        .expect("copied history");
+
+    // Assert
+    assert_eq!(preparation.state, db::SessionPreparationState::Ready);
+    assert_eq!(
+        fork_messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Source question", "Source answer"]
+    );
+}
+
+/// Snapshots checkout directories, session branches, and worktree registrations
+/// so failed creation cannot leave resources that are invisible in the
+/// database.
+async fn session_creation_resources(root: &Path) -> Vec<String> {
+    let mut snapshot: Vec<String> = fs::read_dir(root)
+        .expect("repository entries")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    snapshot.sort();
+    for arguments in [
+        ["branch", "--list", "wt/*"],
+        ["worktree", "list", "--porcelain"],
+    ] {
+        let output = tokio::process::Command::new("git")
+            .args(arguments)
+            .current_dir(root)
+            .output()
+            .await
+            .expect("read git state");
+        assert!(output.status.success());
+        snapshot.push(String::from_utf8(output.stdout).expect("git output"));
+    }
+
+    snapshot
+}
+
+#[tokio::test]
 /// Verifies launching an already-linked follow-up task opens its sibling
 /// session instead of creating another session.
 async fn launch_or_open_selected_follow_up_task_opens_existing_sibling_session() {
@@ -6165,7 +6414,7 @@ async fn test_continue_terminal_session_opens_draft_prompt_for_done_session_with
     let mut mock_git_client = ag_git::MockGitClient::new();
     mock_git_client
         .expect_find_git_repo_root()
-        .times(1..)
+        .never()
         .returning(|path| Box::pin(async move { Some(path) }));
     mock_git_client
         .expect_fetch_remote()
@@ -6252,7 +6501,7 @@ async fn test_continue_terminal_session_falls_back_to_persisted_context_without_
     let mut mock_git_client = ag_git::MockGitClient::new();
     mock_git_client
         .expect_find_git_repo_root()
-        .times(1..)
+        .never()
         .returning(|path| Box::pin(async move { Some(path) }));
     mock_git_client
         .expect_fetch_remote()
@@ -6368,7 +6617,7 @@ async fn test_continue_terminal_session_uses_persisted_context_for_canceled_sour
     let mut mock_git_client = ag_git::MockGitClient::new();
     mock_git_client
         .expect_find_git_repo_root()
-        .times(1..)
+        .never()
         .returning(|path| Box::pin(async move { Some(path) }));
     mock_git_client
         .expect_fetch_remote()

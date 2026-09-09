@@ -28,7 +28,11 @@ impl SessionSnapshotStore {
     }
 
     /// Forks durable session state while clearing source-specific linkage.
-    pub(super) async fn fork(&self, snapshot: ForkSessionSnapshot<'_>) -> Result<(), DbError> {
+    pub(super) async fn fork(
+        &self,
+        snapshot: ForkSessionSnapshot<'_>,
+        start_ref: Option<&str>,
+    ) -> Result<(), DbError> {
         let ForkSessionSnapshot {
             new_session_id,
             source_session_id,
@@ -86,6 +90,18 @@ ORDER BY position, id
         .execute(&mut *transaction)
         .await
         .db_context(FORK_SESSION_SNAPSHOT)?;
+
+        if let Some(start_ref) = start_ref {
+            sqlx::query(
+                "INSERT INTO session_preparation (session_id, state, start_ref) VALUES (?, \
+                 'preparing', ?)",
+            )
+            .bind(new_session_id)
+            .bind(start_ref)
+            .execute(&mut *transaction)
+            .await
+            .db_context(FORK_SESSION_SNAPSHOT)?;
+        }
 
         transaction
             .commit()

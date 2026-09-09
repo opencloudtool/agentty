@@ -33,6 +33,7 @@ use crate::domain::session::{
     can_rebase_session_branch_in_stack as stack_can_rebase_session_branch,
     can_reply_to_session_in_stack as stack_can_reply_to_session,
     can_start_staged_session_in_stack as stack_can_start_staged_session,
+    has_reserved_branch_work_in_stack,
 };
 use crate::domain::session_message::{SessionMessageKind, SessionTranscript};
 use crate::domain::session_order;
@@ -135,12 +136,6 @@ impl CancellationCapability {
                     && session.status.can_transition_to(Status::Canceled)
             }
         }
-    }
-
-    /// Returns whether cancellation must stop active or reserved branch work.
-    fn stops_branch_work(self, status: Status) -> bool {
-        status == Status::InProgress
-            || (self == Self::StackedDescendant && status.is_stack_branch_mutating())
     }
 }
 
@@ -464,7 +459,12 @@ impl SessionManager {
         session_id: &str,
         parent_session_id: &str,
     ) -> Result<(), SessionError> {
-        if !stack_can_append_session(&self.state.sessions, session_id, parent_session_id) {
+        if !stack_can_append_session(&self.state.sessions, session_id, parent_session_id)
+            || self.has_competing_preparation(session_id)
+            || has_reserved_branch_work_in_stack(&self.state.sessions, parent_session_id, |id| {
+                self.worker_service.has_preparation_reservation(id)
+            })
+        {
             return Err(SessionError::Workflow(
                 "Append to stack requires an independent Review or AgentReview session and an \
                  idle review-ready parent"
@@ -706,7 +706,6 @@ impl SessionManager {
         })?;
 
         Self::record_session_creation_activity(services, &session_id).await;
-        services.emit_session_and_project_refresh_events();
 
         Ok(session_id)
     }
@@ -723,12 +722,56 @@ impl SessionManager {
     /// Returns an error if the source session is missing, not root
     /// review-ready, repository metadata cannot be resolved, the worktree
     /// cannot be created, or the metadata snapshot cannot be persisted.
+    /// Preparation failures roll back the reserved fork and its resources.
     pub async fn fork_session(
         &mut self,
         services: &AppServices,
         source_session_id: &str,
     ) -> Result<String, SessionError> {
-        let (source_branch, source_agent) = {
+        let (session_id, repo_root) = self
+            .reserve_fork_session_with_repo_root(services, source_session_id)
+            .await?;
+        if let Err(error) = Self::prepare_reserved_session(services, &session_id).await {
+            let folder = session_folder(services.base_path(), &session_id);
+            let has_worktree = services.fs_client().is_dir(folder.clone());
+            Self::rollback_failed_session_creation(
+                services,
+                &folder,
+                &repo_root,
+                &session_id,
+                &session_branch(&session_id),
+                true,
+                has_worktree,
+            )
+            .await;
+            self.clear_history_replay_pending(&session_id);
+
+            return Err(error);
+        }
+        services.emit_session_and_project_refresh_events();
+
+        Ok(session_id)
+    }
+
+    /// Freezes fork history and its source commit before background checkout.
+    pub(crate) async fn reserve_fork_session(
+        &mut self,
+        services: &AppServices,
+        source_session_id: &str,
+    ) -> Result<String, SessionError> {
+        self.reserve_fork_session_with_repo_root(services, source_session_id)
+            .await
+            .map(|(session_id, _repo_root)| session_id)
+    }
+
+    /// Captures the repository root with the reservation so synchronous
+    /// rollback never depends on a second, fallible repository lookup.
+    async fn reserve_fork_session_with_repo_root(
+        &mut self,
+        services: &AppServices,
+        source_session_id: &str,
+    ) -> Result<(String, PathBuf), SessionError> {
+        let source_branch = {
             let source_session = self.session_or_err(source_session_id)?;
             if !source_session.allows_fork_action() {
                 return Err(SessionError::Workflow(
@@ -736,11 +779,8 @@ impl SessionManager {
                 ));
             }
 
-            let source_branch = self
-                .session_branch_name(&source_session.id)
-                .map_or_else(|| session_branch(&source_session.id), str::to_string);
-
-            (source_branch, source_session.agent)
+            self.session_branch_name(&source_session.id)
+                .map_or_else(|| session_branch(&source_session.id), str::to_string)
         };
         services
             .db()
@@ -764,69 +804,27 @@ impl SessionManager {
             )));
         }
 
-        let worktree_branch = session_branch(&session_id);
-        Self::create_session_worktree(
-            services,
-            &session_id,
-            &folder,
-            &repo_root,
-            &worktree_branch,
-            &source_branch,
-        )
-        .await?;
-
-        let fork_status = Status::Review.to_string();
-        let snapshot = db::ForkSessionSnapshot {
-            new_session_id: &session_id,
-            source_session_id,
-            status: &fork_status,
-        };
-        if let Err(error) = services
+        let start_ref = services
+            .git_client()
+            .ref_hash(repo_root.clone(), source_branch)
+            .await?;
+        services
             .db()
             .sessions()
-            .fork_session_snapshot(snapshot)
-            .await
-        {
-            Self::rollback_failed_session_creation(
-                services,
-                &folder,
-                &repo_root,
-                &session_id,
-                &worktree_branch,
-                false,
+            .reserve_fork_session_snapshot(
+                db::ForkSessionSnapshot {
+                    new_session_id: &session_id,
+                    source_session_id,
+                    status: &Status::Review.to_string(),
+                },
+                &start_ref,
             )
-            .await;
-
-            return Err(SessionError::Workflow(format!(
-                "Failed to save forked session metadata: {error}"
-            )));
-        }
-
+            .await?;
         Self::record_session_creation_activity(services, &session_id).await;
 
-        Self::setup_created_session_backend(
-            services,
-            agent::create_backend(source_agent.kind()).as_ref(),
-            &folder,
-            &repo_root,
-            &session_id,
-            &worktree_branch,
-        )
-        .await?;
-
-        SessionTaskService::refresh_persisted_session_diff_stats(
-            services.db(),
-            services.fs_client().as_ref(),
-            services.git_client().as_ref(),
-            &session_id,
-            &folder,
-        )
-        .await;
-
         self.mark_history_replay_pending(&session_id);
-        services.emit_session_and_project_refresh_events();
 
-        Ok(session_id)
+        Ok((session_id, repo_root))
     }
 
     /// Creates one regular session whose worktree is materialized before the
@@ -859,130 +857,78 @@ impl SessionManager {
         .await
     }
 
-    /// Executes prepared session creation without borrowing foreground state.
+    /// Creates a ready workspace for callers that require readiness on return.
+    /// Preparation failures roll back the reservation and its resources.
     pub(crate) async fn materialize_session(
         services: &AppServices,
         project_id: i64,
         base_branch: &str,
         working_dir: PathBuf,
-        mut creation_settings: SessionCreationSettings,
+        creation_settings: SessionCreationSettings,
         creation_kind: SessionCreationKind,
     ) -> Result<String, SessionError> {
-        creation_settings.role = creation_kind.role();
-        let session_agent = creation_settings.agent;
-        let session_model = session_agent.model();
-        let session_role = creation_settings.role.to_string();
-        let orchestration_task_id = creation_kind.orchestration_task_id();
-
-        let session_id = Uuid::new_v4().to_string();
-        let folder = session_folder(services.base_path(), &session_id);
-        let fs_client = services.fs_client();
-        if fs_client.exists(folder.clone()) {
-            return Err(SessionError::Workflow(format!(
-                "Session folder {session_id} already exists"
-            )));
-        }
-
-        let worktree_branch = session_branch(&session_id);
-        let git_client = services.git_client();
-        let repo_root = git_client
-            .find_git_repo_root(working_dir)
-            .await
-            .ok_or_else(|| {
-                SessionError::Workflow("Failed to find git repository root".to_string())
-            })?;
-        Self::create_session_worktree(
+        let session_id = Self::reserve_session(
             services,
-            &session_id,
-            &folder,
-            &repo_root,
-            &worktree_branch,
+            project_id,
             base_branch,
+            creation_settings,
+            creation_kind,
         )
         .await?;
+        if let Err(error) = Self::prepare_reserved_session(services, &session_id).await {
+            let folder = session_folder(services.base_path(), &session_id);
+            let has_worktree = services.fs_client().is_dir(folder.clone());
+            Self::rollback_failed_session_creation(
+                services,
+                &folder,
+                &working_dir,
+                &session_id,
+                &session_branch(&session_id),
+                true,
+                has_worktree,
+            )
+            .await;
 
-        let session_agent_kind = session_agent.kind().to_string();
-        let status = Status::Draft.to_string();
-        if let Err(error) = services
+            return Err(error);
+        }
+        services.emit_session_and_project_refresh_events();
+
+        Ok(session_id)
+    }
+
+    /// Saves a usable conversation identity before preparing its workspace.
+    pub(crate) async fn reserve_session(
+        services: &AppServices,
+        project_id: i64,
+        base_branch: &str,
+        creation_settings: SessionCreationSettings,
+        creation_kind: SessionCreationKind,
+    ) -> Result<String, SessionError> {
+        let session_id = Uuid::new_v4().to_string();
+        services
             .db()
             .sessions()
-            .insert_session_with_agent(db::PersistedSessionCreation {
-                agent: &session_agent_kind,
+            .reserve_session(db::PersistedSessionCreation {
+                agent: &creation_settings.agent.kind().to_string(),
                 base_branch,
                 id: &session_id,
                 is_draft: false,
-                model: session_model.as_str(),
-                orchestration_task_id,
+                model: creation_settings.agent.model().as_str(),
+                orchestration_task_id: creation_kind.orchestration_task_id(),
                 parent_session_id: None,
                 permission_mode: creation_settings.permission_mode,
                 personality_id: creation_settings.personality_id.as_deref(),
                 project_id,
                 reasoning_level: creation_settings.reasoning_level,
                 response_style: creation_settings.response_style,
-                role: Some(&session_role),
+                role: Some(&creation_kind.role().to_string()),
                 speed_mode: creation_settings.speed_mode,
-                status: &status,
+                status: &Status::Draft.to_string(),
             })
-            .await
-        {
-            Self::rollback_failed_session_creation(
-                services,
-                &folder,
-                &repo_root,
-                &session_id,
-                &worktree_branch,
-                false,
-            )
-            .await;
-
-            return Err(SessionError::Workflow(format!(
-                "Failed to save session metadata: {error}"
-            )));
-        }
-
+            .await?;
         Self::record_session_creation_activity(services, &session_id).await;
 
-        Self::setup_created_session_backend(
-            services,
-            agent::create_backend(session_agent.kind()).as_ref(),
-            &folder,
-            &repo_root,
-            &session_id,
-            &worktree_branch,
-        )
-        .await?;
-        services.emit_session_and_project_refresh_events();
-
         Ok(session_id)
-    }
-
-    /// Configures a newly persisted session and rolls back its resources when
-    /// the injected backend rejects setup. Shared by creation and forking.
-    async fn setup_created_session_backend(
-        services: &AppServices,
-        backend: &dyn agent::AgentBackend,
-        folder: &Path,
-        repo_root: &Path,
-        session_id: &str,
-        worktree_branch: &str,
-    ) -> Result<(), SessionError> {
-        if let Err(error) = backend.setup(folder) {
-            Self::rollback_failed_session_creation(
-                services,
-                folder,
-                repo_root,
-                session_id,
-                worktree_branch,
-                true,
-            )
-            .await;
-
-            return Err(SessionError::Workflow(format!(
-                "Failed to setup session backend: {error}"
-            )));
-        }
-
-        Ok(())
     }
 
     /// Creates the git worktree and session-local metadata directory for one
@@ -996,7 +942,7 @@ impl SessionManager {
     /// # Errors
     /// Returns an error if git worktree creation fails or the `.agentty`
     /// metadata directory cannot be created inside the worktree.
-    async fn create_session_worktree(
+    pub(super) async fn create_session_worktree(
         services: &AppServices,
         session_id: &str,
         folder: &Path,
@@ -1026,6 +972,7 @@ impl SessionManager {
                 session_id,
                 worktree_branch,
                 false,
+                true,
             )
             .await;
 
@@ -1052,6 +999,21 @@ impl SessionManager {
         services: &AppServices,
         session_id: &str,
     ) -> Result<(), SessionError> {
+        if let Some(preparation) = services
+            .db()
+            .sessions()
+            .load_session_preparation(session_id)
+            .await?
+        {
+            if preparation.state != db::SessionPreparationState::Ready {
+                return Err(SessionError::Workflow(
+                    "Session workspace is not ready".to_string(),
+                ));
+            }
+            self.set_session_worktree_available(session_id, true);
+
+            return Ok(());
+        }
         let (base_branch, folder, parent_session_id, persisted_session_id, session_agent) = {
             let session = self.session_or_err(session_id)?;
             if !session.is_draft_session() {
@@ -1485,30 +1447,54 @@ impl SessionManager {
     /// constraints.
     pub(crate) fn can_start_staged_session(&self, session_id: &str) -> bool {
         stack_can_start_staged_session(&self.state.sessions, session_id)
+            && self.can_retry_workspace_preparation(session_id)
+            && !self.has_competing_preparation(session_id)
+    }
+
+    /// Prevents workspace retries from invalidating a queued or running
+    /// saved-prompt handoff.
+    pub(crate) fn can_retry_workspace_preparation(&self, session_id: &str) -> bool {
+        !self.worker_service.has_preparation_reservation(session_id)
     }
 
     /// Returns whether a session can start branch-mutating work without
     /// competing with another member of its stack.
     pub(crate) fn can_mutate_session_branch_in_stack(&self, session_id: &str) -> bool {
         stack_can_mutate_session_branch(&self.state.sessions, session_id)
+            && !self.has_competing_preparation(session_id)
     }
 
     /// Returns whether a session can enter the merge queue without competing
     /// with another member of its stack.
     pub(crate) fn can_merge_session_branch_in_stack(&self, session_id: &str) -> bool {
         stack_can_merge_session_branch(&self.state.sessions, session_id)
+            && !self.has_competing_preparation(session_id)
     }
 
     /// Returns whether a session can start sync work without competing with
     /// another member of its stack.
     pub(crate) fn can_rebase_session_branch_in_stack(&self, session_id: &str) -> bool {
         stack_can_rebase_session_branch(&self.state.sessions, session_id)
+            && !self.has_competing_preparation(session_id)
     }
 
     /// Returns whether a session can accept a reply without another stack
     /// member already owning active branch work.
     pub(crate) fn can_reply_to_session_in_stack(&self, session_id: &str) -> bool {
         stack_can_reply_to_session(&self.state.sessions, session_id)
+            && !self.has_competing_preparation(session_id)
+    }
+
+    /// Includes queued saved turns in stack policy without publishing a
+    /// premature user-visible status. Foreground actions are serialized, so
+    /// claiming at enqueue closes the gap before worker acceptance.
+    fn has_competing_preparation(&self, session_id: &str) -> bool {
+        has_reserved_branch_work_in_stack(&self.state.sessions, session_id, |candidate_id| {
+            candidate_id != session_id
+                && self
+                    .worker_service
+                    .has_preparation_reservation(candidate_id)
+        })
     }
 
     /// Starts a `Draft` session from its persisted staged draft bundle.
@@ -1560,6 +1546,18 @@ impl SessionManager {
 
         self.start_session(services, session_id, prompt).await?;
 
+        self.clear_started_draft_attachments(services, session_id)
+            .await;
+
+        Ok(())
+    }
+
+    /// Releases draft attachment staging after the saved turn is accepted.
+    pub(crate) async fn clear_started_draft_attachments(
+        &mut self,
+        services: &AppServices,
+        session_id: &str,
+    ) {
         if let Ok(session_index) = self.session_index_or_err(session_id)
             && let Some(session) = self.session_at_mut(session_index)
         {
@@ -1580,8 +1578,6 @@ impl SessionManager {
                 "failed to clear staged draft attachments after session start"
             );
         }
-
-        Ok(())
     }
 
     /// Submits the first prompt for a blank session and starts the agent.
@@ -1604,53 +1600,20 @@ impl SessionManager {
             .await?;
 
         let session_index = self.session_index_or_err(session_id)?;
-        let (persisted_session_id, session_agent, title) = {
-            let session = self
-                .session_at_mut(session_index)
-                .ok_or(SessionError::NotFound)?;
-
-            session.prompt.clone_from(&prompt.text);
-
-            let title = prompt.text.clone();
-            session.title = Some(title.clone());
-            let session_agent = session.agent;
-
-            (session.id.clone(), session_agent, title)
+        let session = self.session_or_err(session_id)?;
+        let persisted_session_id = session.id.clone();
+        let session_agent = session.agent;
+        let has_saved_prompt = services
+            .db()
+            .sessions()
+            .load_session_preparation(session_id)
+            .await?
+            .is_some_and(|row| row.prompt.is_some());
+        let operation_id = if has_saved_prompt {
+            format!("workspace:{session_id}")
+        } else {
+            Uuid::new_v4().to_string()
         };
-
-        let handles = self.session_handles_or_err(&persisted_session_id)?;
-        let transcript = Arc::clone(&handles.transcript);
-        let status_transition =
-            StatusTransition::from_services(services, handles, persisted_session_id.clone());
-        let app_event_tx = services.event_sender();
-
-        self.persist_first_message_metadata(services, &persisted_session_id, &prompt.text, &title)
-            .await;
-
-        let prompt_transcript_text = prompt.transcript_text();
-        let initial_output = Self::formatted_prompt_output(&prompt, false);
-        SessionTaskService::append_session_transcript_message(
-            &transcript,
-            services.db(),
-            &app_event_tx,
-            &services.session_update_versions(),
-            &persisted_session_id,
-            SessionTranscriptMessageAppend {
-                kind: SessionMessageKind::UserPrompt,
-                raw_content: &prompt_transcript_text,
-            },
-        )
-        .await;
-        self.set_active_prompt_output(&persisted_session_id, initial_output);
-
-        if !status_transition.apply(Status::InProgress).await {
-            warn!(
-                session_id = %persisted_session_id,
-                "skipped session start status update because the in-memory status did not transition to in-progress"
-            );
-        }
-
-        let operation_id = Uuid::new_v4().to_string();
         let command = SessionCommand::Run {
             operation_id,
             request_kind: AgentRequestKind::SessionStart,
@@ -1662,23 +1625,84 @@ impl SessionManager {
                 session_agent,
             },
         };
-        if let Err(error) = self
-            .enqueue_session_command(services, &persisted_session_id, command)
+        let ready_tx = match self
+            .enqueue_gated_session_command(services, &persisted_session_id, command)
             .await
         {
-            self.cleanup_prompt_attachment_files(services, &prompt)
-                .await;
+            Ok(ready_tx) => ready_tx,
+            Err(error) => {
+                // Saved prompts still own their attachments until a retry
+                // hands them to the worker successfully.
+                if !has_saved_prompt {
+                    self.cleanup_prompt_attachment_files(services, &prompt)
+                        .await;
+                }
 
-            return Err(error);
+                return Err(error);
+            }
+        };
+
+        let title = {
+            let session = self
+                .session_at_mut(session_index)
+                .ok_or(SessionError::NotFound)?;
+
+            session.prompt.clone_from(&prompt.text);
+
+            let title = prompt.text.clone();
+            session.title = Some(title.clone());
+
+            title
+        };
+
+        let handles = self.session_handles_or_err(&persisted_session_id)?;
+        let transcript = Arc::clone(&handles.transcript);
+        let status_transition =
+            StatusTransition::from_services(services, handles, persisted_session_id.clone());
+        let app_event_tx = services.event_sender();
+
+        self.persist_first_message_metadata(services, &persisted_session_id, &prompt.text, &title)
+            .await;
+
+        if !has_saved_prompt {
+            let prompt_transcript_text = prompt.transcript_text();
+            let initial_output = Self::formatted_prompt_output(&prompt, false);
+            SessionTaskService::append_session_transcript_message(
+                &transcript,
+                services.db(),
+                &app_event_tx,
+                &services.session_update_versions(),
+                &persisted_session_id,
+                SessionTranscriptMessageAppend {
+                    kind: SessionMessageKind::UserPrompt,
+                    raw_content: &prompt_transcript_text,
+                },
+            )
+            .await;
+            self.set_active_prompt_output(&persisted_session_id, initial_output);
+
+            if !status_transition.apply(Status::InProgress).await {
+                warn!(
+                    session_id = %persisted_session_id,
+                    "skipped session start status update because the in-memory status did not transition to in-progress"
+                );
+            }
         }
 
-        if let Err(error) = self.clear_session_draft_flag(services, session_id).await {
+        // Saved prompts leave draft mode in the worker's acceptance
+        // transaction, so a rejected handoff still checks the parent on retry.
+        if !has_saved_prompt
+            && let Err(error) = self.clear_session_draft_flag(services, session_id).await
+        {
             warn!(
                 session_id,
                 %error,
                 "failed to clear draft flag after session start"
             );
         }
+        // The worker may now execute without racing the foreground's
+        // initial transcript or status publication.
+        let _ = ready_tx.send(());
 
         Ok(())
     }
@@ -2239,6 +2263,21 @@ impl SessionManager {
             return None;
         }
 
+        let session_id = self.state.sessions[selected_index].id.clone();
+        if services
+            .db()
+            .sessions()
+            .load_session_preparation(&session_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|preparation| preparation.state == db::SessionPreparationState::Preparing)
+        {
+            if let Err(error) = self.cancel_session(services, &session_id).await {
+                warn!(session_id = %session_id, %error, "failed to cancel workspace preparation before deletion");
+            }
+            return None;
+        }
         let session = self.remove_session_at(selected_index)?;
         self.state.remove_handle(&session.id);
         self.remove_session_worktree_availability(&session.id);
@@ -2400,7 +2439,10 @@ impl SessionManager {
             requires_existing_worker,
             review_comment_thread_ids,
         } = options;
-        let should_replay_history = self.should_replay_history(session_id);
+        // A saved fork prompt still needs the copied history if its worker
+        // rejected acceptance after an earlier successful enqueue.
+        let should_replay_history = self.should_replay_history(session_id)
+            || operation_id.as_deref() == Some(format!("workspace:{session_id}").as_str());
         let (replay_transcript, is_first_message, persisted_session_id, title_to_save) = match self
             .prepare_reply_context(session_id, &prompt, should_replay_history, eligibility)
         {
@@ -2412,10 +2454,6 @@ impl SessionManager {
                 return false;
             }
         };
-
-        if should_replay_history {
-            self.clear_history_replay_pending(&persisted_session_id);
-        }
 
         let app_event_tx = services.event_sender();
 
@@ -2462,6 +2500,7 @@ impl SessionManager {
             review_comment_thread_ids,
             session_agent,
         });
+        let preparation_owned = command.is_preparation_prompt(&persisted_session_id);
         let enqueued = self
             .enqueue_reply_command(
                 services,
@@ -2479,6 +2518,7 @@ impl SessionManager {
         if enqueued == ReplyEnqueueOutcome::Enqueued
             && defer_prompt_until_enqueued
             && persist_prompt
+            && !preparation_owned
         {
             self.append_reply_prompt_line(
                 services,
@@ -2489,6 +2529,10 @@ impl SessionManager {
                 prompt_presentation,
             )
             .await;
+        }
+
+        if enqueued != ReplyEnqueueOutcome::Failed && should_replay_history {
+            self.clear_history_replay_pending(&persisted_session_id);
         }
 
         enqueued != ReplyEnqueueOutcome::Failed
@@ -2793,6 +2837,7 @@ impl SessionManager {
         command: SessionCommand,
         options: ReplyEnqueueOptions,
     ) -> ReplyEnqueueOutcome {
+        let preparation_owned = command.is_preparation_prompt(persisted_session_id);
         let enqueue_result = if options.idempotent {
             self.enqueue_session_command_idempotently(services, persisted_session_id, command)
                 .await
@@ -2810,7 +2855,9 @@ impl SessionManager {
         let newly_enqueued = match enqueue_result {
             Ok(newly_enqueued) => newly_enqueued,
             Err(error) => {
-                self.cleanup_prompt_attachment_files(services, prompt).await;
+                if !preparation_owned {
+                    self.cleanup_prompt_attachment_files(services, prompt).await;
+                }
 
                 if options.report_failure_in_transcript {
                     let error_line = TranscriptNotice::ReplyError.format(error);
@@ -3380,6 +3427,7 @@ impl SessionManager {
         session_id: &str,
         worktree_branch: &str,
         session_saved: bool,
+        has_worktree: bool,
     ) {
         if session_saved {
             if let Err(error) = services.db().sessions().delete_session(session_id).await {
@@ -3395,7 +3443,9 @@ impl SessionManager {
             );
         }
 
-        {
+        // A rejected checkout can refer to a branch that already existed;
+        // only remove Git resources when this attempt has a worktree.
+        if has_worktree {
             let git_client = services.git_client();
             let folder = folder.to_path_buf();
             let repo_root = repo_root.to_path_buf();
@@ -3558,18 +3608,22 @@ impl SessionManager {
 
         let branch_name = session_branch(&session.id);
         let folder = session.folder.clone();
-        let stops_branch_work = cancellation_capability.stops_branch_work(session.status);
-        let has_worktree = services.fs_client().is_dir(folder.clone());
         let handles = self.session_handles_or_err(session_id)?;
         let status_transition = StatusTransition::from_services(services, handles, session_id);
 
-        if stops_branch_work {
-            Self::signal_session_cancellation(services, handles, session_id).await;
-        }
+        // Queued work and preparation handoffs can own execution before the
+        // foreground status reflects it. Terminal cancellation stops them too.
+        Self::signal_session_cancellation(services, handles, session_id).await;
 
         let status_updated = status_transition.apply(Status::Canceled).await;
 
-        if status_updated {
+        let preparation_owns_cleanup = services
+            .db()
+            .sessions()
+            .cancel_session_preparation(session_id)
+            .await?;
+        if status_updated && !preparation_owns_cleanup {
+            let has_worktree = services.fs_client().is_dir(folder.clone());
             Self::spawn_canceled_session_cleanup(
                 services,
                 folder,
@@ -3663,7 +3717,7 @@ impl SessionManager {
     /// worktree exists, removes git worktree/branch resources, then clears the
     /// session-scoped prompt temp directory. Cleanup remains best-effort and
     /// reports failures through debug-visible warnings.
-    fn spawn_canceled_session_cleanup(
+    pub(super) fn spawn_canceled_session_cleanup(
         services: &AppServices,
         folder: PathBuf,
         branch_name: String,
@@ -3737,7 +3791,7 @@ impl SessionManager {
     /// remove the directory from disk. Any cleanup failures are returned as
     /// human-readable messages so callers can surface them when needed.
     #[must_use]
-    async fn cleanup_session_worktree_resources(
+    pub(super) async fn cleanup_session_worktree_resources(
         fs_client: Arc<dyn FsClient>,
         git_client: Arc<dyn git::GitClient>,
         folder: PathBuf,
@@ -4830,7 +4884,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creation_and_fork_roll_back_when_metadata_persistence_fails() {
+    async fn creation_and_fork_reserve_metadata_before_checkout() {
         for fork in [false, true] {
             // Arrange
             let source = test_session("source", Status::Review, Some("Source"), "history");
@@ -4850,13 +4904,16 @@ mod tests {
             .await
             .expect("failure trigger");
             let mut manager = session_manager_with_one_session(source);
-            let mut git = rollback_git_client();
-            git.expect_find_git_repo_root()
-                .once()
-                .returning(|path| Box::pin(async move { Some(path) }));
-            git.expect_create_worktree()
-                .once()
-                .returning(|_, _, _, _| Box::pin(async { Ok(()) }));
+            let mut git = git::MockGitClient::new();
+            if fork {
+                git.expect_find_git_repo_root()
+                    .once()
+                    .returning(|path| Box::pin(async move { Some(path) }));
+                git.expect_ref_hash()
+                    .once()
+                    .returning(|_, _| Box::pin(async { Ok("frozen-source-commit".to_string()) }));
+            }
+            git.expect_create_worktree().never();
             let services = test_services_with_fs_client(
                 &database,
                 Arc::new(RealClock),
@@ -4905,6 +4962,68 @@ mod tests {
                     .0,
                 1
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn synchronous_fork_checkout_failure_removes_reservation_and_replay() {
+        // Arrange
+        let source = test_session("source", Status::Review, Some("Source"), "history");
+        let source_id = source.id.clone();
+        let (database, pool) = database_with_session_and_pool(&source).await;
+        let mut manager = session_manager_with_one_session(source);
+        let original_replay = manager.workflow_state.pending_history_replay.clone();
+        let mut git = git::MockGitClient::new();
+        git.expect_find_git_repo_root()
+            .times(4)
+            .returning(|path| Box::pin(async move { Some(path) }));
+        git.expect_ref_hash()
+            .times(2)
+            .returning(|_, _| Box::pin(async { Ok("source-commit".to_string()) }));
+        git.expect_create_worktree()
+            .times(2)
+            .returning(|_, _, _, _| {
+                Box::pin(async {
+                    Err(git::GitError::CommandFailed {
+                        command: "git worktree add".to_string(),
+                        stderr: "checkout rejected".to_string(),
+                    })
+                })
+            });
+        git.expect_remove_worktree().never();
+        git.expect_delete_branch().never();
+        let services = test_services_with_fs_client(
+            &database,
+            Arc::new(RealClock),
+            Arc::new(create_passthrough_mock_fs_client()),
+            Arc::new(git),
+            Arc::new(forge::MockReviewRequestClient::new()),
+        );
+
+        for _attempt in 0..2 {
+            // Act
+            let result = manager.fork_session(&services, &source_id).await;
+            let preparation_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM session_preparation")
+                    .fetch_one(&pool)
+                    .await
+                    .expect("preparation count");
+
+            // Assert
+            assert!(
+                result
+                    .expect_err("checkout failure")
+                    .to_string()
+                    .contains("checkout rejected")
+            );
+            assert_eq!(
+                manager.workflow_state.pending_history_replay,
+                original_replay
+            );
+            assert_eq!(preparation_count, 0);
+            let sessions = database.sessions().load_sessions().await.expect("sessions");
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].id, source_id.as_str());
         }
     }
 
@@ -4959,54 +5078,6 @@ mod tests {
                 .expect("session count")
                 .0,
             1
-        );
-    }
-
-    #[tokio::test]
-    async fn backend_setup_failure_rolls_back_persisted_session() {
-        // Arrange
-        let session = test_session("", Status::Draft, None, "");
-        let session_id = session.id.clone();
-        let database = database_with_session(&session).await;
-        let services = test_services_with_fs_client(
-            &database,
-            Arc::new(RealClock),
-            Arc::new(create_passthrough_mock_fs_client()),
-            Arc::new(rollback_git_client()),
-            Arc::new(forge::MockReviewRequestClient::new()),
-        );
-        let mut backend = agent::MockAgentBackend::new();
-        backend.expect_setup().once().returning(|_| {
-            Err(agent::AgentBackendError::Setup(
-                "setup rejected".to_string(),
-            ))
-        });
-
-        // Act
-        let result = SessionManager::setup_created_session_backend(
-            &services,
-            &backend,
-            &session.folder,
-            Path::new("/tmp/project"),
-            &session_id,
-            "wt/new-session",
-        )
-        .await;
-
-        // Assert
-        assert!(
-            result
-                .expect_err("backend setup must fail")
-                .to_string()
-                .contains("setup rejected")
-        );
-        assert!(
-            database
-                .sessions()
-                .load_session(&session_id)
-                .await
-                .expect("session lookup")
-                .is_none()
         );
     }
 

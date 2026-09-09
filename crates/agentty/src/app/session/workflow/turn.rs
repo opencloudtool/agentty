@@ -136,15 +136,14 @@ impl MainCheckoutSnapshot {
 /// Executes one agent turn through the session channel and applies all
 /// post-turn effects (stats, auto-commit, size refresh, status update).
 ///
-/// When `request_kind` is [`AgentRequestKind::SessionResume`], the session
-/// is first transitioned to `InProgress` (start turns set `InProgress` in
-/// the lifecycle before enqueueing). Start and resume turns schedule detached
-/// title generation while the current title remains provisional. Progress
-/// events update the UI indicator; `PidUpdate` events update the shared PID
-/// slot used for accounting and CLI cancellation. If the turn fails, the
-/// error is appended to session output before transitioning to `Review`;
-/// user-stopped turns skip that fallback so the UI cancellation path can
-/// finalize `Canceled`.
+/// Start and resume turns transition to `InProgress` before provider work.
+/// Saved preparation prompts first record a durable execution marker. They
+/// schedule detached title generation while the current title remains
+/// provisional. Progress events update the UI indicator; `PidUpdate` events
+/// update the shared PID slot used for accounting and CLI cancellation. If the
+/// turn fails, the error is appended to session output before transitioning to
+/// `Review`; user-stopped turns skip that fallback so the UI cancellation path
+/// can finalize `Canceled`.
 ///
 /// A fresh [`CancellationToken`] is swapped into the shared mutex at
 /// the top of this function so stale cancellations from previous
@@ -162,7 +161,7 @@ pub(super) async fn run_channel_turn(
     // Discard stale cancellations, then keep the new token for this turn.
     let turn_cancel_token = fresh_turn_cancel_token(context)?;
 
-    prepare_resume_turn(context, &request_kind).await;
+    prepare_session_turn(context, &request_kind).await;
 
     let post_turn_context =
         post_turn::PostTurnContext::from_worker(context, Arc::clone(&one_shot_client));
@@ -490,17 +489,22 @@ pub(super) async fn resolve_turn_personality(
     }
 }
 
-/// Applies best-effort state cleanup before a resume turn starts.
-async fn prepare_resume_turn(context: &SessionWorkerContext, request_kind: &AgentRequestKind) {
-    if !matches!(request_kind, AgentRequestKind::SessionResume) {
+/// Marks an executing session turn in progress and clears resumed questions.
+async fn prepare_session_turn(context: &SessionWorkerContext, request_kind: &AgentRequestKind) {
+    if !matches!(
+        request_kind,
+        AgentRequestKind::SessionStart | AgentRequestKind::SessionResume
+    ) {
         return;
     }
 
-    let _ = context
-        .db
-        .sessions()
-        .update_session_questions(&context.session_id, "")
-        .await;
+    if matches!(request_kind, AgentRequestKind::SessionResume) {
+        let _ = context
+            .db
+            .sessions()
+            .update_session_questions(&context.session_id, "")
+            .await;
+    }
 
     let status_transition = StatusTransition::from_parts(
         context.app_event_tx.clone(),

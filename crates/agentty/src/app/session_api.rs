@@ -1,7 +1,6 @@
 //! Agentty adapter for the frontend-neutral `ag-session` programmatic API.
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use ag_agent::{ReasoningLevel, ResponseStyle, SpeedMode, parse_persisted_session_agent_model};
@@ -393,7 +392,6 @@ impl App {
             creation_kind,
             project_id: request.project_id,
             settings,
-            working_dir: project.working_dir,
         })
     }
 
@@ -408,14 +406,18 @@ impl App {
             )));
         }
         if let CreateSessionMode::Stacked { parent_session_id } = &request.mode {
-            let parent = self
-                .get_api_session(parent_session_id)
-                .await?
+            let parent_project_id = self
+                .services
+                .db()
+                .sessions()
+                .load_session_project_id(parent_session_id)
+                .await
+                .map_err(|error| ApiSessionError::Operation(error.to_string()))?
                 .ok_or(ApiSessionError::NotFound)?;
-            if parent.settings.project_id != request.project_id {
+            if parent_project_id != request.project_id {
                 return Err(ApiSessionError::Operation(format!(
                     "Parent session `{parent_session_id}` belongs to project `{}`, not `{}`",
-                    parent.settings.project_id, request.project_id
+                    parent_project_id, request.project_id
                 )));
             }
         }
@@ -879,10 +881,15 @@ impl App {
         let Some(source_session_id) = source_session_id else {
             return Ok(None);
         };
-        let source = self
-            .get_api_session(source_session_id)
-            .await?
+        let source_row = self
+            .services
+            .db()
+            .sessions()
+            .load_session(source_session_id)
+            .await
+            .map_err(|error| ApiSessionError::Operation(error.to_string()))?
             .ok_or(ApiSessionError::NotFound)?;
+        let source = build_api_session(source_row, Vec::new(), Vec::new())?;
         if source.settings.project_id != project_id {
             return Err(ApiSessionError::Operation(format!(
                 "Session `{source_session_id}` belongs to project `{}`, not `{project_id}`",
@@ -915,10 +922,7 @@ impl App {
                 ApiSessionError::Operation("Git branch is required to create a session".to_string())
             })?;
 
-        Ok(ApiProjectCreationContext {
-            base_branch,
-            working_dir: self.projects.working_dir().to_path_buf(),
-        })
+        Ok(ApiProjectCreationContext { base_branch })
     }
 
     /// Attempts to register a newly persisted active-project session before
@@ -934,7 +938,10 @@ impl App {
             return;
         }
 
-        self.refresh_sessions_now().await;
+        let _ = self
+            .sessions
+            .register_created_session(&self.services, session_id, self.projects.working_dir())
+            .await;
         if self
             .sessions
             .sessions()
@@ -951,7 +958,6 @@ impl App {
 /// Worktree inputs resolved for one API-requested project.
 struct ApiProjectCreationContext {
     base_branch: String,
-    working_dir: PathBuf,
 }
 
 /// Launch settings loaded from one existing session.
@@ -3152,6 +3158,7 @@ mod tests {
         request_message(&mut app, session_id.clone(), "initial prompt")
             .await
             .expect("initial turn should start");
+        crate::test_support::finish_session_creation_tasks(&mut app).await;
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(1), turn_started_rx.recv())
                 .await

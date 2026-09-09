@@ -289,8 +289,6 @@ pub struct App {
     /// Pending creation responses, completed only after foreground refresh.
     pub(crate) pending_session_creations:
         HashMap<String, crate::app::session_creation::PendingSessionCreation>,
-    /// Most recently opened creation notice; older results cannot steal focus.
-    pub(crate) interactive_session_creation: Option<String>,
     /// Tracks background session-diff loads by request generation so stale
     /// completions cannot change the active mode or review generation.
     pub(crate) pending_session_diff_requests: HashMap<u64, PendingSessionDiffRequest>,
@@ -569,6 +567,8 @@ impl App {
             .sessions
             .create_session(&self.projects, &self.services)
             .await?;
+        self.process_pending_app_events().await;
+        self.reload_projects().await;
         self.finish_session_creation(&session_id).await;
 
         Ok(session_id)
@@ -645,13 +645,14 @@ impl App {
     pub async fn fork_session(&mut self, source_session_id: &str) -> Result<String, AppError> {
         let session_id = self
             .sessions
-            .fork_session(&self.services, source_session_id)
+            .reserve_fork_session(&self.services, source_session_id)
             .await?;
         self.finish_session_creation(&session_id).await;
         self.sessions
             .load_session_detail_into_state(self.services.db(), &session_id)
             .await;
         self.open_session(&session_id);
+        self.retry_workspace_preparation(&session_id).await?;
 
         Ok(session_id)
     }
@@ -716,8 +717,7 @@ impl App {
     /// Applies the shared post-create refresh and selection flow for a new
     /// session.
     async fn finish_session_creation(&mut self, session_id: &str) {
-        self.process_pending_app_events().await;
-        self.reload_projects().await;
+        self.finish_api_session_creation(session_id).await;
 
         let index = self
             .sessions
@@ -812,6 +812,10 @@ impl App {
         session_id: &str,
         prompt: impl Into<TurnPrompt>,
     ) -> Result<(), AppError> {
+        let prompt = prompt.into();
+        if self.queue_preparation_prompt(session_id, &prompt).await? {
+            return Ok(());
+        }
         if self
             .sessions
             .session_for_id(session_id)
@@ -844,6 +848,18 @@ impl App {
         session_id: &str,
         prompt: impl Into<TurnPrompt>,
     ) -> Result<(), AppError> {
+        if self
+            .services
+            .db()
+            .sessions()
+            .load_session_preparation(session_id)
+            .await?
+            .is_some_and(|preparation| preparation.prompt.is_some())
+        {
+            return Err(AppError::Workflow(
+                "The staged prompt is already waiting for workspace setup".to_string(),
+            ));
+        }
         Ok(self
             .sessions
             .stage_draft_message(&self.services, session_id, prompt)
@@ -860,7 +876,46 @@ impl App {
     /// missing, has no staged drafts, or stack consistency or launch enqueueing
     /// fails.
     pub async fn start_staged_session(&mut self, session_id: &str) -> Result<(), AppError> {
+        if self
+            .sessions
+            .session_for_id(session_id)
+            .is_some_and(|session| {
+                session.accepts_user_turns()
+                    && session
+                        .transient_messages
+                        .get(TransientMessageSlot::WorkspacePreparation)
+                        .is_some()
+            })
+        {
+            return self.retry_workspace_preparation(session_id).await;
+        }
         self.ensure_project_checkout_available(self.projects.active_project_id())?;
+        let session = self
+            .sessions
+            .session_for_id(session_id)
+            .ok_or(session::SessionError::NotFound)?;
+        if !self.sessions.can_start_staged_session(session_id) || session.prompt.is_empty() {
+            return Err(AppError::Workflow(
+                "Stage at least one draft; stacked sessions can only start when their parent is \
+                 in review and the stack has no other active branch work"
+                    .to_string(),
+            ));
+        }
+        let prompt = TurnPrompt {
+            attachments: session.draft_attachments.clone(),
+            text: session.prompt.clone(),
+            text_source: crate::domain::turn_prompt::TurnPromptTextSource::UserPrompt,
+        };
+        let base_branch = session.base_branch.clone();
+        self.services
+            .db()
+            .sessions()
+            .insert_session_preparation(session_id, &base_branch)
+            .await?;
+        if self.queue_preparation_prompt(session_id, &prompt).await? {
+            self.retry_workspace_preparation(session_id).await?;
+            return Ok(());
+        }
         self.clear_review_output(session_id);
         self.services
             .db()
@@ -883,6 +938,12 @@ impl App {
     /// submission. Returns `true` when the reply command was enqueued on the
     /// session worker.
     pub async fn reply(&mut self, session_id: &str, prompt: impl Into<TurnPrompt>) -> bool {
+        let prompt = prompt.into();
+        match self.queue_preparation_prompt(session_id, &prompt).await {
+            Ok(true) => return true,
+            Ok(false) => {}
+            Err(_) => return false,
+        }
         if self
             .sessions
             .session_or_err(session_id)
@@ -1262,6 +1323,22 @@ impl App {
     /// state for that session.
     pub async fn delete_selected_session_deferred_cleanup(&mut self) {
         let session_id = self.selected_session().map(|session| session.id.clone());
+        if let Some(session_id) = &session_id
+            && self
+                .services
+                .db()
+                .sessions()
+                .load_session_preparation(session_id)
+                .await
+                .is_ok_and(|preparation| {
+                    preparation.is_some_and(|row| {
+                        row.state == crate::infra::db::SessionPreparationState::Preparing
+                    })
+                })
+        {
+            let _ = self.cancel_session(session_id).await;
+            return;
+        }
         self.sessions
             .delete_selected_session_deferred_cleanup(&self.projects, &self.services)
             .await;
@@ -1817,6 +1894,7 @@ impl App {
         );
         app::review::hydrate_review_transients(&self.review_cache, self.sessions.state_mut());
         self.restart_git_status_task();
+        self.resume_ready_workspace_prompts().await;
     }
 
     /// Reloads project list snapshots from persistence.
@@ -2529,7 +2607,7 @@ mod fork_tests {
                 && session.published_upstream_ref.is_none()
                 && session.stats.added_lines == 0
                 && session.stats.deleted_lines == 0
-                && session.stats.diff_state == SessionDiffState::Empty
+                && session.stats.diff_state == SessionDiffState::Unknown
                 && session.stats.input_tokens == 0
                 && session.stats.output_tokens == 0
         ));
@@ -2576,7 +2654,7 @@ mod fork_tests {
     }
 
     #[tokio::test]
-    async fn test_fork_session_from_dirty_source_refreshes_fork_diff_state() {
+    async fn test_fork_session_from_dirty_source_prepares_frozen_snapshot() {
         // Arrange
         let (mut app, _base_dir) =
             crate::test_support::new_git_test_app_with_mock_tmux_client().await;
@@ -2587,6 +2665,8 @@ mod fork_tests {
             .fork_session(&source_session_id)
             .await
             .expect("expected session fork to succeed");
+
+        crate::test_support::finish_session_creation_tasks(&mut app).await;
 
         // Assert
         assert_ne!(forked_session_id, source_session_id);
