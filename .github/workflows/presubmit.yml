@@ -24,17 +24,17 @@ jobs:
           persist-credentials: false
 
       - name: Generate and publish coverage
-        uses: ./.github/actions/run-coverage
+        uses: $/.github/actions/run-coverage
         with:
           sonar-token: ${{ secrets.SONAR_TOKEN }}
 
   e2e:
     name: End-to-end feature tests
-    uses: ./.github/workflows/e2e.yml
+    uses: $/.github/workflows/e2e.yml
 
   validate:
     name: Workspace checks
-    uses: ./.github/workflows/workspace-validation.yml
+    uses: $/.github/workflows/workspace-validation.yml
     with:
       cargo-audit: true
       cargo-machete: true

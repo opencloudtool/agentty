@@ -14,7 +14,7 @@ runs:
   using: composite
   steps:
     - name: Setup Rust and `prek`
-      uses: ./.github/actions/setup-rust-prek
+      uses: $/.github/actions/setup-rust-prek
       with:
         cargo-llvm-cov: "true"
         llvm-tools-preview: "true"

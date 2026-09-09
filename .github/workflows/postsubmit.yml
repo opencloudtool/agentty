@@ -62,7 +62,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust and `prek`
-        uses: ./.github/actions/setup-rust-prek
+        uses: $/.github/actions/setup-rust-prek
 
       - name: Run source tests
         id: source-tests
@@ -82,7 +82,7 @@ jobs:
 
   validate:
     name: Workspace checks
-    uses: ./.github/workflows/workspace-validation.yml
+    uses: $/.github/workflows/workspace-validation.yml
     with:
       cargo-audit: true
       cargo-machete: true
@@ -102,11 +102,11 @@ jobs:
           persist-credentials: false
 
       - name: Generate and publish coverage
-        uses: ./.github/actions/run-coverage
+        uses: $/.github/actions/run-coverage
         with:
           sonar-token: ${{ secrets.SONAR_TOKEN }}
           summarize: "true"
 
   e2e:
     name: End-to-end feature tests
-    uses: ./.github/workflows/e2e.yml
+    uses: $/.github/workflows/e2e.yml
