@@ -8,6 +8,19 @@ use crate::presentation::app_mode::ChatFocus;
 use crate::presentation::help_action;
 use crate::ui::style;
 
+/// Availability of file matches in the current question-answer lookup.
+#[derive(Clone, Copy)]
+pub enum QuestionLookupState {
+    /// The terminal has no room for a visible suggestion row.
+    Clipped,
+    /// No lookup is active at the input cursor.
+    Closed,
+    /// A lookup is active but has no results yet, or no matching files.
+    Empty,
+    /// The lookup has a nonempty suggestion list.
+    Matches,
+}
+
 /// Returns wrapped question-panel lines with the correct focus styling.
 pub(crate) fn question_panel_lines(
     question_title: &str,
@@ -87,19 +100,45 @@ pub(crate) fn question_option_lines(
 /// as a navigation key while the user is moving through predefined options. The
 /// `q: Sessions` hint is surfaced whenever that predicate is satisfied so the
 /// shortcut stays discoverable in answer focus too, not only in chat focus.
-/// `is_at_mention_open` mirrors the runtime predicate that routes `Esc` to the
-/// at-mention dropdown dismissal, so an `Esc: cancel @` hint is surfaced while
-/// the dropdown is visible.
+/// `lookup_state` distinguishes selectable matches from an active lookup that
+/// can only be dismissed while entries are loading or no files match.
 ///
 /// Footer entries follow the canonical composer-footer ordering shared with
 /// prompt mode: the `Tab` focus toggle first as the stable anchor, then the
-/// primary `Enter` action, reading extras, and exit actions last.
+/// primary `Enter` action, reading extras, and exit actions last. An active
+/// file lookup replaces focus and send actions with selection controls.
 pub fn question_help_footer_line(
     focus: ChatFocus,
     has_session_diff: bool,
     is_navigating_options: bool,
-    is_at_mention_open: bool,
+    lookup_state: QuestionLookupState,
 ) -> Line<'static> {
+    if focus == ChatFocus::Input
+        && !is_navigating_options
+        && !matches!(lookup_state, QuestionLookupState::Closed)
+    {
+        let mut help_actions = if matches!(lookup_state, QuestionLookupState::Matches) {
+            vec![
+                help_action::HelpAction::new("select", "Tab/Enter", "Select file"),
+                help_action::HelpAction::new("navigate", "Up/Down", "Navigate files"),
+            ]
+        } else if matches!(lookup_state, QuestionLookupState::Empty) {
+            vec![help_action::HelpAction::new(
+                "close @",
+                "Tab/Enter",
+                "Close lookup",
+            )]
+        } else {
+            Vec::new()
+        };
+        help_actions.extend([
+            help_action::HelpAction::new("cancel @", "Esc", "Cancel @"),
+            help_action::HelpAction::new("end turn", "Ctrl+C", "End turn"),
+        ]);
+
+        return crate::ui::help_format::footer_line(&help_actions);
+    }
+
     let is_chat_focused = focus == ChatFocus::Chat;
     let focus_label = if is_chat_focused { "Answer" } else { "Chat" };
     let mut help_actions = vec![help_action::HelpAction::new("focus", "Tab", focus_label)];
@@ -118,9 +157,6 @@ pub fn question_help_footer_line(
     }
 
     if !is_chat_focused {
-        if is_at_mention_open {
-            help_actions.push(help_action::HelpAction::new("cancel @", "Esc", "Cancel @"));
-        }
         help_actions.push(help_action::HelpAction::new(
             "end turn", "Ctrl+C", "End turn",
         ));

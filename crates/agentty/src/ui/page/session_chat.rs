@@ -635,7 +635,7 @@ fn render_question_panel(
     let input_placeholder = "Type answer";
     let at_mention_max_visible =
         layout::question_at_mention_max_visible(bottom_area, panel_areas.input_area, 10);
-    let at_mention_menu = if is_free_text_mode {
+    let at_mention_menu = if is_free_text_mode && at_mention_max_visible > 0 {
         at_mention_state.and_then(|state| {
             prompt_format::file_lookup_suggestion_list(
                 display_text,
@@ -656,6 +656,15 @@ fn render_question_panel(
 
     let is_at_mention_open =
         is_free_text_mode && at_mention_state.is_some() && input.at_mention_query().is_some();
+    let lookup_state = if !is_at_mention_open {
+        question_format::QuestionLookupState::Closed
+    } else if at_mention_max_visible == 0 {
+        question_format::QuestionLookupState::Clipped
+    } else if at_mention_menu.is_some() {
+        question_format::QuestionLookupState::Matches
+    } else {
+        question_format::QuestionLookupState::Empty
+    };
     render_question_at_mention_overlay(f, bottom_area, panel_areas.input_area, at_mention_menu);
     render_question_help_footer(
         f,
@@ -664,7 +673,7 @@ fn render_question_panel(
         focus,
         has_session_diff,
         !is_free_text_mode,
-        is_at_mention_open,
+        lookup_state,
     );
 }
 
@@ -675,9 +684,8 @@ fn render_question_panel(
 ///
 /// `is_navigating_options` mirrors the runtime predicate that treats plain `q`
 /// as a sessions-list shortcut, so the footer can surface it whenever the
-/// shortcut is actually wired up. `is_at_mention_open` mirrors the runtime
-/// predicate that routes `Esc` to the at-mention dropdown so the footer can
-/// add a separate `Esc: cancel @` hint while the overlay is visible.
+/// shortcut is actually wired up. `lookup_state` only advertises selection
+/// and navigation when the prepared suggestion list contains matches.
 fn render_question_help_footer(
     f: &mut Frame,
     area: Rect,
@@ -685,7 +693,7 @@ fn render_question_help_footer(
     focus: ChatFocus,
     has_session_diff: bool,
     is_navigating_options: bool,
-    is_at_mention_open: bool,
+    lookup_state: question_format::QuestionLookupState,
 ) {
     if help_height == 0 {
         return;
@@ -695,7 +703,7 @@ fn render_question_help_footer(
         focus,
         has_session_diff,
         is_navigating_options,
-        is_at_mention_open,
+        lookup_state,
     ))
     .alignment(ratatui::layout::Alignment::Left);
     f.render_widget(help_para, area);
@@ -1364,6 +1372,135 @@ mod tests {
         assert!(text.contains("Options:"), "should render options header");
         assert!(text.contains("Yes"), "should render first option");
         assert!(text.contains("No"), "should render second option");
+    }
+
+    #[test]
+    fn test_render_question_lookup_shows_file_and_selection_controls() {
+        // Arrange
+        let session = session_fixture();
+        let mode = AppMode::Question {
+            at_mention_state: Some(PromptAtMentionState::new(vec![
+                crate::domain::file_entry::FileEntry {
+                    is_dir: false,
+                    path: "src/session_chat.rs".to_string(),
+                },
+            ])),
+            current_index: 0,
+            focus: ChatFocus::Input,
+            input: InputState::with_text("@session".to_string()),
+            questions: vec![QuestionItem::new("Which file?")],
+            responses: Vec::new(),
+            scroll_offset: None,
+            selected_option_index: None,
+            session_id: "session-id".into(),
+        };
+        let mut page = test_session_chat_page(&session, &mode);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24))
+            .expect("failed to create terminal");
+
+        // Act
+        terminal
+            .draw(|frame| Page::render(&mut page, frame, frame.area()))
+            .expect("failed to draw question lookup");
+
+        // Assert
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("src/session_chat.rs"));
+        assert!(text.contains("Tab/Enter: select"));
+        assert!(text.contains("Up/Down: navigate"));
+        assert!(text.contains("Esc: cancel @"));
+        assert!(!text.contains("Enter: send"));
+    }
+
+    #[test]
+    fn test_render_question_lookup_requires_space_for_a_complete_result_row() {
+        for height in 4..=7 {
+            // Arrange
+            let input = InputState::with_text("@src".to_string());
+            let questions = vec![QuestionItem::new("Which file?")];
+            let lookup = PromptAtMentionState::new(vec![crate::domain::file_entry::FileEntry {
+                is_dir: false,
+                path: "src/lib.rs".to_string(),
+            }]);
+            let state = QuestionPanelState {
+                at_mention_state: Some(&lookup),
+                current_index: 0,
+                focus: ChatFocus::Input,
+                has_session_diff: false,
+                input: &input,
+                questions: &questions,
+                selected_option_index: None,
+            };
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, height))
+                    .expect("failed to create terminal");
+
+            // Act
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    let panel_areas = layout::question_panel_areas(
+                        area,
+                        "Which file?",
+                        input.text(),
+                        0,
+                        CHAT_INPUT_MAX_PANEL_HEIGHT,
+                    );
+                    render_question_panel(frame, area, Some(panel_areas), &state);
+                })
+                .expect("failed to draw constrained lookup");
+
+            // Assert
+            let text = buffer_text(terminal.backend().buffer());
+            assert!(text.contains("@src"));
+            assert!(text.contains("Esc: cancel @"));
+            assert!(!text.contains("Tab/Enter: close @"));
+            assert_eq!(text.contains("src/lib.rs"), height == 7);
+            assert_eq!(text.contains("Tab/Enter: select"), height == 7);
+            assert_eq!(text.contains("Up/Down: navigate"), height == 7);
+        }
+    }
+
+    #[test]
+    fn test_render_question_empty_lookup_shows_only_dismissal_controls() {
+        for entries in [
+            Vec::new(),
+            vec![crate::domain::file_entry::FileEntry {
+                is_dir: false,
+                path: "src/session_chat.rs".to_string(),
+            }],
+        ] {
+            // Arrange
+            let session = session_fixture();
+            let mode = AppMode::Question {
+                at_mention_state: Some(PromptAtMentionState::new(entries)),
+                current_index: 0,
+                focus: ChatFocus::Input,
+                input: InputState::with_text("@missing".to_string()),
+                questions: vec![QuestionItem::new("Which file?")],
+                responses: Vec::new(),
+                scroll_offset: None,
+                selected_option_index: None,
+                session_id: "session-id".into(),
+            };
+            let mut page = test_session_chat_page(&session, &mode);
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24))
+                .expect("failed to create terminal");
+
+            // Act
+            terminal
+                .draw(|frame| Page::render(&mut page, frame, frame.area()))
+                .expect("failed to draw empty question lookup");
+
+            // Assert
+            let text = buffer_text(terminal.backend().buffer());
+            assert!(text.contains("@missing"));
+            assert!(text.contains("Tab/Enter: close @"));
+            assert!(text.contains("Esc: cancel @"));
+            assert!(!text.contains("Tab/Enter: select"));
+            assert!(!text.contains("Up/Down: navigate"));
+            assert!(!text.contains("Enter: send"));
+        }
     }
 
     #[test]

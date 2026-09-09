@@ -23,7 +23,8 @@ const NO_ANSWER: &str = "no answer";
 /// Applies one key event in question-answer mode.
 ///
 /// `Tab` toggles focus between the question panel and the chat output for
-/// scrolling. When chat is focused, scroll keys (`j`/`k`/`Up`/`Down`/`g`/`G`/
+/// scrolling, unless an open `@` lookup consumes it for file selection. When
+/// chat is focused, scroll keys (`j`/`k`/`Up`/`Down`/`g`/`G`/
 /// `Ctrl+d`/`Ctrl+u`) navigate the session transcript. `Enter` submits the
 /// typed answer (or `no answer` when blank), `Ctrl+C` ends the entire turn
 /// without sending a reply while the answer input is focused, `Esc` dismisses
@@ -35,11 +36,22 @@ pub(crate) async fn handle_with_cache(
     app: &mut App,
     render_cache_store: &RenderCacheStore,
     terminal_size: Rect,
-    key: KeyEvent,
+    mut key: KeyEvent,
 ) -> EventResult {
+    // Canonicalize plain terminal Enter encodings before lookup and submission
+    // routing. Modified character forms retain their multiline editing meaning.
+    if key.modifiers.is_empty() && input_key::is_enter_key(key.code) {
+        key.code = KeyCode::Enter;
+    }
+
     if is_plain_q(key) && should_exit_to_list_on_q(app) {
         exit_to_list_saving_progress(app);
 
+        return EventResult::Continue;
+    }
+
+    if is_answer_input_focused(app) && is_active_at_mention(app) && handle_at_mention_key(app, key)
+    {
         return EventResult::Continue;
     }
 
@@ -52,10 +64,6 @@ pub(crate) async fn handle_with_cache(
             end_turn_no_answer(app).await;
         }
 
-        return EventResult::Continue;
-    }
-
-    if is_active_at_mention(app) && handle_at_mention_key(app, key) {
         return EventResult::Continue;
     }
 
@@ -476,6 +484,10 @@ fn is_active_at_mention(app: &App) -> bool {
 ///
 /// Returns `true` when the key was consumed by the at-mention handler.
 fn handle_at_mention_key(app: &mut App, key: KeyEvent) -> bool {
+    if input_key::should_insert_newline(key) {
+        return false;
+    }
+
     match key.code {
         KeyCode::Esc => dismiss_question_at_mention(app),
         KeyCode::Enter | KeyCode::Tab => {
@@ -598,7 +610,7 @@ fn handle_question_at_mention_select(app: &mut App) {
     if let Some(selection) = replacement
         && let AppMode::Question { input, .. } = &mut app.mode
     {
-        input.replace_range(selection.at_start, selection.cursor, &selection.text);
+        input.replace_range(selection.at_start, selection.at_end, &selection.text);
     }
 
     sync_question_at_mention_state(app);
@@ -905,6 +917,320 @@ mod tests {
 
     /// Fake terminal size used by tests that don't exercise scrolling.
     const TEST_TERMINAL_SIZE: Rect = Rect::new(0, 0, 80, 24);
+
+    #[tokio::test]
+    async fn test_question_lookup_selects_file_without_submitting_or_changing_focus() {
+        for selection_key in [
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Char('\r'),
+            KeyCode::Char('\n'),
+        ] {
+            // Arrange
+            let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+            app.mode = question_mode_with_options();
+            if let AppMode::Question {
+                at_mention_state,
+                input,
+                selected_option_index,
+                ..
+            } = &mut app.mode
+            {
+                *selected_option_index = None;
+                *input = InputState::with_text("Use @src/pending".to_string());
+                input.cursor = "Use @src".chars().count();
+                *at_mention_state = Some(PromptAtMentionState::new(vec![
+                    crate::domain::file_entry::FileEntry {
+                        is_dir: false,
+                        path: "src/first.rs".to_string(),
+                    },
+                    crate::domain::file_entry::FileEntry {
+                        is_dir: false,
+                        path: "src/second.rs".to_string(),
+                    },
+                ]));
+            }
+
+            // Act
+            for code in [KeyCode::Down, KeyCode::Up, KeyCode::Down, selection_key] {
+                handle(
+                    &mut app,
+                    TEST_TERMINAL_SIZE,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                )
+                .await;
+            }
+
+            // Assert
+            assert!(matches!(
+                &app.mode,
+                AppMode::Question {
+                    at_mention_state: None,
+                    current_index: 0,
+                    focus: ChatFocus::Input,
+                    input,
+                    responses,
+                    selected_option_index: None,
+                    ..
+                } if input.text() == "Use @src/second.rs " && responses.is_empty()
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_question_enter_encodings_submit_without_lookup() {
+        for code in [KeyCode::Enter, KeyCode::Char('\r'), KeyCode::Char('\n')] {
+            for (selected_option, draft, expected) in [
+                (Some(1), "ignored draft", "Option B"),
+                (None, "typed answer", "typed answer"),
+                (None, "", NO_ANSWER),
+            ] {
+                // Arrange
+                let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+                app.mode = question_mode_with_options();
+                if let AppMode::Question {
+                    input,
+                    questions,
+                    selected_option_index,
+                    ..
+                } = &mut app.mode
+                {
+                    *input = InputState::with_text(draft.to_string());
+                    *selected_option_index = selected_option;
+                    questions.push(QuestionItem::new("Anything else?"));
+                }
+
+                // Act
+                handle(
+                    &mut app,
+                    TEST_TERMINAL_SIZE,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                )
+                .await;
+
+                // Assert
+                assert!(matches!(
+                    &app.mode,
+                    AppMode::Question {
+                        current_index: 1,
+                        input,
+                        responses,
+                        focus: ChatFocus::Input,
+                        ..
+                    } if responses == &vec![expected.to_string()] && input.is_empty()
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_question_lookup_modified_enter_inserts_newline() {
+        for (code, modifiers) in [
+            (KeyCode::Enter, KeyModifiers::ALT),
+            (KeyCode::Enter, KeyModifiers::SHIFT),
+            (KeyCode::Char('\r'), KeyModifiers::ALT),
+            (KeyCode::Char('\r'), KeyModifiers::SHIFT),
+            (KeyCode::Char('\n'), KeyModifiers::ALT),
+            (KeyCode::Char('\n'), KeyModifiers::SHIFT),
+            (KeyCode::Char('\r'), KeyModifiers::CONTROL),
+            (KeyCode::Char('\n'), KeyModifiers::CONTROL),
+            (KeyCode::Char('j'), KeyModifiers::CONTROL),
+            (KeyCode::Char('m'), KeyModifiers::CONTROL),
+        ] {
+            // Arrange
+            let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+            app.mode = question_mode_with_options();
+            if let AppMode::Question {
+                at_mention_state,
+                input,
+                selected_option_index,
+                ..
+            } = &mut app.mode
+            {
+                *selected_option_index = None;
+                *input = InputState::with_text("@src".to_string());
+                *at_mention_state = Some(PromptAtMentionState::new(vec![
+                    crate::domain::file_entry::FileEntry {
+                        is_dir: false,
+                        path: "src/lib.rs".to_string(),
+                    },
+                ]));
+            }
+
+            // Act
+            handle(&mut app, TEST_TERMINAL_SIZE, KeyEvent::new(code, modifiers)).await;
+
+            // Assert
+            assert!(matches!(
+                &app.mode,
+                AppMode::Question {
+                    at_mention_state: None,
+                    current_index: 0,
+                    focus: ChatFocus::Input,
+                    input,
+                    responses,
+                    ..
+                } if input.text() == "@src\n" && responses.is_empty()
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_question_empty_lookup_selection_closes_without_submitting() {
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Char('\r'),
+            KeyCode::Char('\n'),
+        ] {
+            for entries in [
+                Vec::new(),
+                vec![crate::domain::file_entry::FileEntry {
+                    is_dir: false,
+                    path: "src/lib.rs".to_string(),
+                }],
+            ] {
+                // Arrange
+                let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+                app.mode = question_mode_with_options();
+                if let AppMode::Question {
+                    at_mention_state,
+                    input,
+                    selected_option_index,
+                    ..
+                } = &mut app.mode
+                {
+                    *selected_option_index = None;
+                    *input = InputState::with_text("@missing".to_string());
+                    *at_mention_state = Some(PromptAtMentionState::new(entries));
+                }
+
+                // Act
+                handle(
+                    &mut app,
+                    TEST_TERMINAL_SIZE,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                )
+                .await;
+
+                // Assert
+                assert!(matches!(
+                    &app.mode,
+                    AppMode::Question {
+                        at_mention_state: None,
+                        current_index: 0,
+                        focus: ChatFocus::Input,
+                        input,
+                        responses,
+                        ..
+                    } if input.text() == "@missing" && responses.is_empty()
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_question_delayed_lookup_result_respects_dismissal() {
+        for dismissal in [
+            None,
+            Some(KeyCode::Esc),
+            Some(KeyCode::Tab),
+            Some(KeyCode::Enter),
+        ] {
+            // Arrange
+            let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+            app.mode = question_mode_with_options();
+            if let AppMode::Question {
+                at_mention_state,
+                input,
+                selected_option_index,
+                ..
+            } = &mut app.mode
+            {
+                *selected_option_index = None;
+                *input = InputState::with_text("@src".to_string());
+                *at_mention_state = Some(PromptAtMentionState::new(Vec::new()));
+            }
+            let entries = vec![crate::domain::file_entry::FileEntry {
+                is_dir: false,
+                path: "src/lib.rs".to_string(),
+            }];
+            let lookup_root = app.at_mention_lookup_root("session-id");
+            let delayed_result = AppEvent::AtMentionEntriesLoaded {
+                entries: entries.clone(),
+                session_id: "session-id".into(),
+            };
+
+            // Act: deliver the queued load after the dismissal key was handled.
+            if let Some(code) = dismissal {
+                handle(
+                    &mut app,
+                    TEST_TERMINAL_SIZE,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                )
+                .await;
+            }
+            app.apply_app_events(delayed_result).await;
+
+            // Assert: late results may populate the cache, but cannot reopen
+            // the picker.
+            assert_eq!(
+                app.sessions.at_mention_index_for_root(&lookup_root),
+                Some(entries.clone())
+            );
+            let expected_entries = dismissal.is_none().then_some(entries);
+            assert!(matches!(
+                &app.mode,
+                AppMode::Question {
+                    at_mention_state,
+                    input,
+                    focus: ChatFocus::Input,
+                    ..
+                } if input.text() == "@src"
+                    && at_mention_state.as_ref().map(|state| &state.all_entries)
+                        == expected_entries.as_ref()
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_question_lookup_escape_preserves_draft_and_restores_tab_focus_toggle() {
+        // Arrange
+        let mut app = crate::test_support::new_test_app_without_retained_base_dir().await;
+        app.mode = question_mode_with_options();
+        if let AppMode::Question {
+            at_mention_state,
+            input,
+            selected_option_index,
+            ..
+        } = &mut app.mode
+        {
+            *selected_option_index = None;
+            *input = InputState::with_text("@src".to_string());
+            *at_mention_state = Some(PromptAtMentionState::new(Vec::new()));
+        }
+
+        // Act
+        for code in [KeyCode::Esc, KeyCode::Tab] {
+            handle(
+                &mut app,
+                TEST_TERMINAL_SIZE,
+                KeyEvent::new(code, KeyModifiers::NONE),
+            )
+            .await;
+        }
+
+        // Assert
+        assert!(matches!(
+            &app.mode,
+            AppMode::Question {
+                at_mention_state: None,
+                focus: ChatFocus::Chat,
+                input,
+                ..
+            } if input.text() == "@src"
+        ));
+    }
 
     #[tokio::test]
     async fn test_question_at_mention_loads_parent_worktree_entries_for_stacked_session() {

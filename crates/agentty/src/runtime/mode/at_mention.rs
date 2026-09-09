@@ -9,7 +9,7 @@ use crate::app::at_mention_task;
 use crate::app::session::SessionManager;
 use crate::app::{AppEvent, TaskService};
 use crate::domain::file_entry::{FileEntry, filter_entries};
-use crate::domain::input::InputState;
+use crate::domain::input::{InputState, is_at_mention_query_character};
 use crate::domain::session::SessionId;
 use crate::presentation::prompt::PromptAtMentionState;
 
@@ -28,12 +28,12 @@ pub(crate) enum AtMentionSyncAction {
 /// Text replacement derived from the currently highlighted `@`-mention row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AtMentionSelection {
-    /// End character index of the active `@query`.
-    pub cursor: usize,
-    /// Replacement text inserted into the input.
-    pub text: String,
+    /// Exclusive end character index of the complete active `@query` token.
+    pub at_end: usize,
     /// Start character index of the active `@query`.
     pub at_start: usize,
+    /// Replacement text inserted into the input.
+    pub text: String,
 }
 
 /// Returns the next `@`-mention sync action for one input buffer and dropdown
@@ -92,7 +92,8 @@ pub(crate) fn move_selection_down(input: &InputState, at_mention_state: &mut Pro
 }
 
 /// Returns the replacement text for the highlighted `@`-mention entry, if the
-/// input still contains an active `@query`.
+/// input still contains an active `@query`. The replacement spans the whole
+/// token, including any suffix after the cursor, and preserves its delimiters.
 pub(crate) fn selected_replacement(
     input: &InputState,
     at_mention_state: &PromptAtMentionState,
@@ -102,10 +103,17 @@ pub(crate) fn selected_replacement(
     let clamped_index = at_mention_state
         .selected_index
         .min(filtered.len().saturating_sub(1));
+    let at_end = input.cursor
+        + input
+            .text()
+            .chars()
+            .skip(input.cursor)
+            .take_while(|character| is_at_mention_query_character(*character))
+            .count();
 
     filtered.get(clamped_index).map(|entry| AtMentionSelection {
+        at_end,
         at_start,
-        cursor: input.cursor,
         text: format_mention_text(entry),
     })
 }
@@ -201,11 +209,37 @@ mod tests {
         assert_eq!(
             selection,
             AtMentionSelection {
+                at_end: 4,
                 at_start: 0,
-                cursor: 4,
                 text: "@src/ ".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn test_selected_replacement_replaces_full_token_and_preserves_surrounding_text() {
+        for (draft, prefix, expected) in [
+            ("@src/lib", "@src/li", "@src/lib.rs "),
+            ("Use @src/lib next", "Use @src/li", "Use @src/lib.rs  next"),
+            ("See (@src/lib)", "See (@src/li", "See (@src/lib.rs )"),
+            ("é @src/文件 next", "é @src/", "é @src/lib.rs  next"),
+            ("@src/lib.rs", "@src/lib.rs", "@src/lib.rs "),
+        ] {
+            // Arrange
+            let mut input = InputState::with_text(draft.to_string());
+            input.cursor = prefix.chars().count();
+            let state = PromptAtMentionState::new(vec![FileEntry {
+                is_dir: false,
+                path: "src/lib.rs".to_string(),
+            }]);
+
+            // Act
+            let selection = selected_replacement(&input, &state).expect("expected file selection");
+            input.replace_range(selection.at_start, selection.at_end, &selection.text);
+
+            // Assert
+            assert_eq!(input.text(), expected);
+        }
     }
 
     #[tokio::test]

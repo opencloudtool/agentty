@@ -790,6 +790,11 @@ reply; it is ignored while chat output is focused. `q` (outside free-text input)
 to the sessions list with the **Question** state kept for later; answers already
 submitted are saved, and reopening the session resumes at the next unanswered question.
 
+In a free-text answer, type `@` to look up repository files. Use `Up` / `Down` to choose
+a match and `Tab` / `Enter` to insert it without submitting the answer. `Esc` closes the
+lookup while keeping your draft, even if file loading finishes afterward. Editing the
+query can open the lookup again.
+
 ## Prompt Input Extras
 
 <a id="usage-prompt-extras"></a> In prompt input, `Ctrl+V`, `Ctrl+Shift+V`, and `Alt+V`

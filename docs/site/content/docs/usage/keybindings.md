@@ -441,6 +441,15 @@ exist:
 | `Ctrl+Y` / `Ctrl+Shift+Z`        | Redo                                 |
 | `Tab`                            | Focus chat output for scrolling      |
 
+Type `@` followed by a file-name fragment to look up repository files in your answer.
+While the lookup has matches, `Up` / `Down` navigate them and `Tab` / `Enter` replace
+the entire `@` token with the selected path, including any query text after the cursor.
+With no matches, `Tab` / `Enter` close the lookup. `Esc` always dismisses the lookup,
+and `Alt+Enter` / `Shift+Enter` still insert a newline. After selecting a file with
+`Enter`, press `Enter` again to send the answer; `Tab` switches focus as usual. When the
+terminal is too short to show a result row, the footer hides lookup selection hints;
+`Esc` still dismisses the lookup.
+
 In free-text mode every other printable character — including `q` — is inserted into the
 answer. To leave without answering, press `Tab` to focus the chat output and then `q`,
 or press `Ctrl+C` while the answer input is focused.
