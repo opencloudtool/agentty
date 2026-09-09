@@ -7,6 +7,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [v0.15.13] - 2026-09-09
+
+### Added
+
+- agentty: support repository file lookup in diff comments while preserving drafts.
+
+### Changed
+
+- release: bump workspace crate metadata and lockfile package versions to `0.15.13`.
+
+### Contributors
+
+- @minev-dev
+
 ## [v0.15.12] - 2026-09-08
 
 ### Added
