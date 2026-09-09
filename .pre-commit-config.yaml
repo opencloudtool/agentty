@@ -225,7 +225,7 @@ repos:
           cargo llvm-cov nextest --workspace --lib --bins --examples --locked --profile ci
           --fail-under-lines 93 --fail-under-functions 91
           --lcov --no-default-ignore-filename-regex
-          --ignore-filename-regex '(/rustc/|/(tests|benches)/|/(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$|/target/llvm-cov-target/|/\.cargo/(registry|git)/|/\.rustup/toolchains/)'
+          --ignore-filename-regex '(/rustc/|/(tests|benches)/|/(tests\.rs|[0-9a-zA-Z_-]+[_-]tests?\.rs)$|/target/llvm-cov-target/|/\.cargo/(registry|git)/|/\.rustup/toolchains/)'
           --output-path coverage.lcov
         language: system
         types: [rust]
@@ -239,7 +239,7 @@ repos:
           CARGO_UNSTABLE_FINE_GRAIN_LOCKING=false cargo llvm-cov nextest --workspace
           --lib --bins --examples --locked --profile ci --lcov
           --no-default-ignore-filename-regex --ignore-filename-regex
-          "(/rustc/|/(tests|benches)/|/(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$|/target/llvm-cov-target/|/\.cargo/(registry|git)/|/\.rustup/toolchains/)"
+          "(/rustc/|/(tests|benches)/|/(tests\.rs|[0-9a-zA-Z_-]+[_-]tests?\.rs)$|/target/llvm-cov-target/|/\.cargo/(registry|git)/|/\.rustup/toolchains/)"
           --output-path coverage.lcov && diff-cover coverage.lcov
           --compare-branch=main --fail-under=100 --include-untracked --show-uncovered'
         language: python
