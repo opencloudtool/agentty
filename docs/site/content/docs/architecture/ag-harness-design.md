@@ -19,7 +19,8 @@ flowchart LR
 
 ## Public boundary
 
-- `Harness` owns the model, repository policy, lifecycle observers, and database path.
+- `Harness` owns the model, repository policy, lifecycle observers, and shared database
+  pool.
 - `Session` is the only multi-turn abstraction. It persists and restores bounded
   history.
 - `Model` is the object-safe provider boundary. `ModelCompletion` carries the response,
@@ -91,6 +92,11 @@ failure.
 
 ## Concurrency
 
+The first create or resume initializes the harness's database pool and runs migrations.
+Concurrent initialization is serialized, and failed initialization can be retried. All
+sessions created or resumed through that harness share its four-connection limit.
+Reconfiguring the database path resets the pool; separate harnesses own separate pools.
+
 Different session IDs may run concurrently through the SQLite connection pool. A partial
 unique index permits only one `pending` or `running` turn for a given session, so
 concurrent writers receive `SessionError::Busy` instead of interleaving messages.
@@ -100,3 +106,10 @@ concurrent writers receive `SessionError::Busy` instead of interleaving messages
 Lifecycle observers receive content-free turn, model-request, and tool events. The host
 chooses exporters. `LifecycleMetrics` and `LifecycleTraceObserver` project this stream
 to OpenTelemetry without storing prompts or tool output in telemetry.
+
+`run_once` owns terminal events for ephemeral turns. `Session::send` owns them for
+durable turns and emits `TurnCompleted` only after committing messages and updating
+session state. Durable turn durations include acquisition and persistence. Session
+coordination or persistence failures emit `TurnFailed` with `session_error`; model or
+tool failures retain their original classification even if recording the failure also
+fails. Dropping either operation emits cancellation once.
