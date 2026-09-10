@@ -31,6 +31,7 @@ pub use lifecycle::{
 pub use model::{
     CompletionMetadata, CompletionUsage, Model, ModelClient, ModelCompletion, ModelError,
     ModelErrorType, ModelMessage, ModelMetadata, ModelMetadataError, ModelRequest, ModelResponse,
+    ReasoningEffort,
 };
 pub use provider::{
     KIMI_K2_6, KimiConfig, MUSE_SPARK_1_3, MUSE_SPARK_1_3_CONTRIBUTOR, ModelConfiguration,

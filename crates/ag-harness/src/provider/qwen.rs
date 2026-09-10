@@ -1,3 +1,4 @@
+use crate::model::ReasoningEffort;
 use crate::{chat_completion, telemetry};
 
 pub(crate) const DASHSCOPE_API_KEY_ENV: &str = "DASHSCOPE_API_KEY";
@@ -6,17 +7,36 @@ pub(crate) const DASHSCOPE_BASE_URL_ENV: &str = "DASHSCOPE_BASE_URL";
 /// Qwen Plus model identifier.
 pub const QWEN_PLUS: &str = "qwen-plus";
 
-pub(crate) const POLICY: chat_completion::ChatCompletionProviderPolicy =
+pub(crate) fn policy(model: &str) -> chat_completion::ChatCompletionProviderPolicy {
+    let preserves_reasoning = model.starts_with("qwen3.8-");
+
     chat_completion::ChatCompletionProviderPolicy {
         display_name: "Qwen",
+        reasoning_format: if preserves_reasoning {
+            chat_completion::ReasoningFormat::Effort(reasoning_effort_name)
+        } else if model == QWEN_PLUS {
+            chat_completion::ReasoningFormat::EnableThinking
+        } else {
+            chat_completion::ReasoningFormat::None
+        },
         response_format_with_tools: false,
         structured_output: chat_completion::StructuredOutputMode::JsonObject {
-            assistant_reasoning_content: false,
+            assistant_reasoning_content: preserves_reasoning,
             tool_result_name: false,
         },
         telemetry_name: telemetry::PROVIDER_ALIBABA_CLOUD,
         unsupported_schema_reason: "Qwen JSON Object mode requires an explicit object root schema",
-    };
+    }
+}
+
+fn reasoning_effort_name(reasoning_effort: ReasoningEffort) -> &'static str {
+    match reasoning_effort {
+        ReasoningEffort::Low | ReasoningEffort::Medium => reasoning_effort.as_str(),
+        ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => {
+            ReasoningEffort::XHigh.as_str()
+        }
+    }
+}
 
 /// Configuration for a Qwen model served through Alibaba Cloud Model Studio's
 /// OpenAI-compatible API.
@@ -118,10 +138,14 @@ mod tests {
     }
 
     fn qwen(server: &MockServer) -> model::ModelClient {
+        qwen_model(server, QWEN_PLUS)
+    }
+
+    fn qwen_model(server: &MockServer, model: &str) -> model::ModelClient {
         model::ModelClient::qwen(QwenConfig {
             api_key: "test-key".to_string(),
             base_url: format!("{}/", server.uri()),
-            model: "qwen-plus".to_string(),
+            model: model.to_string(),
         })
         .expect("fixture configuration should be valid")
     }
@@ -204,6 +228,102 @@ mod tests {
                 "choices": [{
                     "finish_reason": finish_reason,
                     "message": message
+                }]
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_qwen_3_8_tool_response(
+        server: &MockServer,
+        prompt: &str,
+        reasoning_content: &str,
+    ) {
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(bearer_token("test-key"))
+            .and(body_json(json!({
+                "messages": [
+                    {
+                        "content": format!(
+                            "{STRUCTURED_OUTPUT_INSTRUCTION}{}",
+                            person_schema_value()
+                        ),
+                        "role": "system"
+                    },
+                    {"content": prompt, "role": "user"}
+                ],
+                "model": "qwen3.8-max",
+                "tools": [read_tool_wire()]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": null,
+                        "reasoning_content": reasoning_content,
+                        "tool_calls": [{
+                            "id": "call_qwen_read",
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "arguments": r#"{"path":"Cargo.toml","offset":1,"limit":12}"#
+                            }
+                        }]
+                    }
+                }]
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_qwen_3_8_continuation(
+        server: &MockServer,
+        prompt: &str,
+        result: &str,
+        reasoning_content: &str,
+    ) {
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(bearer_token("test-key"))
+            .and(body_json(json!({
+                "messages": [
+                    {
+                        "content": format!(
+                            "{STRUCTURED_OUTPUT_INSTRUCTION}{}",
+                            person_schema_value()
+                        ),
+                        "role": "system"
+                    },
+                    {"content": prompt, "role": "user"},
+                    {
+                        "content": null,
+                        "reasoning_content": reasoning_content,
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "function": {
+                                "arguments": r#"{"limit":12,"offset":1,"path":"Cargo.toml"}"#,
+                                "name": "read"
+                            },
+                            "id": "call_qwen_read",
+                            "type": "function"
+                        }]
+                    },
+                    {
+                        "content": result,
+                        "role": "tool",
+                        "tool_call_id": "call_qwen_read"
+                    }
+                ],
+                "model": "qwen3.8-max",
+                "tools": [read_tool_wire()]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": r#"{"name":"Cargo"}"#}
                 }]
             })))
             .expect(1)
@@ -406,6 +526,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preserves_qwen_3_8_reasoning_for_tool_continuation() {
+        // Arrange
+        let server = MockServer::start().await;
+        let prompt = "inspect the manifest";
+        let result = r#"{"content":"[workspace]","end_line":1,"next_offset":null,"path":"Cargo.toml","start_line":1,"truncated":false}"#;
+        let reasoning_content = "I should inspect the manifest before answering.";
+        mount_qwen_3_8_tool_response(&server, prompt, reasoning_content).await;
+        mount_qwen_3_8_continuation(&server, prompt, result, reasoning_content).await;
+        let model = qwen_model(&server, "qwen3.8-max");
+
+        // Act
+        let tool_response = model
+            .complete(read_request(prompt))
+            .await
+            .expect("initial Qwen3.8 tool request should succeed");
+        let call = tool_response
+            .call()
+            .expect("initial response should contain a tool call")
+            .clone();
+        let mut model_request = read_request(prompt);
+        model_request.record_tool_result(call, result.to_string());
+        let response = model
+            .complete(model_request)
+            .await
+            .expect("continued Qwen3.8 request should succeed");
+
+        // Assert
+        assert_eq!(response.output(), Some(&json!({ "name": "Cargo" })));
+    }
+
+    #[tokio::test]
     async fn rejects_terminal_response_with_tool_calls() {
         // Arrange
         let server = MockServer::start().await;
@@ -584,7 +735,7 @@ mod tests {
             "stub-key".to_string(),
             "https://stub.example/v1/".to_string(),
             "qwen-stub".to_string(),
-            POLICY,
+            policy("qwen-stub"),
             Arc::new(StubClient),
         );
 

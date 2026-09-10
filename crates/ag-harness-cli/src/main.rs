@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use std::{env, io};
 
 use ag_harness::{
-    Harness, ModelConfiguration, ModelConfigurationError, ModelProvider, OutputSchema, Repository,
-    Session, SessionInfo, Tool, TurnOutcome,
+    Harness, ModelConfiguration, ModelConfigurationError, ModelProvider, OutputSchema,
+    ReasoningEffort, Repository, Session, SessionInfo, Tool, TurnOutcome,
 };
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
@@ -21,7 +21,13 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt as _, AsyncWrite, AsyncWriteExt as
 const READ_ONLY_SYSTEM_PROMPT: &str = concat!(
     "You are operating in a read-only repository harness. The read tool supports file, list, ",
     "search, diff, and show actions. For change review, call diff first, then use search, file, ",
-    "list, or show for evidence. Call the tool immediately and use its result before answering. ",
+    "list, or show for evidence. Use repository tools only when the user explicitly asks about ",
+    "repository contents. Treat an unambiguous reference to the repository, project, codebase, ",
+    "code, a file, or a change as an explicit repository request. Treat replies, response speed, ",
+    "response visibility, and model behavior as casual chat topics only when they are not ",
+    "explicitly tied to the repository, project, codebase, code, a file, or a change. ",
+    "Do not call tools for casual conversation or ambiguous requests. When needed, call the tool ",
+    "immediately and use its result before answering. ",
     "Never narrate, promise, or defer a future tool call. Never claim that you created, ",
     "modified, deleted, or executed files or commands because filesystem mutation and command ",
     "execution are unavailable. If asked to perform an unsupported action, state that it is ",
@@ -30,7 +36,13 @@ const READ_ONLY_SYSTEM_PROMPT: &str = concat!(
 const READ_WRITE_SYSTEM_PROMPT: &str = concat!(
     "You are operating in a repository harness with read and write tools. The read tool supports ",
     "file, list, search, diff, and show actions. For change review, call diff first. When a user ",
-    "asks about repository contents, call read immediately and use its result before answering. ",
+    "explicitly asks about repository contents, call read immediately and use its result before ",
+    "answering. Treat an unambiguous reference to the repository, project, codebase, code, a \
+     file, ",
+    "or a change as an explicit repository request. Treat replies, response speed, response ",
+    "visibility, and model behavior as casual chat topics only when they are not explicitly tied ",
+    "to the repository, project, codebase, code, a file, or a change. Do not ",
+    "call tools for casual conversation or ambiguous requests. ",
     "When a user asks to create or modify a file, call the write tool ",
     "immediately in the same response. Never narrate, promise, or defer a future tool call. Only ",
     "claim that a file was created or modified after the write tool succeeds. File deletion and ",
@@ -53,6 +65,14 @@ struct Cli {
     /// in PATH.
     #[arg(long, global = true, value_name = "FILE")]
     git_executable: Option<PathBuf>,
+    /// Model reasoning depth used for chat requests.
+    #[arg(
+        long,
+        global = true,
+        default_value = "low",
+        value_parser = reasoning_effort_parser()
+    )]
+    reasoning_effort: ReasoningEffort,
     #[command(subcommand)]
     command: Command,
 }
@@ -122,6 +142,18 @@ fn model_provider_parser() -> impl TypedValueParser<Value = ModelProvider> {
             .map(|provider| provider.as_str()),
     )
     .try_map(|provider| provider.parse::<ModelProvider>())
+}
+
+fn reasoning_effort_parser() -> impl TypedValueParser<Value = ReasoningEffort> {
+    PossibleValuesParser::new(ReasoningEffort::ALL.iter().map(|effort| effort.as_str())).try_map(
+        |effort| {
+            ReasoningEffort::ALL
+                .iter()
+                .copied()
+                .find(|candidate| candidate.as_str() == effort)
+                .ok_or_else(|| format!("unsupported reasoning effort `{effort}`"))
+        },
+    )
 }
 
 fn provider_help() -> String {
@@ -229,6 +261,7 @@ where
 {
     let database = database_path(cli.database, &mut environment)?;
     let git_executable = cli.git_executable;
+    let reasoning_effort = cli.reasoning_effort;
     match cli.command {
         Command::Run(args) => {
             let session_id = args
@@ -241,8 +274,13 @@ where
                 &mut environment,
             )?;
             let repository = repository_or_default(args.read_dir, git_executable)?;
-            let (harness, system_prompt) =
-                configured_harness(client, database, repository, args.allow_write);
+            let (harness, system_prompt) = configured_harness(
+                client,
+                database,
+                repository,
+                args.allow_write,
+                reasoning_effort,
+            );
             let mut session = harness
                 .session(&session_id, chat_schema()?)
                 .system_prompt(system_prompt)
@@ -259,7 +297,13 @@ where
             let client =
                 model_client(provider, &model, args.base_url.as_deref(), &mut environment)?;
             let repository = repository_or_default(args.read_dir, git_executable)?;
-            let (harness, _) = configured_harness(client, database, repository, args.allow_write);
+            let (harness, _) = configured_harness(
+                client,
+                database,
+                repository,
+                args.allow_write,
+                reasoning_effort,
+            );
             let mut session = harness.resume(&args.session).await?;
             let mut output = output;
             announce_session(&mut output, &args.session).await?;
@@ -353,9 +397,11 @@ fn configured_harness(
     database: PathBuf,
     repository: Repository,
     allow_write: bool,
+    reasoning_effort: ReasoningEffort,
 ) -> (Harness, &'static str) {
     let mut harness = Harness::new(client)
         .database(database)
+        .model_reasoning_effort(reasoning_effort)
         .repository(repository)
         .allow(Tool::Read);
     if allow_write {

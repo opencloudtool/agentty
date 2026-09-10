@@ -15,7 +15,13 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const READ_ONLY_SYSTEM_PROMPT: &str = concat!(
     "You are operating in a read-only repository harness. The read tool supports file, list, ",
     "search, diff, and show actions. For change review, call diff first, then use search, file, ",
-    "list, or show for evidence. Call the tool immediately and use its result before answering. ",
+    "list, or show for evidence. Use repository tools only when the user explicitly asks about ",
+    "repository contents. Treat an unambiguous reference to the repository, project, codebase, ",
+    "code, a file, or a change as an explicit repository request. Treat replies, response speed, ",
+    "response visibility, and model behavior as casual chat topics only when they are not ",
+    "explicitly tied to the repository, project, codebase, code, a file, or a change. ",
+    "Do not call tools for casual conversation or ambiguous requests. When needed, call the tool ",
+    "immediately and use its result before answering. ",
     "Never narrate, promise, or defer a future tool call. Never claim that you created, ",
     "modified, deleted, or executed files or commands because filesystem mutation and command ",
     "execution are unavailable. If asked to perform an unsupported action, state that it is ",
@@ -24,7 +30,13 @@ const READ_ONLY_SYSTEM_PROMPT: &str = concat!(
 const READ_WRITE_SYSTEM_PROMPT: &str = concat!(
     "You are operating in a repository harness with read and write tools. The read tool supports ",
     "file, list, search, diff, and show actions. For change review, call diff first. When a user ",
-    "asks about repository contents, call read immediately and use its result before answering. ",
+    "explicitly asks about repository contents, call read immediately and use its result before ",
+    "answering. Treat an unambiguous reference to the repository, project, codebase, code, a \
+     file, ",
+    "or a change as an explicit repository request. Treat replies, response speed, response ",
+    "visibility, and model behavior as casual chat topics only when they are not explicitly tied ",
+    "to the repository, project, codebase, code, a file, or a change. Do not ",
+    "call tools for casual conversation or ambiguous requests. ",
     "When a user asks to create or modify a file, call the write tool ",
     "immediately in the same response. Never narrate, promise, or defer a future tool call. Only ",
     "claim that a file was created or modified after the write tool succeeds. File deletion and ",
@@ -122,6 +134,9 @@ fn help_describes_the_chat_interface() {
     assert!(stdout.contains("Usage: ag-harness [OPTIONS] <COMMAND>"));
     assert!(stdout.contains("--git-executable <FILE>"));
     assert!(stdout.contains("defaults to the first valid Git found in PATH"));
+    assert!(stdout.contains("--reasoning-effort <REASONING_EFFORT>"));
+    assert!(stdout.contains("[default: low]"));
+    assert!(stdout.contains("[possible values: low, medium, high, xhigh, max]"));
     assert!(stdout.contains("Commands:"));
     assert!(stdout.contains("Starts a new durable session"));
     assert!(stdout.contains("Resumes a durable session"));
@@ -239,17 +254,69 @@ fn run_help_describes_optional_initial_prompt() {
     assert!(stdout.contains("[default: .]"));
     assert!(stdout.contains("--allow-write"));
     assert!(stdout.contains("Enables repository writes through the write tool"));
+    assert!(stdout.contains("--reasoning-effort <REASONING_EFFORT>"));
     assert!(!stdout.contains("Chat behavior:"));
     assert!(!stdout.contains("--schema"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn provider_flags_select_kimi_and_qwen_wire_formats() {
+async fn qwen_3_8_uses_graded_reasoning_effort() {
+    // Arrange
+    let server = MockServer::start().await;
+    let model = "qwen3.8-max";
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(bearer_token("test-key"))
+        .and(body_json(json!({
+            "messages": [
+                {"content": structured_output_instruction(), "role": "system"},
+                {"content": READ_ONLY_SYSTEM_PROMPT, "role": "system"},
+                {"content": "Hello", "role": "user"}
+            ],
+            "model": model,
+            "reasoning_effort": "xhigh",
+            "tools": [read_tool()]
+        })))
+        .respond_with(response("provider response", 4, 2))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_storage, mut command) = harness_command().expect("temporary storage should exist");
+
+    // Act
+    let output = command
+        .args([
+            "run",
+            model,
+            "Hello",
+            "--provider",
+            "qwen",
+            "--reasoning-effort",
+            "high",
+        ])
+        .env("DASHSCOPE_API_KEY", "test-key")
+        .env("DASHSCOPE_BASE_URL", server.uri())
+        .output()
+        .expect("Qwen3.8 request should run");
+
+    // Assert
+    assert!(
+        output.status.success(),
+        "Qwen3.8 CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("assistant> provider response"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kimi_custom_models_use_supported_reasoning_formats() {
     // Arrange and Act
-    for provider in [ModelProvider::Kimi, ModelProvider::Qwen] {
-        let model = provider.known_models()[0];
+    for (model, reasoning) in [
+        ("kimi-k3", json!({"reasoning_effort": "low"})),
+        ("kimi-k2.7-code", json!({"thinking": {"type": "enabled"}})),
+    ] {
         let server = MockServer::start().await;
-        let expected_request = json!({
+        let mut expected_request = json!({
             "messages": [
                 {"content": structured_output_instruction(), "role": "system"},
                 {"content": READ_ONLY_SYSTEM_PROMPT, "role": "system"},
@@ -258,6 +325,65 @@ async fn provider_flags_select_kimi_and_qwen_wire_formats() {
             "model": model,
             "tools": [read_tool()]
         });
+        expected_request
+            .as_object_mut()
+            .expect("request fixture should be an object")
+            .extend(
+                reasoning
+                    .as_object()
+                    .expect("reasoning fixture should be an object")
+                    .clone(),
+            );
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(bearer_token("test-key"))
+            .and(body_json(expected_request))
+            .respond_with(response("provider response", 4, 2))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (_storage, mut command) = harness_command().expect("temporary storage should exist");
+        let output = command
+            .args(["run", model, "Hello", "--provider", "kimi"])
+            .env("KIMI_API_KEY", "test-key")
+            .env("KIMI_BASE_URL", server.uri())
+            .output()
+            .expect("custom Kimi request should run");
+
+        // Assert
+        assert!(
+            output.status.success(),
+            "{model} CLI failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("assistant> provider response"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_flags_select_kimi_and_qwen_wire_formats() {
+    // Arrange and Act
+    for provider in [ModelProvider::Kimi, ModelProvider::Qwen] {
+        let model = provider.known_models()[0];
+        let server = MockServer::start().await;
+        let mut expected_request = json!({
+            "messages": [
+                {"content": structured_output_instruction(), "role": "system"},
+                {"content": READ_ONLY_SYSTEM_PROMPT, "role": "system"},
+                {"content": "Hello", "role": "user"}
+            ],
+            "model": model,
+            "tools": [read_tool()]
+        });
+        match provider {
+            ModelProvider::Kimi => {
+                expected_request["thinking"] = json!({"type": "disabled"});
+            }
+            ModelProvider::Qwen => {
+                expected_request["enable_thinking"] = json!(false);
+            }
+            ModelProvider::Muse => unreachable!("the test covers alternate providers"),
+        }
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(bearer_token("test-key"))
@@ -307,6 +433,7 @@ async fn initial_prompt_prints_answer_and_model_metadata() {
                 {"content": "Hello", "role": "user"}
             ],
             "model": "muse-test",
+            "reasoning_effort": "low",
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -404,6 +531,7 @@ async fn stdin_prompts_share_conversation_history() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
+        .and(body_string_contains(r#""reasoning_effort":"low""#))
         .and(body_string_contains(
             r#""content":"first question","role":"user""#,
         ))
@@ -414,6 +542,7 @@ async fn stdin_prompts_share_conversation_history() {
         .await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
+        .and(body_string_contains(r#""reasoning_effort":"low""#))
         .and(body_string_contains(
             r#""content":"{\"message\":\"first answer\"}","role":"assistant""#,
         ))
@@ -470,6 +599,7 @@ async fn resume_restores_history_from_the_default_database() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
+        .and(body_string_contains(r#""reasoning_effort":"low""#))
         .and(body_string_contains(
             r#""content":"first question","role":"user""#,
         ))
@@ -480,6 +610,7 @@ async fn resume_restores_history_from_the_default_database() {
         .await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
+        .and(body_string_contains(r#""reasoning_effort":"low""#))
         .and(body_string_contains(
             r#""content":"{\"message\":\"first answer\"}","role":"assistant""#,
         ))
@@ -559,6 +690,7 @@ async fn stdin_chat_emits_failure_before_retry_and_exits_unsuccessfully() {
                 {"content": "retry question", "role": "user"}
             ],
             "model": "muse-test",
+            "reasoning_effort": "low",
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -639,6 +771,7 @@ async fn read_tool_reports_the_file_without_printing_its_contents() {
                 {"content": "Inspect the manifest", "role": "user"}
             ],
             "model": "muse-test",
+            "reasoning_effort": "low",
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -790,6 +923,7 @@ async fn redirected_output_with_terminal_stdin_is_one_shot() {
                 {"content": "Hello", "role": "user"}
             ],
             "model": "muse-test",
+            "reasoning_effort": "low",
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {

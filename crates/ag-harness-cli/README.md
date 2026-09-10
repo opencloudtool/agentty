@@ -31,7 +31,13 @@ cargo run --locked -p ag-harness-cli -- \
 ## Defaults
 
 - Repository writes are disabled unless `--allow-write` is set.
-- Sessions are stored in `~/.ag-harness/db/harness.db`.
+- Sessions are stored in `~/.ag-harness/db/harness.db`. Set `AG_HARNESS_ROOT`, or pass
+  `--database <FILE>`, to choose another location. If `HOME` is unavailable, one of
+  those explicit locations is required.
 - The first valid Git in `PATH` is used; `--git-executable <FILE>` overrides it.
 - Muse is the default provider. Run `cargo run --locked -p ag-harness-cli -- run --help`
   for Kimi, Qwen, model, and credential options.
+- CLI chats default to low model reasoning to reduce latency; pass
+  `--reasoning-effort <LEVEL>` to select deeper reasoning. Direct `ag-harness` library
+  users retain provider defaults unless they configure `Harness::model_reasoning_effort`
+  or `ModelRequest::with_model_reasoning_effort`.

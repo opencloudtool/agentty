@@ -3,6 +3,7 @@ use std::error::Error;
 use std::ops::Deref;
 
 use async_trait::async_trait;
+use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -53,12 +54,9 @@ impl ModelClient {
     /// Returns [`ModelMetadataError`] when the configured model identifier is
     /// empty or contains only whitespace.
     pub fn kimi(config: KimiConfig) -> Result<Self, ModelMetadataError> {
-        Self::chat_completion(
-            config.api_key,
-            config.base_url,
-            config.model,
-            provider::KIMI_POLICY,
-        )
+        let policy = provider::kimi_policy(&config.model);
+
+        Self::chat_completion(config.api_key, config.base_url, config.model, policy)
     }
 
     /// Creates a client backed by Meta's Model API for Muse models.
@@ -83,12 +81,9 @@ impl ModelClient {
     /// Returns [`ModelMetadataError`] when the configured model identifier is
     /// empty or contains only whitespace.
     pub fn qwen(config: QwenConfig) -> Result<Self, ModelMetadataError> {
-        Self::chat_completion(
-            config.api_key,
-            config.base_url,
-            config.model,
-            provider::QWEN_POLICY,
-        )
+        let policy = provider::qwen_policy(&config.model);
+
+        Self::chat_completion(config.api_key, config.base_url, config.model, policy)
     }
 
     /// Returns the validated provider and model identity retained by the
@@ -129,18 +124,20 @@ impl ModelClient {
             Ok(chat_completion::GeneratedResponse::Failed { error, metadata }) => {
                 (Err(error), Some(metadata))
             }
-            Ok(chat_completion::GeneratedResponse::Output { metadata, output }) => {
-                match request.schema().parse_and_validate(&output) {
-                    Ok(response) => (
-                        Ok(ModelCompletion::new(
-                            metadata,
-                            ModelResponse::from_output(response),
-                        )),
-                        None,
+            Ok(chat_completion::GeneratedResponse::Output {
+                metadata,
+                output,
+                reasoning_content,
+            }) => match request.schema().parse_and_validate(&output) {
+                Ok(response) => (
+                    Ok(
+                        ModelCompletion::new(metadata, ModelResponse::from_output(response))
+                            .with_reasoning_content(reasoning_content),
                     ),
-                    Err(error) => (Err(ModelError::from(error)), Some(metadata)),
-                }
-            }
+                    None,
+                ),
+                Err(error) => (Err(ModelError::from(error)), Some(metadata)),
+            },
             Ok(chat_completion::GeneratedResponse::ToolCall { call, metadata }) => (
                 Ok(ModelCompletion::new(
                     metadata,
@@ -265,6 +262,7 @@ pub enum ModelMetadataError {
 pub struct ModelRequest {
     lifecycle_observed: bool,
     messages: Vec<ModelMessage>,
+    model_reasoning_effort: Option<ReasoningEffort>,
     prompt: String,
     provider_session_id: Option<String>,
     schema: OutputSchema,
@@ -279,6 +277,7 @@ impl ModelRequest {
         Self {
             lifecycle_observed: false,
             messages: vec![ModelMessage::User(prompt.clone())],
+            model_reasoning_effort: None,
             prompt,
             provider_session_id: None,
             schema,
@@ -298,11 +297,20 @@ impl ModelRequest {
         Self {
             lifecycle_observed: false,
             messages,
+            model_reasoning_effort: None,
             prompt,
             provider_session_id: None,
             schema,
             tools: Vec::new(),
         }
+    }
+
+    /// Requests a provider-supported reasoning depth for this completion.
+    #[must_use]
+    pub fn with_model_reasoning_effort(mut self, reasoning_effort: ReasoningEffort) -> Self {
+        self.model_reasoning_effort = Some(reasoning_effort);
+
+        self
     }
 
     /// Advertises one native function tool for this request.
@@ -343,6 +351,11 @@ impl ModelRequest {
     /// to support chat and tool execution. The harness owns its mutation.
     pub fn messages(&self) -> &[ModelMessage] {
         &self.messages
+    }
+
+    /// Returns the requested provider reasoning depth, when configured.
+    pub fn model_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.model_reasoning_effort
     }
 
     pub(crate) fn advertises_tool(&self, name: &str) -> bool {
@@ -396,13 +409,58 @@ impl ModelRequest {
             );
     }
 
-    pub(crate) fn record_output(&mut self, output: &Value) {
-        self.messages
-            .push(ModelMessage::Assistant(output.to_string()));
+    pub(crate) fn record_output_with_reasoning(
+        &mut self,
+        output: &Value,
+        reasoning_content: Option<String>,
+    ) {
+        let content = output.to_string();
+        self.messages.push(match reasoning_content {
+            Some(reasoning_content) => ModelMessage::AssistantReasoning {
+                content,
+                reasoning_content,
+            },
+            None => ModelMessage::Assistant(content),
+        });
     }
 
     pub(crate) fn into_messages(self) -> Vec<ModelMessage> {
         self.messages
+    }
+}
+
+/// Provider-supported reasoning depth for one model completion.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ReasoningEffort {
+    /// Uses a light reasoning pass.
+    Low,
+    /// Uses a moderate reasoning pass.
+    Medium,
+    /// Uses a deep reasoning pass.
+    #[default]
+    High,
+    /// Uses an extra-high reasoning pass.
+    #[serde(rename = "xhigh")]
+    XHigh,
+    /// Uses the provider's maximum reasoning depth.
+    Max,
+}
+
+impl ReasoningEffort {
+    /// All selectable model reasoning efforts in display order.
+    pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::XHigh, Self::Max];
+
+    /// Returns the provider-neutral identifier for this effort.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
     }
 }
 
@@ -416,6 +474,14 @@ impl ModelRequest {
 pub enum ModelMessage {
     /// Validated structured assistant output serialized as JSON text.
     Assistant(String),
+    /// Validated assistant output paired with provider reasoning that must be
+    /// replayed.
+    AssistantReasoning {
+        /// Validated structured assistant output serialized as JSON text.
+        content: String,
+        /// Provider reasoning content replayed verbatim on the next request.
+        reasoning_content: String,
+    },
     /// One assistant tool call, followed by its result.
     AssistantToolCall(tool::ToolCall),
     /// An ordered assistant tool-call batch, followed by its ordered results.
@@ -439,6 +505,10 @@ impl ModelMessage {
     pub(crate) fn retained_bytes(&self) -> usize {
         match self {
             Self::Assistant(content) | Self::System(content) | Self::User(content) => content.len(),
+            Self::AssistantReasoning {
+                content,
+                reasoning_content,
+            } => content.len().saturating_add(reasoning_content.len()),
             Self::AssistantToolCall(call) => {
                 let arguments = call
                     .arguments_json()
@@ -478,6 +548,7 @@ impl ModelMessage {
 pub struct ModelCompletion {
     metadata: Option<CompletionMetadata>,
     provider_session_id: Option<String>,
+    reasoning_content: Option<String>,
     response: ModelResponse,
 }
 
@@ -487,6 +558,7 @@ impl ModelCompletion {
         Self {
             metadata: Some(metadata),
             provider_session_id: None,
+            reasoning_content: None,
             response,
         }
     }
@@ -496,6 +568,7 @@ impl ModelCompletion {
         Self {
             metadata: None,
             provider_session_id: None,
+            reasoning_content: None,
             response,
         }
     }
@@ -504,6 +577,12 @@ impl ModelCompletion {
     #[must_use]
     pub fn with_provider_session_id(mut self, provider_session_id: impl Into<String>) -> Self {
         self.provider_session_id = Some(provider_session_id.into());
+
+        self
+    }
+
+    pub(crate) fn with_reasoning_content(mut self, reasoning_content: Option<String>) -> Self {
+        self.reasoning_content = reasoning_content;
 
         self
     }
@@ -528,8 +607,20 @@ impl ModelCompletion {
         self.response
     }
 
-    pub(crate) fn into_parts(self) -> (ModelResponse, Option<CompletionMetadata>, Option<String>) {
-        (self.response, self.metadata, self.provider_session_id)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ModelResponse,
+        Option<CompletionMetadata>,
+        Option<String>,
+        Option<String>,
+    ) {
+        (
+            self.response,
+            self.metadata,
+            self.provider_session_id,
+            self.reasoning_content,
+        )
     }
 }
 
@@ -1328,6 +1419,34 @@ mod tests {
         assert_eq!(request.prompt(), "hello");
         assert_eq!(request.schema(), &schema);
         assert_eq!(request.tools(), []);
+    }
+
+    #[test]
+    fn request_uses_provider_neutral_reasoning_effort_names() {
+        // Arrange
+        let schema =
+            OutputSchema::new(json!({ "type": "object" })).expect("schema should be valid");
+        let names = ["low", "medium", "high", "xhigh", "max"];
+
+        // Act
+        let request =
+            ModelRequest::new("hello", schema).with_model_reasoning_effort(ReasoningEffort::High);
+        let serialized = ReasoningEffort::ALL
+            .iter()
+            .map(|effort| serde_json::to_value(effort).expect("effort should serialize"))
+            .collect::<Vec<_>>();
+
+        // Assert
+        assert_eq!(
+            request.model_reasoning_effort(),
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(
+            serialized,
+            names.map(|name| serde_json::Value::String(name.to_string()))
+        );
+        assert_eq!(ReasoningEffort::default(), ReasoningEffort::High);
+        assert_eq!(ReasoningEffort::ALL.map(ReasoningEffort::as_str), names);
     }
 
     #[test]
