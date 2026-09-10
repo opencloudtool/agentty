@@ -17,6 +17,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::model::{ModelMessage, ModelMetadata};
 use crate::tool::{ReadArguments, ToolCall, WriteArguments};
+use crate::write_journal::WriteJournal;
 use crate::{OutputSchema, OutputSchemaError, TurnError};
 
 pub(crate) const TURN_LEASE_SECONDS: i64 = 300;
@@ -547,6 +548,7 @@ RETURNING owner_token
         turn_position: i64,
         messages: &[ModelMessage],
         provider_session_id: Option<&str>,
+        acknowledged_writes: &[i64],
     ) -> Result<(), SessionError> {
         let encoded_messages = messages
             .iter()
@@ -602,6 +604,21 @@ WHERE id = ?
         .execute(&mut *transaction)
         .await
         .session_context("complete persistent session turn")?;
+        for write_id in acknowledged_writes {
+            sqlx::query!(
+                r"
+UPDATE session_write SET acknowledged_by_turn = ?
+WHERE session_id = ? AND id = ? AND turn_position < ? AND acknowledged_by_turn IS NULL
+",
+                turn_position,
+                session_id,
+                write_id,
+                turn_position
+            )
+            .execute(&mut *transaction)
+            .await
+            .session_context("acknowledge persistent write diagnostics")?;
+        }
         transaction
             .commit()
             .await
@@ -662,7 +679,7 @@ WHERE id = ?
         Ok(())
     }
 
-    async fn recover_stale_turns(&self, session_id: &str) -> Result<(), SessionError> {
+    pub(crate) async fn recover_stale_turns(&self, session_id: &str) -> Result<(), SessionError> {
         let now = self.timestamp_source.now_timestamp_seconds();
         sqlx::query(
             r"
@@ -683,7 +700,6 @@ WHERE session_id = ?
         Ok(())
     }
 
-    #[cfg(test)]
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -856,7 +872,8 @@ pub enum SessionError {
     /// Durable session operations require a configured SQLite database.
     #[error("durable sessions require Harness::database(path)")]
     StorageRequired,
-    /// The model turn failed before it could be persisted.
+    /// The model turn failed; write records remain available through the
+    /// session.
     #[error(transparent)]
     Turn(#[from] TurnError),
     /// A model turn and the attempt to persist its failure both failed.
@@ -957,6 +974,16 @@ pub(crate) struct TurnGuard {
 }
 
 impl TurnGuard {
+    pub(crate) fn write_journal(&self) -> WriteJournal {
+        WriteJournal {
+            owner_token: self.owner.token.clone(),
+            pool: self.pool.clone(),
+            session_id: self.owner.session_id.clone(),
+            timestamp_source: Arc::clone(&self.timestamp_source),
+            turn_position: self.owner.turn_position,
+        }
+    }
+
     fn new(database: &Database, owner: TurnOwner) -> Self {
         Self {
             armed: true,
@@ -1280,7 +1307,7 @@ fn connect_options(path: &Path) -> SqliteConnectOptions {
         .create_if_missing(true)
         .busy_timeout(DB_BUSY_TIMEOUT)
         .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
+        .synchronous(SqliteSynchronous::Full)
         .foreign_keys(true)
 }
 
@@ -1849,7 +1876,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
         assert!(database_path.exists());
         assert_eq!(journal_mode, "wal");
         assert_eq!(foreign_keys, 1);
-        assert_eq!(synchronous, 1);
+        assert_eq!(synchronous, 2);
     }
 
     #[tokio::test]
@@ -2592,7 +2619,7 @@ ORDER BY turn_position
 
         // Act
         let error = database
-            .complete_turn("session-a", turn_position, &[], None)
+            .complete_turn("session-a", turn_position, &[], None, &[])
             .await
             .expect_err("non-running turn should fail");
         let repeated_failure = database

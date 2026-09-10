@@ -28,6 +28,7 @@ reqwest.workspace = true
 rustix.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["arbitrary_precision"] }
+sha2.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true

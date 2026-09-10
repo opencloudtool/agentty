@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "\nSELECT w.id AS \"id!\", w.call_id, w.expected_hash, w.path, w.repository_root, w.resulting_hash,\n       w.status, w.turn_position, t.status AS turn_status\nFROM session_write w\nJOIN session_turn t USING (session_id, turn_position)\nWHERE w.session_id = ?\n  AND (? = FALSE OR (t.status != 'completed' AND w.acknowledged_by_turn IS NULL))\nORDER BY w.turn_position, w.id\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "call_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "call_id"
+          }
+        }
+      },
+      {
+        "name": "expected_hash",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "expected_hash"
+          }
+        }
+      },
+      {
+        "name": "path",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "repository_root",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "repository_root"
+          }
+        }
+      },
+      {
+        "name": "resulting_hash",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "resulting_hash"
+          }
+        }
+      },
+      {
+        "name": "status",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "turn_position",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "session_write",
+            "name": "turn_position"
+          }
+        }
+      },
+      {
+        "name": "turn_status",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "session_turn",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c3af8307294e34b70771b0cbd4d46a06019fe8fc1a8fa8d930032ed79226dcb9"
+}
